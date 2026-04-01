@@ -382,6 +382,26 @@ CREATE TRIGGER tr_products_updated_at BEFORE UPDATE ON products FOR EACH ROW EXE
 CREATE TRIGGER tr_customers_updated_at BEFORE UPDATE ON customers FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 CREATE TRIGGER tr_inventories_updated_at BEFORE UPDATE ON inventories FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
+-- Auth 사용자 자동 등록 트리거
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO public.users (id, email, password_hash, name, role)
+  VALUES (
+    NEW.id,
+    NEW.email,
+    COALESCE(NEW.encrypted_password, ''),
+    COALESCE(NEW.raw_user_meta_data->>'name', split_part(NEW.email, '@', 1)),
+    'PHARMACY_STAFF'
+  );
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
 -- 전표번호 자동 생성
 CREATE OR REPLACE FUNCTION generate_order_number(prefix VARCHAR, branch_code VARCHAR)
 RETURNS VARCHAR AS $$
