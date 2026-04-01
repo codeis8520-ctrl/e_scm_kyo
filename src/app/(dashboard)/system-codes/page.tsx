@@ -58,6 +58,16 @@ interface Category {
   parent?: { name: string } | null;
 }
 
+interface NotificationTemplate {
+  id: string;
+  template_code: string;
+  template_name: string;
+  message_template: string;
+  buttons: any[];
+  is_active: boolean;
+  created_at: string;
+}
+
 const CHANNEL_OPTIONS = [
   { value: 'STORE', label: '한약국' },
   { value: 'DEPT_STORE', label: '백화점' },
@@ -89,12 +99,13 @@ const ROLE_COLORS: Record<string, string> = {
 };
 
 export default function SystemCodesPage() {
-  const [activeTab, setActiveTab] = useState<'branches' | 'grades' | 'tags' | 'categories' | 'staff'>('branches');
+  const [activeTab, setActiveTab] = useState<'branches' | 'grades' | 'tags' | 'categories' | 'staff' | 'templates'>('branches');
   const [branches, setBranches] = useState<Branch[]>([]);
   const [grades, setGrades] = useState<CustomerGrade[]>([]);
   const [tags, setTags] = useState<CustomerTag[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [users, setUsers] = useState<User[]>([]);
+  const [templates, setTemplates] = useState<NotificationTemplate[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [showBranchModal, setShowBranchModal] = useState(false);
@@ -102,11 +113,13 @@ export default function SystemCodesPage() {
   const [showTagModal, setShowTagModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [showUserModal, setShowUserModal] = useState(false);
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
   const [editingGrade, setEditingGrade] = useState<CustomerGrade | null>(null);
   const [editingTag, setEditingTag] = useState<CustomerTag | null>(null);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [editingTemplate, setEditingTemplate] = useState<NotificationTemplate | null>(null);
 
   useEffect(() => {
     fetchData();
@@ -131,6 +144,9 @@ export default function SystemCodesPage() {
     } else if (activeTab === 'staff') {
       const { data } = await supabase.from('users').select('*, branch:branches(name)').order('created_at', { ascending: false });
       setUsers((data || []) as User[]);
+    } else if (activeTab === 'templates') {
+      const { data } = await supabase.from('notification_templates').select('*').order('created_at', { ascending: false });
+      setTemplates((data || []) as NotificationTemplate[]);
     }
 
     setLoading(false);
@@ -222,6 +238,16 @@ export default function SystemCodesPage() {
           }`}
         >
           직원 관리
+        </button>
+        <button
+          onClick={() => setActiveTab('templates')}
+          className={`px-4 py-2 font-medium border-b-2 -mb-px transition-colors ${
+            activeTab === 'templates'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          알림톡 템플릿
         </button>
       </div>
 
@@ -564,6 +590,61 @@ export default function SystemCodesPage() {
         </div>
       )}
 
+      {activeTab === 'templates' && (
+        <div className="card">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="font-semibold">알림톡 템플릿 목록</h3>
+            <button
+              onClick={() => { setEditingTemplate(null); setShowTemplateModal(true); }}
+              className="btn-primary"
+            >
+              + 템플릿 추가
+            </button>
+          </div>
+
+          <table className="table">
+            <thead>
+              <tr>
+                <th>템플릿 코드</th>
+                <th>템플릿명</th>
+                <th>메시지 미리보기</th>
+                <th>상태</th>
+                <th>관리</th>
+              </tr>
+            </thead>
+            <tbody>
+              {templates.map((template) => (
+                <tr key={template.id}>
+                  <td className="font-mono text-sm">{template.template_code}</td>
+                  <td>{template.template_name}</td>
+                  <td className="max-w-xs text-sm truncate">{template.message_template}</td>
+                  <td>
+                    <span className={`badge ${template.is_active ? 'badge-success' : 'badge-error'}`}>
+                      {template.is_active ? '활성' : '비활성'}
+                    </span>
+                  </td>
+                  <td>
+                    <button
+                      onClick={() => { setEditingTemplate(template); setShowTemplateModal(true); }}
+                      className="text-blue-600 hover:underline mr-2"
+                    >
+                      수정
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {templates.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="text-center text-slate-400 py-8">
+                    등록된 템플릿이 없습니다
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {showBranchModal && (
         <BranchModal
           branch={editingBranch}
@@ -603,6 +684,14 @@ export default function SystemCodesPage() {
           branches={branches}
           onClose={() => setShowUserModal(false)}
           onSuccess={() => { setShowUserModal(false); fetchData(); }}
+        />
+      )}
+
+      {showTemplateModal && (
+        <TemplateModal
+          template={editingTemplate}
+          onClose={() => setShowTemplateModal(false)}
+          onSuccess={() => { setShowTemplateModal(false); fetchData(); }}
         />
       )}
     </div>
@@ -1333,6 +1422,111 @@ function UserModal({
               {loading ? '처리 중...' : (user ? '수정' : '추가')}
             </button>
             <button type="button" onClick={onClose} className="flex-1 btn-secondary">취소</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function TemplateModal({ template, onClose, onSuccess }: { template: NotificationTemplate | null; onClose: () => void; onSuccess: () => void }) {
+  const supabase = createClient();
+  const [formData, setFormData] = useState({
+    template_code: template?.template_code || '',
+    template_name: template?.template_name || '',
+    message_template: template?.message_template || '',
+  });
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+
+    try {
+      const db = supabase as any;
+      if (template?.id) {
+        await db.from('notification_templates').update(formData).eq('id', template.id);
+      } else {
+        await db.from('notification_templates').insert({ ...formData, is_active: true });
+      }
+      onSuccess();
+    } catch (err: any) {
+      setError(err?.message || '오류가 발생했습니다.');
+      setLoading(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!template?.id) return;
+    if (!confirm('정말 삭제하시겠습니까?')) return;
+    await supabase.from('notification_templates').delete().eq('id', template.id);
+    onSuccess();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg p-6 w-full max-w-lg">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-lg font-bold">{template?.id ? '템플릿 수정' : '템플릿 추가'}</h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">✕</button>
+        </div>
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-lg text-sm">{error}</div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700">템플릿 코드 *</label>
+            <input
+              type="text"
+              value={formData.template_code}
+              onChange={(e) => setFormData({ ...formData, template_code: e.target.value })}
+              required
+              disabled={!!template?.id}
+              className="mt-1 input"
+              placeholder="ORDER_COMPLETE"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">템플릿명 *</label>
+            <input
+              type="text"
+              value={formData.template_name}
+              onChange={(e) => setFormData({ ...formData, template_name: e.target.value })}
+              required
+              className="mt-1 input"
+              placeholder="주문 완료 알림"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">메시지 템플릿 *</label>
+            <textarea
+              value={formData.message_template}
+              onChange={(e) => setFormData({ ...formData, message_template: e.target.value })}
+              required
+              rows={6}
+              className="mt-1 input"
+              placeholder="{{customer_name}}님, 안녕하세요..."
+            />
+            <p className="text-xs text-slate-500 mt-1">
+              변수: {'{{customer_name}}'}, {'{{product_name}}'}, {'{{amount}}'}, {'{{event_name}}'} 등
+            </p>
+          </div>
+
+          <div className="flex gap-2 pt-4">
+            <button type="submit" disabled={loading} className="flex-1 btn-primary">
+              {loading ? '처리 중...' : (template?.id ? '수정' : '등록')}
+            </button>
+            {template?.id && (
+              <button type="button" onClick={handleDelete} className="px-4 py-2 bg-red-100 text-red-600 rounded-md hover:bg-red-200">
+                삭제
+              </button>
+            )}
           </div>
         </form>
       </div>

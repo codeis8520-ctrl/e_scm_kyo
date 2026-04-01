@@ -258,17 +258,41 @@ CREATE TABLE seasons (
 );
 
 -- =====================================================
+-- 알림톡 템플릿
+-- =====================================================
+CREATE TABLE notification_templates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    template_code VARCHAR(50) UNIQUE NOT NULL,
+    template_name VARCHAR(100) NOT NULL,
+    message_template TEXT NOT NULL,
+    buttons JSONB DEFAULT '[]',
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 초기 알림 템플릿
+INSERT INTO notification_templates (template_code, template_name, message_template, is_active) VALUES
+('ORDER_COMPLETE', '주문 완료 알림', '안녕하세요 {{customer_name}}님, 주문이 완료되었습니다.\n\n📦 상품: {{product_name}}\n💰 금액: {{amount}}원\n\n감사합니다.', true),
+('REPURCHASE_ALERT', '재구매 안내', '안녕하세요 {{customer_name}}님, {{product_name}} 재구매 시기입니다.\n\n최근 구매: {{last_purchase_date}}\n정기적으로 섭취하시는 건강관리에 도움을 드립니다.', true),
+('EVENT_INVITE', '이벤트 초대', '안녕하세요 {{customer_name}}님, 특별한 이벤트에 초대합니다!\n\n🎉 {{event_name}}\n📅 {{event_date}}\n\n행사 전용 상품을 준비했습니다.', true),
+('MEMBERSHIP_UPDATE', '멤버십 등급 안내', '축하합니다! {{customer_name}}님의 등급이 {{new_grade}}로 상승했습니다.\n\n변경일: {{change_date}}\n다양한 혜택을 확인해보세요!', true)
+ON CONFLICT (template_code) DO NOTHING;
+
+-- =====================================================
 -- 카카오톡 알림 내역
 -- =====================================================
 CREATE TABLE notifications (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     customer_id UUID REFERENCES customers(id),
     notification_type VARCHAR(50) NOT NULL,
+    template_id UUID REFERENCES notification_templates(id),
     template_code VARCHAR(50),
     phone VARCHAR(20) NOT NULL,
     message TEXT NOT NULL,
     status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed')),
     sent_at TIMESTAMP WITH TIME ZONE,
+    sent_by UUID REFERENCES users(id),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
@@ -305,6 +329,8 @@ CREATE INDEX idx_sales_orders_ordered_at ON sales_orders(ordered_at);
 CREATE INDEX idx_sales_order_items_sales_order ON sales_order_items(sales_order_id);
 CREATE INDEX idx_point_history_customer ON point_history(customer_id);
 CREATE INDEX idx_notifications_customer ON notifications(customer_id);
+CREATE INDEX idx_notifications_status ON notifications(status);
+CREATE INDEX idx_notification_templates_active ON notification_templates(is_active);
 CREATE INDEX idx_cafe24_sync_logs_status ON cafe24_sync_logs(status);
 CREATE INDEX idx_seasons_active ON seasons(is_active) WHERE is_active = true;
 
@@ -325,6 +351,7 @@ ALTER TABLE sales_order_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE point_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE production_orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE seasons ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notification_templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cafe24_sync_logs ENABLE ROW LEVEL SECURITY;
 
@@ -379,6 +406,9 @@ CREATE POLICY production_orders_all ON production_orders FOR ALL TO authenticate
 
 -- seasons: staff 이상 접근
 CREATE POLICY seasons_all ON seasons FOR ALL TO authenticated USING (true);
+
+-- notification_templates: staff 이상 접근
+CREATE POLICY notification_templates_all ON notification_templates FOR ALL TO authenticated USING (true);
 
 -- notifications: staff 이상 접근
 CREATE POLICY notifications_all ON notifications FOR ALL TO authenticated USING (true);
