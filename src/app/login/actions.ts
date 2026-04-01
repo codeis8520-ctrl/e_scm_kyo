@@ -14,7 +14,7 @@ export async function login(formData: FormData) {
   const { error } = await supabase.auth.signInWithPassword(data);
 
   if (error) {
-    redirect('/login?error=Could not authenticate user');
+    redirect(`/login?error=${encodeURIComponent(error.message)}`);
   }
 
   redirect('/');
@@ -28,10 +28,16 @@ export async function signup(formData: FormData) {
     password: formData.get('password') as string,
   };
 
-  const { error } = await supabase.auth.signUp(data);
+  const { data: result, error } = await supabase.auth.signUp(data);
 
   if (error) {
-    redirect('/login?error=Could not create user');
+    redirect(`/login/signup?error=${encodeURIComponent(error.message)}`);
+  }
+
+  // 성공 시
+  if (result?.user && !result?.session) {
+    // 이메일 확인이 필요한 경우
+    redirect('/login/signup?message=이메일 확인 후 로그인해주세요');
   }
 
   redirect('/');
