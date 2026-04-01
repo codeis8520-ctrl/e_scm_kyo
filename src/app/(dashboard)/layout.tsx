@@ -9,6 +9,7 @@ const navItems = [
   { href: '/pos', label: 'POS', icon: '💰' },
   { href: '/pos/manual', label: '수기 입력', icon: '✏️' },
   { href: '/products', label: '제품 관리', icon: '📦' },
+  { href: '/production', label: '생산 관리', icon: '🏭' },
   { href: '/inventory', label: '재고 관리', icon: '🏪' },
   { href: '/customers', label: '고객 관리', icon: '👥' },
   { href: '/notifications', label: '알림톡', icon: '📱' },
