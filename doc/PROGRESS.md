@@ -89,6 +89,21 @@
 - NotificationsPage: 전화번호 검증
 - ProductionPage: 생산 수량 검증
 
+#### 4. 시스템 코드 관리 페이지 추가
+
+**파일 생성:**
+- `src/app/(dashboard)/system-codes/page.tsx` - 시스템 코드 관리 페이지
+- `supabase/schema.sql` - customer_grades 테이블 추가
+
+**구현 기능:**
+| 구분 | 기능 |
+|------|------|
+| **지점 관리** | CRUD - 지점명, 코드, 채널, 연락처, 주소 |
+| **고객 등급** | CRUD - 코드, 이름, 설명, 색상, 정렬순서 |
+| **고객 태그** | CRUD - 이름, 설명, 색상 |
+
+**DB 변경:** `customer_grades` 테이블 추가 (NORMAL, VIP, VVIP 기본 데이터)
+
 #### 2. 대시보드 고도화 (FR-D01~D05)
 **파일 생성:**
 - `src/app/(dashboard)/DashboardClient.tsx` - 대시보드 클라이언트 컴포넌트

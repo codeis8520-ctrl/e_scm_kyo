@@ -6,6 +6,7 @@ import {
   createBranch, updateBranch, deleteBranch,
   createCustomerGrade, updateCustomerGrade, deleteCustomerGrade,
   createCustomerTag, updateCustomerTag, deleteCustomerTag,
+  createCategory, updateCategory, deleteCategory,
 } from '@/lib/actions';
 import { validators } from '@/lib/validators';
 
@@ -36,10 +37,18 @@ interface CustomerTag {
   color: string;
 }
 
+interface Category {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  sort_order: number;
+  parent?: { name: string } | null;
+}
+
 const CHANNEL_OPTIONS = [
   { value: 'STORE', label: '한약국' },
   { value: 'DEPT_STORE', label: '백화점' },
-  { value: 'ONLINE', label: '자사몬' },
+  { value: 'ONLINE', label: '자사몰' },
   { value: 'EVENT', label: '이벤트' },
 ];
 
@@ -51,18 +60,21 @@ const CHANNEL_COLORS: Record<string, string> = {
 };
 
 export default function SystemCodesPage() {
-  const [activeTab, setActiveTab] = useState<'branches' | 'grades' | 'tags'>('branches');
+  const [activeTab, setActiveTab] = useState<'branches' | 'grades' | 'tags' | 'categories'>('branches');
   const [branches, setBranches] = useState<Branch[]>([]);
   const [grades, setGrades] = useState<CustomerGrade[]>([]);
   const [tags, setTags] = useState<CustomerTag[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [showBranchModal, setShowBranchModal] = useState(false);
   const [showGradeModal, setShowGradeModal] = useState(false);
   const [showTagModal, setShowTagModal] = useState(false);
+  const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
   const [editingGrade, setEditingGrade] = useState<CustomerGrade | null>(null);
   const [editingTag, setEditingTag] = useState<CustomerTag | null>(null);
+  const [editingCategory, setEditingCategory] = useState<Category | null>(null);
 
   useEffect(() => {
     fetchData();
@@ -78,9 +90,12 @@ export default function SystemCodesPage() {
     } else if (activeTab === 'grades') {
       const { data } = await supabase.from('customer_grades').select('*').order('sort_order');
       setGrades(data || []);
-    } else {
+    } else if (activeTab === 'tags') {
       const { data } = await supabase.from('customer_tags').select('*').order('created_at');
       setTags(data || []);
+    } else {
+      const { data } = await supabase.from('categories').select('*, parent:categories(name)').order('sort_order');
+      setCategories(data || []);
     }
 
     setLoading(false);
@@ -101,6 +116,12 @@ export default function SystemCodesPage() {
   const handleDeleteTag = async (id: string) => {
     if (!confirm('정말 삭제하시겠습니까?')) return;
     await deleteCustomerTag(id);
+    fetchData();
+  };
+
+  const handleDeleteCategory = async (id: string) => {
+    if (!confirm('정말 삭제하시겠습니까?')) return;
+    await deleteCategory(id);
     fetchData();
   };
 
@@ -140,6 +161,16 @@ export default function SystemCodesPage() {
           }`}
         >
           고객 태그
+        </button>
+        <button
+          onClick={() => setActiveTab('categories')}
+          className={`px-4 py-2 font-medium border-b-2 -mb-px transition-colors ${
+            activeTab === 'categories'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          카테고리
         </button>
       </div>
 
@@ -358,6 +389,61 @@ export default function SystemCodesPage() {
         </div>
       )}
 
+      {activeTab === 'categories' && (
+        <div className="card">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="font-semibold">카테고리 목록</h3>
+            <button
+              onClick={() => { setEditingCategory(null); setShowCategoryModal(true); }}
+              className="btn-primary"
+            >
+              + 카테고리 추가
+            </button>
+          </div>
+
+          <table className="table">
+            <thead>
+              <tr>
+                <th>카테고리명</th>
+                <th>상위 카테고리</th>
+                <th>정렬순서</th>
+                <th>관리</th>
+              </tr>
+            </thead>
+            <tbody>
+              {categories.map((cat) => (
+                <tr key={cat.id}>
+                  <td className="font-medium">{cat.name}</td>
+                  <td className="text-slate-500">{cat.parent?.name || '-'}</td>
+                  <td>{cat.sort_order}</td>
+                  <td>
+                    <button
+                      onClick={() => { setEditingCategory(cat); setShowCategoryModal(true); }}
+                      className="text-blue-600 hover:underline mr-2"
+                    >
+                      수정
+                    </button>
+                    <button
+                      onClick={() => handleDeleteCategory(cat.id)}
+                      className="text-red-600 hover:underline"
+                    >
+                      삭제
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {categories.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="text-center text-slate-400 py-8">
+                    등록된 카테고리가 없습니다
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {showBranchModal && (
         <BranchModal
           branch={editingBranch}
@@ -379,6 +465,15 @@ export default function SystemCodesPage() {
           tag={editingTag}
           onClose={() => setShowTagModal(false)}
           onSuccess={() => { setShowTagModal(false); fetchData(); }}
+        />
+      )}
+
+      {showCategoryModal && (
+        <CategoryModal
+          category={editingCategory}
+          categories={categories}
+          onClose={() => setShowCategoryModal(false)}
+          onSuccess={() => { setShowCategoryModal(false); fetchData(); }}
         />
       )}
     </div>
@@ -794,6 +889,123 @@ function TagModal({ tag, onClose, onSuccess }: { tag: CustomerTag | null; onClos
           <div className="flex gap-2 pt-4">
             <button type="submit" disabled={loading} className="flex-1 btn-primary">
               {loading ? '처리 중...' : (tag ? '수정' : '추가')}
+            </button>
+            <button type="button" onClick={onClose} className="flex-1 btn-secondary">취소</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function CategoryModal({
+  category,
+  categories,
+  onClose,
+  onSuccess,
+}: {
+  category: Category | null;
+  categories: Category[];
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const [formData, setFormData] = useState({
+    name: category?.name || '',
+    parent_id: category?.parent_id || '',
+    sort_order: category?.sort_order || 0,
+  });
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    setFieldErrors({});
+
+    const errors: Record<string, string> = {};
+    const nameError = validators.required(formData.name, '카테고리명');
+    if (nameError) errors.name = nameError;
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      setLoading(false);
+      return;
+    }
+
+    const form = new FormData();
+    Object.entries(formData).forEach(([key, value]) => {
+      form.append(key, String(value));
+    });
+
+    const result = category
+      ? await updateCategory(category.id, form)
+      : await createCategory(form);
+
+    if (result?.error) {
+      setError(result.error);
+      setLoading(false);
+    } else {
+      onSuccess();
+    }
+  };
+
+  const parentCategories = categories.filter((c) => c.id !== category?.id);
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg p-6 w-full max-w-md">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-lg font-bold">{category ? '카테고리 수정' : '카테고리 추가'}</h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">✕</button>
+        </div>
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-lg text-sm">{error}</div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700">카테고리명 *</label>
+            <input
+              type="text"
+              value={formData.name}
+              onChange={(e) => { setFormData({ ...formData, name: e.target.value }); setFieldErrors({ ...fieldErrors, name: '' }); }}
+              placeholder="한방식품"
+              className={`mt-1 input ${fieldErrors.name ? 'border-red-500' : ''}`}
+            />
+            {fieldErrors.name && <p className="mt-1 text-xs text-red-500">{fieldErrors.name}</p>}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">상위 카테고리</label>
+            <select
+              value={formData.parent_id}
+              onChange={(e) => setFormData({ ...formData, parent_id: e.target.value })}
+              className="mt-1 input"
+            >
+              <option value="">없음 (최상위)</option>
+              {parentCategories.map((cat) => (
+                <option key={cat.id} value={cat.id}>{cat.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">정렬순서</label>
+            <input
+              type="number"
+              value={formData.sort_order}
+              onChange={(e) => setFormData({ ...formData, sort_order: parseInt(e.target.value) || 0 })}
+              min="0"
+              className="mt-1 input"
+            />
+          </div>
+
+          <div className="flex gap-2 pt-4">
+            <button type="submit" disabled={loading} className="flex-1 btn-primary">
+              {loading ? '처리 중...' : (category ? '수정' : '추가')}
             </button>
             <button type="button" onClick={onClose} className="flex-1 btn-secondary">취소</button>
           </div>

@@ -51,7 +51,7 @@ interface DashboardData {
 const CHANNEL_LABELS: Record<string, string> = {
   STORE: '한약국',
   DEPT_STORE: '백화점',
-  ONLINE: '자사몬',
+  ONLINE: '자사몰',
   EVENT: '이벤트',
 };
 

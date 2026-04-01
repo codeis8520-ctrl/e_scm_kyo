@@ -263,6 +263,77 @@ export async function getCategories() {
   return { data: data || [] };
 }
 
+export async function getCategoriesAll() {
+  const supabase = await createClient();
+  const { data } = await supabase.from('categories').select('*, parent:categories(name)').order('sort_order');
+  return { data: data || [] };
+}
+
+export async function createCategory(formData: FormData) {
+  const supabase = await createClient();
+  
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect('/login');
+
+  const categoryData = {
+    name: formData.get('name') as string,
+    parent_id: formData.get('parent_id') as string || null,
+    sort_order: parseInt(formData.get('sort_order') as string) || 0,
+  };
+
+  // @ts-ignore
+  const { error } = await supabase.from('categories').insert(categoryData);
+  
+  if (error) {
+    return { error: error.message };
+  }
+  
+  revalidatePath('/products');
+  revalidatePath('/system-codes');
+  return { success: true };
+}
+
+export async function updateCategory(id: string, formData: FormData) {
+  const supabase = await createClient();
+  
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect('/login');
+
+  const categoryData = {
+    name: formData.get('name') as string,
+    parent_id: formData.get('parent_id') as string || null,
+    sort_order: parseInt(formData.get('sort_order') as string) || 0,
+  };
+
+  // @ts-ignore
+  const { error } = await supabase.from('categories').update(categoryData).eq('id', id);
+  
+  if (error) {
+    return { error: error.message };
+  }
+  
+  revalidatePath('/products');
+  revalidatePath('/system-codes');
+  return { success: true };
+}
+
+export async function deleteCategory(id: string) {
+  const supabase = await createClient();
+  
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect('/login');
+
+  const { error } = await supabase.from('categories').delete().eq('id', id);
+  
+  if (error) {
+    return { error: error.message };
+  }
+  
+  revalidatePath('/products');
+  revalidatePath('/system-codes');
+  return { success: true };
+}
+
 export async function getBranches() {
   const supabase = await createClient();
   const { data } = await supabase.from('branches').select('*').order('created_at');
