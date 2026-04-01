@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 
 interface CartItem {
@@ -9,19 +9,36 @@ interface CartItem {
   price: number;
   quantity: number;
   inventory?: any;
+  barcode?: string;
+}
+
+interface Customer {
+  id: string;
+  name: string;
+  phone: string;
+  grade: string;
 }
 
 export default function POSPage() {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [search, setSearch] = useState('');
   const [products, setProducts] = useState<any[]>([]);
+  const [productMap, setProductMap] = useState<Map<string, any>>(new Map());
   const [branches, setBranches] = useState<any[]>([]);
-  const [customers, setCustomers] = useState<any[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedBranch, setSelectedBranch] = useState('');
-  const [selectedCustomer, setSelectedCustomer] = useState('');
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [customerResults, setCustomerResults] = useState<Customer[]>([]);
+  const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'kakao'>('cash');
   const [processing, setProcessing] = useState(false);
+  const [lastScannedBarcode, setLastScannedBarcode] = useState('');
+
+  const barcodeInputRef = useRef<HTMLInputElement>(null);
+  const customerInputRef = useRef<HTMLInputElement>(null);
+  const productSearchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -30,14 +47,24 @@ export default function POSPage() {
       const [productsRes, branchesRes, customersRes] = await Promise.all([
         supabase.from('products').select('*, inventories(*)').eq('is_active', true).order('name'),
         supabase.from('branches').select('*').eq('is_active', true).order('created_at'),
-        supabase.from('customers').select('*').eq('is_active', true).order('name').limit(100),
+        supabase.from('customers').select('id, name, phone, grade').eq('is_active', true).order('name'),
       ]);
 
       const branchesData = (branchesRes.data || []) as any[];
-      setProducts((productsRes.data || []) as any[]);
+      const productsData = (productsRes.data || []) as any[];
+      const customersData = (customersRes.data || []) as any[];
+
+      setProducts(productsData);
       setBranches(branchesData);
-      setCustomers((customersRes.data || []) as any[]);
-      
+      setCustomers(customersData);
+
+      const map = new Map<string, any>();
+      productsData.forEach(p => {
+        if (p.barcode) map.set(p.barcode, p);
+        map.set(p.code, p);
+      });
+      setProductMap(map);
+
       if (branchesData.length > 0) {
         setSelectedBranch(branchesData[0].id);
       }
@@ -45,7 +72,24 @@ export default function POSPage() {
       setLoading(false);
     };
     fetchData();
+
+    barcodeInputRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    if (customerSearch.length >= 1) {
+      const q = customerSearch.toLowerCase();
+      const results = customers.filter(c => 
+        c.name.toLowerCase().includes(q) ||
+        c.phone.replace(/-/g, '').includes(q.replace(/-/g, ''))
+      );
+      setCustomerResults(results.slice(0, 10));
+      setShowCustomerDropdown(true);
+    } else {
+      setCustomerResults([]);
+      setShowCustomerDropdown(false);
+    }
+  }, [customerSearch, customers]);
 
   const filteredProducts = products.filter(p =>
     p.name.includes(search) || p.code.includes(search)
@@ -67,8 +111,11 @@ export default function POSPage() {
         price: product.price,
         quantity: 1,
         inventory: product.inventories,
+        barcode: product.barcode,
       }];
     });
+    setSearch('');
+    productSearchRef.current?.focus();
   };
 
   const removeFromCart = (productId: string) => {
@@ -87,6 +134,35 @@ export default function POSPage() {
     );
   };
 
+  const handleBarcodeScan = (barcode: string) => {
+    const trimmed = barcode.trim();
+    if (!trimmed) return;
+    
+    const product = productMap.get(trimmed);
+    if (product) {
+      addToCart(product);
+      setLastScannedBarcode(trimmed);
+    } else {
+      alert(`바코드 "${trimmed}" 해당 제품이 없습니다.`);
+    }
+    setSearch('');
+  };
+
+  const selectCustomer = (customer: Customer) => {
+    setSelectedCustomer(customer);
+    setCustomerSearch('');
+    setCustomerResults([]);
+    setShowCustomerDropdown(false);
+  };
+
+  const clearCustomer = () => {
+    setSelectedCustomer(null);
+    setCustomerSearch('');
+    setCustomerResults([]);
+    setShowCustomerDropdown(false);
+    customerInputRef.current?.focus();
+  };
+
   const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
 
   const handlePayment = async () => {
@@ -101,7 +177,6 @@ export default function POSPage() {
     const db = supabase as any;
 
     try {
-      // 1. 재고 확인 및 차감
       for (const item of cart) {
         const { data: inventory } = await supabase
           .from('inventories')
@@ -131,7 +206,6 @@ export default function POSPage() {
         });
       }
 
-      // 2. 판매 전표 생성
       const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
       const branchCode = branches.find(b => b.id === selectedBranch)?.code || 'ETC';
       const orderNumber = `SA-${branchCode}-${today}-${Date.now().toString().slice(-4)}`;
@@ -142,7 +216,7 @@ export default function POSPage() {
         order_number: orderNumber,
         channel: branches.find(b => b.id === selectedBranch)?.channel || 'STORE',
         branch_id: selectedBranch,
-        customer_id: selectedCustomer || null,
+        customer_id: selectedCustomer?.id || null,
         ordered_by: user?.id,
         total_amount: total,
         discount_amount: 0,
@@ -154,7 +228,6 @@ export default function POSPage() {
 
       if (saleError) throw saleError;
 
-      // 3. 판매 항목 저장
       for (const item of cart) {
         await db.from('sales_order_items').insert({
           sales_order_id: (saleOrder as any).id,
@@ -166,26 +239,23 @@ export default function POSPage() {
         });
       }
 
-      // 4. 포인트 적립 (고객 선택 시)
       if (selectedCustomer) {
         const pointsEarned = Math.floor(total / 100);
         await db.from('point_history').insert({
-          customer_id: selectedCustomer,
+          customer_id: selectedCustomer.id,
           sales_order_id: (saleOrder as any).id,
           type: 'earn',
           points: pointsEarned,
           balance: 0,
           description: `구매 적립 (${orderNumber})`,
         });
-
-        await db.from('customers').update({
-          total_points: db.sql`total_points + ${pointsEarned}`,
-          total_purchase: db.sql`total_purchase + ${total}`,
-        }).eq('id', selectedCustomer);
       }
 
       alert(`결제가 완료되었습니다.\n전표번호: ${orderNumber}`);
       setCart([]);
+      setSelectedCustomer(null);
+      setCustomerSearch('');
+      barcodeInputRef.current?.focus();
     } catch (err: any) {
       console.error(err);
       alert('결제 처리 중 오류가 발생했습니다.');
@@ -196,16 +266,51 @@ export default function POSPage() {
 
   return (
     <div className="flex gap-6 h-[calc(100vh-8rem)]">
-      {/* 제품 목록 */}
       <div className="flex-1 flex flex-col">
-        <div className="mb-4">
-          <input
-            type="text"
-            placeholder="제품명 또는 코드 검색..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="input"
-          />
+        <div className="mb-3">
+          <div className="flex gap-2">
+            <div className="flex-1 relative">
+              <input
+                ref={productSearchRef}
+                type="text"
+                placeholder="제품검색 (이름/코드)... 또는 바코드 스캔"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && search.trim()) {
+                    const product = products.find(p => p.code === search.trim() || p.barcode === search.trim());
+                    if (product) {
+                      addToCart(product);
+                    }
+                  }
+                }}
+                className="input"
+              />
+            </div>
+          </div>
+          <div className="mt-2 relative">
+            <input
+              ref={barcodeInputRef}
+              type="text"
+              placeholder="📷 바코드 리더기:条码扫描器 (Enter 자동 인식)"
+              className="input text-sm border-2 border-blue-200 focus:border-blue-400"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const target = e.target as HTMLInputElement;
+                  handleBarcodeScan(target.value);
+                  target.value = '';
+                }
+              }}
+              onFocus={() => {
+                if (lastScannedBarcode) setLastScannedBarcode('');
+              }}
+            />
+            {lastScannedBarcode && (
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-green-600 bg-green-50 px-2 py-1 rounded">
+                ✓ {lastScannedBarcode}
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="flex-1 overflow-auto">
@@ -217,15 +322,18 @@ export default function POSPage() {
                 <button
                   key={product.id}
                   onClick={() => addToCart(product)}
-                  className="bg-white p-4 rounded-lg shadow hover:shadow-md transition-shadow text-left"
+                  className="bg-white p-4 rounded-lg shadow hover:shadow-md transition-shadow text-left border border-slate-100 hover:border-blue-300"
                 >
+                  {product.barcode && (
+                    <p className="text-xs text-slate-400 font-mono mb-1">{product.barcode}</p>
+                  )}
                   <p className="font-medium text-slate-800">{product.name}</p>
                   <p className="text-xs text-slate-400 mb-2">{product.code}</p>
                   <p className="text-lg font-bold text-blue-600">
                     {product.price.toLocaleString()}원
                   </p>
                   {product.inventories?.quantity !== undefined && (
-                    <p className="text-xs text-slate-500 mt-1">
+                    <p className={`text-xs mt-1 ${product.inventories.quantity < 10 ? 'text-red-500' : 'text-slate-500'}`}>
                       재고: {product.inventories.quantity}
                     </p>
                   )}
@@ -236,7 +344,6 @@ export default function POSPage() {
         </div>
       </div>
 
-      {/* 장바구니 */}
       <div className="w-[420px] bg-white rounded-lg shadow flex flex-col">
         <div className="p-4 border-b">
           <h3 className="font-semibold text-lg">장바구니</h3>
@@ -287,7 +394,6 @@ export default function POSPage() {
             <span>{total.toLocaleString()}원</span>
           </div>
 
-          {/* 지점 선택 */}
           <select
             value={selectedBranch}
             onChange={(e) => setSelectedBranch(e.target.value)}
@@ -299,19 +405,70 @@ export default function POSPage() {
             ))}
           </select>
 
-          {/* 고객 선택 */}
-          <select
-            value={selectedCustomer}
-            onChange={(e) => setSelectedCustomer(e.target.value)}
-            className="input"
-          >
-            <option value="">비회원</option>
-            {customers.map(c => (
-              <option key={c.id} value={c.id}>{c.name} ({c.phone})</option>
-            ))}
-          </select>
+          <div className="relative">
+            {selectedCustomer ? (
+              <div className="flex items-center justify-between p-3 bg-blue-50 rounded-lg border border-blue-200">
+                <div>
+                  <p className="font-medium text-blue-800">{selectedCustomer.name}</p>
+                  <p className="text-sm text-blue-600">{selectedCustomer.phone}</p>
+                  <span className={`inline-block px-2 py-0.5 text-xs rounded ${
+                    selectedCustomer.grade === 'VVIP' ? 'bg-red-100 text-red-700' :
+                    selectedCustomer.grade === 'VIP' ? 'bg-amber-100 text-amber-700' :
+                    'bg-slate-100 text-slate-600'
+                  }`}>
+                    {selectedCustomer.grade}
+                  </span>
+                </div>
+                <button onClick={clearCustomer} className="text-slate-400 hover:text-slate-600">
+                  ✕
+                </button>
+              </div>
+            ) : (
+              <div className="relative">
+                <input
+                  ref={customerInputRef}
+                  type="text"
+                  placeholder="고객 검색 (이름/휴대폰 뒷자리)"
+                  value={customerSearch}
+                  onChange={(e) => setCustomerSearch(e.target.value)}
+                  onFocus={() => customerSearch.length >= 1 && setShowCustomerDropdown(true)}
+                  onBlur={() => setTimeout(() => setShowCustomerDropdown(false), 200)}
+                  className="input"
+                />
+                {showCustomerDropdown && customerResults.length > 0 && (
+                  <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-60 overflow-auto">
+                    {customerResults.map(c => (
+                      <button
+                        key={c.id}
+                        onMouseDown={() => selectCustomer(c)}
+                        className="w-full text-left px-4 py-3 hover:bg-blue-50 border-b border-slate-100 last:border-b-0"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="font-medium">{c.name}</p>
+                            <p className="text-sm text-slate-500">{c.phone}</p>
+                          </div>
+                          <span className={`px-2 py-0.5 text-xs rounded ${
+                            c.grade === 'VVIP' ? 'bg-red-100 text-red-700' :
+                            c.grade === 'VIP' ? 'bg-amber-100 text-amber-700' :
+                            'bg-slate-100 text-slate-600'
+                          }`}>
+                            {c.grade}
+                          </span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {showCustomerDropdown && customerSearch.length >= 1 && customerResults.length === 0 && (
+                  <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg p-4 text-center text-slate-400">
+                    검색 결과 없음
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
-          {/* 결제 수단 */}
           <div className="grid grid-cols-3 gap-2">
             <button
               onClick={() => setPaymentMethod('cash')}
