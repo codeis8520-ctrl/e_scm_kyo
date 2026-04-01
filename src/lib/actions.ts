@@ -451,6 +451,129 @@ export async function deleteBranch(id: string) {
   return { success: true };
 }
 
+// ============ Users (Staff Management) ============
+
+export async function getUsers() {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from('users')
+    .select('*, branch:branches(name)')
+    .order('created_at', { ascending: false });
+  return { data: data || [] };
+}
+
+export async function getUsersByBranch(branchId: string) {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from('users')
+    .select('*, branch:branches(name)')
+    .eq('branch_id', branchId)
+    .order('created_at', { ascending: false });
+  return { data: data || [] };
+}
+
+export async function createUser(formData: FormData) {
+  const supabase = await createClient();
+  
+  const { data: { user: authUser } } = await supabase.auth.getUser();
+  if (!authUser) redirect('/login');
+
+  const email = formData.get('email') as string;
+  const password = formData.get('password') as string;
+  const name = formData.get('name') as string;
+  const phone = formData.get('phone') as string;
+  const role = formData.get('role') as string;
+  const branchId = formData.get('branch_id') as string;
+
+  // Create auth user
+  const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true,
+  });
+
+  if (authError) {
+    return { error: authError.message };
+  }
+
+  if (!authData.user) {
+    return { error: '사용자 생성 실패' };
+  }
+
+  // Create user profile
+  const { error } = await supabase.from('users').insert({
+    id: authData.user.id,
+    email,
+    password_hash: 'managed_by_auth',
+    name,
+    phone: phone || null,
+    role,
+    branch_id: branchId || null,
+  } as any);
+
+  if (error) {
+    // Cleanup auth user if profile creation fails
+    await supabase.auth.admin.deleteUser(authData.user.id);
+    return { error: error.message };
+  }
+  
+  revalidatePath('/system-codes');
+  return { success: true };
+}
+
+export async function updateUser(id: string, formData: FormData) {
+  const supabase = await createClient();
+  
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect('/login');
+
+  const userData: Record<string, any> = {
+    name: formData.get('name') as string,
+    phone: formData.get('phone') as string || null,
+    role: formData.get('role') as string,
+  };
+
+  const branchId = formData.get('branch_id') as string;
+  if (branchId) {
+    userData.branch_id = branchId;
+  }
+
+  const isActive = formData.get('is_active');
+  if (isActive !== undefined) {
+    userData.is_active = isActive === 'true';
+  }
+
+  // @ts-ignore
+  const { error } = await supabase.from('users').update(userData).eq('id', id);
+  
+  if (error) {
+    return { error: error.message };
+  }
+  
+  revalidatePath('/system-codes');
+  return { success: true };
+}
+
+export async function deleteUser(id: string) {
+  const supabase = await createClient();
+  
+  const { data: { user: authUser } } = await supabase.auth.getUser();
+  if (!authUser) redirect('/login');
+
+  // Delete auth user first
+  const { error: authError } = await supabase.auth.admin.deleteUser(id);
+  
+  if (authError) {
+    return { error: authError.message };
+  }
+  
+  // User profile will be deleted via cascade or manually
+  await supabase.from('users').delete().eq('id', id);
+  
+  revalidatePath('/system-codes');
+  return { success: true };
+}
+
 // ============ Customer Grades (System Codes) ============
 
 export async function getCustomerGrades() {

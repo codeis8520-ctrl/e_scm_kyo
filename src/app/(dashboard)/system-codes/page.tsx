@@ -7,6 +7,7 @@ import {
   createCustomerGrade, updateCustomerGrade, deleteCustomerGrade,
   createCustomerTag, updateCustomerTag, deleteCustomerTag,
   createCategory, updateCategory, deleteCategory,
+  createUser, updateUser, deleteUser,
 } from '@/lib/actions';
 import { validators } from '@/lib/validators';
 
@@ -18,6 +19,17 @@ interface Branch {
   address: string | null;
   phone: string | null;
   is_active: boolean;
+}
+
+interface User {
+  id: string;
+  email: string;
+  name: string;
+  phone: string | null;
+  role: string;
+  branch_id: string | null;
+  is_active: boolean;
+  branch?: { name: string };
 }
 
 interface CustomerGrade {
@@ -59,22 +71,41 @@ const CHANNEL_COLORS: Record<string, string> = {
   EVENT: 'bg-amber-100 text-amber-700',
 };
 
+const ROLE_OPTIONS = [
+  { value: 'SUPER_ADMIN', label: '본부 대표', description: '모든 권한' },
+  { value: 'HQ_OPERATOR', label: '본부 운영자', description: '본부 업무' },
+  { value: 'PHARMACY_STAFF', label: '약사', description: '한약국 직원' },
+  { value: 'BRANCH_STAFF', label: '지점 직원', description: '지점 업무' },
+  { value: 'EXECUTIVE', label: '임원', description: '경영진' },
+];
+
+const ROLE_COLORS: Record<string, string> = {
+  SUPER_ADMIN: 'bg-red-100 text-red-700',
+  HQ_OPERATOR: 'bg-purple-100 text-purple-700',
+  PHARMACY_STAFF: 'bg-blue-100 text-blue-700',
+  BRANCH_STAFF: 'bg-green-100 text-green-700',
+  EXECUTIVE: 'bg-amber-100 text-amber-700',
+};
+
 export default function SystemCodesPage() {
-  const [activeTab, setActiveTab] = useState<'branches' | 'grades' | 'tags' | 'categories'>('branches');
+  const [activeTab, setActiveTab] = useState<'branches' | 'grades' | 'tags' | 'categories' | 'staff'>('branches');
   const [branches, setBranches] = useState<Branch[]>([]);
   const [grades, setGrades] = useState<CustomerGrade[]>([]);
   const [tags, setTags] = useState<CustomerTag[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [showBranchModal, setShowBranchModal] = useState(false);
   const [showGradeModal, setShowGradeModal] = useState(false);
   const [showTagModal, setShowTagModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [showUserModal, setShowUserModal] = useState(false);
   const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
   const [editingGrade, setEditingGrade] = useState<CustomerGrade | null>(null);
   const [editingTag, setEditingTag] = useState<CustomerTag | null>(null);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
+  const [editingUser, setEditingUser] = useState<User | null>(null);
 
   useEffect(() => {
     fetchData();
@@ -93,9 +124,12 @@ export default function SystemCodesPage() {
     } else if (activeTab === 'tags') {
       const { data } = await supabase.from('customer_tags').select('*').order('created_at');
       setTags(data || []);
-    } else {
+    } else if (activeTab === 'categories') {
       const { data } = await supabase.from('categories').select('*, parent:categories(name)').order('sort_order');
       setCategories(data || []);
+    } else if (activeTab === 'staff') {
+      const { data } = await supabase.from('users').select('*, branch:branches(name)').order('created_at', { ascending: false });
+      setUsers((data || []) as User[]);
     }
 
     setLoading(false);
@@ -122,6 +156,12 @@ export default function SystemCodesPage() {
   const handleDeleteCategory = async (id: string) => {
     if (!confirm('정말 삭제하시겠습니까?')) return;
     await deleteCategory(id);
+    fetchData();
+  };
+
+  const handleDeleteUser = async (id: string) => {
+    if (!confirm('정말 삭제하시겠습니까?')) return;
+    await deleteUser(id);
     fetchData();
   };
 
@@ -171,6 +211,16 @@ export default function SystemCodesPage() {
           }`}
         >
           카테고리
+        </button>
+        <button
+          onClick={() => setActiveTab('staff')}
+          className={`px-4 py-2 font-medium border-b-2 -mb-px transition-colors ${
+            activeTab === 'staff'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          직원 관리
         </button>
       </div>
 
@@ -444,6 +494,73 @@ export default function SystemCodesPage() {
         </div>
       )}
 
+      {activeTab === 'staff' && (
+        <div className="card">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="font-semibold">직원 목록</h3>
+            <button
+              onClick={() => { setEditingUser(null); setShowUserModal(true); }}
+              className="btn-primary"
+            >
+              + 직원 추가
+            </button>
+          </div>
+
+          <table className="table">
+            <thead>
+              <tr>
+                <th>이름</th>
+                <th>이메일</th>
+                <th>역할</th>
+                <th>담당 지점</th>
+                <th>상태</th>
+                <th>관리</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((user) => (
+                <tr key={user.id}>
+                  <td className="font-medium">{user.name}</td>
+                  <td className="text-slate-500">{user.email}</td>
+                  <td>
+                    <span className={`badge ${ROLE_COLORS[user.role] || 'bg-slate-100'}`}>
+                      {ROLE_OPTIONS.find(r => r.value === user.role)?.label || user.role}
+                    </span>
+                  </td>
+                  <td>{user.branch?.name || '-'}</td>
+                  <td>
+                    <span className={`badge ${user.is_active ? 'badge-success' : 'badge-error'}`}>
+                      {user.is_active ? '활성' : '비활성'}
+                    </span>
+                  </td>
+                  <td>
+                    <button
+                      onClick={() => { setEditingUser(user); setShowUserModal(true); }}
+                      className="text-blue-600 hover:underline mr-2"
+                    >
+                      수정
+                    </button>
+                    <button
+                      onClick={() => handleDeleteUser(user.id)}
+                      className="text-red-600 hover:underline"
+                    >
+                      삭제
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {users.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="text-center text-slate-400 py-8">
+                    등록된 직원이 없습니다
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {showBranchModal && (
         <BranchModal
           branch={editingBranch}
@@ -474,6 +591,15 @@ export default function SystemCodesPage() {
           categories={categories}
           onClose={() => setShowCategoryModal(false)}
           onSuccess={() => { setShowCategoryModal(false); fetchData(); }}
+        />
+      )}
+
+      {showUserModal && (
+        <UserModal
+          user={editingUser}
+          branches={branches}
+          onClose={() => setShowUserModal(false)}
+          onSuccess={() => { setShowUserModal(false); fetchData(); }}
         />
       )}
     </div>
@@ -1006,6 +1132,187 @@ function CategoryModal({
           <div className="flex gap-2 pt-4">
             <button type="submit" disabled={loading} className="flex-1 btn-primary">
               {loading ? '처리 중...' : (category ? '수정' : '추가')}
+            </button>
+            <button type="button" onClick={onClose} className="flex-1 btn-secondary">취소</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function UserModal({
+  user,
+  branches,
+  onClose,
+  onSuccess,
+}: {
+  user: User | null;
+  branches: Branch[];
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const [formData, setFormData] = useState({
+    email: user?.email || '',
+    password: '',
+    name: user?.name || '',
+    phone: user?.phone || '',
+    role: user?.role || 'BRANCH_STAFF',
+    branch_id: user?.branch_id || '',
+    is_active: user?.is_active ?? true,
+  });
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    setFieldErrors({});
+
+    const errors: Record<string, string> = {};
+    const emailError = validators.required(formData.email, '이메일');
+    if (emailError) errors.email = emailError;
+    else {
+      const emailFormatError = validators.email(formData.email);
+      if (emailFormatError) errors.email = emailFormatError;
+    }
+    if (!user) {
+      const passwordError = validators.minLength(formData.password, 6, '비밀번호');
+      if (passwordError) errors.password = passwordError;
+    }
+    const nameError = validators.required(formData.name, '이름');
+    if (nameError) errors.name = nameError;
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      setLoading(false);
+      return;
+    }
+
+    const form = new FormData();
+    Object.entries(formData).forEach(([key, value]) => {
+      form.append(key, String(value));
+    });
+
+    const result = user
+      ? await updateUser(user.id, form)
+      : await createUser(form);
+
+    if (result?.error) {
+      setError(result.error);
+      setLoading(false);
+    } else {
+      onSuccess();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg p-6 w-full max-w-md">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-lg font-bold">{user ? '직원 수정' : '직원 추가'}</h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">✕</button>
+        </div>
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-lg text-sm">{error}</div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700">이메일 *</label>
+            <input
+              type="email"
+              value={formData.email}
+              onChange={(e) => { setFormData({ ...formData, email: e.target.value }); setFieldErrors({ ...fieldErrors, email: '' }); }}
+              disabled={!!user}
+              className={`mt-1 input ${fieldErrors.email ? 'border-red-500' : ''}`}
+            />
+            {fieldErrors.email && <p className="mt-1 text-xs text-red-500">{fieldErrors.email}</p>}
+          </div>
+
+          {!user && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700">비밀번호 *</label>
+              <input
+                type="password"
+                value={formData.password}
+                onChange={(e) => { setFormData({ ...formData, password: e.target.value }); setFieldErrors({ ...fieldErrors, password: '' }); }}
+                placeholder="6자 이상"
+                className={`mt-1 input ${fieldErrors.password ? 'border-red-500' : ''}`}
+              />
+              {fieldErrors.password && <p className="mt-1 text-xs text-red-500">{fieldErrors.password}</p>}
+            </div>
+          )}
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">이름 *</label>
+            <input
+              type="text"
+              value={formData.name}
+              onChange={(e) => { setFormData({ ...formData, name: e.target.value }); setFieldErrors({ ...fieldErrors, name: '' }); }}
+              className={`mt-1 input ${fieldErrors.name ? 'border-red-500' : ''}`}
+            />
+            {fieldErrors.name && <p className="mt-1 text-xs text-red-500">{fieldErrors.name}</p>}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">연락처</label>
+            <input
+              type="tel"
+              value={formData.phone}
+              onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+              placeholder="010-0000-0000"
+              className="mt-1 input"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">역할 *</label>
+            <select
+              value={formData.role}
+              onChange={(e) => setFormData({ ...formData, role: e.target.value })}
+              className="mt-1 input"
+            >
+              {ROLE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label} ({opt.description})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">담당 지점</label>
+            <select
+              value={formData.branch_id}
+              onChange={(e) => setFormData({ ...formData, branch_id: e.target.value })}
+              className="mt-1 input"
+            >
+              <option value="">없음 (본사)</option>
+              {branches.map((branch) => (
+                <option key={branch.id} value={branch.id}>{branch.name}</option>
+              ))}
+            </select>
+          </div>
+
+          {user && (
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="is_active"
+                checked={formData.is_active}
+                onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })}
+              />
+              <label htmlFor="is_active" className="text-sm text-gray-700">활성 상태</label>
+            </div>
+          )}
+
+          <div className="flex gap-2 pt-4">
+            <button type="submit" disabled={loading} className="flex-1 btn-primary">
+              {loading ? '처리 중...' : (user ? '수정' : '추가')}
             </button>
             <button type="button" onClick={onClose} className="flex-1 btn-secondary">취소</button>
           </div>
