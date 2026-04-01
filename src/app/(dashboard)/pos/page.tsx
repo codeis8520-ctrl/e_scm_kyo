@@ -8,26 +8,43 @@ interface CartItem {
   name: string;
   price: number;
   quantity: number;
+  inventory?: any;
 }
 
 export default function POSPage() {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [search, setSearch] = useState('');
   const [products, setProducts] = useState<any[]>([]);
+  const [branches, setBranches] = useState<any[]>([]);
+  const [customers, setCustomers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedBranch, setSelectedBranch] = useState('');
+  const [selectedCustomer, setSelectedCustomer] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'kakao'>('cash');
+  const [processing, setProcessing] = useState(false);
 
   useEffect(() => {
-    const fetchProducts = async () => {
+    const fetchData = async () => {
       const supabase = createClient();
-      const { data } = await supabase
-        .from('products')
-        .select('*')
-        .eq('is_active', true)
-        .order('name');
-      setProducts(data || []);
+      
+      const [productsRes, branchesRes, customersRes] = await Promise.all([
+        supabase.from('products').select('*, inventories(*)').eq('is_active', true).order('name'),
+        supabase.from('branches').select('*').eq('is_active', true).order('created_at'),
+        supabase.from('customers').select('*').eq('is_active', true).order('name').limit(100),
+      ]);
+
+      const branchesData = (branchesRes.data || []) as any[];
+      setProducts((productsRes.data || []) as any[]);
+      setBranches(branchesData);
+      setCustomers((customersRes.data || []) as any[]);
+      
+      if (branchesData.length > 0) {
+        setSelectedBranch(branchesData[0].id);
+      }
+      
       setLoading(false);
     };
-    fetchProducts();
+    fetchData();
   }, []);
 
   const filteredProducts = products.filter(p =>
@@ -49,6 +66,7 @@ export default function POSPage() {
         name: product.name,
         price: product.price,
         quantity: 1,
+        inventory: product.inventories,
       }];
     });
   };
@@ -73,12 +91,112 @@ export default function POSPage() {
 
   const handlePayment = async () => {
     if (cart.length === 0) return;
-    alert('결제가 완료되었습니다.');
-    setCart([]);
+    if (!selectedBranch) {
+      alert('지점을 선택해주세요.');
+      return;
+    }
+
+    setProcessing(true);
+    const supabase = createClient();
+    const db = supabase as any;
+
+    try {
+      // 1. 재고 확인 및 차감
+      for (const item of cart) {
+        const { data: inventory } = await supabase
+          .from('inventories')
+          .select('id, quantity')
+          .eq('branch_id', selectedBranch)
+          .eq('product_id', item.productId)
+          .single();
+
+        const inv = inventory as any;
+        if (!inv || inv.quantity < item.quantity) {
+          alert(`"${item.name}" 재고가 부족합니다.`);
+          setProcessing(false);
+          return;
+        }
+
+        await db.from('inventories').update({
+          quantity: inv.quantity - item.quantity,
+        }).eq('id', inv.id);
+
+        await db.from('inventory_movements').insert({
+          branch_id: selectedBranch,
+          product_id: item.productId,
+          movement_type: 'OUT',
+          quantity: item.quantity,
+          reference_type: 'POS_SALE',
+          memo: null,
+        });
+      }
+
+      // 2. 판매 전표 생성
+      const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const branchCode = branches.find(b => b.id === selectedBranch)?.code || 'ETC';
+      const orderNumber = `SA-${branchCode}-${today}-${Date.now().toString().slice(-4)}`;
+
+      const { data: { user } } = await supabase.auth.getUser();
+
+      const { data: saleOrder, error: saleError } = await db.from('sales_orders').insert({
+        order_number: orderNumber,
+        channel: branches.find(b => b.id === selectedBranch)?.channel || 'STORE',
+        branch_id: selectedBranch,
+        customer_id: selectedCustomer || null,
+        ordered_by: user?.id,
+        total_amount: total,
+        discount_amount: 0,
+        status: 'COMPLETED',
+        payment_method: paymentMethod,
+        points_earned: Math.floor(total / 100),
+        ordered_at: new Date().toISOString(),
+      }).select().single();
+
+      if (saleError) throw saleError;
+
+      // 3. 판매 항목 저장
+      for (const item of cart) {
+        await db.from('sales_order_items').insert({
+          sales_order_id: (saleOrder as any).id,
+          product_id: item.productId,
+          quantity: item.quantity,
+          unit_price: item.price,
+          discount_amount: 0,
+          total_price: item.price * item.quantity,
+        });
+      }
+
+      // 4. 포인트 적립 (고객 선택 시)
+      if (selectedCustomer) {
+        const pointsEarned = Math.floor(total / 100);
+        await db.from('point_history').insert({
+          customer_id: selectedCustomer,
+          sales_order_id: (saleOrder as any).id,
+          type: 'earn',
+          points: pointsEarned,
+          balance: 0,
+          description: `구매 적립 (${orderNumber})`,
+        });
+
+        await db.from('customers').update({
+          total_points: db.sql`total_points + ${pointsEarned}`,
+          total_purchase: db.sql`total_purchase + ${total}`,
+        }).eq('id', selectedCustomer);
+      }
+
+      alert(`결제가 완료되었습니다.\n전표번호: ${orderNumber}`);
+      setCart([]);
+    } catch (err: any) {
+      console.error(err);
+      alert('결제 처리 중 오류가 발생했습니다.');
+    }
+
+    setProcessing(false);
   };
 
   return (
     <div className="flex gap-6 h-[calc(100vh-8rem)]">
+      {/* 제품 목록 */}
       <div className="flex-1 flex flex-col">
         <div className="mb-4">
           <input
@@ -106,6 +224,11 @@ export default function POSPage() {
                   <p className="text-lg font-bold text-blue-600">
                     {product.price.toLocaleString()}원
                   </p>
+                  {product.inventories?.quantity !== undefined && (
+                    <p className="text-xs text-slate-500 mt-1">
+                      재고: {product.inventories.quantity}
+                    </p>
+                  )}
                 </button>
               ))}
             </div>
@@ -113,7 +236,8 @@ export default function POSPage() {
         </div>
       </div>
 
-      <div className="w-96 bg-white rounded-lg shadow flex flex-col">
+      {/* 장바구니 */}
+      <div className="w-[420px] bg-white rounded-lg shadow flex flex-col">
         <div className="p-4 border-b">
           <h3 className="font-semibold text-lg">장바구니</h3>
         </div>
@@ -162,17 +286,71 @@ export default function POSPage() {
             <span>합계</span>
             <span>{total.toLocaleString()}원</span>
           </div>
+
+          {/* 지점 선택 */}
+          <select
+            value={selectedBranch}
+            onChange={(e) => setSelectedBranch(e.target.value)}
+            className="input"
+          >
+            <option value="">지점 선택</option>
+            {branches.map(b => (
+              <option key={b.id} value={b.id}>{b.name}</option>
+            ))}
+          </select>
+
+          {/* 고객 선택 */}
+          <select
+            value={selectedCustomer}
+            onChange={(e) => setSelectedCustomer(e.target.value)}
+            className="input"
+          >
+            <option value="">비회원</option>
+            {customers.map(c => (
+              <option key={c.id} value={c.id}>{c.name} ({c.phone})</option>
+            ))}
+          </select>
+
+          {/* 결제 수단 */}
           <div className="grid grid-cols-3 gap-2">
-            <button className="btn-secondary py-3">현금</button>
-            <button className="btn-secondary py-3">카드</button>
-            <button className="btn-secondary py-3">카카오</button>
+            <button
+              onClick={() => setPaymentMethod('cash')}
+              className={`py-2 rounded-md ${
+                paymentMethod === 'cash'
+                  ? 'bg-green-500 text-white'
+                  : 'bg-slate-100 text-slate-700'
+              }`}
+            >
+              현금
+            </button>
+            <button
+              onClick={() => setPaymentMethod('card')}
+              className={`py-2 rounded-md ${
+                paymentMethod === 'card'
+                  ? 'bg-green-500 text-white'
+                  : 'bg-slate-100 text-slate-700'
+              }`}
+            >
+              카드
+            </button>
+            <button
+              onClick={() => setPaymentMethod('kakao')}
+              className={`py-2 rounded-md ${
+                paymentMethod === 'kakao'
+                  ? 'bg-green-500 text-white'
+                  : 'bg-slate-100 text-slate-700'
+              }`}
+            >
+              카카오
+            </button>
           </div>
+
           <button
             onClick={handlePayment}
-            disabled={cart.length === 0}
+            disabled={cart.length === 0 || !selectedBranch || processing}
             className="w-full btn-primary py-3 text-lg disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            결제하기
+            {processing ? '처리 중...' : '결제하기'}
           </button>
         </div>
       </div>
