@@ -112,6 +112,7 @@ CREATE TABLE customers (
     name VARCHAR(100) NOT NULL,
     phone VARCHAR(20) UNIQUE NOT NULL,
     email VARCHAR(255),
+    address TEXT,
     grade VARCHAR(20) DEFAULT 'NORMAL' CHECK (grade IN ('NORMAL', 'VIP', 'VVIP')),
     primary_branch_id UUID REFERENCES branches(id),
     assigned_to UUID REFERENCES users(id),
@@ -146,14 +147,15 @@ CREATE TABLE customer_grades (
     color VARCHAR(20) DEFAULT '#6366f1',
     sort_order INT DEFAULT 0,
     is_active BOOLEAN DEFAULT true,
+    point_rate DECIMAL(5,2) DEFAULT 1.00,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- 기본 등급 데이터
-INSERT INTO customer_grades (code, name, description, color, sort_order) VALUES
-    ('NORMAL', '일반', '일반 고객', '#94a3b8', 1),
-    ('VIP', 'VIP', 'VIP 고객', '#f59e0b', 2),
-    ('VVIP', 'VVIP', 'VVIP 고객', '#ef4444', 3);
+-- 기본 등급 데이터 (적립율 포함)
+INSERT INTO customer_grades (code, name, description, color, sort_order, point_rate) VALUES
+    ('NORMAL', '일반', '일반 고객', '#94a3b8', 1, 1.00),
+    ('VIP', 'VIP', 'VIP 고객', '#f59e0b', 2, 2.00),
+    ('VVIP', 'VVIP', 'VVIP 고객', '#ef4444', 3, 3.00);
 
 -- =====================================================
 -- 고객 태그 분류

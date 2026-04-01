@@ -135,6 +135,7 @@ export async function createCustomer(formData: FormData) {
     name: formData.get('name') as string,
     phone: formData.get('phone') as string,
     email: formData.get('email') as string || null,
+    address: formData.get('address') as string || null,
     grade: formData.get('grade') as string || 'NORMAL',
     primary_branch_id: formData.get('primary_branch_id') as string || null,
     health_note: formData.get('health_note') as string || null,
@@ -161,6 +162,7 @@ export async function updateCustomer(id: string, formData: FormData) {
     name: formData.get('name') as string,
     phone: formData.get('phone') as string,
     email: formData.get('email') as string || null,
+    address: formData.get('address') as string || null,
     grade: formData.get('grade') as string || 'NORMAL',
     primary_branch_id: formData.get('primary_branch_id') as string || null,
     health_note: formData.get('health_note') as string || null,
@@ -594,6 +596,7 @@ export async function createCustomerGrade(formData: FormData) {
     description: formData.get('description') as string || null,
     color: formData.get('color') as string || '#6366f1',
     sort_order: parseInt(formData.get('sort_order') as string) || 0,
+    point_rate: parseFloat(formData.get('point_rate') as string) || 1.00,
   };
 
   // @ts-ignore
@@ -620,6 +623,7 @@ export async function updateCustomerGrade(id: string, formData: FormData) {
     color: formData.get('color') as string || '#6366f1',
     sort_order: parseInt(formData.get('sort_order') as string) || 0,
     is_active: formData.get('is_active') === 'true',
+    point_rate: parseFloat(formData.get('point_rate') as string) || 1.00,
   };
 
   // @ts-ignore

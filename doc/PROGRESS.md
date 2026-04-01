@@ -1,6 +1,6 @@
 # 경옥채 사내 통합시스템 개발 진행 상황
 
-**최종 업데이트**: 2026-04-01
+**최종 업데이트**: 2026-04-02
 
 ## 프로젝트 개요
 
@@ -46,6 +46,27 @@
 ---
 
 ## 완료된 작업 내역
+
+### 2026-04-02
+
+#### 1. 고객 등급별 적립율 추가
+**파일 수정:**
+- `supabase/schema.sql` - `customer_grades.point_rate` 필드 추가
+- `src/lib/actions.ts` - `createCustomerGrade`, `updateCustomerGrade`에 point_rate 추가
+- `src/app/(dashboard)/system-codes/page.tsx` - GradeModal에 적립율 입력 필드 추가
+
+**적용 내용:**
+- 등급 등록/수정 시 적립율(%) 입력 가능
+- NORMAL: 1%, VIP: 2%, VVIP: 3% 기본값
+
+#### 2. 고객 주소 필드 추가
+**파일 수정:**
+- `src/app/(dashboard)/customers/CustomerModal.tsx` - address 입력 필드 추가
+- `src/lib/actions.ts` - `createCustomer`, `updateCustomer`에 address 추가
+
+**적용 내용:**
+- 고객 등록/수정 시 주소 입력 가능
+- 택배 발송 기능 대비
 
 ### 2026-04-01
 

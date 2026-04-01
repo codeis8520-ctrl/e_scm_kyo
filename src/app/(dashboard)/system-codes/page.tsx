@@ -40,6 +40,7 @@ interface CustomerGrade {
   color: string;
   sort_order: number;
   is_active: boolean;
+  point_rate: number;
 }
 
 interface CustomerTag {
@@ -313,6 +314,7 @@ export default function SystemCodesPage() {
                 <th>설명</th>
                 <th>색상</th>
                 <th>순서</th>
+                <th>적립율</th>
                 <th>상태</th>
                 <th>관리</th>
               </tr>
@@ -338,6 +340,7 @@ export default function SystemCodesPage() {
                     </span>
                   </td>
                   <td>{grade.sort_order}</td>
+                  <td>{grade.point_rate}%</td>
                   <td>
                     <span className={`badge ${grade.is_active ? 'badge-success' : 'badge-error'}`}>
                       {grade.is_active ? '활성' : '비활성'}
@@ -361,7 +364,7 @@ export default function SystemCodesPage() {
               ))}
               {grades.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="text-center text-slate-400 py-8">
+                  <td colSpan={8} className="text-center text-slate-400 py-8">
                     등록된 등급이 없습니다
                   </td>
                 </tr>
@@ -765,6 +768,7 @@ function GradeModal({ grade, onClose, onSuccess }: { grade: CustomerGrade | null
     color: grade?.color || '#6366f1',
     sort_order: grade?.sort_order || 0,
     is_active: grade?.is_active ?? true,
+    point_rate: grade?.point_rate || 1.00,
   });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -885,6 +889,20 @@ function GradeModal({ grade, onClose, onSuccess }: { grade: CustomerGrade | null
                 className="w-8 h-8 rounded cursor-pointer"
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">적립율 (%)</label>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              max="100"
+              value={formData.point_rate}
+              onChange={(e) => setFormData({ ...formData, point_rate: parseFloat(e.target.value) || 0 })}
+              className="mt-1 input"
+              placeholder="1.00"
+            />
           </div>
 
           {grade && (

@@ -9,6 +9,7 @@ interface Customer {
   name: string;
   phone: string;
   email: string | null;
+  address: string | null;
   grade: string;
   primary_branch_id: string | null;
   health_note: string | null;
@@ -27,6 +28,7 @@ export default function CustomerModal({ customer, onClose, onSuccess }: Props) {
     name: customer?.name || '',
     phone: customer?.phone || '',
     email: customer?.email || null,
+    address: customer?.address || null,
     grade: customer?.grade || 'NORMAL',
     primary_branch_id: customer?.primary_branch_id || null,
     health_note: customer?.health_note || null,
@@ -156,6 +158,17 @@ export default function CustomerModal({ customer, onClose, onSuccess }: Props) {
             {fieldErrors.email && (
               <p className="mt-1 text-xs text-red-500">{fieldErrors.email}</p>
             )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">주소</label>
+            <input
+              type="text"
+              value={formData.address || ''}
+              onChange={(e) => setFormData({ ...formData, address: e.target.value || null })}
+              className="mt-1 input"
+              placeholder="北京市朝阳区..."
+            />
           </div>
 
           <div className="grid grid-cols-2 gap-4">

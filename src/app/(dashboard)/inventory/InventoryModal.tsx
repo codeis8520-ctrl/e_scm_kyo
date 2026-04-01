@@ -9,11 +9,27 @@ interface Props {
   onSuccess: () => void;
 }
 
+interface Product {
+  id: string;
+  name: string;
+  code: string;
+}
+
+interface Branch {
+  id: string;
+  name: string;
+}
+
 export default function InventoryModal({ inventory, onClose, onSuccess }: Props) {
-  const [branches, setBranches] = useState<any[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [searchProduct, setSearchProduct] = useState('');
+  const [filteredProducts, setFilteredProducts] = useState<Product[]>([]);
+  const [selectedProduct, setSelectedProduct] = useState<{ id: string; name: string; code: string } | null>(
+    inventory?.product ? { id: inventory.product_id, name: inventory.product?.name, code: inventory.product?.code } : null
+  );
   const [formData, setFormData] = useState({
     branch_id: inventory?.branch_id || '',
-    product_id: inventory?.product_id || '',
     movement_type: 'IN',
     quantity: 1,
     memo: '',
@@ -23,7 +39,31 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
 
   useEffect(() => {
     getBranches().then(res => setBranches(res.data || []));
+    loadProducts();
   }, []);
+
+  const loadProducts = async () => {
+    const supabase = (window as any).createClient?.() || {};
+    const { createClient } = await import('@/lib/supabase/client');
+    const client = createClient();
+    const { data } = await client.from('products').select('id, name, code').eq('is_active', true).order('name');
+    setProducts((data || []) as Product[]);
+    setFilteredProducts((data || []) as Product[]);
+  };
+
+  const handleProductSearch = (query: string) => {
+    setSearchProduct(query);
+    if (!query) {
+      setFilteredProducts(products);
+    } else {
+      setFilteredProducts(
+        products.filter(p => 
+          p.name.toLowerCase().includes(query.toLowerCase()) ||
+          p.code.toLowerCase().includes(query.toLowerCase())
+        )
+      );
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -36,10 +76,20 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
       return;
     }
 
+    if (!selectedProduct && !inventory) {
+      setError('제품을 선택해주세요.');
+      setLoading(false);
+      return;
+    }
+
+    const finalProductId = inventory?.product_id || selectedProduct?.id;
+
     const form = new FormData();
-    Object.entries(formData).forEach(([key, value]) => {
-      form.append(key, String(value));
-    });
+    form.append('branch_id', formData.branch_id);
+    form.append('product_id', finalProductId);
+    form.append('movement_type', formData.movement_type);
+    form.append('quantity', String(formData.quantity));
+    form.append('memo', formData.memo);
 
     try {
       await adjustInventory(form);
@@ -75,21 +125,82 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700">지점 *</label>
-            <select
-              value={formData.branch_id}
-              onChange={(e) => setFormData({ ...formData, branch_id: e.target.value })}
-              required
-              disabled={!!inventory}
-              className="mt-1 input"
-            >
-              <option value="">선택하세요</option>
-              {branches.map(branch => (
-                <option key={branch.id} value={branch.id}>{branch.name}</option>
-              ))}
-            </select>
-          </div>
+          {!inventory && (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">제품 *</label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={searchProduct || selectedProduct?.name || ''}
+                    onChange={(e) => {
+                      handleProductSearch(e.target.value);
+                      setSelectedProduct(null);
+                    }}
+                    placeholder="제품명 또는 코드 검색..."
+                    className="mt-1 input"
+                  />
+                  {searchProduct && filteredProducts.length > 0 && !selectedProduct && (
+                    <div className="absolute z-10 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                      {filteredProducts.slice(0, 10).map(product => (
+                        <button
+                          key={product.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedProduct(product);
+                            setSearchProduct(product.name);
+                            setFilteredProducts([]);
+                          }}
+                          className="w-full text-left px-3 py-2 hover:bg-slate-50 border-b border-slate-100 last:border-0"
+                        >
+                          <span className="font-medium">{product.name}</span>
+                          <span className="text-slate-400 text-sm ml-2">{product.code}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {selectedProduct && (
+                  <p className="mt-1 text-xs text-green-600">
+                    ✓ 선택됨: {selectedProduct.name} ({selectedProduct.code})
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">지점 *</label>
+                <select
+                  value={formData.branch_id}
+                  onChange={(e) => setFormData({ ...formData, branch_id: e.target.value })}
+                  required
+                  className="mt-1 input"
+                >
+                  <option value="">선택하세요</option>
+                  {branches.map(branch => (
+                    <option key={branch.id} value={branch.id}>{branch.name}</option>
+                  ))}
+                </select>
+              </div>
+            </>
+          )}
+
+          {inventory && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700">지점 *</label>
+              <select
+                value={formData.branch_id}
+                onChange={(e) => setFormData({ ...formData, branch_id: e.target.value })}
+                required
+                disabled={!!inventory}
+                className="mt-1 input"
+              >
+                <option value="">선택하세요</option>
+                {branches.map(branch => (
+                  <option key={branch.id} value={branch.id}>{branch.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-gray-700">조정 유형 *</label>
@@ -128,21 +239,25 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
                 조정 (=)
               </button>
             </div>
+            <p className="mt-1 text-xs text-slate-500">
+              {formData.movement_type === 'IN' && '입고: 현재고 + 수량'}
+              {formData.movement_type === 'OUT' && '출고: 현재고 - 수량'}
+              {formData.movement_type === 'ADJUST' && '조정: 현재고 = 수량'}
+            </p>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700">수량 *</label>
+            <label className="block text-sm font-medium text-gray-700">
+              {formData.movement_type === 'ADJUST' ? '변경 후 수량 *' : '수량 *'}
+            </label>
             <input
               type="number"
               value={formData.quantity}
               onChange={(e) => setFormData({ ...formData, quantity: parseInt(e.target.value) || 0 })}
               required
-              min="1"
+              min="0"
               className="mt-1 input"
             />
-            {formData.quantity < 1 && (
-              <p className="mt-1 text-xs text-red-500">수량은 1 이상이어야 합니다</p>
-            )}
           </div>
 
           <div>
