@@ -1,25 +1,88 @@
-import { createClient } from '@/lib/supabase/server';
+'use client';
 
-export default async function InventoryPage() {
-  const supabase = await createClient();
-  
-  const { data: inventories } = await supabase
-    .from('inventories')
-    .select('*, branch:branches(*), product:products(*)')
-    .order('updated_at', { ascending: false });
+import { useState, useEffect } from 'react';
+import { createClient } from '@/lib/supabase/client';
+import InventoryModal from './InventoryModal';
+
+interface Inventory {
+  id: string;
+  branch_id: string;
+  product_id: string;
+  quantity: number;
+  safety_stock: number;
+  branch?: { id: string; name: string };
+  product?: { id: string; name: string; code: string };
+}
+
+export default function InventoryPage() {
+  const [inventories, setInventories] = useState<Inventory[]>([]);
+  const [branchFilter, setBranchFilter] = useState('');
+  const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [editInventory, setEditInventory] = useState<Inventory | null>(null);
+
+  const fetchInventory = async () => {
+    setLoading(true);
+    const supabase = createClient();
+    let query = supabase
+      .from('inventories')
+      .select('*, branch:branches(*), product:products(*)')
+      .order('updated_at', { ascending: false });
+
+    if (branchFilter) {
+      query = query.eq('branch_id', branchFilter);
+    }
+
+    if (search) {
+      query = query.or(`product.name.ilike.%${search}%,product.code.ilike.%${search}%`);
+    }
+
+    const { data } = await query;
+    setInventories(data || []);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    fetchInventory();
+  }, [branchFilter]);
+
+  const handleAdjust = (item: Inventory) => {
+    setEditInventory(item);
+    setShowModal(true);
+  };
+
+  const handleClose = () => {
+    setShowModal(false);
+    setEditInventory(null);
+  };
+
+  const handleSuccess = () => {
+    handleClose();
+    fetchInventory();
+  };
 
   return (
     <div className="card">
       <div className="flex justify-between items-center mb-6">
         <h3 className="font-semibold text-lg">재고 현황</h3>
-        <div className="flex gap-2">
-          <button className="btn-primary">+ 입고</button>
-          <button className="btn-secondary">+ 출고</button>
-        </div>
+        <button
+          onClick={() => {
+            setEditInventory(null);
+            setShowModal(true);
+          }}
+          className="btn-primary"
+        >
+          + 입출고
+        </button>
       </div>
 
       <div className="flex gap-4 mb-4">
-        <select className="input w-48">
+        <select
+          value={branchFilter}
+          onChange={(e) => setBranchFilter(e.target.value)}
+          className="input w-48"
+        >
           <option value="">전체 지점</option>
           <option value="HQ">본사</option>
           <option value="PHA">한약국</option>
@@ -30,12 +93,11 @@ export default async function InventoryPage() {
         <input
           type="text"
           placeholder="제품명 또는 코드 검색..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && fetchInventory()}
           className="input max-w-md"
         />
-        <label className="flex items-center gap-2 text-sm text-slate-600">
-          <input type="checkbox" />
-          재고 부족만 보기
-        </label>
       </div>
 
       <table className="table">
@@ -51,7 +113,13 @@ export default async function InventoryPage() {
           </tr>
         </thead>
         <tbody>
-          {inventories?.map((item: any) => {
+          {loading ? (
+            <tr>
+              <td colSpan={7} className="text-center text-slate-400 py-8">
+                로딩 중...
+              </td>
+            </tr>
+          ) : inventories.map((item) => {
             const isLow = item.quantity < item.safety_stock;
             return (
               <tr key={item.id}>
@@ -70,12 +138,17 @@ export default async function InventoryPage() {
                   )}
                 </td>
                 <td>
-                  <button className="text-blue-600 hover:underline mr-2">입출고</button>
+                  <button
+                    onClick={() => handleAdjust(item)}
+                    className="text-blue-600 hover:underline"
+                  >
+                    입출고
+                  </button>
                 </td>
               </tr>
             );
           })}
-          {(!inventories || inventories.length === 0) && (
+          {!loading && inventories.length === 0 && (
             <tr>
               <td colSpan={7} className="text-center text-slate-400 py-8">
                 재고 데이터가 없습니다
@@ -84,6 +157,14 @@ export default async function InventoryPage() {
           )}
         </tbody>
       </table>
+
+      {showModal && (
+        <InventoryModal
+          inventory={editInventory}
+          onClose={handleClose}
+          onSuccess={handleSuccess}
+        />
+      )}
     </div>
   );
 }

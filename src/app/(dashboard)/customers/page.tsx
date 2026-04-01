@@ -1,37 +1,99 @@
-import { createClient } from '@/lib/supabase/server';
+'use client';
 
-export default async function CustomersPage() {
-  const supabase = await createClient();
-  
-  const { data: customers } = await supabase
-    .from('customers')
-    .select('*, primary_branch:branches(*)')
-    .order('created_at', { ascending: false });
+import { useState, useEffect } from 'react';
+import { createClient } from '@/lib/supabase/client';
+import CustomerModal from './CustomerModal';
+
+interface Customer {
+  id: string;
+  name: string;
+  phone: string;
+  email: string | null;
+  grade: string;
+  primary_branch_id: string | null;
+  health_note: string | null;
+  total_points: number;
+  is_active: boolean;
+  primary_branch?: { id: string; name: string };
+}
+
+export default function CustomersPage() {
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [search, setSearch] = useState('');
+  const [gradeFilter, setGradeFilter] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [editCustomer, setEditCustomer] = useState<Customer | null>(null);
+
+  const fetchCustomers = async () => {
+    setLoading(true);
+    const supabase = createClient();
+    let query = supabase
+      .from('customers')
+      .select('*, primary_branch:branches(*)')
+      .order('created_at', { ascending: false });
+
+    if (search) {
+      query = query.or(`name.ilike.%${search}%,phone.ilike.%${search}%`);
+    }
+
+    if (gradeFilter) {
+      query = query.eq('grade', gradeFilter);
+    }
+
+    const { data } = await query;
+    setCustomers(data || []);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    fetchCustomers();
+  }, [search, gradeFilter]);
+
+  const handleEdit = (customer: Customer) => {
+    setEditCustomer(customer);
+    setShowModal(true);
+  };
+
+  const handleClose = () => {
+    setShowModal(false);
+    setEditCustomer(null);
+  };
+
+  const handleSuccess = () => {
+    handleClose();
+    fetchCustomers();
+  };
 
   return (
     <div className="card">
       <div className="flex justify-between items-center mb-6">
         <h3 className="font-semibold text-lg">고객 목록</h3>
-        <button className="btn-primary">+ 고객 추가</button>
+        <button
+          onClick={() => setShowModal(true)}
+          className="btn-primary"
+        >
+          + 고객 추가
+        </button>
       </div>
 
       <div className="flex gap-4 mb-4">
         <input
           type="text"
           placeholder="이름 또는 연락처 검색..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
           className="input max-w-md"
         />
-        <select className="input w-40">
+        <select
+          value={gradeFilter}
+          onChange={(e) => setGradeFilter(e.target.value)}
+          className="input w-40"
+        >
           <option value="">전체 등급</option>
           <option value="NORMAL">일반</option>
           <option value="VIP">VIP</option>
           <option value="VVIP">VVIP</option>
-        </select>
-        <select className="input w-40">
-          <option value="">전체 지점</option>
-          <option value="HQ">본사</option>
-          <option value="PHA">한약국</option>
-          <option value="DS-GN">백화점 강남점</option>
         </select>
       </div>
 
@@ -43,12 +105,18 @@ export default async function CustomersPage() {
             <th>등급</th>
             <th>담당 지점</th>
             <th>적립포인트</th>
-            <th>최근 구매</th>
+            <th>상태</th>
             <th>관리</th>
           </tr>
         </thead>
         <tbody>
-          {customers?.map((customer: any) => (
+          {loading ? (
+            <tr>
+              <td colSpan={7} className="text-center text-slate-400 py-8">
+                로딩 중...
+              </td>
+            </tr>
+          ) : customers.map((customer) => (
             <tr key={customer.id}>
               <td className="font-medium">{customer.name}</td>
               <td>{customer.phone}</td>
@@ -62,14 +130,28 @@ export default async function CustomersPage() {
               </td>
               <td>{customer.primary_branch?.name || '-'}</td>
               <td>{customer.total_points?.toLocaleString() || 0}P</td>
-              <td>-</td>
               <td>
-                <button className="text-blue-600 hover:underline mr-2">상세</button>
-                <button className="text-blue-600 hover:underline">수정</button>
+                <span className={customer.is_active ? 'badge badge-success' : 'badge badge-error'}>
+                  {customer.is_active ? '활성' : '비활성'}
+                </span>
+              </td>
+              <td>
+                <button
+                  onClick={() => handleEdit(customer)}
+                  className="text-blue-600 hover:underline mr-2"
+                >
+                  상세
+                </button>
+                <button
+                  onClick={() => handleEdit(customer)}
+                  className="text-blue-600 hover:underline"
+                >
+                  수정
+                </button>
               </td>
             </tr>
           ))}
-          {(!customers || customers.length === 0) && (
+          {!loading && customers.length === 0 && (
             <tr>
               <td colSpan={7} className="text-center text-slate-400 py-8">
                 등록된 고객이 없습니다
@@ -78,6 +160,14 @@ export default async function CustomersPage() {
           )}
         </tbody>
       </table>
+
+      {showModal && (
+        <CustomerModal
+          customer={editCustomer}
+          onClose={handleClose}
+          onSuccess={handleSuccess}
+        />
+      )}
     </div>
   );
 }
