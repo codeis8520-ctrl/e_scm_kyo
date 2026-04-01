@@ -140,6 +140,9 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
               min="1"
               className="mt-1 input"
             />
+            {formData.quantity < 1 && (
+              <p className="mt-1 text-xs text-red-500">수량은 1 이상이어야 합니다</p>
+            )}
           </div>
 
           <div>

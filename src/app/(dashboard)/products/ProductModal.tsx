@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { createProduct, updateProduct, deleteProduct, getCategories } from '@/lib/actions';
+import { validators } from '@/lib/validators';
 
 interface Product {
   id?: string;
@@ -34,6 +35,7 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
     is_active: product?.is_active ?? true,
   });
   const [error, setError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -44,6 +46,29 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
     e.preventDefault();
     setLoading(true);
     setError('');
+    setFieldErrors({});
+
+    const errors: Record<string, string> = {};
+    const nameError = validators.required(formData.name, '제품명');
+    if (nameError) errors.name = nameError;
+    const codeError = validators.required(formData.code, '제품코드');
+    if (codeError) errors.code = codeError;
+    else {
+      const codeFormatError = validators.code(formData.code);
+      if (codeFormatError) errors.code = codeFormatError;
+    }
+    const priceError = validators.positiveInteger(formData.price, '판매가');
+    if (priceError) errors.price = priceError;
+    if (formData.cost !== null) {
+      const costError = validators.positiveInteger(formData.cost, '원가');
+      if (costError) errors.cost = costError;
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      setLoading(false);
+      return;
+    }
 
     const form = new FormData();
     Object.entries(formData).forEach(([key, value]) => {
@@ -95,10 +120,16 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
             <input
               type="text"
               value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              onChange={(e) => {
+                setFormData({ ...formData, name: e.target.value });
+                setFieldErrors({ ...fieldErrors, name: '' });
+              }}
               required
-              className="mt-1 input"
+              className={`mt-1 input ${fieldErrors.name ? 'border-red-500' : ''}`}
             />
+            {fieldErrors.name && (
+              <p className="mt-1 text-xs text-red-500">{fieldErrors.name}</p>
+            )}
           </div>
 
           <div>
@@ -106,10 +137,17 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
             <input
               type="text"
               value={formData.code}
-              onChange={(e) => setFormData({ ...formData, code: e.target.value })}
+              onChange={(e) => {
+                setFormData({ ...formData, code: e.target.value });
+                setFieldErrors({ ...fieldErrors, code: '' });
+              }}
               required
-              className="mt-1 input"
+              placeholder="P-00001"
+              className={`mt-1 input ${fieldErrors.code ? 'border-red-500' : ''}`}
             />
+            {fieldErrors.code && (
+              <p className="mt-1 text-xs text-red-500">{fieldErrors.code}</p>
+            )}
           </div>
 
           <div>
@@ -132,19 +170,33 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
               <input
                 type="number"
                 value={formData.price}
-                onChange={(e) => setFormData({ ...formData, price: parseInt(e.target.value) || 0 })}
+                onChange={(e) => {
+                  setFormData({ ...formData, price: parseInt(e.target.value) || 0 });
+                  setFieldErrors({ ...fieldErrors, price: '' });
+                }}
                 required
-                className="mt-1 input"
+                min="0"
+                className={`mt-1 input ${fieldErrors.price ? 'border-red-500' : ''}`}
               />
+              {fieldErrors.price && (
+                <p className="mt-1 text-xs text-red-500">{fieldErrors.price}</p>
+              )}
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700">원가</label>
               <input
                 type="number"
                 value={formData.cost || ''}
-                onChange={(e) => setFormData({ ...formData, cost: parseInt(e.target.value) || null })}
-                className="mt-1 input"
+                onChange={(e) => {
+                  setFormData({ ...formData, cost: parseInt(e.target.value) || null });
+                  setFieldErrors({ ...fieldErrors, cost: '' });
+                }}
+                min="0"
+                className={`mt-1 input ${fieldErrors.cost ? 'border-red-500' : ''}`}
               />
+              {fieldErrors.cost && (
+                <p className="mt-1 text-xs text-red-500">{fieldErrors.cost}</p>
+              )}
             </div>
           </div>
 

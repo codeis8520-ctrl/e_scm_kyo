@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { validators, formatPhone } from '@/lib/validators';
 
 export default function NotificationsPage() {
   const [notifications, setNotifications] = useState<any[]>([]);
@@ -169,14 +170,28 @@ function SendNotificationModal({ templates, customers, onClose, onSend }: any) {
   const [phone, setPhone] = useState('');
   const [templateId, setTemplateId] = useState('');
   const [customMessage, setCustomMessage] = useState('');
+  const [phoneError, setPhoneError] = useState('');
 
   const selectedCustomer = customers.find((c: any) => c.id === customerId);
 
   useEffect(() => {
-    if (selectedCustomer) setPhone(selectedCustomer.phone);
+    if (selectedCustomer) {
+      const formatted = formatPhone(selectedCustomer.phone);
+      setPhone(formatted);
+      setPhoneError('');
+    }
   }, [selectedCustomer]);
 
   const selectedTemplate = templates.find((t: any) => t.id === templateId);
+
+  const handleSendClick = () => {
+    const error = validators.phone(phone);
+    if (error) {
+      setPhoneError(error);
+      return;
+    }
+    onSend(customerId, phone, templateId, customMessage);
+  };
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -199,7 +214,18 @@ function SendNotificationModal({ templates, customers, onClose, onSend }: any) {
 
           <div>
             <label className="block text-sm font-medium text-gray-700">연락처</label>
-            <input type="text" value={phone} onChange={(e) => setPhone(e.target.value)} required placeholder="010-0000-0000" className="mt-1 input" />
+            <input
+              type="tel"
+              value={phone}
+              onChange={(e) => {
+                setPhone(formatPhone(e.target.value));
+                setPhoneError('');
+              }}
+              required
+              placeholder="010-0000-0000"
+              className={`mt-1 input ${phoneError ? 'border-red-500' : ''}`}
+            />
+            {phoneError && <p className="mt-1 text-xs text-red-500">{phoneError}</p>}
           </div>
 
           <div>
@@ -225,7 +251,7 @@ function SendNotificationModal({ templates, customers, onClose, onSend }: any) {
           </div>
 
           <div className="flex gap-2 pt-4">
-            <button onClick={() => onSend(customerId, phone, templateId, customMessage)} className="flex-1 btn-primary">
+            <button onClick={handleSendClick} className="flex-1 btn-primary">
               발송
             </button>
             <button onClick={onClose} className="flex-1 btn-secondary">취소</button>

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { validators } from '@/lib/validators';
 
 export default function ProductionPage() {
   const [products, setProducts] = useState<any[]>([]);
@@ -36,6 +37,15 @@ export default function ProductionPage() {
   };
 
   const handleCreateOrder = async (productId: string, quantity: number, memo: string) => {
+    if (!productId) {
+      alert('완제품을 선택해주세요.');
+      return;
+    }
+    if (quantity < 1) {
+      alert('생산 수량은 1 이상이어야 합니다.');
+      return;
+    }
+
     const supabase = createClient();
     const bomItems = getBomByProduct(productId);
 
@@ -289,7 +299,16 @@ function ProductionOrderModal({ products, onClose, onSubmit }: any) {
           </div>
           <div>
             <label className="block text-sm font-medium">생산 수량 *</label>
-            <input type="number" value={quantity} onChange={(e) => setQuantity(parseInt(e.target.value) || 1)} min="1" className="mt-1 input" />
+            <input
+              type="number"
+              value={quantity}
+              onChange={(e) => setQuantity(parseInt(e.target.value) || 1)}
+              min="1"
+              className="mt-1 input"
+            />
+            {quantity < 1 && (
+              <p className="mt-1 text-xs text-red-500">수량은 1 이상이어야 합니다</p>
+            )}
           </div>
           <div>
             <label className="block text-sm font-medium">메모</label>

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { createCustomer, updateCustomer, deleteCustomer, getBranches } from '@/lib/actions';
+import { validators, formatPhone } from '@/lib/validators';
 
 interface Customer {
   id?: string;
@@ -32,6 +33,7 @@ export default function CustomerModal({ customer, onClose, onSuccess }: Props) {
     is_active: customer?.is_active ?? true,
   });
   const [error, setError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -42,6 +44,21 @@ export default function CustomerModal({ customer, onClose, onSuccess }: Props) {
     e.preventDefault();
     setLoading(true);
     setError('');
+    setFieldErrors({});
+
+    const errors: Record<string, string> = {};
+    const nameError = validators.required(formData.name, '이름');
+    if (nameError) errors.name = nameError;
+    const phoneError = validators.phone(formData.phone);
+    if (phoneError) errors.phone = phoneError;
+    const emailError = validators.email(formData.email);
+    if (emailError) errors.email = emailError;
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      setLoading(false);
+      return;
+    }
 
     const form = new FormData();
     Object.entries(formData).forEach(([key, value]) => {
@@ -93,22 +110,35 @@ export default function CustomerModal({ customer, onClose, onSuccess }: Props) {
             <input
               type="text"
               value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              onChange={(e) => {
+                setFormData({ ...formData, name: e.target.value });
+                setFieldErrors({ ...fieldErrors, name: '' });
+              }}
               required
-              className="mt-1 input"
+              className={`mt-1 input ${fieldErrors.name ? 'border-red-500' : ''}`}
             />
+            {fieldErrors.name && (
+              <p className="mt-1 text-xs text-red-500">{fieldErrors.name}</p>
+            )}
           </div>
 
           <div>
             <label className="block text-sm font-medium text-gray-700">연락처 *</label>
             <input
-              type="text"
+              type="tel"
               value={formData.phone}
-              onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+              onChange={(e) => {
+                const formatted = formatPhone(e.target.value);
+                setFormData({ ...formData, phone: formatted });
+                setFieldErrors({ ...fieldErrors, phone: '' });
+              }}
               required
               placeholder="010-0000-0000"
-              className="mt-1 input"
+              className={`mt-1 input ${fieldErrors.phone ? 'border-red-500' : ''}`}
             />
+            {fieldErrors.phone && (
+              <p className="mt-1 text-xs text-red-500">{fieldErrors.phone}</p>
+            )}
           </div>
 
           <div>
@@ -116,9 +146,16 @@ export default function CustomerModal({ customer, onClose, onSuccess }: Props) {
             <input
               type="email"
               value={formData.email || ''}
-              onChange={(e) => setFormData({ ...formData, email: e.target.value || null })}
-              className="mt-1 input"
+              onChange={(e) => {
+                setFormData({ ...formData, email: e.target.value || null });
+                setFieldErrors({ ...fieldErrors, email: '' });
+              }}
+              className={`mt-1 input ${fieldErrors.email ? 'border-red-500' : ''}`}
+              placeholder="example@email.com"
             />
+            {fieldErrors.email && (
+              <p className="mt-1 text-xs text-red-500">{fieldErrors.email}</p>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-4">
