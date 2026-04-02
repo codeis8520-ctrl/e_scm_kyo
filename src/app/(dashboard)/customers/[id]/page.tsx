@@ -471,6 +471,7 @@ export default function CustomerDetailPage() {
                   placeholder="제품명 검색"
                   value={purchaseProductSearch}
                   onChange={(e) => setPurchaseProductSearch(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && fetchData()}
                   className="input w-36"
                 />
                 <select
