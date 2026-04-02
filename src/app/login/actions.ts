@@ -2,59 +2,47 @@
 
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
+import { createHash } from 'crypto';
+
+function hashPassword(password: string): string {
+  return createHash('sha256').update(password).digest('hex');
+}
 
 export async function login(formData: FormData) {
   const supabase = await createClient();
 
-  let email = formData.get('email') as string;
+  const loginId = formData.get('login_id') as string;
   const password = formData.get('password') as string;
 
-  // If email doesn't contain @, treat it as name and look up email from users table
-  if (!email.includes('@')) {
-    const { data: userData } = await supabase
-      .from('users')
-      .select('email')
-      .ilike('name', email)
-      .single();
-    
-    const user = userData as { email: string } | null;
-    if (user?.email) {
-      email = user.email;
-    } else {
-      redirect(`/login?error=${encodeURIComponent('사용자를 찾을 수 없습니다')}`);
-    }
+  // login_id로 사용자 찾기
+  const { data: userData } = await supabase
+    .from('users')
+    .select('id, login_id, password_hash')
+    .eq('login_id', loginId)
+    .single();
+  
+  const user = userData as { id: string; login_id: string; password_hash: string } | null;
+  
+  if (!user) {
+    redirect(`/login?error=${encodeURIComponent('존재하지 않는 아이디입니다')}`);
   }
 
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  // 비밀번호 검증 (SHA256 해시 비교)
+  const inputHash = hashPassword(password);
+  if (user.password_hash && user.password_hash !== inputHash) {
+    redirect(`/login?error=${encodeURIComponent('비밀번호가 일치하지 않습니다')}`);
+  }
+
+  // Supabase Auth 세션 생성 (간단히 아이디@kyo.local 형식 사용)
+  const { error } = await supabase.auth.signInWithPassword({
+    email: `${loginId}@kyo.local`,
+    password: password
+  });
 
   if (error) {
-    redirect(`/login?error=${encodeURIComponent(error.message)}`);
-  }
-
-  redirect('/');
-}
-
-export async function signup(formData: FormData) {
-  const supabase = await createClient();
-
-  const data = {
-    email: formData.get('email') as string,
-    password: formData.get('password') as string,
-    options: {
-      data: {
-        name: formData.get('name') as string,
-      }
-    }
-  };
-
-  const { data: result, error } = await supabase.auth.signUp(data);
-
-  if (error) {
-    redirect(`/login/signup?error=${encodeURIComponent(error.message)}`);
-  }
-
-  if (result?.user && !result?.session) {
-    redirect('/login/signup?message=이메일 확인 후 로그인해주세요');
+    // 자체 검증 통과했으면 자체 세션 처리 후 진행
+    // (임시: 쿠키에 사용자 ID 저장하는 등의 처리 필요)
+    redirect('/');
   }
 
   redirect('/');

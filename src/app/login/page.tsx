@@ -1,5 +1,4 @@
-import { login, signup } from './actions';
-import Link from 'next/link';
+import { login } from './actions';
 
 export default function LoginPage() {
   return (
@@ -8,16 +7,16 @@ export default function LoginPage() {
         <h1 className="text-2xl font-bold mb-6 text-center">경옥채 사내 통합시스템</h1>
         <form className="space-y-4">
           <div>
-            <label htmlFor="email" className="block text-sm font-medium text-gray-700">
-              아이디 (이메일 또는 이름)
+            <label htmlFor="login_id" className="block text-sm font-medium text-gray-700">
+              아이디
             </label>
             <input
-              id="email"
-              name="email"
+              id="login_id"
+              name="login_id"
               type="text"
               required
               className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-              placeholder="이메일 또는 이름을 입력하세요"
+              placeholder="아이디를 입력하세요"
             />
           </div>
           <div>
@@ -40,12 +39,6 @@ export default function LoginPage() {
             >
               로그인
             </button>
-            <Link
-              href="/login/signup"
-              className="w-full flex justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 text-center"
-            >
-              회원가입
-            </Link>
           </div>
         </form>
       </div>

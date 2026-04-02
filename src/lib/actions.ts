@@ -480,25 +480,26 @@ export async function createUser(formData: FormData) {
   const { data: { user: authUser } } = await supabase.auth.getUser();
   if (!authUser) redirect('/login');
 
-  const email = formData.get('email') as string;
+  const loginId = formData.get('login_id') as string;
   const password = formData.get('password') as string;
   const name = formData.get('name') as string;
   const phone = formData.get('phone') as string;
   const role = formData.get('role') as string;
   const branchId = formData.get('branch_id') as string;
 
-  // 이메일 없이 ID/비밀번호로 로그인 가능하게 (pseudo-email 사용)
-  const loginId = email || name;
-  const authEmail = email ? email : `${loginId}@kyo.local`;
+  // SHA256으로 비밀번호 해싱
+  const hashPassword = (pwd: string) => {
+    const crypto = require('crypto');
+    return crypto.createHash('sha256').update(pwd).digest('hex');
+  };
 
-  // Create auth user (signUp은 Admin 권한 불필요)
+  // Create auth user (임시: 자체 로그인人而使用)
+  const authEmail = `${loginId}@kyo.local`;
   const { data: authData, error: authError } = await supabase.auth.signUp({
     email: authEmail,
     password,
     options: {
-      data: {
-        name,
-      }
+      data: { name }
     }
   });
 
@@ -506,22 +507,25 @@ export async function createUser(formData: FormData) {
     return { error: authError.message };
   }
 
-  if (!authData.user) {
-    return { error: '사용자 생성 실패' };
-  }
-
-  // Create user profile
+  // Create user profile with login_id
+  const userId = authData?.user?.id || crypto.randomUUID();
   const { error } = await supabase.from('users').insert({
-    id: authData.user.id,
+    id: userId,
+    login_id: loginId,
     email: authEmail,
-    password_hash: 'managed_by_auth',
+    password_hash: hashPassword(password),
     name,
     phone: phone || null,
     role,
     branch_id: branchId || null,
+    is_active: true,
   } as any);
 
   if (error) {
+    // auth 사용자가 만들어졌으면 삭제
+    if (authData?.user) {
+      await supabase.auth.admin.deleteUser(authData.user.id);
+    }
     return { error: error.message };
   }
   

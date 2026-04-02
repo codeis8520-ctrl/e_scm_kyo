@@ -23,6 +23,7 @@ interface Branch {
 
 interface User {
   id: string;
+  login_id: string;
   email: string;
   name: string;
   phone: string | null;
@@ -1260,7 +1261,7 @@ function UserModal({
   onSuccess: () => void;
 }) {
   const [formData, setFormData] = useState({
-    email: user?.email || '',
+    login_id: (user as any)?.login_id || '',
     password: '',
     name: user?.name || '',
     phone: user?.phone || '',
@@ -1280,6 +1281,9 @@ function UserModal({
     setFieldErrors({});
 
     const errors: Record<string, string> = {};
+    const loginIdError = validators.required(formData.login_id, '아이디');
+    if (loginIdError) errors.login_id = loginIdError;
+    
     const nameError = validators.required(formData.name, '이름');
     if (nameError) errors.name = nameError;
     
@@ -1311,15 +1315,22 @@ function UserModal({
 
         if (updateError) throw updateError;
       } else {
-        // 추가 모드 - users 테이블에 직접 삽입
+        // 추가 모드 - login_id 사용
+        // SHA256으로 비밀번호 해싱
+        const hashPassword = (pwd: string) => {
+          const crypto = require('crypto');
+          return crypto.createHash('sha256').update(pwd).digest('hex');
+        };
+
         const { error: insertError } = await db.from('users').insert({
-          email: formData.email,
+          login_id: formData.login_id,
+          email: `${formData.login_id}@kyo.local`,
+          password_hash: hashPassword(formData.password),
           name: formData.name,
           phone: formData.phone || null,
           role: formData.role,
           branch_id: formData.branch_id || null,
           is_active: formData.is_active,
-          password_hash: '', // 우리 시스템에서는 사용 안 함
         });
 
         if (insertError) throw insertError;
@@ -1347,17 +1358,17 @@ function UserModal({
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700">
-              {user ? '이메일' : '이메일 (선택, 없으면 이름을 로그인 아이디로 사용)'}
+              {user ? '아이디' : '아이디 *'}
             </label>
             <input
-              type="email"
-              value={formData.email}
-              onChange={(e) => { setFormData({ ...formData, email: e.target.value }); setFieldErrors({ ...fieldErrors, email: '' }); }}
+              type="text"
+              value={formData.login_id}
+              onChange={(e) => { setFormData({ ...formData, login_id: e.target.value }); setFieldErrors({ ...fieldErrors, login_id: '' }); }}
               disabled={!!user}
-              placeholder="없으면 이름으로 로그인 가능"
-              className={`mt-1 input ${fieldErrors.email ? 'border-red-500' : ''}`}
+              placeholder="로그인할 아이디"
+              className={`mt-1 input ${fieldErrors.login_id ? 'border-red-500' : ''}`}
             />
-            {fieldErrors.email && <p className="mt-1 text-xs text-red-500">{fieldErrors.email}</p>}
+            {fieldErrors.login_id && <p className="mt-1 text-xs text-red-500">{fieldErrors.login_id}</p>}
           </div>
 
           {!user && (
