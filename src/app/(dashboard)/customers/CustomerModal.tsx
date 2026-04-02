@@ -65,7 +65,7 @@ export default function CustomerModal({ customer, onClose, onSuccess }: Props) {
     });
 
     supabase.from('customer_grades').select('code, name').eq('is_active', true).order('sort_order').then(({ data }) => {
-      const list = data || [];
+      const list: { code: string; name: string }[] = (data as any) || [];
       setGrades(list);
       if (!formData.grade && list.length > 0) {
         setFormData(prev => ({ ...prev, grade: list[0].code }));
