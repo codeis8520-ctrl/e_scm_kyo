@@ -27,6 +27,8 @@ interface Customer {
   name: string;
   phone: string;
   grade: string;
+  total_points?: number;
+  grade_point_rate?: number;
 }
 
 export default function POSPage() {
@@ -60,15 +62,21 @@ export default function POSPage() {
     const fetchData = async () => {
       const supabase = createClient();
       
-      const [productsRes, branchesRes, customersRes] = await Promise.all([
+      const [productsRes, branchesRes, customersRes, gradesRes] = await Promise.all([
         supabase.from('products').select('*, inventories(*)').eq('is_active', true).order('name'),
         supabase.from('branches').select('*').eq('is_active', true).order('created_at'),
-        supabase.from('customers').select('id, name, phone, grade').eq('is_active', true).order('name'),
+        supabase.from('customers').select('id, name, phone, grade, total_points').eq('is_active', true).order('name'),
+        supabase.from('customer_grades').select('code, point_rate'),
       ]);
+
+      const gradesMap = new Map((gradesRes.data || []).map((g: any) => [g.code, g.point_rate]));
 
       const branchesData = (branchesRes.data || []) as any[];
       const productsData = (productsRes.data || []) as any[];
-      const customersData = (customersRes.data || []) as any[];
+      const customersData = (customersRes.data || []).map((c: any) => ({
+        ...c,
+        grade_point_rate: gradesMap.get(c.grade) || 1.0,
+      }));
 
       setProducts(productsData);
       setBranches(branchesData);
@@ -272,15 +280,23 @@ export default function POSPage() {
 
       // 4. 포인트 적립
       if (selectedCustomer) {
-        const pointsEarned = Math.floor(total / 100);
+        const pointRate = selectedCustomer.grade_point_rate || 1.0;
+        const pointsEarned = Math.floor(total * pointRate / 100);
+        const currentPoints = selectedCustomer.total_points || 0;
+        const newBalance = currentPoints + pointsEarned;
+        
         await db.from('point_history').insert({
           customer_id: selectedCustomer.id,
           sales_order_id: saleOrderId,
           type: 'earn',
           points: pointsEarned,
-          balance: 0,
-          description: `구매 적립 (${orderNumber})`,
+          balance: newBalance,
+          description: `구매 적립 (${orderNumber}) - ${pointRate}%`,
         });
+        
+        await db.from('customers').update({
+          total_points: newBalance,
+        }).eq('id', selectedCustomer.id);
       }
 
       alert(`결제가 완료되었습니다.\n전표번호: ${orderNumber}`);
