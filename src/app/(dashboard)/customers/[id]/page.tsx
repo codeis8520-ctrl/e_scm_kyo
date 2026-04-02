@@ -140,19 +140,17 @@ export default function CustomerDetailPage() {
           quantity,
           unit_price,
           total_price,
-          ordered_at,
-          status,
-          sales_order:-sales_orders(
+          product:products(name),
+          sales_order:sales_orders(
             ordered_at,
             status,
             branch:branches(name)
-          ),
-          product:products(name)
+          )
         `)
-        .eq('customer_id', customerId)
-        .gte('ordered_at', `${start}T00:00:00`)
-        .lte('ordered_at', `${end}T23:59:59`)
-        .order('ordered_at', { ascending: false }),
+        .eq('sales_order.customer_id', customerId)
+        .gte('sales_order.ordered_at', `${start}T00:00:00`)
+        .lte('sales_order.ordered_at', `${end}T23:59:59`)
+        .order('sales_order.ordered_at', { ascending: false }),
       supabase
         .from('customer_consultations')
         .select('*, consulted_by:users(name)')
