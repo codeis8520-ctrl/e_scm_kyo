@@ -41,6 +41,7 @@ export async function POST() {
             name: member.member_name,
             email: member.member_email || null,
             phone: member.member_phone || member.member_cellphone || null,
+            source: 'CAFE24',
           })
           .eq('id', existing.data.id);
         updated++;
@@ -53,6 +54,7 @@ export async function POST() {
             phone: member.member_phone || member.member_cellphone || `cafe24_${member.member_id}`,
             cafe24_member_id: member.member_id,
             grade: 'NORMAL',
+            source: 'CAFE24',
           });
 
         if (error) {
