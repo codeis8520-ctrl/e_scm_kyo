@@ -272,6 +272,84 @@ export async function adjustInventory(formData: FormData) {
   return { success: true };
 }
 
+export async function transferInventory(formData: FormData) {
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  const fromBranchId = formData.get('from_branch_id') as string;
+  const toBranchId = formData.get('to_branch_id') as string;
+  const productId = formData.get('product_id') as string;
+  const quantity = parseInt(formData.get('quantity') as string);
+  const memo = formData.get('memo') as string;
+
+  if (fromBranchId === toBranchId) {
+    return { error: '동일 지점 간 이동은 할 수 없습니다.' };
+  }
+
+  if (quantity <= 0) {
+    return { error: '이동 수량은 1개 이상이어야 합니다.' };
+  }
+
+  const fromInventory = await db
+    .from('inventories')
+    .select('quantity')
+    .eq('branch_id', fromBranchId)
+    .eq('product_id', productId)
+    .single();
+
+  if (!fromInventory.data || fromInventory.data.quantity < quantity) {
+    return { error: '이동 수량이 출고 지점의 재고보다 많습니다.' };
+  }
+
+  const toInventory = await db
+    .from('inventories')
+    .select('id, quantity')
+    .eq('branch_id', toBranchId)
+    .eq('product_id', productId)
+    .single();
+
+  if (toInventory.data) {
+    await db
+      .from('inventories')
+      .update({ quantity: toInventory.data.quantity + quantity })
+      .eq('id', toInventory.data.id);
+  } else {
+    await db.from('inventories').insert({
+      branch_id: toBranchId,
+      product_id: productId,
+      quantity: quantity,
+      safety_stock: 0,
+    });
+  }
+
+  await db
+    .from('inventories')
+    .update({ quantity: fromInventory.data.quantity - quantity })
+    .eq('branch_id', fromBranchId)
+    .eq('product_id', productId);
+
+  await db.from('inventory_movements').insert({
+    branch_id: fromBranchId,
+    product_id: productId,
+    movement_type: 'OUT',
+    quantity: quantity,
+    reference_type: 'TRANSFER',
+    memo: `지점 이동: ${memo || '출고'}`,
+  });
+
+  await db.from('inventory_movements').insert({
+    branch_id: toBranchId,
+    product_id: productId,
+    movement_type: 'IN',
+    quantity: quantity,
+    reference_type: 'TRANSFER',
+    memo: `지점 이동: ${memo || '입고'}`,
+  });
+
+  revalidatePath('/inventory');
+  return { success: true };
+}
+
 // ============ Categories ============
 
 export async function getCategories() {

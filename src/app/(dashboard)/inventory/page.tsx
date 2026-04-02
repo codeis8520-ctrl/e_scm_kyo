@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import InventoryModal from './InventoryModal';
+import TransferModal from './TransferModal';
 
 interface Inventory {
   id: string;
@@ -27,7 +28,9 @@ export default function InventoryPage() {
   const [barcodeSearch, setBarcodeSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
+  const [showTransferModal, setShowTransferModal] = useState(false);
   const [editInventory, setEditInventory] = useState<Inventory | null>(null);
+  const [transferInventory, setTransferInventory] = useState<Inventory | null>(null);
 
   useEffect(() => {
     fetchBranches();
@@ -183,9 +186,15 @@ export default function InventoryPage() {
                 <td>
                   <button
                     onClick={() => handleAdjust(item)}
-                    className="text-blue-600 hover:underline"
+                    className="text-blue-600 hover:underline mr-2"
                   >
                     입출고
+                  </button>
+                  <button
+                    onClick={() => { setTransferInventory(item); setShowTransferModal(true); }}
+                    className="text-green-600 hover:underline"
+                  >
+                    이동
                   </button>
                 </td>
               </tr>
@@ -206,6 +215,15 @@ export default function InventoryPage() {
           inventory={editInventory}
           onClose={handleClose}
           onSuccess={handleSuccess}
+        />
+      )}
+
+      {showTransferModal && transferInventory && (
+        <TransferModal
+          inventory={transferInventory}
+          branches={branches}
+          onClose={() => { setShowTransferModal(false); setTransferInventory(null); }}
+          onSuccess={() => { setShowTransferModal(false); setTransferInventory(null); fetchInventory(); }}
         />
       )}
     </div>
