@@ -187,13 +187,37 @@ export default function POSPage() {
       orderNumber = `SA-${branchCode}-${today}-${randomSuffix}`;
 
       const { data: { user } } = await supabase.auth.getUser();
+      
+      // ordered_by가 users 테이블에 있는지 확인
+      let orderedByUserId = user?.id;
+      if (user?.id) {
+        const { data: userData } = await supabase
+          .from('users')
+          .select('id')
+          .eq('id', user.id)
+          .single();
+        
+        if (!userData) {
+          // users 테이블에 없으면 생성 (trigger가 안된 경우)
+          const { error: userError } = await db.from('users').insert({
+            id: user.id,
+            email: user.email || 'unknown@pos.com',
+            name: user.email?.split('@')[0] || 'POS 사용자',
+            password_hash: '',
+            role: 'PHARMACY_STAFF',
+          });
+          if (userError) {
+            console.error('사용자 생성 실패:', userError);
+          }
+        }
+      }
 
       const { data: saleOrder, error: saleError } = await db.from('sales_orders').insert({
         order_number: orderNumber,
         channel: branches.find(b => b.id === selectedBranch)?.channel || 'STORE',
         branch_id: selectedBranch,
         customer_id: selectedCustomer?.id || null,
-        ordered_by: user?.id,
+        ordered_by: orderedByUserId,
         total_amount: total,
         discount_amount: 0,
         status: 'COMPLETED',
