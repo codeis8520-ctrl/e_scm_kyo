@@ -2,9 +2,9 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { Cafe24Member } from '@/lib/cafe24/types';
 
-const db = await createClient() as any;
-
 export async function POST() {
+  const supabase = await createClient() as any;
+  
   try {
     const mallId = process.env.CAFE24_MALL_ID;
     const clientId = process.env.CAFE24_CLIENT_ID;
@@ -29,14 +29,14 @@ export async function POST() {
     let skipped = 0;
 
     for (const member of members) {
-      const existing = await db
+      const existing = await supabase
         .from('customers')
         .select('id, name, cafe24_member_id')
         .eq('cafe24_member_id', member.member_id)
         .single();
 
       if (existing.data) {
-        await db
+        await supabase
           .from('customers')
           .update({
             name: member.member_name,
@@ -46,7 +46,7 @@ export async function POST() {
           .eq('id', existing.data.id);
         updated++;
       } else {
-        const { error } = await db
+        const { error } = await supabase
           .from('customers')
           .insert({
             name: member.member_name,
@@ -65,7 +65,7 @@ export async function POST() {
       }
     }
 
-    await db.from('cafe24_sync_logs').insert({
+    await supabase.from('cafe24_sync_logs').insert({
       sync_type: 'member_batch_sync',
       cafe24_order_id: 'batch',
       data: { total: members.length, created, updated, skipped },
@@ -88,15 +88,17 @@ export async function POST() {
 }
 
 export async function GET() {
+  const supabase = await createClient() as any;
+  
   try {
-    const logs = await db
+    const logs = await supabase
       .from('cafe24_sync_logs')
       .select('*')
       .eq('sync_type', 'member_batch_sync')
       .order('processed_at', { ascending: false })
       .limit(10);
 
-    const { count } = await db
+    const { count } = await supabase
       .from('customers')
       .select('*', { count: 'exact', head: true })
       .not('cafe24_member_id', 'is', null);
