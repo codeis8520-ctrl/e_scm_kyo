@@ -166,21 +166,23 @@ export default function DashboardClient() {
           </button>
         </div>
 
-        <div className="flex gap-2 flex-wrap">
-          {['ALL', 'STORE', 'DEPT_STORE', 'ONLINE', 'EVENT'].map((ch) => (
-            <button
-              key={ch}
-              onClick={() => setSelectedChannel(ch)}
-              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                selectedChannel === ch
-                  ? CHANNEL_COLORS[ch] || 'bg-slate-600' + ' text-white'
-                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-              }`}
-            >
-              {ch === 'ALL' ? '전체 채널' : CHANNEL_LABELS[ch] || ch}
-            </button>
-          ))}
-        </div>
+        {!isBranchUser && (
+          <div className="flex gap-2 flex-wrap">
+            {['ALL', 'STORE', 'DEPT_STORE', 'ONLINE', 'EVENT'].map((ch) => (
+              <button
+                key={ch}
+                onClick={() => setSelectedChannel(ch)}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                  selectedChannel === ch
+                    ? CHANNEL_COLORS[ch] || 'bg-slate-600' + ' text-white'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {ch === 'ALL' ? '전체 채널' : CHANNEL_LABELS[ch] || ch}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
