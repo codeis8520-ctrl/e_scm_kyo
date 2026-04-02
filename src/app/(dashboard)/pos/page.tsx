@@ -269,12 +269,17 @@ export default function POSPage() {
       setCustomerSearch('');
       barcodeInputRef.current?.focus();
     } catch (err: any) {
-      console.error(err);
+      console.error('결제 오류:', err);
       // 에러 발생 시刚才创建的销售记录也删除
       if (saleOrderId) {
-        await db.from('sales_orders').delete().eq('id', saleOrderId);
+        try {
+          await db.from('sales_orders').delete().eq('id', saleOrderId);
+        } catch (e) {
+          console.error('판매 전표 삭제 실패:', e);
+        }
       }
-      alert('결제 처리 중 오류가 발생했습니다. 다시 시도해주세요.');
+      const errorMsg = err?.message || err?.details || JSON.stringify(err);
+      alert(`결제 처리 중 오류가 발생했습니다.\n\n${errorMsg}\n\n브라우저 콘솔(F12)을 확인해주세요.`);
     }
 
     setProcessing(false);
