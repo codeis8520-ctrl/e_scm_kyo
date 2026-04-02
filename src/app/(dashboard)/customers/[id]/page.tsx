@@ -41,6 +41,7 @@ interface PurchaseItem {
   unit_price: number;
   total_price: number;
   ordered_at: string;
+  branch_id: string;
   branch_name: string;
   status: string;
 }
@@ -109,6 +110,8 @@ export default function CustomerDetailPage() {
 
   const [purchaseDateRange, setPurchaseDateRange] = useState(getDefaultDateRange);
   const [consultDateRange, setConsultDateRange] = useState(getDefaultDateRange);
+  const [purchaseProductSearch, setPurchaseProductSearch] = useState('');
+  const [purchaseBranchFilter, setPurchaseBranchFilter] = useState('');
 
   useEffect(() => {
     fetchData();
@@ -139,7 +142,8 @@ export default function CustomerDetailPage() {
           id,
           ordered_at,
           status,
-          branch:branches(name),
+          branch_id,
+          branch:branches(name, id),
           items:sales_order_items(
             id,
             quantity,
@@ -149,8 +153,8 @@ export default function CustomerDetailPage() {
           )
         `)
         .eq('customer_id', customerId)
-        .gte('ordered_at', `${start}T00:00:00`)
-        .lte('ordered_at', `${end}T23:59:59`)
+        .gte('ordered_at', `${purchaseDateRange.start}T00:00:00`)
+        .lte('ordered_at', `${purchaseDateRange.end}T23:59:59`)
         .order('ordered_at', { ascending: false }),
       supabase
         .from('customer_consultations')
@@ -180,10 +184,19 @@ export default function CustomerDetailPage() {
         unit_price: item.unit_price,
         total_price: item.total_price,
         ordered_at: order.ordered_at,
+        branch_id: order.branch_id,
         branch_name: order.branch?.name || '-',
         status: order.status,
       }))
-    );
+    ).filter((item: PurchaseItem) => {
+      if (purchaseProductSearch && !item.product_name.toLowerCase().includes(purchaseProductSearch.toLowerCase())) {
+        return false;
+      }
+      if (purchaseBranchFilter && item.branch_id !== purchaseBranchFilter) {
+        return false;
+      }
+      return true;
+    });
     setPurchaseItems(items);
 
     setConsultations((consultationsRes.data || []) as Consultation[]);
@@ -453,13 +466,32 @@ export default function CustomerDetailPage() {
                   onChange={(e) => handleDateFilterChange('purchase', 'end', e.target.value)}
                   className="input w-36"
                 />
-                <button onClick={() => applyDateFilter('purchase')} className="btn-secondary">
+                <input
+                  type="text"
+                  placeholder="제품명 검색"
+                  value={purchaseProductSearch}
+                  onChange={(e) => setPurchaseProductSearch(e.target.value)}
+                  className="input w-36"
+                />
+                <select
+                  value={purchaseBranchFilter}
+                  onChange={(e) => setPurchaseBranchFilter(e.target.value)}
+                  className="input w-36"
+                >
+                  <option value="">전체 지점</option>
+                  {branches.map(b => (
+                    <option key={b.id} value={b.id}>{b.name}</option>
+                  ))}
+                </select>
+                <button onClick={() => fetchData()} className="btn-secondary">
                   조회
                 </button>
                 <button 
                   onClick={() => {
                     const range = getDefaultDateRange();
                     setPurchaseDateRange(range);
+                    setPurchaseProductSearch('');
+                    setPurchaseBranchFilter('');
                     setTimeout(() => fetchData(), 0);
                   }}
                   className="text-sm text-slate-500 hover:text-slate-700"
