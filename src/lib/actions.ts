@@ -453,6 +453,90 @@ export async function deleteBranch(id: string) {
   return { success: true };
 }
 
+// ============ Channels ============
+
+export async function getChannels() {
+  const supabase = await createClient();
+  const { data } = await supabase.from('channels').select('*').order('sort_order');
+  return { data: data || [] };
+}
+
+export async function createChannel(formData: FormData) {
+  const supabase = await createClient();
+  
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect('/login');
+
+  const channelData = {
+    code: formData.get('code') as string,
+    name: formData.get('name') as string,
+    color: formData.get('color') as string || '#6366f1',
+    sort_order: parseInt(formData.get('sort_order') as string) || 0,
+    is_active: true,
+  };
+
+  // @ts-ignore
+  const { error } = await supabase.from('channels').insert(channelData);
+  
+  if (error) {
+    return { error: error.message };
+  }
+  
+  revalidatePath('/system-codes');
+  return { success: true };
+}
+
+export async function updateChannel(id: string, formData: FormData) {
+  const supabase = await createClient();
+  
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect('/login');
+
+  const channelData = {
+    code: formData.get('code') as string,
+    name: formData.get('name') as string,
+    color: formData.get('color') as string || '#6366f1',
+    sort_order: parseInt(formData.get('sort_order') as string) || 0,
+    is_active: formData.get('is_active') === 'true',
+  };
+
+  // @ts-ignore
+  const { error } = await supabase.from('channels').update(channelData).eq('id', id);
+  
+  if (error) {
+    return { error: error.message };
+  }
+  
+  revalidatePath('/system-codes');
+  return { success: true };
+}
+
+export async function deleteChannel(id: string) {
+  const supabase = await createClient();
+  
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect('/login');
+
+  // 해당 채널을 사용하는 지점이 있는지 확인
+  const { data: branches } = await supabase
+    .from('branches')
+    .select('id')
+    .eq('channel', id);
+  
+  if (branches && branches.length > 0) {
+    return { error: '해당 채널을 사용하는 지점이 있어 삭제할 수 없습니다.' };
+  }
+
+  const { error } = await supabase.from('channels').delete().eq('id', id);
+  
+  if (error) {
+    return { error: error.message };
+  }
+  
+  revalidatePath('/system-codes');
+  return { success: true };
+}
+
 // ============ Users (Staff Management) ============
 
 export async function getUsers() {

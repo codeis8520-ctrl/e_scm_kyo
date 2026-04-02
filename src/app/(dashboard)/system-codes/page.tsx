@@ -8,8 +8,18 @@ import {
   createCustomerTag, updateCustomerTag, deleteCustomerTag,
   createCategory, updateCategory, deleteCategory,
   createUser, updateUser, deleteUser,
+  createChannel, updateChannel, deleteChannel,
 } from '@/lib/actions';
 import { validators } from '@/lib/validators';
+
+interface Channel {
+  id: string;
+  code: string;
+  name: string;
+  color: string;
+  sort_order: number;
+  is_active: boolean;
+}
 
 interface Branch {
   id: string;
@@ -122,7 +132,8 @@ interface ScreenPermission {
 }
 
 export default function SystemCodesPage() {
-  const [activeTab, setActiveTab] = useState<'branches' | 'grades' | 'tags' | 'categories' | 'staff' | 'templates' | 'permissions'>('branches');
+  const [activeTab, setActiveTab] = useState<'channels' | 'branches' | 'grades' | 'tags' | 'categories' | 'staff' | 'templates' | 'permissions'>('channels');
+  const [channels, setChannels] = useState<Channel[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [grades, setGrades] = useState<CustomerGrade[]>([]);
   const [tags, setTags] = useState<CustomerTag[]>([]);
@@ -132,12 +143,14 @@ export default function SystemCodesPage() {
   const [permissions, setPermissions] = useState<ScreenPermission[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const [showChannelModal, setShowChannelModal] = useState(false);
   const [showBranchModal, setShowBranchModal] = useState(false);
   const [showGradeModal, setShowGradeModal] = useState(false);
   const [showTagModal, setShowTagModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [showUserModal, setShowUserModal] = useState(false);
   const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
   const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
   const [editingGrade, setEditingGrade] = useState<CustomerGrade | null>(null);
   const [editingTag, setEditingTag] = useState<CustomerTag | null>(null);
@@ -153,7 +166,10 @@ export default function SystemCodesPage() {
     setLoading(true);
     const supabase = createClient();
 
-    if (activeTab === 'branches') {
+    if (activeTab === 'channels') {
+      const { data } = await supabase.from('channels').select('*').order('sort_order');
+      setChannels((data || []) as Channel[]);
+    } else if (activeTab === 'branches') {
       const { data } = await supabase.from('branches').select('*').order('created_at', { ascending: true });
       setBranches(data || []);
     } else if (activeTab === 'grades') {
@@ -177,6 +193,16 @@ export default function SystemCodesPage() {
     }
 
     setLoading(false);
+  };
+
+  const handleDeleteChannel = async (id: string) => {
+    if (!confirm('정말 삭제하시겠습니까?')) return;
+    const result = await deleteChannel(id);
+    if (result?.error) {
+      alert(result.error);
+      return;
+    }
+    fetchData();
   };
 
   const handleDeleteBranch = async (id: string) => {
@@ -238,6 +264,16 @@ export default function SystemCodesPage() {
       </div>
 
       <div className="flex gap-2 border-b border-slate-200">
+        <button
+          onClick={() => setActiveTab('channels')}
+          className={`px-4 py-2 font-medium border-b-2 -mb-px transition-colors ${
+            activeTab === 'channels'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          채널 관리
+        </button>
         <button
           onClick={() => setActiveTab('branches')}
           className={`px-4 py-2 font-medium border-b-2 -mb-px transition-colors ${
@@ -309,6 +345,74 @@ export default function SystemCodesPage() {
           권한 관리
         </button>
       </div>
+
+      {activeTab === 'channels' && (
+        <div className="card">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="font-semibold">채널 목록</h3>
+            <button
+              onClick={() => { setEditingChannel(null); setShowChannelModal(true); }}
+              className="btn-primary"
+            >
+              + 채널 추가
+            </button>
+          </div>
+
+          <table className="table">
+            <thead>
+              <tr>
+                <th>색상</th>
+                <th>코드</th>
+                <th>채널명</th>
+                <th>정렬순서</th>
+                <th>상태</th>
+                <th>관리</th>
+              </tr>
+            </thead>
+            <tbody>
+              {channels.map((channel) => (
+                <tr key={channel.id}>
+                  <td>
+                    <span
+                      className="inline-block w-6 h-6 rounded-full border-2"
+                      style={{ backgroundColor: channel.color }}
+                    />
+                  </td>
+                  <td className="font-mono">{channel.code}</td>
+                  <td className="font-medium">{channel.name}</td>
+                  <td>{channel.sort_order}</td>
+                  <td>
+                    <span className={`badge ${channel.is_active ? 'badge-success' : 'badge-error'}`}>
+                      {channel.is_active ? '활성' : '비활성'}
+                    </span>
+                  </td>
+                  <td>
+                    <button
+                      onClick={() => { setEditingChannel(channel); setShowChannelModal(true); }}
+                      className="text-blue-600 hover:underline mr-2"
+                    >
+                      수정
+                    </button>
+                    <button
+                      onClick={() => handleDeleteChannel(channel.id)}
+                      className="text-red-600 hover:underline"
+                    >
+                      삭제
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {channels.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="text-center text-slate-400 py-8">
+                    등록된 채널이 없습니다
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {activeTab === 'branches' && (
         <div className="card">
@@ -761,6 +865,14 @@ export default function SystemCodesPage() {
         </div>
       )}
 
+      {showChannelModal && (
+        <ChannelModal
+          channel={editingChannel}
+          onClose={() => setShowChannelModal(false)}
+          onSuccess={() => { setShowChannelModal(false); fetchData(); }}
+        />
+      )}
+
       {showBranchModal && (
         <>
           {console.log('Rendering BranchModal, showBranchModal:', showBranchModal, 'editingBranch:', editingBranch)}
@@ -813,6 +925,148 @@ export default function SystemCodesPage() {
           onSuccess={() => { setShowTemplateModal(false); fetchData(); }}
         />
       )}
+    </div>
+  );
+}
+
+function ChannelModal({ channel, onClose, onSuccess }: { channel: Channel | null; onClose: () => void; onSuccess: () => void }) {
+  const [formData, setFormData] = useState({
+    code: channel?.code || '',
+    name: channel?.name || '',
+    color: channel?.color || '#6366f1',
+    sort_order: channel?.sort_order || 0,
+    is_active: channel?.is_active ?? true,
+  });
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    setFieldErrors({});
+
+    const errors: Record<string, string> = {};
+    const codeError = validators.required(formData.code, '채널코드');
+    if (codeError) errors.code = codeError;
+    const nameError = validators.required(formData.name, '채널명');
+    if (nameError) errors.name = nameError;
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      setLoading(false);
+      return;
+    }
+
+    const form = new FormData();
+    Object.entries(formData).forEach(([key, value]) => {
+      form.append(key, String(value));
+    });
+
+    const result = channel
+      ? await updateChannel(channel.id, form)
+      : await createChannel(form);
+
+    if (result?.error) {
+      setError(result.error);
+      setLoading(false);
+    } else {
+      onSuccess();
+    }
+  };
+
+  const presetColors = ['#6366f1', '#8b5cf6', '#ec4899', '#ef4444', '#f59e0b', '#10b981', '#06b6d4', '#f97316'];
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg p-6 w-full max-w-md">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-lg font-bold">{channel ? '채널 수정' : '채널 추가'}</h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">✕</button>
+        </div>
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-lg text-sm">{error}</div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700">채널코드 *</label>
+            <input
+              type="text"
+              value={formData.code}
+              onChange={(e) => { setFormData({ ...formData, code: e.target.value.toUpperCase() }); setFieldErrors({ ...fieldErrors, code: '' }); }}
+              placeholder="STORE"
+              className={`mt-1 input ${fieldErrors.code ? 'border-red-500' : ''}`}
+            />
+            {fieldErrors.code && <p className="mt-1 text-xs text-red-500">{fieldErrors.code}</p>}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">채널명 *</label>
+            <input
+              type="text"
+              value={formData.name}
+              onChange={(e) => { setFormData({ ...formData, name: e.target.value }); setFieldErrors({ ...fieldErrors, name: '' }); }}
+              placeholder="한약국"
+              className={`mt-1 input ${fieldErrors.name ? 'border-red-500' : ''}`}
+            />
+            {fieldErrors.name && <p className="mt-1 text-xs text-red-500">{fieldErrors.name}</p>}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">색상</label>
+            <div className="flex gap-2 mt-1">
+              {presetColors.map((color) => (
+                <button
+                  key={color}
+                  type="button"
+                  onClick={() => setFormData({ ...formData, color })}
+                  className={`w-8 h-8 rounded-full border-2 ${formData.color === color ? 'border-slate-800' : 'border-transparent'}`}
+                  style={{ backgroundColor: color }}
+                />
+              ))}
+              <input
+                type="color"
+                value={formData.color}
+                onChange={(e) => setFormData({ ...formData, color: e.target.value })}
+                className="w-8 h-8 rounded cursor-pointer"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">정렬순서</label>
+            <input
+              type="number"
+              value={formData.sort_order}
+              onChange={(e) => setFormData({ ...formData, sort_order: parseInt(e.target.value) || 0 })}
+              min="0"
+              className="mt-1 input"
+            />
+          </div>
+
+          {channel && (
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="is_active"
+                checked={formData.is_active}
+                onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })}
+              />
+              <label htmlFor="is_active" className="text-sm text-gray-700">활성 상태</label>
+            </div>
+          )}
+
+          <div className="flex gap-2 pt-4">
+            <button type="submit" disabled={loading} className="flex-1 btn-primary">
+              {loading ? '처리 중...' : (channel ? '수정' : '추가')}
+            </button>
+            <button type="button" onClick={onClose} className="flex-1 btn-secondary">취소</button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

@@ -4,13 +4,32 @@
 -- =====================================================
 
 -- =====================================================
+-- 채널 관리 (한약국, 백화점, 자사몰, 이벤트 등)
+-- =====================================================
+CREATE TABLE channels (
+    id VARCHAR(20) PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    color VARCHAR(20) DEFAULT '#6366f1',
+    sort_order INT DEFAULT 0,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 채널 기본 데이터
+INSERT INTO channels (id, name, color, sort_order) VALUES
+    ('STORE', '한약국', '#10b981', 1),
+    ('DEPT_STORE', '백화점', '#8b5cf6', 2),
+    ('ONLINE', '자사몰', '#3b82f6', 3),
+    ('EVENT', '이벤트', '#f59e0b', 4);
+
+-- =====================================================
 -- 조직 관리 (매장/지점)
 -- =====================================================
 CREATE TABLE branches (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(100) NOT NULL,
     code VARCHAR(20) UNIQUE NOT NULL,
-    channel VARCHAR(20) NOT NULL CHECK (channel IN ('STORE', 'DEPT_STORE', 'ONLINE', 'EVENT')),
+    channel VARCHAR(20) NOT NULL REFERENCES channels(id),
     address TEXT,
     phone VARCHAR(20),
     is_active BOOLEAN DEFAULT true,
