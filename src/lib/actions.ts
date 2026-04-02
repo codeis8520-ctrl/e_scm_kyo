@@ -376,7 +376,7 @@ export async function createBranch(formData: FormData) {
 
   const branchData = {
     name: formData.get('name') as string,
-    code: formData.get('code') as string,
+    code: 'BR-' + Date.now().toString(36).toUpperCase(),
     channel: formData.get('channel') as string,
     address: formData.get('address') as string || null,
     phone: formData.get('phone') as string || null,

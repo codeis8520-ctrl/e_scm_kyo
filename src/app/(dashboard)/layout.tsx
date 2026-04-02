@@ -16,7 +16,6 @@ const ALL_NAV_ITEMS = [
   { href: '/customers', label: '고객', icon: '👥' },
   { href: '/notifications', label: '알림', icon: '📱' },
   { href: '/system-codes', label: '코드', icon: '⚙️' },
-  { href: '/branches', label: '지점', icon: '🏢' },
   { href: '/reports', label: '보고서', icon: '📈' },
 ];
 

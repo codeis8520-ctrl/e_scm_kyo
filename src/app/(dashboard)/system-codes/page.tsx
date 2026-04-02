@@ -820,7 +820,6 @@ export default function SystemCodesPage() {
 function BranchModal({ branch, onClose, onSuccess }: { branch: Branch | null; onClose: () => void; onSuccess: () => void }) {
   const [formData, setFormData] = useState({
     name: branch?.name || '',
-    code: branch?.code || '',
     channel: branch?.channel || 'STORE',
     address: branch?.address || '',
     phone: branch?.phone || '',
@@ -839,12 +838,6 @@ function BranchModal({ branch, onClose, onSuccess }: { branch: Branch | null; on
     const errors: Record<string, string> = {};
     const nameError = validators.required(formData.name, '지점명');
     if (nameError) errors.name = nameError;
-    const codeError = validators.required(formData.code, '지점코드');
-    if (codeError) errors.code = codeError;
-    else {
-      const codeFormatError = validators.code(formData.code);
-      if (codeFormatError) errors.code = codeFormatError;
-    }
     if (formData.phone) {
       const phoneError = validators.phone(formData.phone);
       if (phoneError) errors.phone = phoneError;
@@ -897,17 +890,12 @@ function BranchModal({ branch, onClose, onSuccess }: { branch: Branch | null; on
             {fieldErrors.name && <p className="mt-1 text-xs text-red-500">{fieldErrors.name}</p>}
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700">지점코드 *</label>
-            <input
-              type="text"
-              value={formData.code}
-              onChange={(e) => { setFormData({ ...formData, code: e.target.value }); setFieldErrors({ ...fieldErrors, code: '' }); }}
-              placeholder="SEOUL-01"
-              className={`mt-1 input ${fieldErrors.code ? 'border-red-500' : ''}`}
-            />
-            {fieldErrors.code && <p className="mt-1 text-xs text-red-500">{fieldErrors.code}</p>}
-          </div>
+          {branch && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700">지점코드</label>
+              <input type="text" value={branch.code} disabled className="mt-1 input bg-slate-50 text-slate-500" />
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-gray-700">채널 *</label>
