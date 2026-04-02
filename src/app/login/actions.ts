@@ -9,32 +9,32 @@ function hashPassword(password: string): string {
   return createHash('sha256').update(password).digest('hex');
 }
 
-export async function login(formData: FormData) {
+export async function login(formData: FormData): Promise<{ error?: string; success?: boolean }> {
   const supabase = await createClient();
 
   const loginId = formData.get('login_id') as string;
   const password = formData.get('password') as string;
 
   // login_id로 사용자 찾기
-  const { data: userData } = await supabase
+  const { data: userData, error: queryError } = await supabase
     .from('users')
     .select('id, login_id, password_hash, name, role')
     .eq('login_id', loginId)
     .single();
   
-  const user = userData as { id: string; login_id: string; password_hash: string; name: string; role: string } | null;
-  
-  if (!user) {
-    redirect(`/login?error=${encodeURIComponent('존재하지 않는 아이디입니다')}`);
+  if (queryError || !userData) {
+    return { error: '존재하지 않는 아이디입니다' };
   }
+  
+  const user = userData as { id: string; login_id: string; password_hash: string; name: string; role: string };
 
   // 비밀번호 검증 (SHA256 해시 비교)
   const inputHash = hashPassword(password);
   if (user.password_hash && user.password_hash !== inputHash) {
-    redirect(`/login?error=${encodeURIComponent('비밀번호가 일치하지 않습니다')}`);
+    return { error: '비밀번호가 일치하지 않습니다' };
   }
 
-  // 자체 세션 토큰 생성 (간단히 user ID를 쿠키에 저장)
+  // 자체 세션 토큰 생성
   const sessionToken = createHash('sha256').update(`${user.id}-${Date.now()}`).digest('hex');
   
   // 쿠키에 세션 저장
@@ -43,7 +43,7 @@ export async function login(formData: FormData) {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
-    maxAge: 60 * 60 * 24 * 7, // 1주일
+    maxAge: 60 * 60 * 24 * 7,
     path: '/',
   });
   cookieStore.set('user_id', user.id, {
@@ -54,7 +54,7 @@ export async function login(formData: FormData) {
     path: '/',
   });
   cookieStore.set('user_name', user.name, {
-    httpOnly: false, // 클라이언트에서 읽기 가능
+    httpOnly: false,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     maxAge: 60 * 60 * 24 * 7,
@@ -68,7 +68,7 @@ export async function login(formData: FormData) {
     path: '/',
   });
 
-  redirect('/');
+  return { success: true };
 }
 
 export async function signOut() {
