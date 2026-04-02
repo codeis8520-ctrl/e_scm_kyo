@@ -468,7 +468,7 @@ export async function createChannel(formData: FormData) {
   if (!user) redirect('/login');
 
   const name = formData.get('name') as string;
-  const code = name.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+  const code = name.replace(/\s+/g, '_').toUpperCase();
 
   const channelData = {
     code,
