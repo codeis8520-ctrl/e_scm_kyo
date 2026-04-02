@@ -279,8 +279,12 @@ export default function POSPage() {
 
       // 4. 포인트 적립
       if (selectedCustomer) {
+        console.log('DEBUG selectedCustomer:', selectedCustomer);
+        console.log('DEBUG grade_point_rate:', selectedCustomer.grade_point_rate);
         const pointRate = selectedCustomer.grade_point_rate || 1.0;
+        console.log('DEBUG pointRate:', pointRate);
         const pointsEarned = Math.floor(total * pointRate / 100);
+        console.log('DEBUG total:', total, 'pointsEarned:', pointsEarned);
         
         const { data: lastHistory } = await db
           .from('point_history')
