@@ -169,9 +169,10 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
               <label className="block text-sm font-medium text-gray-700">판매가 *</label>
               <input
                 type="number"
-                value={formData.price}
+                value={formData.price || ''}
                 onChange={(e) => {
-                  setFormData({ ...formData, price: parseInt(e.target.value) || 0 });
+                  const val = e.target.value;
+                  setFormData({ ...formData, price: val === '' ? 0 : parseInt(val) || 0 });
                   setFieldErrors({ ...fieldErrors, price: '' });
                 }}
                 required
