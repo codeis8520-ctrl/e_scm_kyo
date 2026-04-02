@@ -32,6 +32,7 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
     branch_id: inventory?.branch_id || '',
     movement_type: 'IN',
     quantity: 1,
+    safety_stock: inventory?.safety_stock || 0,
     memo: '',
   });
   const [error, setError] = useState('');
@@ -89,6 +90,7 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
     form.append('product_id', finalProductId);
     form.append('movement_type', formData.movement_type);
     form.append('quantity', String(formData.quantity));
+    form.append('safety_stock', String(formData.safety_stock));
     form.append('memo', formData.memo);
 
     try {
@@ -259,6 +261,25 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
               className="mt-1 input"
             />
           </div>
+
+          {inventory && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700">
+                안전재고 설정
+                <span className="text-xs text-slate-400 ml-1">(최소 유지 재고량)</span>
+              </label>
+              <input
+                type="number"
+                value={formData.safety_stock}
+                onChange={(e) => setFormData({ ...formData, safety_stock: parseInt(e.target.value) || 0 })}
+                min="0"
+                className="mt-1 input"
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                안전재고 이상이면 "정상", 미만이면 "부족"으로 표시됩니다
+              </p>
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-gray-700">메모</label>

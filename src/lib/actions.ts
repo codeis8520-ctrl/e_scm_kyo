@@ -207,17 +207,17 @@ export async function getInventory(branchId?: string, search?: string) {
 
 export async function adjustInventory(formData: FormData) {
   const supabase = await createClient();
-  
 
   const branchId = formData.get('branch_id') as string;
   const productId = formData.get('product_id') as string;
   const movementType = formData.get('movement_type') as string;
   const quantity = parseInt(formData.get('quantity') as string);
+  const safetyStock = parseInt(formData.get('safety_stock') as string) || 0;
   const memo = formData.get('memo') as string;
 
   const { data: currentArr } = await supabase
     .from('inventories')
-    .select('quantity')
+    .select('quantity, safety_stock')
     .eq('branch_id', branchId)
     .eq('product_id', productId);
   
@@ -228,7 +228,7 @@ export async function adjustInventory(formData: FormData) {
       branch_id: branchId,
       product_id: productId,
       quantity: Math.abs(quantity),
-      safety_stock: 0,
+      safety_stock: safetyStock,
     } as any);
   } else {
     let newQuantity: number;
@@ -243,7 +243,10 @@ export async function adjustInventory(formData: FormData) {
     await supabase
       .from('inventories')
       // @ts-ignore
-      .update({ quantity: Math.max(0, newQuantity) })
+      .update({ 
+        quantity: Math.max(0, newQuantity),
+        safety_stock: safetyStock
+      })
       .eq('branch_id', branchId)
       .eq('product_id', productId);
   }
