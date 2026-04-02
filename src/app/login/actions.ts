@@ -6,12 +6,25 @@ import { createClient } from '@/lib/supabase/server';
 export async function login(formData: FormData) {
   const supabase = await createClient();
 
-  const data = {
-    email: formData.get('email') as string,
-    password: formData.get('password') as string,
-  };
+  let email = formData.get('email') as string;
+  const password = formData.get('password') as string;
 
-  const { error } = await supabase.auth.signInWithPassword(data);
+  // If email doesn't contain @, treat it as name and look up email from users table
+  if (!email.includes('@')) {
+    const { data: userData } = await supabase
+      .from('users')
+      .select('email')
+      .ilike('name', email)
+      .single();
+    
+    if (userData?.email) {
+      email = userData.email;
+    } else {
+      redirect(`/login?error=${encodeURIComponent('사용자를 찾을 수 없습니다')}`);
+    }
+  }
+
+  const { error } = await supabase.auth.signInWithPassword({ email, password });
 
   if (error) {
     redirect(`/login?error=${encodeURIComponent(error.message)}`);
