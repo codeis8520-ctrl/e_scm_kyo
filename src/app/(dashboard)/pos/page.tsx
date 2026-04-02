@@ -242,7 +242,7 @@ export default function POSPage() {
         branch_id: selectedBranch,
         customer_id: selectedCustomer?.id || null,
         ordered_by: orderedByUserId,
-        total_amount: finalAmount,
+        total_amount: total,
         discount_amount: usePoints ? pointsToUse : 0,
         status: 'COMPLETED',
         payment_method: paymentMethod,
