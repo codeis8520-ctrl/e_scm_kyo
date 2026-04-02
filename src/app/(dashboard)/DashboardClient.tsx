@@ -62,12 +62,42 @@ const CHANNEL_COLORS: Record<string, string> = {
   EVENT: 'bg-amber-500',
 };
 
+function getCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const cookies = document.cookie.split(';').reduce((acc, cookie) => {
+    const [key, value] = cookie.trim().split('=');
+    acc[key] = decodeURIComponent(value || '');
+    return acc;
+  }, {} as Record<string, string>);
+  return cookies[name] || null;
+}
+
 export default function DashboardClient() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedChannel, setSelectedChannel] = useState<string>('ALL');
   const [viewMode, setViewMode] = useState<'hq' | 'branch'>('hq');
-  const [selectedBranch, setSelectedBranch] = useState<string>('ALL');
+  
+  const initialBranch = (() => {
+    const role = getCookie('user_role');
+    const branchId = getCookie('user_branch_id');
+    if (role === 'BRANCH_STAFF' || role === 'PHARMACY_STAFF') {
+      return branchId || 'ALL';
+    }
+    return 'ALL';
+  })();
+  
+  const [selectedBranch] = useState<string>(initialBranch);
+  const [userRole] = useState<string | null>(getCookie('user_role'));
+
+  useEffect(() => {
+    const role = getCookie('user_role');
+    if (role === 'BRANCH_STAFF' || role === 'PHARMACY_STAFF') {
+      setViewMode('branch');
+    } else {
+      setViewMode('hq');
+    }
+  }, []);
 
   useEffect(() => {
     fetchDashboardData();
@@ -106,27 +136,31 @@ export default function DashboardClient() {
     { total: 0, count: 0 }
   );
 
+  const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap gap-4 items-center justify-between">
         <div className="flex gap-2">
           <button
             onClick={() => setViewMode('hq')}
+            disabled={isBranchUser}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
               viewMode === 'hq'
                 ? 'bg-blue-600 text-white'
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
+            } ${isBranchUser ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
             본사 뷰
           </button>
           <button
             onClick={() => setViewMode('branch')}
+            disabled={isBranchUser}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
               viewMode === 'branch'
                 ? 'bg-blue-600 text-white'
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
+            } ${isBranchUser ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
             지점 뷰
           </button>

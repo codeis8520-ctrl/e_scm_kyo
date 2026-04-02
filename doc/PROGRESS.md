@@ -1,6 +1,6 @@
 # 경옥채 사내 통합시스템 개발 진행 상황
 
-**최종 업데이트**: 2026-04-03
+**최종 업데이트**: 2026-04-02
 
 ## 프로젝트 개요
 
@@ -48,6 +48,37 @@
 ## 완료된 작업 내역
 
 ### 2026-04-02
+
+#### 1. 역할별 지점 권한 적용 (Dashboard + POS)
+
+**파일 수정:**
+- `src/app/(dashboard)/DashboardClient.tsx` - 지점별 초기값 및 viewMode 제한
+- `src/app/(dashboard)/pos/page.tsx` - 지점 선택 기본값 및 셀렉터 비활성화
+
+**적용 내용:**
+- **BRANCH_STAFF / PHARMACY_STAFF** 역할 사용자:
+  - Dashboard: `selectedBranch` 초기값을 `user_branch_id` 쿠키로 설정
+  - Dashboard: viewMode 버튼 비활성화 (hq/branch 토글 불가)
+  - POS: branch selector 초기값을 `user_branch_id`로 설정
+  - POS: branch selector 비활성화 (다른 지점 선택 불가)
+
+**동작 방식:**
+```typescript
+// 쿠키에서 직접 초기값 설정 (IIFE)
+const initialBranch = (() => {
+  const role = getCookie('user_role');
+  const branchId = getCookie('user_branch_id');
+  if (role === 'BRANCH_STAFF' || role === 'PHARMACY_STAFF') {
+    return branchId || 'ALL';
+  }
+  return 'ALL';
+})();
+
+const [selectedBranch] = useState<string>(initialBranch);
+const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
+```
+
+### 2026-04-02 (이전)
 
 #### 1. 고객 등급별 적립율 추가
 **파일 수정:**

@@ -18,7 +18,7 @@ export async function login(formData: FormData): Promise<{ error?: string; succe
   // login_id로 사용자 찾기
   const { data: userData, error: queryError } = await supabase
     .from('users')
-    .select('id, login_id, password_hash, name, role')
+    .select('id, login_id, password_hash, name, role, branch_id')
     .eq('login_id', loginId)
     .single();
   
@@ -26,7 +26,7 @@ export async function login(formData: FormData): Promise<{ error?: string; succe
     return { error: '존재하지 않는 아이디입니다' };
   }
   
-  const user = userData as { id: string; login_id: string; password_hash: string; name: string; role: string };
+  const user = userData as { id: string; login_id: string; password_hash: string; name: string; role: string; branch_id: string | null };
 
   // 비밀번호 검증 (SHA256 해시 비교)
   const inputHash = hashPassword(password);
@@ -67,6 +67,15 @@ export async function login(formData: FormData): Promise<{ error?: string; succe
     maxAge: 60 * 60 * 24 * 7,
     path: '/',
   });
+  if (user.branch_id) {
+    cookieStore.set('user_branch_id', user.branch_id, {
+      httpOnly: false,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 60 * 60 * 24 * 7,
+      path: '/',
+    });
+  }
 
   return { success: true };
 }
@@ -77,5 +86,6 @@ export async function signOut() {
   cookieStore.delete('user_id');
   cookieStore.delete('user_name');
   cookieStore.delete('user_role');
+  cookieStore.delete('user_branch_id');
   redirect('/login');
 }

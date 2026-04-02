@@ -3,6 +3,16 @@
 import { useState, useEffect, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 
+function getCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const cookies = document.cookie.split(';').reduce((acc, cookie) => {
+    const [key, value] = cookie.trim().split('=');
+    acc[key] = decodeURIComponent(value || '');
+    return acc;
+  }, {} as Record<string, string>);
+  return cookies[name] || null;
+}
+
 interface CartItem {
   productId: string;
   name: string;
@@ -35,10 +45,13 @@ export default function POSPage() {
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'kakao'>('cash');
   const [processing, setProcessing] = useState(false);
   const [lastScannedBarcode, setLastScannedBarcode] = useState('');
+  const [userRole, setUserRole] = useState<string | null>(null);
 
   const barcodeInputRef = useRef<HTMLInputElement>(null);
   const customerInputRef = useRef<HTMLInputElement>(null);
   const productSearchRef = useRef<HTMLInputElement>(null);
+
+  const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
 
   useEffect(() => {
     const fetchData = async () => {
@@ -65,7 +78,15 @@ export default function POSPage() {
       });
       setProductMap(map);
 
-      if (branchesData.length > 0) {
+      const role = getCookie('user_role');
+      const userBranchId = getCookie('user_branch_id');
+      setUserRole(role);
+      
+      if (role === 'BRANCH_STAFF' || role === 'PHARMACY_STAFF') {
+        if (userBranchId) {
+          setSelectedBranch(userBranchId);
+        }
+      } else if (branchesData.length > 0) {
         setSelectedBranch(branchesData[0].id);
       }
       
@@ -442,7 +463,8 @@ export default function POSPage() {
           <select
             value={selectedBranch}
             onChange={(e) => setSelectedBranch(e.target.value)}
-            className="input"
+            disabled={isBranchUser}
+            className={`input ${isBranchUser ? 'bg-slate-100 cursor-not-allowed' : ''}`}
           >
             <option value="">지점 선택</option>
             {branches.map(b => (
