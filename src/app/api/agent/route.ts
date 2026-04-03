@@ -115,9 +115,11 @@ ${message}
     });
   } catch (error: any) {
     console.error('Agent error:', error);
+    console.error('Error stack:', error.stack);
     return NextResponse.json({
       type: 'error',
       message: error.message || '에러가 발생했습니다.',
+      error: error.toString(),
     }, { status: 500 });
   }
 }
