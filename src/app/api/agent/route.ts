@@ -271,38 +271,39 @@ ${message}
       { role: 'user', content: message },
     ];
 
-    log('Calling MiniMax API for SQL generation...');
+    log('Calling MiniMax API...');
     const response = await miniMaxClient.chat(messages);
-    log('MiniMax response received', response.substring(0, 500));
+    log('MiniMax response received');
+
+    const keywordSql = buildQueryFromKeywords(message);
+    
+    if (keywordSql) {
+      log('Using keyword-based query:', keywordSql);
+      const supabase = await createClient();
+      const { data, error } = await executeSmartQuery(supabase, keywordSql);
+      if (error) {
+        return NextResponse.json({ type: 'error', message: `쿼리 실행 실패: ${error.message}` });
+      }
+      return NextResponse.json({ type: 'success', message: formatNaturalResponse(message, data) });
+    }
 
     const sqlQuery = extractSqlFromResponse(response);
     
     if (!sqlQuery) {
-      log('Could not extract SQL, using keyword fallback');
-      const fallbackSql = buildQueryFromKeywords(message);
-      if (fallbackSql) {
-        const supabase = await createClient();
-        const { data, error } = await executeSmartQuery(supabase, fallbackSql);
-        if (error) {
-          return NextResponse.json({ type: 'error', message: `쿼리 실행 실패: ${error.message}` });
-        }
-        return NextResponse.json({ type: 'success', message: formatNaturalResponse(message, data) });
-      }
       return NextResponse.json({
         type: 'error',
-        message: '질문을 이해하지 못했습니다. 다시 시도해주세요.',
+        message: '질문을 이해하지 못했습니다. 다른 방식으로 다시 시도해주세요.',
       });
     }
 
     if (!isValidSelectQuery(sqlQuery)) {
-      log('Invalid query detected', sqlQuery);
       return NextResponse.json({
         type: 'error',
         message: '보안 정책에 위배되는 쿼리는 실행할 수 없습니다.',
       });
     }
 
-    log('Executing SQL:', sqlQuery);
+    log('Executing AI SQL:', sqlQuery);
     const supabase = await createClient();
     const { data, error } = await executeSmartQuery(supabase, sqlQuery);
 
