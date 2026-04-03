@@ -61,18 +61,26 @@ function extractSqlFromResponse(response: string): string | null {
   }
 }
 
-function parseQueryIntent(sql: string): { table: string; filters: Record<string, any>; fields: string[] } {
+function parseQueryIntent(sql: string): { table: string; alias: string; filters: Record<string, any>; fields: string[]; joins: any[] } {
   const normalized = sql.toLowerCase();
-  const tableMatch = sql.match(/FROM\s+(\w+)/i);
-  const table = tableMatch ? tableMatch[1].toLowerCase() : '';
+  
+  const fromMatch = sql.match(/FROM\s+(\w+)(?:\s+(\w+))?/i);
+  const table = fromMatch ? fromMatch[1].toLowerCase() : '';
+  const alias = fromMatch && fromMatch[2] ? fromMatch[2].toLowerCase() : '';
   
   const selectMatch = sql.match(/SELECT\s+(.+?)\s+FROM/i);
   const fields = selectMatch ? selectMatch[1].split(',').map((f: string) => f.trim()) : ['*'];
   
   const filters: Record<string, any> = {};
+  const joins: any[] = [];
+  
+  const joinMatches = sql.matchAll(/JOIN\s+(\w+)(?:\s+(\w+))?\s+ON\s+[\w.]+\s*=\s*[\w.]+/gi);
+  for (const match of joinMatches) {
+    joins.push({ table: match[1].toLowerCase(), alias: match[2] || '' });
+  }
   
   if (normalized.includes('where')) {
-    const whereMatch = sql.match(/WHERE\s+(.+?)(?:\s+(?:ORDER|GROUP|LIMIT|HAVING)|$)/i);
+    const whereMatch = sql.match(/WHERE\s+(.+?)(?:\s+(?:ORDER|GROUP|LIMIT|HAVING|JOIN)|$)/i);
     if (whereMatch) {
       const whereClause = whereMatch[1].trim();
       
@@ -85,10 +93,25 @@ function parseQueryIntent(sql: string): { table: string; filters: Record<string,
       if (eqMatch) {
         filters[eqMatch[1]] = { op: 'eq', value: eqMatch[2] };
       }
+      
+      const gtMatch = whereClause.match(/(\w+)\s*>\s*(\d+)/i);
+      if (gtMatch) {
+        filters[gtMatch[1]] = { op: 'gt', value: parseInt(gtMatch[2]) };
+      }
+      
+      const neMatch = whereClause.match(/(\w+)\s*<>?\s*['"]?(\w+)['"]?/gi);
+      if (neMatch) {
+        for (const n of neMatch) {
+          const parts = n.split(/\s*<>?\s*/);
+          if (parts[0] && parts[1]) {
+            filters[parts[0]] = { op: 'ne', value: parts[1].replace(/['"]/g, '') };
+          }
+        }
+      }
     }
   }
   
-  return { table, filters, fields };
+  return { table, alias, filters, fields, joins };
 }
 
 function buildQueryFromKeywords(message: string): string | null {
@@ -143,9 +166,9 @@ function buildQueryFromKeywords(message: string): string | null {
 }
 
 async function executeSmartQuery(supabase: any, sql: string): Promise<{ data: any; error: any }> {
-  const { table, filters, fields } = parseQueryIntent(sql);
+  const { table, alias, filters, fields, joins } = parseQueryIntent(sql);
   
-  log('Parsed query intent:', { table, filters, fields });
+  log('Parsed query intent:', { table, alias, filters, fields, joins });
   
   const allowedTables = ['branches', 'products', 'inventories', 'inventory_movements', 'customers', 'customer_grades', 'point_history', 'sales_orders', 'sales_order_items', 'users', 'categories', 'notifications', 'cafe24_sync_logs'];
   
@@ -154,18 +177,40 @@ async function executeSmartQuery(supabase: any, sql: string): Promise<{ data: an
   }
   
   try {
-    let query = (supabase as any).from(table).select('*');
+    let query: any;
     
-    for (const [field, cond] of Object.entries(filters)) {
-      const condition = cond as { op: string; value: string };
+    if (table === 'inventories') {
+      query = supabase
+        .from('inventories')
+        .select('*, products(name, code, barcode), branches(name)')
+        .gt('quantity', 0);
+    } else if (table === 'point_history') {
+      query = supabase
+        .from('point_history')
+        .select('*, customers(name, phone)')
+        .order('created_at', { ascending: false });
+    } else {
+      query = (supabase as any).from(table).select('*');
+    }
+    
+    for (const [fld, cond] of Object.entries(filters)) {
+      const condition = cond as { op: string; value: any };
+      let fieldName = fld;
+      if (alias && fld.startsWith(alias + '.')) {
+        fieldName = fld.replace(alias + '.', '');
+      }
       if (condition.op === 'like') {
-        query = query.like(field, `%${condition.value}%`);
+        query = query.like(fieldName, `%${condition.value}%`);
       } else if (condition.op === 'eq') {
-        query = query.eq(field, condition.value);
+        query = query.eq(fieldName, condition.value);
+      } else if (condition.op === 'gt') {
+        query = query.gt(fieldName, condition.value);
+      } else if (condition.op === 'ne') {
+        query = query.neq(fieldName, condition.value);
       }
     }
     
-    const orderMatch = sql.match(/ORDER BY\s+(\w+)(?:\s+(ASC|DESC))?/i);
+    const orderMatch = sql.match(/ORDER BY\s+(?:\w+\.)?(\w+)(?:\s+(ASC|DESC))?/i);
     if (orderMatch) {
       query = query.order(orderMatch[1], { ascending: orderMatch[2]?.toUpperCase() !== 'DESC' });
     }
@@ -398,11 +443,16 @@ function formatMultipleRecords(records: any[], question: string): string {
   
   const isInventoryList = records[0] && 'quantity' in records[0];
   if (isInventoryList) {
-    const list = records.slice(0, 5).map((inv: any, i: number) => {
-      const name = inv.product_name || inv.products?.name || inv.name || '알 수 없는 제품';
-      return `${i + 1}. ${name}: ${inv.quantity}개${inv.safety_stock ? ` (안전재고 ${inv.safety_stock})` : ''}`;
+    const list = records.slice(0, 10).map((inv: any, i: number) => {
+      const productName = inv.product_name || inv.products?.name || inv.name || 
+                   (inv.products ? '제품' : '알 수 없는 제품');
+      const branchName = inv.branch_name || inv.branches?.name || '';
+      let line = `${i + 1}. ${productName}: ${inv.quantity}개`;
+      if (branchName) line += ` [${branchName}]`;
+      if (inv.safety_stock) line += ` (안전재고 ${inv.safety_stock})`;
+      return line;
     }).join('\n');
-    const suffix = records.length > 5 ? `\n...이 외 ${records.length - 5}개` : '';
+    const suffix = records.length > 10 ? `\n...이 외 ${records.length - 10}개` : '';
     return `${records.length}개 재고가 조회되었습니다:\n${list}${suffix}`;
   }
   

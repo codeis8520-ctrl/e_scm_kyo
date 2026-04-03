@@ -131,28 +131,28 @@ processed_at: TIMESTAMP
 `;
 
 export const QUERY_EXAMPLES = `
-== 쿼리 예시 ==
+== 쿼리 예시 (JOIN 사용 금지) ==
 
-고객 이름으로 조회 (customers.name은 직접 조회):
+고객 이름으로 조회:
 SELECT * FROM customers WHERE name LIKE '%홍길동%' LIMIT 10
 
-고객 등급별 적립률 (customer_grades 테이블):
+고객 등급별 적립률:
 SELECT * FROM customer_grades ORDER BY sort_order
 
-포인트 잔액 조회 (point_history 테이블):
-SELECT * FROM point_history WHERE customer_id = '고객UUID' ORDER BY created_at DESC LIMIT 10
+포인트 내역 조회:
+SELECT * FROM point_history LIMIT 10
 
 제품 조회:
-SELECT * FROM products WHERE name LIKE '%제품명%' LIMIT 10
+SELECT * FROM products WHERE name LIKE '%제품%' LIMIT 10
 
 지점 조회:
 SELECT * FROM branches WHERE name LIKE '%강남%' LIMIT 10
 
-재고 조회 (inventories 테이블):
-SELECT i.*, p.name as product_name FROM inventories i JOIN products p ON i.product_id = p.id WHERE i.quantity < i.safety_stock LIMIT 10
+재고 조회 (quantity > 0 인 것만 자동 조회됨):
+SELECT * FROM inventories LIMIT 20
 
 매출 조회:
-SELECT * FROM sales_orders WHERE status = 'COMPLETED' ORDER BY ordered_at DESC LIMIT 10
+SELECT * FROM sales_orders ORDER BY ordered_at DESC LIMIT 10
 `;
 
 export const SYSTEM_PROMPT = `
