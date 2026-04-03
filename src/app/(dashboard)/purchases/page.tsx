@@ -22,6 +22,15 @@ const STATUS_BADGE: Record<string, string> = {
   CANCELLED: 'bg-red-100 text-red-600',
 };
 
+function getCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  return document.cookie.split(';').reduce((acc, c) => {
+    const [k, v] = c.trim().split('=');
+    acc[k] = decodeURIComponent(v || '');
+    return acc;
+  }, {} as Record<string, string>)[name] || null;
+}
+
 export default function PurchasesPage() {
   const [orders, setOrders] = useState<any[]>([]);
   const [suppliers, setSuppliers] = useState<any[]>([]);
@@ -29,6 +38,10 @@ export default function PurchasesPage() {
   const [supplierFilter, setSupplierFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
+
+  const userRole = getCookie('user_role');
+  const userBranchId = getCookie('user_branch_id');
+  const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
 
   const fetchData = async () => {
     setLoading(true);
@@ -45,6 +58,7 @@ export default function PurchasesPage() {
       .order('ordered_at', { ascending: false })
       .limit(100);
 
+    if (isBranchUser && userBranchId) q = q.eq('branch_id', userBranchId);
     if (statusFilter) q = q.eq('status', statusFilter);
     if (supplierFilter) q = q.eq('supplier_id', supplierFilter);
 

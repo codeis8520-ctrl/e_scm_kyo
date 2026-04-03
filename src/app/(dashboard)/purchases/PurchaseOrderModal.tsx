@@ -18,13 +18,26 @@ interface OrderItem {
   unit_price: number;
 }
 
+function getCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  return document.cookie.split(';').reduce((acc, c) => {
+    const [k, v] = c.trim().split('=');
+    acc[k] = decodeURIComponent(v || '');
+    return acc;
+  }, {} as Record<string, string>)[name] || null;
+}
+
 export default function PurchaseOrderModal({ onClose, onSuccess }: Props) {
+  const userRole = getCookie('user_role');
+  const userBranchId = getCookie('user_branch_id');
+  const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
+
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [branches, setBranches] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
   const [productSearch, setProductSearch] = useState('');
   const [showProductDrop, setShowProductDrop] = useState(false);
-  const [form, setForm] = useState({ supplier_id: '', branch_id: '', expected_date: '', memo: '' });
+  const [form, setForm] = useState({ supplier_id: '', branch_id: isBranchUser && userBranchId ? userBranchId : '', expected_date: '', memo: '' });
   const [items, setItems] = useState<OrderItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -113,7 +126,13 @@ export default function PurchaseOrderModal({ onClose, onSuccess }: Props) {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700">입고 지점 *</label>
-              <select value={form.branch_id} onChange={e => setForm(f => ({ ...f, branch_id: e.target.value }))} className="mt-1 input" required>
+              <select
+                value={form.branch_id}
+                onChange={e => setForm(f => ({ ...f, branch_id: e.target.value }))}
+                className={`mt-1 input ${isBranchUser ? 'bg-slate-100 cursor-not-allowed' : ''}`}
+                disabled={isBranchUser}
+                required
+              >
                 <option value="">선택</option>
                 {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
               </select>

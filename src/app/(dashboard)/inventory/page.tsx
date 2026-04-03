@@ -135,8 +135,11 @@ export default function InventoryPage() {
     return matchBranch && matchSearch;
   });
 
-  // 재고 부족 수 (전체)
-  const lowCount = inventories.filter(i => i.quantity < i.safety_stock).length;
+  // 재고 부족 수 (지점 사용자는 자기 지점만)
+  const lowCount = inventories.filter(i =>
+    i.quantity < i.safety_stock &&
+    (!isBranchUser || !userBranchId || i.branch_id === userBranchId)
+  ).length;
 
   return (
     <div className="card">
