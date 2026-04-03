@@ -47,6 +47,9 @@ interface DashboardData {
   lowInventory: LowInventoryItem[];
   onlineOrders: number;
   onlineAmount: number;
+  monthPurchaseTotal: number;
+  monthReturnTotal: number;
+  pendingPOCount: number;
 }
 
 const CHANNEL_LABELS: Record<string, string> = {
@@ -219,12 +222,20 @@ export default function DashboardClient() {
           <p className="text-xs text-slate-400">품목</p>
         </div>
 
-        <div className="stat-card col-span-2">
-          <p className="text-sm text-slate-500">전체 채널</p>
-          <p className="text-2xl font-bold text-slate-800">
-            {channelSummary.total.toLocaleString()}원
+        <div className="stat-card">
+          <p className="text-sm text-slate-500">이번달 매입</p>
+          <p className="text-2xl font-bold text-amber-700">
+            {data.monthPurchaseTotal.toLocaleString()}원
           </p>
-          <p className="text-xs text-slate-400">{channelSummary.count}건</p>
+          <p className="text-xs text-slate-400">진행중 {data.pendingPOCount}건</p>
+        </div>
+
+        <div className="stat-card">
+          <p className="text-sm text-slate-500">이번달 환불</p>
+          <p className="text-2xl font-bold text-red-600">
+            {data.monthReturnTotal.toLocaleString()}원
+          </p>
+          <p className="text-xs text-slate-400">순매출 {(data.monthTotal - data.monthReturnTotal).toLocaleString()}원</p>
         </div>
       </div>
 

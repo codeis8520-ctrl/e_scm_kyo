@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import InventoryModal from './InventoryModal';
 import TransferModal from './TransferModal';
@@ -101,15 +102,18 @@ export default function InventoryPage() {
     <div className="card">
       <div className="flex justify-between items-center mb-6">
         <h3 className="font-semibold text-lg">재고 현황</h3>
-        <button
-          onClick={() => {
-            setEditInventory(null);
-            setShowModal(true);
-          }}
-          className="btn-primary"
-        >
-          + 입출고
-        </button>
+        <div className="flex gap-2">
+          <Link href="/inventory/count" className="btn-secondary py-2 px-4 text-sm">재고 실사</Link>
+          <button
+            onClick={() => {
+              setEditInventory(null);
+              setShowModal(true);
+            }}
+            className="btn-primary"
+          >
+            + 입출고
+          </button>
+        </div>
       </div>
 
       <div className="flex gap-4 mb-4">

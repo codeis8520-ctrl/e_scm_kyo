@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import CustomerModal from './CustomerModal';
+import { autoUpgradeCustomerGrades } from '@/lib/actions';
 
 interface Customer {
   id: string;
@@ -26,6 +27,7 @@ export default function CustomersPage() {
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editCustomer, setEditCustomer] = useState<Customer | null>(null);
+  const [upgrading, setUpgrading] = useState(false);
 
   const fetchCustomers = async () => {
     setLoading(true);
@@ -71,12 +73,25 @@ export default function CustomersPage() {
     <div className="card">
       <div className="flex justify-between items-center mb-6">
         <h3 className="font-semibold text-lg">고객 목록</h3>
-        <button
-          onClick={() => setShowModal(true)}
-          className="btn-primary"
-        >
-          + 고객 추가
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={async () => {
+              if (!confirm('누적 구매액 기준으로 등급을 자동 업그레이드합니다.\n(VIP: 100만원↑, VVIP: 300만원↑)\n계속하시겠습니까?')) return;
+              setUpgrading(true);
+              const result = await autoUpgradeCustomerGrades();
+              setUpgrading(false);
+              alert(`등급 업그레이드 완료: ${result.upgraded}명`);
+              fetchCustomers();
+            }}
+            disabled={upgrading}
+            className="btn-secondary py-2 px-4 text-sm"
+          >
+            {upgrading ? '처리 중...' : '등급 자동 업그레이드'}
+          </button>
+          <button onClick={() => setShowModal(true)} className="btn-primary">
+            + 고객 추가
+          </button>
+        </div>
       </div>
 
       <div className="flex gap-4 mb-4">

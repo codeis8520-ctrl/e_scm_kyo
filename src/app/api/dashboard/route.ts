@@ -80,6 +80,9 @@ export async function GET(request: NextRequest) {
     lowInventoryResult,
     branchesResult,
     onlineOrdersResult,
+    monthPurchaseResult,
+    monthReturnResult,
+    pendingPOResult,
   ] = await Promise.all([
     salesQuery,
     monthSalesQuery,
@@ -100,6 +103,23 @@ export async function GET(request: NextRequest) {
       .eq('channel', 'ONLINE')
       .gte('ordered_at', `${today}T00:00:00`)
       .lt('ordered_at', `${today}T23:59:59`),
+    // 이번달 매입액 (확정 이상)
+    supabase
+      .from('purchase_orders')
+      .select('total_amount')
+      .in('status', ['CONFIRMED', 'PARTIALLY_RECEIVED', 'RECEIVED'])
+      .gte('ordered_at', `${monthStart}T00:00:00`),
+    // 이번달 환불액
+    supabase
+      .from('return_orders')
+      .select('refund_amount')
+      .eq('status', 'COMPLETED')
+      .gte('processed_at', `${monthStart}T00:00:00`),
+    // 진행중 발주 건수
+    supabase
+      .from('purchase_orders')
+      .select('id', { count: 'exact', head: true })
+      .in('status', ['DRAFT', 'CONFIRMED', 'PARTIALLY_RECEIVED']),
   ]);
 
   const todaySales = (todaySalesResult.data || []) as { total_amount: number }[];
@@ -109,6 +129,9 @@ export async function GET(request: NextRequest) {
   const lowInventory = (lowInventoryResult.data || []) as any[];
   const branches = (branchesResult.data || []) as { id: string; name: string }[];
   const onlineOrders = onlineOrdersResult.data || [];
+  const monthPurchaseTotal = (monthPurchaseResult.data || []).reduce((s: number, p: any) => s + (p.total_amount || 0), 0);
+  const monthReturnTotal   = (monthReturnResult.data || []).reduce((s: number, r: any) => s + (r.refund_amount || 0), 0);
+  const pendingPOCount     = pendingPOResult.count ?? 0;
 
   const channelSales: ChannelSales[] = ['STORE', 'DEPT_STORE', 'ONLINE', 'EVENT']
     .map((ch) => {
@@ -183,5 +206,8 @@ export async function GET(request: NextRequest) {
     lowInventory: lowInventoryFormatted,
     onlineOrders: onlineOrders.length,
     onlineAmount,
+    monthPurchaseTotal,
+    monthReturnTotal,
+    pendingPOCount,
   });
 }

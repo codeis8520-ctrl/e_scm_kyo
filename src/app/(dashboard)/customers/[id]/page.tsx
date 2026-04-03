@@ -34,18 +34,6 @@ interface CustomerDetail {
   assigned_to?: { id: string; name: string } | null;
 }
 
-interface PurchaseItem {
-  id: string;
-  product_name: string;
-  quantity: number;
-  unit_price: number;
-  total_price: number;
-  ordered_at: string;
-  branch_id: string;
-  branch_name: string;
-  status: string;
-}
-
 interface Consultation {
   id: string;
   consultation_type: string;
@@ -98,7 +86,8 @@ export default function CustomerDetailPage() {
   const customerId = params.id as string;
   
   const [customer, setCustomer] = useState<CustomerDetail | null>(null);
-  const [purchaseItems, setPurchaseItems] = useState<PurchaseItem[]>([]);
+  const [purchaseOrders, setPurchaseOrders] = useState<any[]>([]);
+  const [expandedOrders, setExpandedOrders] = useState<Set<string>>(new Set());
   const [consultations, setConsultations] = useState<Consultation[]>([]);
   const [allTags, setAllTags] = useState<Tag[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -184,28 +173,16 @@ export default function CustomerDetailPage() {
       });
     }
 
-    const items: PurchaseItem[] = (purchasesRes.data || []).flatMap((order: any) => 
-      (order.items || []).map((item: any) => ({
-        id: item.id,
-        product_name: item.product?.name || '알 수 없음',
-        quantity: item.quantity,
-        unit_price: item.unit_price,
-        total_price: item.total_price,
-        ordered_at: order.ordered_at,
-        branch_id: order.branch_id,
-        branch_name: order.branch?.name || '-',
-        status: order.status,
-      }))
-    ).filter((item: PurchaseItem) => {
-      if (purchaseProductSearch && !item.product_name.toLowerCase().includes(purchaseProductSearch.toLowerCase())) {
-        return false;
-      }
-      if (purchaseBranchFilter && item.branch_id !== purchaseBranchFilter) {
-        return false;
+    const filteredOrders = (purchasesRes.data || []).filter((order: any) => {
+      if (purchaseBranchFilter && order.branch_id !== purchaseBranchFilter) return false;
+      if (purchaseProductSearch) {
+        const q = purchaseProductSearch.toLowerCase();
+        const match = (order.items || []).some((i: any) => i.product?.name?.toLowerCase().includes(q));
+        if (!match) return false;
       }
       return true;
     });
-    setPurchaseItems(items);
+    setPurchaseOrders(filteredOrders);
 
     setConsultations((consultationsRes.data || []) as Consultation[]);
     setAllTags((tagsRes.data || []) as Tag[]);
@@ -258,8 +235,21 @@ export default function CustomerDetailPage() {
     setShowConsultModal(false);
   };
 
-  const getTotalPurchaseAmount = () => {
-    return purchaseItems.reduce((sum, p) => sum + p.total_price, 0);
+  const purchaseStats = {
+    orderCount: purchaseOrders.length,
+    totalAmount: purchaseOrders
+      .filter(o => !['CANCELLED', 'REFUNDED'].includes(o.status))
+      .reduce((s: number, o: any) => s + (o.total_amount || 0), 0),
+    lastDate: purchaseOrders.length > 0 ? purchaseOrders[0].ordered_at?.slice(0, 10) : null,
+  };
+
+  const toggleOrder = (orderId: string) => {
+    setExpandedOrders(prev => {
+      const next = new Set(prev);
+      if (next.has(orderId)) next.delete(orderId);
+      else next.add(orderId);
+      return next;
+    });
   };
 
   const handleDateFilterChange = (type: 'purchase' | 'consult', field: 'start' | 'end', value: string) => {
@@ -413,13 +403,19 @@ export default function CustomerDetailPage() {
             <h3 className="font-semibold mb-3">구매 요약</h3>
             <dl className="space-y-2 text-sm">
               <div className="flex justify-between">
-                <dt className="text-slate-500">총 구매 횟수</dt>
-                <dd>{purchaseItems.length}회</dd>
+                <dt className="text-slate-500">주문 건수</dt>
+                <dd>{purchaseStats.orderCount}건</dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-slate-500">총 구매 금액</dt>
-                <dd className="font-medium">{getTotalPurchaseAmount().toLocaleString()}원</dd>
+                <dt className="text-slate-500">누적 구매액 (LTV)</dt>
+                <dd className="font-semibold text-blue-700">{purchaseStats.totalAmount.toLocaleString()}원</dd>
               </div>
+              {purchaseStats.lastDate && (
+                <div className="flex justify-between">
+                  <dt className="text-slate-500">최근 구매일</dt>
+                  <dd>{purchaseStats.lastDate}</dd>
+                </div>
+              )}
             </dl>
           </div>
         </div>
@@ -444,7 +440,7 @@ export default function CustomerDetailPage() {
                   : 'border-transparent text-slate-500'
               }`}
             >
-              구매 이력 ({purchaseItems.length})
+              구매 이력 ({purchaseOrders.length})
             </button>
             <button
               onClick={() => setActiveTab('consultations')}
@@ -492,10 +488,8 @@ export default function CustomerDetailPage() {
                     <option key={b.id} value={b.id}>{b.name}</option>
                   ))}
                 </select>
-                <button onClick={() => fetchData()} className="btn-secondary">
-                  조회
-                </button>
-                <button 
+                <button onClick={() => fetchData()} className="btn-secondary">조회</button>
+                <button
                   onClick={() => {
                     const range = getDefaultDateRange();
                     setPurchaseDateRange(range);
@@ -509,36 +503,79 @@ export default function CustomerDetailPage() {
                 </button>
               </div>
 
-              <div className="card">
-                {purchaseItems.length > 0 ? (
-                  <table className="table">
-                    <thead>
-                      <tr>
-                        <th>날짜</th>
-                        <th>제품</th>
-                        <th>수량</th>
-                        <th>단가</th>
-                        <th>금액</th>
-                        <th>지점</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {purchaseItems.map(item => (
-                        <tr key={item.id}>
-                          <td className="text-sm">{new Date(item.ordered_at).toLocaleDateString('ko-KR')}</td>
-                          <td className="font-medium">{item.product_name}</td>
-                          <td>{item.quantity}</td>
-                          <td>{item.unit_price.toLocaleString()}원</td>
-                          <td className="font-semibold">{item.total_price.toLocaleString()}원</td>
-                          <td className="text-slate-500">{item.branch_name}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <p className="text-center text-slate-400 py-8">구매 이력이 없습니다</p>
-                )}
-              </div>
+              {purchaseOrders.length === 0 ? (
+                <div className="card text-center text-slate-400 py-8">구매 이력이 없습니다</div>
+              ) : (
+                <div className="space-y-2">
+                  {purchaseOrders.map((order: any) => {
+                    const isExpanded = expandedOrders.has(order.id);
+                    const isRefunded = ['REFUNDED', 'PARTIALLY_REFUNDED'].includes(order.status);
+                    const isCancelled = order.status === 'CANCELLED';
+                    const statusLabel: Record<string, string> = {
+                      COMPLETED: '완료', CANCELLED: '취소', REFUNDED: '환불', PARTIALLY_REFUNDED: '부분환불',
+                    };
+                    const statusColor: Record<string, string> = {
+                      COMPLETED: 'bg-green-100 text-green-700',
+                      CANCELLED: 'bg-slate-100 text-slate-500',
+                      REFUNDED: 'bg-red-100 text-red-600',
+                      PARTIALLY_REFUNDED: 'bg-amber-100 text-amber-700',
+                    };
+                    return (
+                      <div key={order.id} className={`border rounded-lg overflow-hidden ${isCancelled || isRefunded ? 'opacity-60' : ''}`}>
+                        <button
+                          onClick={() => toggleOrder(order.id)}
+                          className="w-full flex items-center justify-between px-4 py-3 bg-white hover:bg-slate-50 text-left"
+                        >
+                          <div className="flex items-center gap-3">
+                            <span className="text-slate-400 text-xs">{isExpanded ? '▼' : '▶'}</span>
+                            <div>
+                              <p className="font-mono text-sm font-semibold text-blue-700">{order.order_number}</p>
+                              <p className="text-xs text-slate-500">
+                                {order.ordered_at?.slice(0, 16).replace('T', ' ')} · {order.branch?.name}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className={`badge text-xs ${statusColor[order.status] || ''}`}>
+                              {statusLabel[order.status] || order.status}
+                            </span>
+                            <span className={`font-semibold text-sm ${isRefunded || isCancelled ? 'line-through text-slate-400' : ''}`}>
+                              {(order.total_amount || 0).toLocaleString()}원
+                            </span>
+                          </div>
+                        </button>
+                        {isExpanded && (
+                          <div className="border-t bg-slate-50 px-4 py-3">
+                            <table className="table text-sm">
+                              <thead>
+                                <tr>
+                                  <th>제품</th>
+                                  <th className="w-16 text-center">수량</th>
+                                  <th className="w-28 text-right">단가</th>
+                                  <th className="w-28 text-right">금액</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(order.items || []).map((item: any) => (
+                                  <tr key={item.id}>
+                                    <td>{item.product?.name || '-'}</td>
+                                    <td className="text-center">{item.quantity}</td>
+                                    <td className="text-right">{item.unit_price.toLocaleString()}원</td>
+                                    <td className="text-right font-medium">{item.total_price.toLocaleString()}원</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                            {order.payment_method && (
+                              <p className="text-xs text-slate-400 mt-2">결제: {order.payment_method}</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 

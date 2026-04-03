@@ -13,6 +13,8 @@ const ALL_NAV_ITEMS = [
   { href: '/products', label: '제품', icon: '📦' },
   { href: '/production', label: '생산', icon: '🏭' },
   { href: '/inventory', label: '재고', icon: '🏪' },
+  { href: '/purchases', label: '매입', icon: '🚚' },
+  { href: '/accounting', label: '회계', icon: '📒' },
   { href: '/customers', label: '고객', icon: '👥' },
   { href: '/notifications', label: '알림', icon: '📱' },
   { href: '/system-codes', label: '코드', icon: '⚙️' },
@@ -144,7 +146,7 @@ export default function DashboardLayout({
                   href={item.href}
                   onClick={() => setSidebarOpen(false)}
                   className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${
-                    pathname === item.href
+                    (item.href === '/' ? pathname === '/' : pathname.startsWith(item.href))
                       ? 'bg-blue-600 text-white'
                       : 'text-slate-300 hover:bg-slate-700 hover:text-white'
                   }`}
@@ -213,7 +215,7 @@ export default function DashboardLayout({
         <header className="hidden lg:block bg-white border-b border-slate-200 px-6 py-4 sticky top-0 z-20">
           <div className="flex justify-between items-center">
             <h2 className="text-lg font-semibold text-slate-800">
-              {navItems.find((item) => item.href === pathname)?.label || '페이지'}
+              {navItems.find((item) => item.href === '/' ? pathname === '/' : pathname.startsWith(item.href))?.label || '페이지'}
             </h2>
             <div className="flex items-center gap-3">
               <span className="text-sm text-slate-500">

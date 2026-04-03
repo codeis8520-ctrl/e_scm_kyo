@@ -13,7 +13,28 @@
       "WebFetch(domain:partners.cafe24.com)",
       "WebFetch(domain:docs.tossplace.com)",
       "Bash(node doc/api_integration_gen.mjs)",
-      "Bash(ls -lh doc/*.pdf)"
+      "Bash(ls -lh doc/*.pdf)",
+      "WebFetch(domain:console.groq.com)",
+      "WebFetch(domain:groq.com)",
+      "WebFetch(domain:ai.google.dev)",
+      "WebFetch(domain:platform.minimax.io)",
+      "WebFetch(domain:pricepertoken.com)",
+      "WebFetch(domain:gorilla.cs.berkeley.edu)",
+      "WebFetch(domain:openai.com)",
+      "WebFetch(domain:www.siliconflow.com)",
+      "Bash(npx tsc:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(node -e \"require\\(''''puppeteer''''\\)\")",
+      "Bash(node -e \"require\\(''''puppeteer-core''''\\)\")",
+      "Bash(node -e \"require\\(''''@sparticuz/chromium''''\\)\")",
+      "Bash(npm list:*)",
+      "Bash(where chromium:*)",
+      "Bash(where chrome:*)",
+      "Bash(node -e \"require\\(''puppeteer''\\); console.log\\(''ok''\\)\")",
+      "Bash(node scripts/generate-prd-v2.js)",
+      "Bash(npm run:*)"
     ]
   }
 }

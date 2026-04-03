@@ -837,14 +837,51 @@ export async function updateCustomerTag(id: string, formData: FormData) {
 
 export async function deleteCustomerTag(id: string) {
   const supabase = await createClient();
-  
 
   const { error } = await supabase.from('customer_tags').delete().eq('id', id);
-  
-  if (error) {
-    return { error: error.message };
-  }
-  
+
+  if (error) return { error: error.message };
+
   revalidatePath('/system-codes');
   return { success: true };
+}
+
+// ─── 고객 등급 자동 업그레이드 ───────────────────────────────────────
+// NORMAL → VIP: 누적 100만원 / VIP → VVIP: 300만원 (업그레이드 전용, 다운 없음)
+export async function autoUpgradeCustomerGrades() {
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  const { data: customers } = await db
+    .from('customers').select('id, grade').eq('is_active', true);
+  if (!customers?.length) return { upgraded: 0 };
+
+  const { data: orders } = await db
+    .from('sales_orders').select('customer_id, total_amount')
+    .eq('status', 'COMPLETED').not('customer_id', 'is', null);
+
+  const ltv = new Map<string, number>();
+  for (const o of (orders || [])) {
+    ltv.set(o.customer_id, (ltv.get(o.customer_id) || 0) + (o.total_amount || 0));
+  }
+
+  const THRESHOLDS = [
+    { grade: 'VVIP', min: 3_000_000 },
+    { grade: 'VIP',  min: 1_000_000 },
+  ];
+  const GRADE_RANK: Record<string, number> = { NORMAL: 0, VIP: 1, VVIP: 2 };
+
+  let upgraded = 0;
+  for (const c of customers) {
+    const total = ltv.get(c.id) || 0;
+    const target = THRESHOLDS.find(t => total >= t.min);
+    if (!target) continue;
+    if ((GRADE_RANK[target.grade] || 0) > (GRADE_RANK[c.grade] || 0)) {
+      await db.from('customers').update({ grade: target.grade }).eq('id', c.id);
+      upgraded++;
+    }
+  }
+
+  revalidatePath('/customers');
+  return { upgraded };
 }

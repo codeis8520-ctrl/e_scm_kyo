@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import RefundModal from './RefundModal';
+import ReceiptModal from './ReceiptModal';
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -48,6 +50,8 @@ export default function POSPage() {
   const [lastScannedBarcode, setLastScannedBarcode] = useState('');
   const [usePoints, setUsePoints] = useState(false);
   const [pointsToUse, setPointsToUse] = useState(0);
+  const [showRefundModal, setShowRefundModal] = useState(false);
+  const [receiptData, setReceiptData] = useState<any>(null);
 
   const barcodeInputRef = useRef<HTMLInputElement>(null);
   const customerInputRef = useRef<HTMLInputElement>(null);
@@ -346,11 +350,33 @@ export default function POSPage() {
         }
       }
 
-      alert(`결제가 완료되었습니다.\n전표번호: ${orderNumber}`);
+      // 영수증 데이터 저장
+      const pointsEarned = selectedCustomer
+        ? Math.floor(finalAmount * (selectedCustomer.grade_point_rate || 1.0) / 100)
+        : 0;
+      setReceiptData({
+        orderNumber,
+        branchName: branches.find(b => b.id === selectedBranch)?.name || '',
+        customerName: selectedCustomer?.name,
+        items: cart.map(item => ({
+          name: item.name,
+          quantity: item.quantity,
+          unitPrice: item.price,
+          totalPrice: item.price * item.quantity,
+        })),
+        totalAmount: total,
+        discountAmount: usePoints ? pointsToUse : 0,
+        finalAmount,
+        pointsUsed: usePoints ? pointsToUse : 0,
+        pointsEarned,
+        paymentMethod,
+        orderedAt: new Date().toISOString(),
+      });
       setCart([]);
       setSelectedCustomer(null);
       setCustomerSearch('');
-      barcodeInputRef.current?.focus();
+      setUsePoints(false);
+      setPointsToUse(0);
     } catch (err: any) {
       console.error('결제 오류:', err);
       // 에러 발생 시刚才创建的销售记录也删除
@@ -661,8 +687,35 @@ export default function POSPage() {
           >
             {processing ? '처리 중...' : '결제하기'}
           </button>
+          <button
+            onClick={() => setShowRefundModal(true)}
+            className="w-full py-2 text-sm text-red-500 border border-red-200 rounded-lg hover:bg-red-50"
+          >
+            환불 처리
+          </button>
         </div>
       </div>
+
+      {showRefundModal && (
+        <RefundModal
+          branchId={selectedBranch}
+          onClose={() => setShowRefundModal(false)}
+          onSuccess={(returnNumber) => {
+            setShowRefundModal(false);
+            alert(`환불이 완료되었습니다.\n환불번호: ${returnNumber}`);
+          }}
+        />
+      )}
+
+      {receiptData && (
+        <ReceiptModal
+          {...receiptData}
+          onClose={() => {
+            setReceiptData(null);
+            barcodeInputRef.current?.focus();
+          }}
+        />
+      )}
     </div>
   );
 }

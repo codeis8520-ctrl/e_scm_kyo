@@ -61,7 +61,10 @@ const CHANNEL_NAMES: Record<string, string> = {
   EVENT: '이벤트',
 };
 
+type ReportTab = 'sales' | 'purchase' | 'pl';
+
 export default function ReportsPage() {
+  const [reportTab, setReportTab] = useState<ReportTab>('sales');
   const [period, setPeriod] = useState<'daily' | 'weekly' | 'monthly'>('daily');
   const [startDate, setStartDate] = useState(() => {
     const d = new Date();
@@ -87,6 +90,8 @@ export default function ReportsPage() {
   const [branchSales, setBranchSales] = useState<BranchSales[]>([]);
   const [productSales, setProductSales] = useState<ProductSales[]>([]);
   const [rawOrders, setRawOrders] = useState<any[]>([]);
+  const [purchaseData, setPurchaseData] = useState<any[]>([]);
+  const [returnData, setReturnData] = useState<any[]>([]);
 
   const userRole = getCookie('user_role');
   const userBranchId = getCookie('user_branch_id');
@@ -248,6 +253,26 @@ export default function ReportsPage() {
     });
     setProductSales(productData.sort((a, b) => b.amount - a.amount).slice(0, 20));
 
+    // 매입 데이터
+    const { data: purchaseRows } = await supabase
+      .from('purchase_orders')
+      .select('id, po_number, total_amount, status, ordered_at, branch:branches(name), supplier:suppliers(name)')
+      .in('status', ['CONFIRMED', 'PARTIALLY_RECEIVED', 'RECEIVED'])
+      .gte('ordered_at', `${startDate}T00:00:00`)
+      .lte('ordered_at', `${endDate}T23:59:59`)
+      .order('ordered_at', { ascending: false }) as any;
+    setPurchaseData((purchaseRows || []) as any[]);
+
+    // 환불 데이터
+    const { data: returnRows } = await supabase
+      .from('return_orders')
+      .select('id, return_number, refund_amount, reason, refund_method, processed_at, branch:branches(name)')
+      .eq('status', 'COMPLETED')
+      .gte('processed_at', `${startDate}T00:00:00`)
+      .lte('processed_at', `${endDate}T23:59:59`)
+      .order('processed_at', { ascending: false }) as any;
+    setReturnData((returnRows || []) as any[]);
+
     setLoading(false);
   };
 
@@ -396,10 +421,26 @@ export default function ReportsPage() {
     doc.save(`매출보고서_${date}.pdf`);
   };
 
+  const totalPurchaseAmount = purchaseData.reduce((s: number, p: any) => s + (p.total_amount || 0), 0);
+  const totalReturnAmount   = returnData.reduce((s: number, r: any) => s + (r.refund_amount || 0), 0);
+  const netSales = salesData.totalAmount - salesData.totalDiscount - totalReturnAmount;
+  const REPORT_TABS = [
+    { key: 'sales' as ReportTab, label: '매출' },
+    { key: 'purchase' as ReportTab, label: `매입 (${purchaseData.length}건)` },
+    { key: 'pl' as ReportTab, label: '손익 요약' },
+  ];
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center flex-wrap gap-4">
-        <h3 className="font-semibold text-lg">매출 보고서</h3>
+        <div className="flex gap-1 border-b border-slate-200">
+          {REPORT_TABS.map(t => (
+            <button key={t.key} onClick={() => setReportTab(t.key)}
+              className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+                reportTab === t.key ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500'
+              }`}>{t.label}</button>
+          ))}
+        </div>
         <div className="flex gap-2 flex-wrap">
           <select
             value={period}
@@ -455,6 +496,133 @@ export default function ReportsPage() {
 
       {loading ? (
         <div className="text-center py-12 text-slate-400">로딩 중...</div>
+      ) : reportTab === 'purchase' ? (
+        <div className="space-y-4">
+          <div className="grid grid-cols-3 gap-4">
+            <div className="card text-center">
+              <p className="text-sm text-slate-500">발주 건수</p>
+              <p className="text-2xl font-bold text-slate-800 mt-1">{purchaseData.length}건</p>
+            </div>
+            <div className="card text-center">
+              <p className="text-sm text-slate-500">총 매입액</p>
+              <p className="text-2xl font-bold text-amber-700 mt-1">{totalPurchaseAmount.toLocaleString()}원</p>
+            </div>
+            <div className="card text-center">
+              <p className="text-sm text-slate-500">환불 금액</p>
+              <p className="text-2xl font-bold text-red-600 mt-1">{totalReturnAmount.toLocaleString()}원</p>
+            </div>
+          </div>
+          <div className="card overflow-x-auto">
+            <h3 className="font-semibold mb-4">매입 발주 내역</h3>
+            {purchaseData.length === 0 ? (
+              <p className="text-center text-slate-400 py-8">해당 기간 매입 데이터가 없습니다</p>
+            ) : (
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>발주일</th>
+                    <th>발주번호</th>
+                    <th>공급업체</th>
+                    <th>입고 지점</th>
+                    <th>상태</th>
+                    <th className="text-right">금액</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {purchaseData.map((p: any) => (
+                    <tr key={p.id}>
+                      <td className="text-sm">{p.ordered_at?.slice(0, 10)}</td>
+                      <td className="font-mono text-sm text-blue-700">{p.po_number}</td>
+                      <td>{(p.supplier as any)?.name || '-'}</td>
+                      <td className="text-slate-500">{(p.branch as any)?.name || '-'}</td>
+                      <td><span className="badge bg-blue-100 text-blue-700 text-xs">{p.status}</span></td>
+                      <td className="text-right font-medium">{(p.total_amount || 0).toLocaleString()}원</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-slate-50">
+                    <td colSpan={5} className="text-right font-semibold pr-4">합계</td>
+                    <td className="text-right font-bold text-amber-700">{totalPurchaseAmount.toLocaleString()}원</td>
+                  </tr>
+                </tfoot>
+              </table>
+            )}
+          </div>
+          {returnData.length > 0 && (
+            <div className="card overflow-x-auto">
+              <h3 className="font-semibold mb-4">환불 내역</h3>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>일자</th>
+                    <th>환불번호</th>
+                    <th>사유</th>
+                    <th>방법</th>
+                    <th>지점</th>
+                    <th className="text-right">금액</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {returnData.map((r: any) => (
+                    <tr key={r.id}>
+                      <td className="text-sm">{r.processed_at?.slice(0, 10)}</td>
+                      <td className="font-mono text-sm text-red-700">{r.return_number}</td>
+                      <td className="text-slate-600">{r.reason}</td>
+                      <td>{r.refund_method}</td>
+                      <td className="text-slate-500">{(r.branch as any)?.name || '-'}</td>
+                      <td className="text-right font-medium text-red-600">{(r.refund_amount || 0).toLocaleString()}원</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ) : reportTab === 'pl' ? (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="card">
+            <h3 className="font-semibold mb-5">간이 손익계산서</h3>
+            <div className="space-y-2 text-sm">
+              {[
+                { label: '총 매출', value: salesData.totalAmount, bold: false },
+                { label: '(-) 포인트 할인', value: -salesData.totalDiscount, indent: true },
+                { label: '(-) 환불', value: -totalReturnAmount, indent: true },
+                null,
+                { label: '순매출', value: netSales, bold: true },
+                null,
+                { label: '(참고) 매입 발주액', value: totalPurchaseAmount, indent: true },
+              ].map((row, i) =>
+                row === null ? <hr key={i} className="border-slate-200" /> : (
+                  <div key={i} className={`flex justify-between py-1 ${row.indent ? 'pl-4 text-slate-500' : ''}`}>
+                    <span className={row.bold ? 'font-semibold text-slate-800' : ''}>{row.label}</span>
+                    <span className={`font-mono ${row.bold ? 'font-bold' : ''} ${row.value < 0 ? 'text-red-500' : ''}`}>
+                      {row.value.toLocaleString()}원
+                    </span>
+                  </div>
+                )
+              )}
+            </div>
+          </div>
+          <div className="card">
+            <h3 className="font-semibold mb-4">주요 지표</h3>
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { label: '매출 주문', value: `${salesData.totalOrders}건` },
+                { label: '환불 건수', value: `${returnData.length}건` },
+                { label: '평균 객단가', value: `${salesData.avgOrderValue.toLocaleString()}원` },
+                { label: '환불률', value: `${salesData.totalOrders > 0 ? Math.round(returnData.length / salesData.totalOrders * 100) : 0}%` },
+                { label: '적립 포인트', value: `${salesData.totalPointsEarned.toLocaleString()}P` },
+                { label: '사용 포인트', value: `${salesData.totalPointsUsed.toLocaleString()}P` },
+              ].map(s => (
+                <div key={s.label} className="bg-slate-50 rounded-lg p-3 text-center">
+                  <p className="text-xs text-slate-500">{s.label}</p>
+                  <p className="font-bold text-slate-800 mt-1">{s.value}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
       ) : (
         <>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
@@ -569,3 +737,4 @@ export default function ReportsPage() {
     </div>
   );
 }
+
