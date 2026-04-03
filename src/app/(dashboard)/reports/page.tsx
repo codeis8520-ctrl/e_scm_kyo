@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { getMonthlyTrend, getProductMargins } from '@/lib/accounting-actions';
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -61,7 +62,7 @@ const CHANNEL_NAMES: Record<string, string> = {
   EVENT: '이벤트',
 };
 
-type ReportTab = 'sales' | 'purchase' | 'pl';
+type ReportTab = 'sales' | 'purchase' | 'pl' | 'trend' | 'margin';
 
 export default function ReportsPage() {
   const [reportTab, setReportTab] = useState<ReportTab>('sales');
@@ -90,8 +91,12 @@ export default function ReportsPage() {
   const [branchSales, setBranchSales] = useState<BranchSales[]>([]);
   const [productSales, setProductSales] = useState<ProductSales[]>([]);
   const [rawOrders, setRawOrders] = useState<any[]>([]);
-  const [purchaseData, setPurchaseData] = useState<any[]>([]);
-  const [returnData, setReturnData] = useState<any[]>([]);
+  const [purchaseData, setPurchaseData]   = useState<any[]>([]);
+  const [returnData, setReturnData]       = useState<any[]>([]);
+  const [trendData, setTrendData]         = useState<any[]>([]);
+  const [marginData, setMarginData]       = useState<any[]>([]);
+  const [trendLoading, setTrendLoading]   = useState(false);
+  const [marginLoading, setMarginLoading] = useState(false);
 
   const userRole = getCookie('user_role');
   const userBranchId = getCookie('user_branch_id');
@@ -424,10 +429,32 @@ export default function ReportsPage() {
   const totalPurchaseAmount = purchaseData.reduce((s: number, p: any) => s + (p.total_amount || 0), 0);
   const totalReturnAmount   = returnData.reduce((s: number, r: any) => s + (r.refund_amount || 0), 0);
   const netSales = salesData.totalAmount - salesData.totalDiscount - totalReturnAmount;
+  // 트렌드 탭 진입 시 로드
+  useEffect(() => {
+    if (reportTab !== 'trend') return;
+    setTrendLoading(true);
+    getMonthlyTrend(12, filterBranch || undefined).then(r => {
+      setTrendData(r.data || []);
+      setTrendLoading(false);
+    });
+  }, [reportTab, filterBranch]);
+
+  // 마진 탭 진입 시 로드
+  useEffect(() => {
+    if (reportTab !== 'margin') return;
+    setMarginLoading(true);
+    getProductMargins(startDate, endDate, filterBranch || undefined).then(r => {
+      setMarginData(r.data || []);
+      setMarginLoading(false);
+    });
+  }, [reportTab, startDate, endDate, filterBranch]);
+
   const REPORT_TABS = [
-    { key: 'sales' as ReportTab, label: '매출' },
+    { key: 'sales'   as ReportTab, label: '매출' },
     { key: 'purchase' as ReportTab, label: `매입 (${purchaseData.length}건)` },
-    { key: 'pl' as ReportTab, label: '손익 요약' },
+    { key: 'pl'      as ReportTab, label: '손익 요약' },
+    { key: 'trend'   as ReportTab, label: '월별 트렌드' },
+    { key: 'margin'  as ReportTab, label: '제품별 마진' },
   ];
 
   return (
@@ -623,6 +650,10 @@ export default function ReportsPage() {
             </div>
           </div>
         </div>
+      ) : reportTab === 'trend' ? (
+        <TrendTab data={trendData} loading={trendLoading} />
+      ) : reportTab === 'margin' ? (
+        <MarginTab data={marginData} loading={marginLoading} />
       ) : (
         <>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
@@ -738,3 +769,194 @@ export default function ReportsPage() {
   );
 }
 
+// ─── 월별 트렌드 탭
+
+function TrendTab({ data, loading }: { data: any[]; loading: boolean }) {
+  if (loading) return <div className="text-center py-16 text-slate-400">로딩 중...</div>;
+  if (!data.length) return <div className="text-center py-16 text-slate-400">데이터가 없습니다</div>;
+  const maxRevenue = Math.max(...data.map(d => d.grossRevenue), 1);
+  return (
+    <div className="space-y-6">
+      <div className="card">
+        <h3 className="font-semibold mb-6">월별 매출 / 매출이익 트렌드 (최근 12개월)</h3>
+        <div className="overflow-x-auto">
+          <svg viewBox={`0 0 ${data.length * 56} 210`} className="w-full min-w-[560px] h-52">
+            {data.map((d, i) => {
+              const x = i * 56 + 4;
+              const revH = Math.max(2, Math.round((d.grossRevenue / maxRevenue) * 160));
+              const profH = Math.max(0, Math.round((Math.max(0, d.grossProfit) / maxRevenue) * 160));
+              const barW = 22;
+              return (
+                <g key={d.month}>
+                  <rect x={x} y={170 - revH} width={barW} height={revH} fill="#3b82f6" opacity="0.75" rx="2" />
+                  <rect x={x + barW + 2} y={170 - profH} width={barW} height={profH}
+                    fill={d.grossProfit >= 0 ? "#10b981" : "#ef4444"} opacity="0.8" rx="2" />
+                  <text x={x + barW} y={184} textAnchor="middle" fontSize="9" fill="#94a3b8">{d.month.slice(5)}월</text>
+                  {d.cogs > 0 && d.grossMargin !== 0 && (
+                    <text x={x + barW + 2} y={170 - profH - 3} textAnchor="middle" fontSize="8"
+                      fill={d.grossMargin >= 0 ? "#059669" : "#dc2626"}>{d.grossMargin}%</text>
+                  )}
+                </g>
+              );
+            })}
+            <rect x={4} y={197} width={10} height={6} fill="#3b82f6" opacity="0.75" rx="1" />
+            <text x={17} y={203} fontSize="8" fill="#64748b">매출</text>
+            <rect x={50} y={197} width={10} height={6} fill="#10b981" opacity="0.8" rx="1" />
+            <text x={63} y={203} fontSize="8" fill="#64748b">이익</text>
+          </svg>
+        </div>
+      </div>
+      <div className="card overflow-x-auto">
+        <table className="table text-sm">
+          <thead><tr>
+            <th>월</th>
+            <th className="text-right">총매출</th>
+            <th className="text-right">환불</th>
+            <th className="text-right">순매출</th>
+            <th className="text-right">매출원가</th>
+            <th className="text-right">매출이익</th>
+            <th className="text-right">마진율</th>
+            <th className="text-right">주문수</th>
+          </tr></thead>
+          <tbody>
+            {data.map(d => (
+              <tr key={d.month}>
+                <td className="font-medium">{d.month}</td>
+                <td className="text-right">{d.grossRevenue.toLocaleString()}</td>
+                <td className="text-right text-red-500">{d.refunds > 0 ? `-${d.refunds.toLocaleString()}` : '-'}</td>
+                <td className="text-right font-medium">{d.netRevenue.toLocaleString()}</td>
+                <td className="text-right text-slate-500">{d.cogs > 0 ? d.cogs.toLocaleString() : '-'}</td>
+                <td className={`text-right font-semibold ${d.grossProfit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  {d.grossProfit.toLocaleString()}
+                </td>
+                <td className={`text-right ${d.grossMargin >= 40 ? 'text-green-600' : d.grossMargin >= 20 ? 'text-amber-600' : 'text-slate-400'}`}>
+                  {d.cogs > 0 ? `${d.grossMargin}%` : '-'}
+                </td>
+                <td className="text-right text-slate-500">{d.orderCount}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot className="bg-slate-50 font-semibold"><tr>
+            <td>합계</td>
+            <td className="text-right">{data.reduce((s,d)=>s+d.grossRevenue,0).toLocaleString()}</td>
+            <td className="text-right text-red-500">-{data.reduce((s,d)=>s+d.refunds,0).toLocaleString()}</td>
+            <td className="text-right">{data.reduce((s,d)=>s+d.netRevenue,0).toLocaleString()}</td>
+            <td className="text-right text-slate-500">{data.reduce((s,d)=>s+d.cogs,0).toLocaleString()}</td>
+            <td className="text-right text-green-600">{data.reduce((s,d)=>s+d.grossProfit,0).toLocaleString()}</td>
+            <td className="text-right">{(() => {
+              const nr = data.reduce((s,d)=>s+d.netRevenue,0);
+              const gp = data.reduce((s,d)=>s+d.grossProfit,0);
+              return nr > 0 && data.some(d=>d.cogs>0) ? `${Math.round(gp/nr*100)}%` : '-';
+            })()}</td>
+            <td className="text-right">{data.reduce((s,d)=>s+d.orderCount,0)}</td>
+          </tr></tfoot>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── 제품별 마진 탭
+
+function MarginTab({ data, loading }: { data: any[]; loading: boolean }) {
+  const [sortKey, setSortKey] = useState<'revenue'|'grossProfit'|'marginPct'>('revenue');
+  const [minMargin, setMinMargin] = useState('');
+  if (loading) return <div className="text-center py-16 text-slate-400">로딩 중...</div>;
+  if (!data.length) return <div className="text-center py-16 text-slate-400">데이터가 없습니다</div>;
+  const hasCogs = data.some(d => d.cogs > 0);
+  const filtered = data
+    .filter(d => minMargin === '' || d.marginPct >= parseInt(minMargin))
+    .sort((a, b) => b[sortKey] - a[sortKey]);
+  const totalRevenue = filtered.reduce((s, d) => s + d.revenue, 0);
+  const totalCogs    = filtered.reduce((s, d) => s + d.cogs, 0);
+  const totalProfit  = filtered.reduce((s, d) => s + d.grossProfit, 0);
+  const avgMargin    = totalRevenue > 0 && hasCogs ? Math.round(totalProfit / totalRevenue * 100) : null;
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-3 items-center">
+        <div className="flex gap-2">
+          {([
+            { k: 'revenue'     as const, label: '매출순' },
+            { k: 'grossProfit' as const, label: '이익순' },
+            { k: 'marginPct'   as const, label: '마진율순' },
+          ]).map(s => (
+            <button key={s.k} onClick={() => setSortKey(s.k)}
+              className={`px-3 py-1.5 rounded text-sm font-medium ${sortKey === s.k ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'}`}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <select value={minMargin} onChange={e => setMinMargin(e.target.value)} className="input text-sm w-36 py-1.5">
+          <option value="">마진율 전체</option>
+          <option value="50">50% 이상</option>
+          <option value="30">30% 이상</option>
+          <option value="0">흑자만</option>
+        </select>
+        {!hasCogs && (
+          <span className="text-xs text-amber-600 bg-amber-50 px-3 py-1.5 rounded border border-amber-200">
+            ⚠️ 제품 원가(cost)가 등록돼야 마진 계산됩니다
+          </span>
+        )}
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {[
+          { label: '총 매출',    value: `${totalRevenue.toLocaleString()}원`, color: 'text-slate-800' },
+          { label: '총 원가',    value: `${totalCogs.toLocaleString()}원`,    color: 'text-amber-700' },
+          { label: '총 이익',    value: `${totalProfit.toLocaleString()}원`,  color: totalProfit >= 0 ? 'text-green-600' : 'text-red-600' },
+          { label: '평균 마진율', value: avgMargin !== null ? `${avgMargin}%` : '-', color: avgMargin !== null && avgMargin >= 30 ? 'text-green-600' : 'text-amber-600' },
+        ].map(s => (
+          <div key={s.label} className="stat-card">
+            <p className="text-sm text-slate-500">{s.label}</p>
+            <p className={`text-xl font-bold mt-1 ${s.color}`}>{s.value}</p>
+          </div>
+        ))}
+      </div>
+      <div className="card overflow-x-auto">
+        <table className="table text-sm">
+          <thead><tr>
+            <th>순위</th><th>제품명</th><th>코드</th>
+            <th className="text-right">수량</th>
+            <th className="text-right">매출액</th>
+            <th className="text-right">원가합계</th>
+            <th className="text-right">매출이익</th>
+            <th className="text-right">마진율</th>
+            <th>매출 비중</th>
+          </tr></thead>
+          <tbody>
+            {filtered.map((d, i) => {
+              const sharePct = totalRevenue > 0 ? Math.round(d.revenue / totalRevenue * 100) : 0;
+              return (
+                <tr key={d.id}>
+                  <td className="text-slate-400">{i + 1}</td>
+                  <td className="font-medium">{d.name}</td>
+                  <td className="font-mono text-xs text-slate-400">{d.code}</td>
+                  <td className="text-right">{d.qty.toLocaleString()}</td>
+                  <td className="text-right">{d.revenue.toLocaleString()}</td>
+                  <td className="text-right text-slate-500">{d.cogs > 0 ? d.cogs.toLocaleString() : '-'}</td>
+                  <td className={`text-right font-semibold ${d.cogs > 0 ? (d.grossProfit >= 0 ? 'text-green-600' : 'text-red-600') : 'text-slate-400'}`}>
+                    {d.cogs > 0 ? d.grossProfit.toLocaleString() : '-'}
+                  </td>
+                  <td className="text-right">
+                    {d.cogs > 0 ? (
+                      <span className={`font-medium ${d.marginPct >= 40 ? 'text-green-600' : d.marginPct >= 20 ? 'text-amber-600' : 'text-red-500'}`}>
+                        {d.marginPct}%
+                      </span>
+                    ) : '-'}
+                  </td>
+                  <td className="w-24">
+                    <div className="flex items-center gap-1.5">
+                      <div className="flex-1 bg-slate-100 rounded-full h-1.5">
+                        <div className="bg-blue-400 h-1.5 rounded-full" style={{ width: `${sharePct}%` }} />
+                      </div>
+                      <span className="text-xs text-slate-400 w-8 text-right">{sharePct}%</span>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}

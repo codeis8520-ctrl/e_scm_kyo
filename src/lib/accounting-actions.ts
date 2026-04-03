@@ -161,6 +161,137 @@ export async function getProfitLoss(startDate: string, endDate: string, branchId
   };
 }
 
+// ─── 월별 트렌드 (최근 N개월) ────────────────────────────────
+
+export async function getMonthlyTrend(months = 12, branchId?: string) {
+  const sb = await createClient() as any;
+
+  const end = new Date();
+  const start = new Date(end);
+  start.setMonth(start.getMonth() - months + 1);
+  start.setDate(1);
+  const startDT = `${start.toISOString().slice(0, 7)}-01T00:00:00`;
+  const endDT   = `${end.toISOString().slice(0, 10)}T23:59:59`;
+
+  // 매출 (월별)
+  let salesQ = sb
+    .from('sales_orders')
+    .select('total_amount, discount_amount, ordered_at, items:sales_order_items(quantity, product:products(cost))')
+    .eq('status', 'COMPLETED')
+    .gte('ordered_at', startDT)
+    .lte('ordered_at', endDT);
+  if (branchId) salesQ = salesQ.eq('branch_id', branchId);
+  const { data: salesRows } = await salesQ;
+
+  // 환불 (월별)
+  let refundQ = sb
+    .from('return_orders')
+    .select('refund_amount, processed_at')
+    .eq('status', 'COMPLETED')
+    .gte('processed_at', startDT)
+    .lte('processed_at', endDT);
+  if (branchId) refundQ = refundQ.eq('branch_id', branchId);
+  const { data: refundRows } = await refundQ;
+
+  // 월별 집계 맵 생성
+  const monthMap = new Map<string, { grossRevenue: number; discount: number; refunds: number; cogs: number; orderCount: number }>();
+
+  // 지난 N개월 키 초기화
+  for (let i = 0; i < months; i++) {
+    const d = new Date(end);
+    d.setMonth(d.getMonth() - (months - 1 - i));
+    const key = d.toISOString().slice(0, 7);
+    monthMap.set(key, { grossRevenue: 0, discount: 0, refunds: 0, cogs: 0, orderCount: 0 });
+  }
+
+  for (const order of (salesRows || [])) {
+    const key = (order.ordered_at as string).slice(0, 7);
+    const m = monthMap.get(key);
+    if (!m) continue;
+    m.grossRevenue += order.total_amount || 0;
+    m.discount     += order.discount_amount || 0;
+    m.orderCount   += 1;
+    for (const item of (order.items || [])) {
+      m.cogs += (item.product?.cost || 0) * (item.quantity || 0);
+    }
+  }
+
+  for (const row of (refundRows || [])) {
+    const key = (row.processed_at as string).slice(0, 7);
+    const m = monthMap.get(key);
+    if (m) m.refunds += row.refund_amount || 0;
+  }
+
+  const result = Array.from(monthMap.entries()).map(([month, m]) => {
+    const netRevenue  = m.grossRevenue - m.discount - m.refunds;
+    const grossProfit = netRevenue - m.cogs;
+    return {
+      month,
+      grossRevenue: m.grossRevenue,
+      discount: m.discount,
+      refunds: m.refunds,
+      netRevenue,
+      cogs: m.cogs,
+      grossProfit,
+      grossMargin: netRevenue > 0 ? Math.round(grossProfit / netRevenue * 100) : 0,
+      orderCount: m.orderCount,
+    };
+  });
+
+  return { data: result };
+}
+
+// ─── 제품별 마진 분석 ──────────────────────────────────────────
+
+export async function getProductMargins(startDate: string, endDate: string, branchId?: string) {
+  const sb = await createClient() as any;
+  const startDT = `${startDate}T00:00:00`;
+  const endDT   = `${endDate}T23:59:59`;
+
+  let q = sb
+    .from('sales_orders')
+    .select(`
+      id, branch_id,
+      items:sales_order_items(
+        quantity, unit_price, total_price,
+        product:products(id, name, code, cost)
+      )
+    `)
+    .eq('status', 'COMPLETED')
+    .gte('ordered_at', startDT)
+    .lte('ordered_at', endDT);
+
+  if (branchId) q = q.eq('branch_id', branchId);
+  const { data: orders } = await q;
+
+  const productMap = new Map<string, {
+    name: string; code: string; cost: number;
+    qty: number; revenue: number; totalCost: number;
+  }>();
+
+  for (const order of (orders || [])) {
+    for (const item of (order.items || [])) {
+      const p = item.product;
+      if (!p) continue;
+      const existing = productMap.get(p.id) || { name: p.name, code: p.code, cost: p.cost || 0, qty: 0, revenue: 0, totalCost: 0 };
+      existing.qty      += item.quantity || 0;
+      existing.revenue  += item.total_price || 0;
+      existing.totalCost += (p.cost || 0) * (item.quantity || 0);
+      productMap.set(p.id, existing);
+    }
+  }
+
+  const rows = Array.from(productMap.entries())
+    .map(([id, p]) => {
+      const grossProfit  = p.revenue - p.totalCost;
+      const marginPct    = p.revenue > 0 ? Math.round(grossProfit / p.revenue * 100) : 0;
+      return { id, name: p.name, code: p.code, qty: p.qty, revenue: p.revenue, cogs: p.totalCost, grossProfit, marginPct };
+    })
+    .sort((a, b) => b.revenue - a.revenue);
+
+  return { data: rows };
+}
+
 // ─── 수동 분개 생성 ───────────────────────────────────────────
 
 export async function createJournalEntry(formData: FormData) {
