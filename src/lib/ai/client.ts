@@ -1,6 +1,31 @@
 export interface MiniMaxMessage {
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
+  tool_calls?: MiniMaxToolCall[];
+  tool_call_id?: string;
+  name?: string;
+}
+
+export interface MiniMaxToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+export interface MiniMaxTool {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: {
+      type: 'object';
+      properties: Record<string, any>;
+      required?: string[];
+    };
+  };
 }
 
 export interface MiniMaxChatResponse {
@@ -35,44 +60,58 @@ export class MiniMaxClient {
     };
   }
 
-  async chat(messages: MiniMaxMessage[]): Promise<string> {
+  async chatWithTools(messages: MiniMaxMessage[], tools?: MiniMaxTool[]): Promise<{
+    message: MiniMaxMessage;
+    finish_reason: string;
+  }> {
     if (!this.apiKey) {
       throw new Error('MINIMAX_API_KEY is not set');
     }
 
-    console.log('MiniMax API call with model:', this.model);
-    console.log('Base URL:', this.baseUrl);
+    const body: any = {
+      model: this.model,
+      messages: messages.map(m => {
+        const msg: any = { role: m.role, content: m.content };
+        if (m.tool_calls) msg.tool_calls = m.tool_calls;
+        if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
+        if (m.name) msg.name = m.name;
+        return msg;
+      }),
+      temperature: 0.1,
+      max_tokens: 2048,
+    };
+
+    if (tools && tools.length > 0) {
+      body.tools = tools;
+      body.tool_choice = 'auto';
+    }
 
     const response = await fetch(`${this.baseUrl}/v1/text/chatcompletion_v2`, {
       method: 'POST',
       headers: this.getHeaders(),
-      body: JSON.stringify({
-        model: this.model,
-        messages: messages.map(m => ({
-          role: m.role,
-          content: m.content,
-        })),
-        temperature: 0.3,
-        max_tokens: 2048,
-      }),
+      body: JSON.stringify(body),
     });
-
-    console.log('MiniMax response status:', response.status);
 
     if (!response.ok) {
       const error = await response.text();
-      console.error('MiniMax API error:', error);
       throw new Error(`MiniMax API error: ${response.status} - ${error}`);
     }
 
     const data: MiniMaxChatResponse = await response.json();
-    console.log('MiniMax response data:', JSON.stringify(data).substring(0, 500));
-    
+
     if (!data.choices || data.choices.length === 0) {
       throw new Error('No response from MiniMax');
     }
 
-    return data.choices[0].message.content;
+    return {
+      message: data.choices[0].message,
+      finish_reason: data.choices[0].finish_reason,
+    };
+  }
+
+  async chat(messages: MiniMaxMessage[]): Promise<string> {
+    const result = await this.chatWithTools(messages);
+    return result.message.content;
   }
 }
 
