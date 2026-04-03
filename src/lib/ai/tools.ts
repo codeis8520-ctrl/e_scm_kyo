@@ -164,14 +164,8 @@ export const AGENT_TOOLS: MiniMaxTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          customer_name: {
-            type: 'string',
-            description: '고객 이름',
-          },
-          phone: {
-            type: 'string',
-            description: '고객 전화번호',
-          },
+          customer_name: { type: 'string', description: '고객 이름' },
+          phone: { type: 'string', description: '고객 전화번호' },
           new_grade: {
             type: 'string',
             enum: ['NORMAL', 'VIP', 'VVIP'],
@@ -182,9 +176,115 @@ export const AGENT_TOOLS: MiniMaxTool[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'create_branch',
+      description: '새 지점을 추가합니다. 코드 > 지점관리에서 할 수 있는 지점 추가 작업입니다. 사용자 확인 후 실행됩니다.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '지점명 (예: 송파점, 강남백화점)' },
+          channel: {
+            type: 'string',
+            enum: ['STORE', 'DEPT_STORE', 'ONLINE', 'EVENT'],
+            description: '채널 유형: STORE=한약국매장, DEPT_STORE=백화점, ONLINE=자사몰, EVENT=이벤트',
+          },
+          address: { type: 'string', description: '주소 (선택)' },
+          phone: { type: 'string', description: '전화번호 (선택)' },
+        },
+        required: ['name', 'channel'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_branch',
+      description: '지점 정보를 수정합니다. 사용자 확인 후 실행됩니다.',
+      parameters: {
+        type: 'object',
+        properties: {
+          branch_name: { type: 'string', description: '수정할 지점명' },
+          new_name: { type: 'string', description: '새 지점명' },
+          address: { type: 'string', description: '새 주소' },
+          phone: { type: 'string', description: '새 전화번호' },
+          is_active: { type: 'boolean', description: '활성화 여부' },
+        },
+        required: ['branch_name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'create_customer',
+      description: '새 고객을 등록합니다. 고객 메뉴에서 할 수 있는 고객 추가 작업입니다. 사용자 확인 후 실행됩니다.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '고객 이름' },
+          phone: { type: 'string', description: '전화번호 (010-0000-0000)' },
+          grade: {
+            type: 'string',
+            enum: ['NORMAL', 'VIP', 'VVIP'],
+            description: '등급 (기본: NORMAL)',
+          },
+          email: { type: 'string', description: '이메일 (선택)' },
+          address: { type: 'string', description: '주소 (선택)' },
+          health_note: { type: 'string', description: '건강 메모 (선택)' },
+        },
+        required: ['name', 'phone'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_customer',
+      description: '고객 정보를 수정합니다. 사용자 확인 후 실행됩니다.',
+      parameters: {
+        type: 'object',
+        properties: {
+          customer_name: { type: 'string', description: '찾을 고객 이름' },
+          phone: { type: 'string', description: '찾을 고객 전화번호' },
+          new_phone: { type: 'string', description: '새 전화번호' },
+          email: { type: 'string', description: '새 이메일' },
+          address: { type: 'string', description: '새 주소' },
+          health_note: { type: 'string', description: '건강 메모' },
+          grade: {
+            type: 'string',
+            enum: ['NORMAL', 'VIP', 'VVIP'],
+            description: '변경할 등급',
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_branches',
+      description: '지점 목록을 조회합니다.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '지점명 키워드 (선택)' },
+        },
+      },
+    },
+  },
 ];
 
-export const WRITE_TOOLS = new Set(['transfer_inventory', 'adjust_points', 'update_customer_grade']);
+export const WRITE_TOOLS = new Set([
+  'transfer_inventory',
+  'adjust_points',
+  'update_customer_grade',
+  'create_branch',
+  'update_branch',
+  'create_customer',
+  'update_customer',
+]);
 
 // ─── Tool Executors ──────────────────────────────────────────────────────────
 
@@ -211,6 +311,16 @@ export async function executeTool(
         return await execAdjustPoints(supabase, args as any);
       case 'update_customer_grade':
         return await execUpdateCustomerGrade(supabase, args as any);
+      case 'create_branch':
+        return await execCreateBranch(supabase, args as any);
+      case 'update_branch':
+        return await execUpdateBranch(supabase, args as any);
+      case 'create_customer':
+        return await execCreateCustomer(supabase, args as any);
+      case 'update_customer':
+        return await execUpdateCustomer(supabase, args as any);
+      case 'get_branches':
+        return await execGetBranches(supabase, args);
       default:
         return JSON.stringify({ error: `Unknown tool: ${toolName}` });
     }
@@ -532,4 +642,117 @@ async function execUpdateCustomerGrade(supabase: any, args: {
     변경등급: gradeNames[args.new_grade] || args.new_grade,
     메시지: `${customer.name} 고객 등급을 ${gradeNames[prevGrade] || prevGrade}에서 ${gradeNames[args.new_grade] || args.new_grade}로 변경했습니다.`,
   });
+}
+
+async function execGetBranches(supabase: any, args: { name?: string }): Promise<string> {
+  let q = supabase.from('branches').select('name, code, channel, address, phone, is_active').order('created_at');
+  if (args.name) q = q.ilike('name', `%${args.name}%`);
+  const { data, error } = await q.limit(30);
+  if (error) return JSON.stringify({ error: error.message });
+  const channelNames: Record<string, string> = { STORE: '한약국', DEPT_STORE: '백화점', ONLINE: '자사몰', EVENT: '이벤트' };
+  return JSON.stringify((data || []).map((b: any) => ({
+    지점명: b.name,
+    코드: b.code,
+    채널: channelNames[b.channel] || b.channel,
+    주소: b.address || '-',
+    전화: b.phone || '-',
+    상태: b.is_active ? '운영중' : '비활성',
+  })));
+}
+
+async function execCreateBranch(supabase: any, args: {
+  name: string;
+  channel: string;
+  address?: string;
+  phone?: string;
+}): Promise<string> {
+  const code = 'BR-' + Date.now().toString(36).toUpperCase();
+  const { error } = await supabase.from('branches').insert({
+    name: args.name,
+    code,
+    channel: args.channel,
+    address: args.address || null,
+    phone: args.phone || null,
+    is_active: true,
+  });
+  if (error) return JSON.stringify({ error: error.message });
+  return JSON.stringify({
+    성공: true,
+    메시지: `${args.name} 지점이 추가되었습니다.`,
+    지점코드: code,
+  });
+}
+
+async function execUpdateBranch(supabase: any, args: {
+  branch_name: string;
+  new_name?: string;
+  address?: string;
+  phone?: string;
+  is_active?: boolean;
+}): Promise<string> {
+  const branch = await findBranchId(supabase, args.branch_name);
+  if (!branch) return JSON.stringify({ error: `지점 "${args.branch_name}"을(를) 찾을 수 없습니다.` });
+
+  const updates: Record<string, any> = {};
+  if (args.new_name !== undefined) updates.name = args.new_name;
+  if (args.address !== undefined) updates.address = args.address;
+  if (args.phone !== undefined) updates.phone = args.phone;
+  if (args.is_active !== undefined) updates.is_active = args.is_active;
+
+  const { error } = await supabase.from('branches').update(updates).eq('id', branch.id);
+  if (error) return JSON.stringify({ error: error.message });
+  return JSON.stringify({ 성공: true, 메시지: `${branch.name} 지점 정보가 수정되었습니다.` });
+}
+
+async function execCreateCustomer(supabase: any, args: {
+  name: string;
+  phone: string;
+  grade?: string;
+  email?: string;
+  address?: string;
+  health_note?: string;
+}): Promise<string> {
+  const { error } = await supabase.from('customers').insert({
+    name: args.name,
+    phone: args.phone,
+    grade: args.grade || 'NORMAL',
+    email: args.email || null,
+    address: args.address || null,
+    health_note: args.health_note || null,
+    is_active: true,
+  });
+  if (error) {
+    if (error.message.includes('unique') || error.message.includes('duplicate')) {
+      return JSON.stringify({ error: `전화번호 ${args.phone}은(는) 이미 등록된 고객입니다.` });
+    }
+    return JSON.stringify({ error: error.message });
+  }
+  return JSON.stringify({
+    성공: true,
+    메시지: `${args.name} 고객이 등록되었습니다.`,
+  });
+}
+
+async function execUpdateCustomer(supabase: any, args: {
+  customer_name?: string;
+  phone?: string;
+  new_phone?: string;
+  email?: string;
+  address?: string;
+  health_note?: string;
+  grade?: string;
+}): Promise<string> {
+  const customer = await findCustomer(supabase, args);
+  if (!customer) return JSON.stringify({ error: '고객을 찾을 수 없습니다.' });
+
+  const updates: Record<string, any> = {};
+  if (args.new_phone !== undefined) updates.phone = args.new_phone;
+  if (args.email !== undefined) updates.email = args.email;
+  if (args.address !== undefined) updates.address = args.address;
+  if (args.health_note !== undefined) updates.health_note = args.health_note;
+  if (args.grade !== undefined) updates.grade = args.grade;
+
+  const { error } = await supabase.from('customers').update(updates).eq('id', customer.id);
+  if (error) return JSON.stringify({ error: error.message });
+  return JSON.stringify({ 성공: true, 메시지: `${customer.name} 고객 정보가 수정되었습니다.` });
 }
