@@ -5,8 +5,8 @@ import { createClient } from '@/lib/supabase/client';
 import Link from 'next/link';
 import {
   getRfmAnalysis, getRepurchaseCycles, getChurnRiskCustomers,
-  SEGMENT_META, type RfmSegment,
 } from '@/lib/customer-analytics-actions';
+import { SEGMENT_META, type RfmSegment } from '@/lib/customer-analytics-types';
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -57,24 +57,39 @@ export default function CustomerAnalyticsPage() {
 
   const loadRfm = useCallback(async () => {
     setRfmLoading(true);
-    const r = await getRfmAnalysis(selectedBranch || undefined);
-    setRfmData(r.data || []);
-    setSegmentSummary(r.segmentSummary || []);
-    setRfmLoading(false);
+    try {
+      const r = await getRfmAnalysis(selectedBranch || undefined);
+      setRfmData(r.data || []);
+      setSegmentSummary(r.segmentSummary || []);
+    } catch (e) {
+      console.error('RFM 분석 오류:', e);
+    } finally {
+      setRfmLoading(false);
+    }
   }, [selectedBranch]);
 
   const loadCycle = useCallback(async () => {
     setCycleLoading(true);
-    const r = await getRepurchaseCycles(selectedBranch || undefined);
-    setCycleData(r);
-    setCycleLoading(false);
+    try {
+      const r = await getRepurchaseCycles(selectedBranch || undefined);
+      setCycleData(r);
+    } catch (e) {
+      console.error('재구매 주기 분석 오류:', e);
+    } finally {
+      setCycleLoading(false);
+    }
   }, [selectedBranch]);
 
   const loadChurn = useCallback(async () => {
     setChurnLoading(true);
-    const r = await getChurnRiskCustomers(selectedBranch || undefined);
-    setChurnData(r.data || []);
-    setChurnLoading(false);
+    try {
+      const r = await getChurnRiskCustomers(selectedBranch || undefined);
+      setChurnData(r.data || []);
+    } catch (e) {
+      console.error('이탈 위험 분석 오류:', e);
+    } finally {
+      setChurnLoading(false);
+    }
   }, [selectedBranch]);
 
   useEffect(() => { if (tab === 'rfm')   loadRfm();   }, [tab, loadRfm]);
