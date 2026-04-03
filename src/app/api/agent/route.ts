@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { miniMaxClient, MiniMaxMessage } from '@/lib/ai/client';
-import { SYSTEM_PROMPT, DB_SCHEMA, BUSINESS_RULES } from '@/lib/ai/schema';
+import { SYSTEM_PROMPT, DB_SCHEMA, BUSINESS_RULES, QUERY_EXAMPLES } from '@/lib/ai/schema';
 
 interface AgentRequest {
   message: string;
@@ -16,43 +16,109 @@ function log(msg: string, data?: any) {
   console.log(`[Agent] ${msg}`, data || '');
 }
 
-function parseNaturalLanguageIntent(userMessage: string, aiResponse: string): any {
-  const msg = userMessage.toLowerCase();
-  const combined = (userMessage + ' ' + aiResponse).toLowerCase();
-  
-  if (msg.includes('뭐') || msg.includes('무엇') || msg.includes('어떤') || 
-      (msg.includes('할') && msg.includes('수')) || msg.includes('도움') ||
-      msg.includes('기능') || msg.includes('능력')) {
-    return { 
-      operation: 'info', 
-      data: { 
-        message: 'AI 어시스턴트가 도와드릴 수 있습니다:\n• 고객 조회/검색/등록\n• 재고 이동/조정/입출고\n• 포인트 적립/사용/조회\n• 제품 검색\n• 지점 조회\n• 판매 주문 조회'
-      } 
-    };
+function isValidSelectQuery(sql: string): boolean {
+  const normalized = sql.trim().toUpperCase();
+  if (!normalized.startsWith('SELECT')) return false;
+  const dangerous = ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'TRUNCATE', 'ALTER', 'CREATE', 'GRANT', 'REVOKE', ';--', 'EXEC', 'EXECUTE'];
+  for (const keyword of dangerous) {
+    if (normalized.includes(keyword)) return false;
   }
+  return true;
+}
+
+function extractSqlFromResponse(response: string): string | null {
+  try {
+    const parsed = JSON.parse(response.replace(/```json\n?/g, '').replace(/\n?```/g, '').trim());
+    return parsed.sql || parsed.query || parsed.query_sql || null;
+  } catch (e) {
+    const sqlMatch = response.match(/(?:sql|query)["']?\s*[:=]\s*["']?([^"'`;]+)/i);
+    if (sqlMatch) return sqlMatch[1].trim();
+    
+    const selectMatch = response.match(/(SELECT\s+[^;]+)/i);
+    if (selectMatch) return selectMatch[1].trim();
+    
+    return null;
+  }
+}
+
+function parseQueryIntent(sql: string): { table: string; filters: Record<string, any>; fields: string[] } {
+  const normalized = sql.toLowerCase();
+  const tableMatch = sql.match(/FROM\s+(\w+)/i);
+  const table = tableMatch ? tableMatch[1].toLowerCase() : '';
   
-  if (combined.includes('고객') || msg.includes('고객')) {
-    if (msg.includes('없') || msg.includes('찾') || msg.includes('검색')) {
-      return { operation: 'customer_query', data: { search: '' } };
+  const selectMatch = sql.match(/SELECT\s+(.+?)\s+FROM/i);
+  const fields = selectMatch ? selectMatch[1].split(',').map((f: string) => f.trim()) : ['*'];
+  
+  const filters: Record<string, any> = {};
+  
+  if (normalized.includes('where')) {
+    const whereMatch = sql.match(/WHERE\s+(.+?)(?:\s+(?:ORDER|GROUP|LIMIT|HAVING)|$)/i);
+    if (whereMatch) {
+      const whereClause = whereMatch[1].trim();
+      
+      const likeMatch = whereClause.match(/(\w+)\s+(?:LIKE|ILIKE)\s+['"]%?(.+?)%?['"]/i);
+      if (likeMatch) {
+        filters[likeMatch[1]] = { op: 'like', value: likeMatch[2] };
+      }
+      
+      const eqMatch = whereClause.match(/(\w+)\s*=\s*['"]([^'"]+)['"]/i);
+      if (eqMatch) {
+        filters[eqMatch[1]] = { op: 'eq', value: eqMatch[2] };
+      }
     }
-    const nameMatch = userMessage.match(/(?:([가-힣]{2,4})동|([가-힣]{2,4})님)/);
-    const searchName = nameMatch ? (nameMatch[1] || nameMatch[2]) : null;
-    return { operation: 'customer_query', data: { search: searchName } };
   }
   
-  if (combined.includes('재고') && combined.includes('이동')) {
-    return { operation: 'inventory_transfer', data: {} };
+  return { table, filters, fields };
+}
+
+async function executeSmartQuery(supabase: any, sql: string): Promise<{ data: any; error: any }> {
+  const { table, filters, fields } = parseQueryIntent(sql);
+  
+  log('Parsed query intent:', { table, filters, fields });
+  
+  const allowedTables = ['branches', 'products', 'inventories', 'inventory_movements', 'customers', 'customer_grades', 'point_history', 'sales_orders', 'sales_order_items', 'users', 'categories', 'notifications', 'cafe24_sync_logs'];
+  
+  if (!allowedTables.includes(table)) {
+    return { data: null, error: { message: `테이블 '${table}'은(는) 조회할 수 없습니다.` } };
   }
   
-  if (combined.includes('재고') && (combined.includes('조회') || combined.includes('확인'))) {
-    return { operation: 'product_query', data: {} };
+  try {
+    let query = (supabase as any).from(table).select(fields.join(','));
+    
+    for (const [field, cond] of Object.entries(filters)) {
+      const condition = cond as { op: string; value: string };
+      if (condition.op === 'like') {
+        query = query.like(field, `%${condition.value}%`);
+      } else if (condition.op === 'eq') {
+        query = query.eq(field, condition.value);
+      }
+    }
+    
+    const orderMatch = sql.match(/ORDER BY\s+(\w+)(?:\s+(ASC|DESC))?/i);
+    if (orderMatch) {
+      query = query.order(orderMatch[1], { ascending: orderMatch[2]?.toUpperCase() !== 'DESC' });
+    }
+    
+    const limitMatch = sql.match(/LIMIT\s+(\d+)/i);
+    if (limitMatch) {
+      query = query.limit(parseInt(limitMatch[1]));
+    } else {
+      query = query.limit(20);
+    }
+    
+    if (table === 'customers') {
+      query = query.select('*, customer_grades(name, point_rate), branches(name)');
+    } else if (table === 'inventories') {
+      query = query.select('*, products(name, code), branches(name)');
+    } else if (table === 'point_history') {
+      query = query.select('*, customers(name, phone)');
+    }
+    
+    const { data, error } = await query;
+    return { data, error };
+  } catch (e: any) {
+    return { data: null, error: { message: e.message } };
   }
-  
-  if (combined.includes('포인트') && combined.includes('조회')) {
-    return { operation: 'point_query', data: {} };
-  }
-  
-  return null;
 }
 
 export async function POST(req: NextRequest) {
@@ -68,55 +134,71 @@ export async function POST(req: NextRequest) {
 
     log('Message received', message);
 
-    const fullPrompt = `${SYSTEM_PROMPT}\n\n${DB_SCHEMA}\n\n${BUSINESS_RULES}\n\n== 현재 사용자 context ==\n${context?.userId ? `사용자 ID: ${context.userId}` : ''}\n${context?.userRole ? `역할: ${context.userRole}` : ''}\n${context?.branchId ? `지점 ID: ${context.branchId}` : ''}\n\n== 사용자 명령 ==\n${message}\n\n## 중요: 반드시 JSON으로만 응답하세요\n아래 예시처럼 JSON 객체 하나만 출력하세요. 다른 텍스트를 절대 추가하지 마세요.\n\n예시:\n{"operation":"customer_query","data":{"search":"홍길동"}}\n{"operation":"info","message":"현재 재고는 100개입니다"}\n\noperation 가능한 값:\n- inventory_transfer (재고 이동)\n- inventory_adjust (재고 조정)\n- inventory_in (재고 입고)\n- inventory_out (재고 출고)\n- point_earn (포인트 적립)\n- point_use (포인트 사용)\n- point_query (포인트 조회)\n- customer_query (고객 조회)\n- customer_create (고객 등록)\n- order_query (주문 조회)\n- product_query (제품 조회)\n- branch_query (지점 조회)\n- info (일반 정보 조회)\n\n**JSON만 응답하세요. 설명이나 다른 텍스트 없이.**`;
+    const fullPrompt = `${SYSTEM_PROMPT}
+
+${DB_SCHEMA}
+
+${QUERY_EXAMPLES}
+
+${BUSINESS_RULES}
+
+== 현재 사용자 ==
+${context?.userId ? `사용자 ID: ${context.userId}` : ''}
+${context?.userRole ? `역할: ${context.userRole}` : ''}
+${context?.branchId ? `지점 ID: ${context.branchId}` : ''}
+
+== 사용자 질문 ==
+${message}
+
+주의: 반드시 SELECT 쿼리만 생성하세요. 절대 INSERT, UPDATE, DELETE 등을 하지 마세요.`;
 
     const messages: MiniMaxMessage[] = [
       { role: 'system', content: fullPrompt },
       { role: 'user', content: message },
     ];
 
-    log('Calling MiniMax API...');
+    log('Calling MiniMax API for SQL generation...');
     const response = await miniMaxClient.chat(messages);
-    log('MiniMax response received', response.substring(0, 300));
+    log('MiniMax response received', response.substring(0, 500));
 
-    const cleaned = response.replace(/```json\n?/g, '').replace(/\n?```/g, '').trim();
-    log('Cleaned response', cleaned.substring(0, 200));
-
-    let intent;
-    try {
-      intent = JSON.parse(cleaned);
-    } catch (e: any) {
-      log('JSON parse error, trying fallback parser', e.message);
-      intent = parseNaturalLanguageIntent(message, cleaned);
-      if (!intent) {
-        return NextResponse.json({
-          type: 'error',
-          message: '명령을 이해하지 못했습니다.',
-          raw: response,
-        });
-      }
-    }
-
-    log('Parsed intent', intent);
-
-    const { operation, data, requiresConfirmation, confirmationMessage } = intent;
-
-    if (requiresConfirmation) {
+    const sqlQuery = extractSqlFromResponse(response);
+    
+    if (!sqlQuery) {
+      log('Could not extract SQL from response');
       return NextResponse.json({
-        type: 'confirm',
-        message: confirmationMessage || '이 작업을 실행할까요?',
-        operation,
-        data,
+        type: 'error',
+        message: '질문을 이해하지 못했습니다. 다시 시도해주세요.',
       });
     }
 
+    if (!isValidSelectQuery(sqlQuery)) {
+      log('Invalid query detected', sqlQuery);
+      return NextResponse.json({
+        type: 'error',
+        message: '보안 정책에 위배되는 쿼리는 실행할 수 없습니다.',
+      });
+    }
+
+    log('Executing SQL:', sqlQuery);
     const supabase = await createClient();
-    const result = await executeOperation(supabase, operation, data);
+    const { data, error } = await executeSmartQuery(supabase, sqlQuery);
+
+    if (error) {
+      return NextResponse.json({
+        type: 'error',
+        message: `쿼리 실행 실패: ${error.message}`,
+      });
+    }
+
+    log('Query result count:', Array.isArray(data) ? data.length : 'not array');
+
+    const naturalResponse = formatNaturalResponse(message, data);
 
     return NextResponse.json({
       type: 'success',
-      message: result.message,
+      message: naturalResponse,
     });
+
   } catch (error: any) {
     log('Error caught', error.message);
     log('Error stack', error.stack);
@@ -127,336 +209,149 @@ export async function POST(req: NextRequest) {
   }
 }
 
-async function executeOperation(supabase: any, operation: string, data: Record<string, any>) {
-  log('Executing operation', operation);
+function formatNaturalResponse(question: string, data: any): string {
+  if (!data) return '데이터가 없습니다.';
+  if (Array.isArray(data) && data.length === 0) return '조회 결과가 없습니다.';
+  
+  const q = question.toLowerCase();
 
-  switch (operation) {
-    case 'inventory_transfer': {
-      const { fromBranchId, toBranchId, productId, quantity, memo } = data;
-
-      const fromInventory = await supabase
-        .from('inventories')
-        .select('id, quantity')
-        .eq('branch_id', fromBranchId)
-        .eq('product_id', productId)
-        .single();
-
-      if (!fromInventory.data || fromInventory.data.quantity < quantity) {
-        throw new Error(`원래 지점 재고가 부족합니다. (현재: ${fromInventory.data?.quantity || 0})`);
-      }
-
-      await supabase.from('inventory_movements').insert({
-        branch_id: fromBranchId,
-        product_id: productId,
-        movement_type: 'OUT',
-        quantity: -quantity,
-        memo: memo || `재고 이동: ${quantity}개`,
-      });
-
-      await supabase.from('inventories').update({
-        quantity: fromInventory.data.quantity - quantity,
-      }).eq('id', fromInventory.data.id);
-
-      let toInventory = await supabase
-        .from('inventories')
-        .select('id, quantity')
-        .eq('branch_id', toBranchId)
-        .eq('product_id', productId)
-        .single();
-
-      if (toInventory.data) {
-        await supabase.from('inventories').update({
-          quantity: toInventory.data.quantity + quantity,
-        }).eq('id', toInventory.data.id);
-      } else {
-        await supabase.from('inventories').insert({
-          branch_id: toBranchId,
-          product_id: productId,
-          quantity: quantity,
-        });
-      }
-
-      await supabase.from('inventory_movements').insert({
-        branch_id: toBranchId,
-        product_id: productId,
-        movement_type: 'IN',
-        quantity: quantity,
-        memo: memo || `재고 이동: ${quantity}개`,
-      });
-
-      return {
-        message: `재고 이동 완료: ${quantity}개 이동`,
-        data: { fromBranchId, toBranchId, productId, quantity },
-      };
+  if (Array.isArray(data)) {
+    if (data.length === 0) return '결과가 없습니다.';
+    if (data.length === 1) {
+      return formatSingleRecord(data[0], q);
     }
-
-    case 'inventory_adjust': {
-      const { branchId, productId, newQuantity, memo, reason } = data;
-
-      let inventory = await supabase
-        .from('inventories')
-        .select('id, quantity')
-        .eq('branch_id', branchId)
-        .eq('product_id', productId)
-        .single();
-
-      if (!inventory.data) {
-        await supabase.from('inventories').insert({
-          branch_id: branchId,
-          product_id: productId,
-          quantity: newQuantity,
-        });
-        inventory = await supabase
-          .from('inventories')
-          .select('id, quantity')
-          .eq('branch_id', branchId)
-          .eq('product_id', productId)
-          .single();
-      } else {
-        await supabase.from('inventories').update({
-          quantity: newQuantity,
-        }).eq('id', inventory.data.id);
-      }
-
-      await supabase.from('inventory_movements').insert({
-        branch_id: branchId,
-        product_id: productId,
-        movement_type: 'ADJUST',
-        quantity: newQuantity - (inventory.data?.quantity || 0),
-        memo: memo || `재고 조정: ${reason || '직접 조정'}`,
-      });
-
-      return {
-        message: `재고 조정 완료: ${inventory.data?.quantity || 0} -> ${newQuantity}`,
-        data: { branchId, productId, oldQuantity: inventory.data?.quantity, newQuantity },
-      };
-    }
-
-    case 'point_earn': {
-      const { customerId, points, salesOrderId, description } = data;
-
-      const lastHistory = await supabase
-        .from('point_history')
-        .select('balance')
-        .eq('customer_id', customerId)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      const currentBalance = lastHistory?.balance || 0;
-      const newBalance = currentBalance + points;
-
-      await supabase.from('point_history').insert({
-        customer_id: customerId,
-        sales_order_id: salesOrderId || null,
-        type: 'earn',
-        points: points,
-        balance: newBalance,
-        description: description || `포인트 적립: ${points}P`,
-      });
-
-      return {
-        message: `포인트 적립 완료: ${points}P (현재 잔액: ${newBalance}P)`,
-        data: { customerId, points, newBalance },
-      };
-    }
-
-    case 'point_use': {
-      const { customerId, points, salesOrderId, description } = data;
-
-      const lastHistory = await supabase
-        .from('point_history')
-        .select('balance')
-        .eq('customer_id', customerId)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      const currentBalance = lastHistory?.balance || 0;
-
-      if (currentBalance < points) {
-        throw new Error(`포인트가 부족합니다. (보유: ${currentBalance}P, 사용 요청: ${points}P)`);
-      }
-
-      const newBalance = currentBalance - points;
-
-      await supabase.from('point_history').insert({
-        customer_id: customerId,
-        sales_order_id: salesOrderId || null,
-        type: 'use',
-        points: -points,
-        balance: newBalance,
-        description: description || `포인트 사용: ${points}P`,
-      });
-
-      return {
-        message: `포인트 사용 완료: ${points}P 차감 (현재 잔액: ${newBalance}P)`,
-        data: { customerId, points, newBalance },
-      };
-    }
-
-    case 'customer_create': {
-      const { name, phone, email, grade, primaryBranchId, source } = data;
-
-      const { data: customer, error } = await supabase
-        .from('customers')
-        .insert({
-          name,
-          phone,
-          email: email || null,
-          grade: grade || 'NORMAL',
-          primary_branch_id: primaryBranchId || null,
-          source: source || 'DIRECT',
-        })
-        .select()
-        .single();
-
-      if (error) throw new Error(`고객 등록 실패: ${error.message}`);
-
-      return {
-        message: `고객 등록 완료: ${name} (${phone})`,
-        data: customer,
-      };
-    }
-
-    case 'product_query': {
-      const { search, limit } = data;
-      let query = supabase.from('products').select('*').eq('is_active', true);
-
-      if (search) {
-        query = query.or(`name.ilike.%${search}%,code.ilike.%${search}%,barcode.ilike.%${search}%`);
-      }
-
-      const { data: products, error } = await query.limit(limit || 20).order('name');
-
-      if (error) throw new Error(`제품 조회 실패: ${error.message}`);
-
-      if (!products || products.length === 0) {
-        return {
-          message: search ? `"${search}" 제품를 찾을 수 없습니다` : '등록된 제품이 없습니다',
-        };
-      }
-
-      if (products.length === 1) {
-        const p = products[0];
-        return {
-          message: `${p.name} (코드: ${p.code})을 찾았습니다. 가격은 ${p.price?.toLocaleString()}원입니다.${p.barcode ? ` 바코드: ${p.barcode}` : ''}`,
-        };
-      }
-
-      const list = products.slice(0, 5).map((p: any, i: number) => `${i + 1}. ${p.name} - ${p.price?.toLocaleString()}원`).join('\n');
-      return {
-        message: `${products.length}개의 제품이 조회되었습니다:\n${list}${products.length > 5 ? '\n...이 외 ' + (products.length - 5) + '개' : ''}`,
-      };
-    }
-
-    case 'customer_query': {
-      const { search } = data;
-      let query = supabase.from('customers').select('*, primary_branch:branches(name)').eq('is_active', true);
-
-      if (search) {
-        query = query.or(`name.ilike.%${search}%,phone.ilike.%${search}%`);
-      }
-
-      const { data: customers, error } = await query.limit(20).order('created_at', { ascending: false });
-
-      if (error) throw new Error(`고객 조회 실패: ${error.message}`);
-
-      if (!customers || customers.length === 0) {
-        return {
-          message: search ? `"${search}" 고객을 찾을 수 없습니다` : '등록된 고객이 없습니다',
-        };
-      }
-
-      if (customers.length === 1) {
-        const c = customers[0];
-        return {
-          message: `${c.name} 고객을 찾았습니다. 전화번호는 ${c.phone}, 등급은 ${c.grade}입니다.${c.primary_branch ? ` 주요 지점은 ${c.primary_branch.name}입니다.` : ''}`,
-        };
-      }
-
-      const list = customers.map((c: any, i: number) => `${i + 1}. ${c.name} (${c.phone}) - ${c.grade}`).join('\n');
-      return {
-        message: `${customers.length}명의 고객이 조회되었습니다:\n${list}`,
-      };
-    }
-
-    case 'branch_query': {
-      const { search } = data;
-      let query = supabase.from('branches').select('*').eq('is_active', true);
-
-      if (search) {
-        query = query.or(`name.ilike.%${search}%,code.ilike.%${search}%`);
-      }
-
-      const { data: branches, error } = await query.order('name');
-
-      if (error) throw new Error(`지점 조회 실패: ${error.message}`);
-
-      if (!branches || branches.length === 0) {
-        return {
-          message: '등록된 지점이 없습니다',
-        };
-      }
-
-      const list = branches.map((b: any, i: number) => `${i + 1}. ${b.name} (${b.code}) - ${b.channel}`).join('\n');
-      return {
-        message: `${branches.length}개의 지점이 있습니다:\n${list}`,
-      };
-    }
-
-    case 'info': {
-      return {
-        message: 'AI 어시스턴트가 도와드릴 수 있습니다:\n• 고객 조회/검색/등록\n• 재고 이동/조정/입출고\n• 포인트 적립/사용/조회\n• 제품 검색\n• 지점 조회\n• 판매 주문 조회\n\n무엇을 도와드릴까요?',
-      };
-    }
-
-    case 'point_query': {
-      const { customerId, search } = data;
-      if (customerId) {
-        const { data: history } = await supabase
-          .from('point_history')
-          .select('*')
-          .eq('customer_id', customerId)
-          .order('created_at', { ascending: false })
-          .limit(10);
-        
-        if (!history || history.length === 0) {
-          return { message: '적립된 포인트 내역이 없습니다.' };
-        }
-        const latest = history[0];
-        return { message: `현재 ${latest.balance?.toLocaleString()}P가 적립되어 있습니다.` };
-      }
-      return {
-        message: `포인트 조회할 고객 이름을 알려주세요`,
-      };
-    }
-
-    default:
-      return {
-        message: `알 수 없는 작업입니다: ${operation}`,
-        data: {},
-      };
+    return formatMultipleRecords(data, q);
   }
+  
+  return formatSingleRecord(data, q);
+}
+
+function formatSingleRecord(record: any, question: string): string {
+  if (!record) return '데이터가 없습니다.';
+  
+  const keys = Object.keys(record);
+  
+  if (keys.includes('name') && keys.includes('phone')) {
+    let msg = '';
+    if (record.name) msg += `${record.name}`;
+    if (record.phone) msg += ` (전화번호: ${record.phone})`;
+    if (record.grade) {
+      const gradeName = record.grade_name || record.grade;
+      msg += `, 등급: ${gradeName}`;
+    }
+    if (record.point_rate) msg += `, 적립률: ${record.point_rate}%`;
+    if (record.balance !== undefined && record.balance !== null) {
+      msg += `, 적립포인트: ${Number(record.balance).toLocaleString()}P`;
+    }
+    if (record.quantity !== undefined && record.quantity !== null) {
+      msg += `, 재고: ${record.quantity}개`;
+    }
+    if (record.price !== undefined && record.price !== null) {
+      msg += `, 가격: ${Number(record.price).toLocaleString()}원`;
+    }
+    if (record.total_amount !== undefined && record.total_amount !== null) {
+      msg += `, 금액: ${Number(record.total_amount).toLocaleString()}원`;
+    }
+    if (record.status) msg += `, 상태: ${record.status}`;
+    if (record.payment_method) msg += `, 결제: ${record.payment_method}`;
+    if (record.created_at) {
+      const date = new Date(record.created_at);
+      msg += `, 등록일: ${date.toLocaleDateString('ko-KR')}`;
+    }
+    return msg || JSON.stringify(record);
+  }
+  
+  if (keys.includes('quantity') && (keys.includes('product_name') || keys.includes('name'))) {
+    const name = record.product_name || record.name || '제품';
+    return `${name}: 재고 ${record.quantity}개${record.safety_stock ? ` (안전재고: ${record.safety_stock})` : ''}`;
+  }
+  
+  if (keys.includes('total_amount') || keys.includes('order_number')) {
+    let msg = `주문번호: ${record.order_number}`;
+    if (record.total_amount) msg += `, 금액: ${Number(record.total_amount).toLocaleString()}원`;
+    if (record.status) msg += `, 상태: ${record.status}`;
+    if (record.payment_method) msg += `, 결제: ${record.payment_method}`;
+    return msg;
+  }
+  
+  if (keys.includes('code') && keys.includes('point_rate')) {
+    return `${record.name || record.code} 등급: 적립률 ${record.point_rate}%`;
+  }
+  
+  const importantFields = ['name', 'phone', 'grade', 'point_rate', 'balance', 'quantity', 'price', 'status', 'code'];
+  const displayFields = keys.filter(k => importantFields.includes(k) && record[k] !== null && record[k] !== undefined);
+  
+  if (displayFields.length > 0) {
+    return displayFields.map(k => {
+      let val = record[k];
+      if (k === 'point_rate') val = `${val}%`;
+      if (k === 'price' || k === 'total_amount') val = `${Number(val).toLocaleString()}원`;
+      if (k === 'balance') val = `${Number(val).toLocaleString()}P`;
+      return `${k}: ${val}`;
+    }).join(', ');
+  }
+  
+  return JSON.stringify(record);
+}
+
+function formatMultipleRecords(records: any[], question: string): string {
+  const q = question.toLowerCase();
+  
+  const isCustomerList = records[0] && 'name' in records[0] && 'phone' in records[0];
+  if (isCustomerList) {
+    const list = records.slice(0, 10).map((c: any, i: number) => {
+      let line = `${i + 1}. ${c.name} (${c.phone || '전화번호 없음'})`;
+      if (c.grade) line += ` - ${c.grade}`;
+      if (c.balance !== undefined && c.balance !== null) line += ` - ${Number(c.balance).toLocaleString()}P`;
+      return line;
+    }).join('\n');
+    const suffix = records.length > 10 ? `\n...이 외 ${records.length - 10}명` : '';
+    return `${records.length}명의 고객이 조회되었습니다:\n${list}${suffix}`;
+  }
+  
+  const isProductList = records[0] && 'name' in records[0] && 'price' in records[0];
+  if (isProductList) {
+    const list = records.slice(0, 10).map((p: any, i: number) => {
+      return `${i + 1}. ${p.name} - ${Number(p.price || 0).toLocaleString()}원`;
+    }).join('\n');
+    const suffix = records.length > 10 ? `\n...이 외 ${records.length - 10}개` : '';
+    return `${records.length}개 제품이 조회되었습니다:\n${list}${suffix}`;
+  }
+  
+  const isInventoryList = records[0] && 'quantity' in records[0];
+  if (isInventoryList) {
+    const list = records.slice(0, 5).map((inv: any, i: number) => {
+      const name = inv.product_name || inv.products?.name || inv.name || '알 수 없는 제품';
+      return `${i + 1}. ${name}: ${inv.quantity}개${inv.safety_stock ? ` (안전재고 ${inv.safety_stock})` : ''}`;
+    }).join('\n');
+    const suffix = records.length > 5 ? `\n...이 외 ${records.length - 5}개` : '';
+    return `${records.length}개 재고가 조회되었습니다:\n${list}${suffix}`;
+  }
+  
+  const isGradeList = records[0] && 'point_rate' in records[0];
+  if (isGradeList) {
+    return records.map(g => `${g.name || g.code}: 적립률 ${g.point_rate}%`).join('\n');
+  }
+  
+  const isPointHistory = records[0] && 'balance' in records[0];
+  if (isPointHistory) {
+    const latest = records[0];
+    const customerName = latest.customers?.name || latest.name || '고객';
+    return `${customerName}의 현재 적립포인트: ${Number(latest.balance).toLocaleString()}P`;
+  }
+  
+  const isBranchList = records[0] && 'code' in records[0] && !records[0].price;
+  if (isBranchList) {
+    const list = records.map((b: any, i: number) => `${i + 1}. ${b.name} (${b.code}) - ${b.channel || ''}`).join('\n');
+    return `${records.length}개의 지점이 조회되었습니다:\n${list}`;
+  }
+  
+  return `${records.length}개 결과가 조회되었습니다.`;
 }
 
 export async function GET(req: NextRequest) {
   return NextResponse.json({
     status: 'ok',
     message: 'AI Agent API is running',
-    available_operations: [
-      'inventory_transfer',
-      'inventory_adjust',
-      'inventory_in',
-      'inventory_out',
-      'point_earn',
-      'point_use',
-      'point_query',
-      'customer_query',
-      'customer_create',
-      'order_query',
-      'product_query',
-      'branch_query',
-    ],
   });
 }
