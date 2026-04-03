@@ -74,6 +74,9 @@ export default function CustomersPage() {
       <div className="flex justify-between items-center mb-6">
         <h3 className="font-semibold text-lg">고객 목록</h3>
         <div className="flex gap-2">
+          <Link href="/customers/analytics" className="btn-secondary py-2 px-4 text-sm">
+            고객 분석
+          </Link>
           <button
             onClick={async () => {
               if (!confirm('누적 구매액 기준으로 등급을 자동 업그레이드합니다.\n(VIP: 100만원↑, VVIP: 300만원↑)\n계속하시겠습니까?')) return;
