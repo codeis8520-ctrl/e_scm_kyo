@@ -33,6 +33,7 @@ ${BUSINESS_RULES}`;
 
 interface AgentRequest {
   message: string;
+  history?: { role: 'user' | 'assistant'; content: string }[];
   context?: {
     userId?: string;
     userRole?: string;
@@ -50,7 +51,7 @@ interface AgentRequest {
 export async function POST(req: NextRequest) {
   try {
     const body: AgentRequest = await req.json();
-    const { message, context, confirm, pending_action } = body;
+    const { message, history, context, confirm, pending_action } = body;
 
     if (!message && !confirm) {
       return NextResponse.json({ error: '메시지가 필요합니다.' }, { status: 400 });
@@ -80,6 +81,7 @@ export async function POST(req: NextRequest) {
 
     const messages: MiniMaxMessage[] = [
       { role: 'system', content: systemContent },
+      ...(history || []).map(h => ({ role: h.role, content: h.content })),
       { role: 'user', content: message },
     ];
 

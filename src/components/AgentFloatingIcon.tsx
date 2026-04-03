@@ -44,8 +44,15 @@ export default function AgentFloatingIcon() {
     }
 
     try {
+      // Build conversation history from current messages (exclude system welcome message)
+      const history = messages
+        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .slice(-10)
+        .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+
       const body: any = {
         message: userMessage,
+        history,
         context: {
           userId: getCookie('user_id'),
           userRole: getCookie('user_role'),
