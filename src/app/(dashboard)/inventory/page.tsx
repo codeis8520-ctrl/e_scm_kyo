@@ -21,21 +21,47 @@ interface Branch {
   name: string;
 }
 
+// 제품별 피벗 행: 제품 정보 + 지점별 재고 맵
+interface ProductRow {
+  productId: string;
+  productName: string;
+  productCode: string;
+  barcode?: string;
+  byBranch: Record<string, Inventory>; // branch_id → Inventory
+}
+
+function getCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  return document.cookie.split(';').reduce((acc, c) => {
+    const [k, v] = c.trim().split('=');
+    acc[k] = decodeURIComponent(v || '');
+    return acc;
+  }, {} as Record<string, string>)[name] || null;
+}
+
 export default function InventoryPage() {
   const [inventories, setInventories] = useState<Inventory[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
-  const [branchFilter, setBranchFilter] = useState('');
   const [search, setSearch] = useState('');
-  const [barcodeSearch, setBarcodeSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [editInventory, setEditInventory] = useState<Inventory | null>(null);
   const [transferInventory, setTransferInventory] = useState<Inventory | null>(null);
+  const [viewMode, setViewMode] = useState<'pivot' | 'flat'>('pivot');
+  const [flatBranchFilter, setFlatBranchFilter] = useState('');
+
+  const userRole = getCookie('user_role');
+  const userBranchId = getCookie('user_branch_id');
+  const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
 
   useEffect(() => {
     fetchBranches();
     fetchInventory();
+    if (isBranchUser && userBranchId) {
+      setFlatBranchFilter(userBranchId);
+      setViewMode('flat');
+    }
   }, []);
 
   const fetchBranches = async () => {
@@ -47,41 +73,13 @@ export default function InventoryPage() {
   const fetchInventory = async () => {
     setLoading(true);
     const supabase = createClient();
-    let query = supabase
+    const { data } = await supabase
       .from('inventories')
-      .select('*, branch:branches(*), product:products(*)')
-      .order('updated_at', { ascending: false });
-
-    if (branchFilter) {
-      query = query.eq('branch_id', branchFilter);
-    }
-
-    const { data } = await query;
-    
-    let filteredData = data || [];
-    
-    if (search) {
-      const searchLower = search.toLowerCase();
-      filteredData = filteredData.filter((item: any) =>
-        item.product?.name?.toLowerCase().includes(searchLower) ||
-        item.product?.code?.toLowerCase().includes(searchLower)
-      );
-    }
-
-    if (barcodeSearch) {
-      const barcodeLower = barcodeSearch.toLowerCase();
-      filteredData = filteredData.filter((item: any) =>
-        item.product?.barcode?.toLowerCase().includes(barcodeLower)
-      );
-    }
-
-    setInventories(filteredData);
+      .select('*, branch:branches(id, name), product:products(id, name, code, barcode)')
+      .order('product_id');
+    setInventories(data || []);
     setLoading(false);
   };
-
-  useEffect(() => {
-    fetchInventory();
-  }, [branchFilter]);
 
   const handleAdjust = (item: Inventory) => {
     setEditInventory(item);
@@ -98,17 +96,63 @@ export default function InventoryPage() {
     fetchInventory();
   };
 
+  // ── 피벗 데이터 계산 ─────────────────────────────────────────────────
+  const productRows: ProductRow[] = (() => {
+    const map = new Map<string, ProductRow>();
+    for (const inv of inventories) {
+      if (!inv.product) continue;
+      if (!map.has(inv.product_id)) {
+        map.set(inv.product_id, {
+          productId: inv.product_id,
+          productName: inv.product.name,
+          productCode: inv.product.code,
+          barcode: inv.product.barcode,
+          byBranch: {},
+        });
+      }
+      map.get(inv.product_id)!.byBranch[inv.branch_id] = inv;
+    }
+    return Array.from(map.values()).sort((a, b) => a.productName.localeCompare(b.productName, 'ko'));
+  })();
+
+  // ── 검색 필터 ─────────────────────────────────────────────────────────
+  const searchLower = search.toLowerCase();
+
+  const filteredPivot = searchLower
+    ? productRows.filter(r =>
+        r.productName.toLowerCase().includes(searchLower) ||
+        r.productCode.toLowerCase().includes(searchLower) ||
+        (r.barcode || '').toLowerCase().includes(searchLower)
+      )
+    : productRows;
+
+  const filteredFlat = inventories.filter(item => {
+    const matchBranch = !flatBranchFilter || item.branch_id === flatBranchFilter;
+    const matchSearch = !searchLower ||
+      item.product?.name?.toLowerCase().includes(searchLower) ||
+      item.product?.code?.toLowerCase().includes(searchLower) ||
+      (item.product?.barcode || '').toLowerCase().includes(searchLower);
+    return matchBranch && matchSearch;
+  });
+
+  // 재고 부족 수 (전체)
+  const lowCount = inventories.filter(i => i.quantity < i.safety_stock).length;
+
   return (
     <div className="card">
       <div className="flex justify-between items-center mb-6">
-        <h3 className="font-semibold text-lg">재고 현황</h3>
+        <div className="flex items-center gap-3">
+          <h3 className="font-semibold text-lg">재고 현황</h3>
+          {lowCount > 0 && (
+            <span className="px-2 py-0.5 text-xs font-medium bg-red-100 text-red-700 rounded-full">
+              부족 {lowCount}건
+            </span>
+          )}
+        </div>
         <div className="flex gap-2">
           <Link href="/inventory/count" className="btn-secondary py-2 px-4 text-sm">재고 실사</Link>
           <button
-            onClick={() => {
-              setEditInventory(null);
-              setShowModal(true);
-            }}
+            onClick={() => { setEditInventory(null); setShowModal(true); }}
             className="btn-primary"
           >
             + 입출고
@@ -116,103 +160,189 @@ export default function InventoryPage() {
         </div>
       </div>
 
-      <div className="flex gap-4 mb-4">
-        <select
-          value={branchFilter}
-          onChange={(e) => { setBranchFilter(e.target.value); }}
-          className="input w-48"
-        >
-          <option value="">전체 지점</option>
-          {branches.map(b => (
-            <option key={b.id} value={b.id}>{b.name}</option>
-          ))}
-        </select>
+      {/* 검색 + 뷰 전환 */}
+      <div className="flex gap-3 mb-4 flex-wrap items-center">
         <input
           type="text"
-          placeholder="제품명 검색..."
+          placeholder="제품명 / 코드 / 바코드 검색..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && fetchInventory()}
-          className="input w-48"
+          className="input w-64"
         />
-        <input
-          type="text"
-          placeholder="바코드 검색..."
-          value={barcodeSearch}
-          onChange={(e) => setBarcodeSearch(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && fetchInventory()}
-          className="input w-40"
-        />
-        <button onClick={() => fetchInventory()} className="btn-secondary">
-          조회
-        </button>
+
+        {/* 뷰 모드 토글 — 지점 고정 사용자는 지점별만 */}
+        {!isBranchUser && (
+          <div className="flex rounded-lg border border-slate-200 overflow-hidden text-sm">
+            <button
+              onClick={() => setViewMode('pivot')}
+              className={`px-4 py-2 font-medium transition-colors ${
+                viewMode === 'pivot'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              제품별 (전체)
+            </button>
+            <button
+              onClick={() => setViewMode('flat')}
+              className={`px-4 py-2 font-medium transition-colors ${
+                viewMode === 'flat'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              지점별
+            </button>
+          </div>
+        )}
+
+        {/* 지점별 뷰일 때만 지점 선택 */}
+        {viewMode === 'flat' && (
+          <select
+            value={flatBranchFilter}
+            onChange={(e) => setFlatBranchFilter(e.target.value)}
+            disabled={isBranchUser}
+            className={`input w-44 ${isBranchUser ? 'bg-slate-100 cursor-not-allowed' : ''}`}
+          >
+            <option value="">전체 지점</option>
+            {branches.map(b => (
+              <option key={b.id} value={b.id}>{b.name}</option>
+            ))}
+          </select>
+        )}
       </div>
 
-      <table className="table">
-        <thead>
-          <tr>
-            <th>지점</th>
-            <th>제품코드</th>
-            <th>제품명</th>
-            <th>바코드</th>
-            <th>현재재고</th>
-            <th>안전재고</th>
-            <th>상태</th>
-            <th>관리</th>
-          </tr>
-        </thead>
-        <tbody>
-          {loading ? (
+      {loading ? (
+        <div className="text-center text-slate-400 py-12">로딩 중...</div>
+      ) : viewMode === 'pivot' ? (
+        /* ── 제품별 피벗 뷰 ── */
+        <div className="overflow-x-auto">
+          <table className="table text-sm">
+            <thead>
+              <tr>
+                <th className="w-24">코드</th>
+                <th>제품명</th>
+                {branches.map(b => (
+                  <th key={b.id} className="text-center whitespace-nowrap">{b.name}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filteredPivot.length === 0 ? (
+                <tr>
+                  <td colSpan={3 + branches.length} className="text-center text-slate-400 py-8">
+                    검색 결과가 없습니다
+                  </td>
+                </tr>
+              ) : filteredPivot.map(row => {
+                const hasAnyLow = branches.some(b => {
+                  const inv = row.byBranch[b.id];
+                  return inv && inv.quantity < inv.safety_stock;
+                });
+                return (
+                  <tr key={row.productId} className={hasAnyLow ? 'bg-red-50/30' : ''}>
+                    <td className="font-mono text-xs text-slate-500">{row.productCode}</td>
+                    <td>
+                      <span className="font-medium">{row.productName}</span>
+                      {row.barcode && (
+                        <span className="ml-2 text-xs text-slate-400 font-mono">{row.barcode}</span>
+                      )}
+                    </td>
+                    {branches.map(b => {
+                      const inv = row.byBranch[b.id];
+                      if (!inv) {
+                        return (
+                          <td key={b.id} className="text-center text-slate-300">-</td>
+                        );
+                      }
+                      const isLow = inv.quantity < inv.safety_stock;
+                      return (
+                        <td key={b.id} className="text-center p-0">
+                          <button
+                            onClick={() => handleAdjust(inv)}
+                            title={`입출고 · 안전재고 ${inv.safety_stock}`}
+                            className={`w-full h-full px-3 py-2 font-semibold transition-colors rounded hover:ring-2 hover:ring-blue-300 hover:ring-inset ${
+                              isLow
+                                ? 'text-red-600 bg-red-50 hover:bg-red-100'
+                                : 'text-slate-800 hover:bg-blue-50'
+                            }`}
+                          >
+                            {inv.quantity}
+                            {isLow && <span className="ml-1 text-xs font-normal">↓{inv.safety_stock}</span>}
+                          </button>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <p className="text-xs text-slate-400 mt-3">
+            숫자 클릭 → 입출고 처리 · 빨간 숫자 = 안전재고 미달 (↓기준값)
+          </p>
+        </div>
+      ) : (
+        /* ── 지점별 플랫 뷰 ── */
+        <table className="table">
+          <thead>
             <tr>
-              <td colSpan={8} className="text-center text-slate-400 py-8">
-                로딩 중...
-              </td>
+              <th>지점</th>
+              <th>제품코드</th>
+              <th>제품명</th>
+              <th>바코드</th>
+              <th>현재재고</th>
+              <th>안전재고</th>
+              <th>상태</th>
+              <th>관리</th>
             </tr>
-          ) : inventories.map((item) => {
-            const isLow = item.quantity < item.safety_stock;
-            return (
-              <tr key={item.id}>
-                <td>{item.branch?.name}</td>
-                <td className="font-mono">{item.product?.code}</td>
-                <td>{item.product?.name}</td>
-                <td className="font-mono text-sm text-slate-500">{item.product?.barcode || '-'}</td>
-                <td className={isLow ? 'text-red-600 font-semibold' : ''}>
-                  {item.quantity}
-                </td>
-                <td>{item.safety_stock}</td>
-                <td>
-                  {isLow ? (
-                    <span className="badge badge-error">부족</span>
-                  ) : (
-                    <span className="badge badge-success">정상</span>
-                  )}
-                </td>
-                <td>
-                  <button
-                    onClick={() => handleAdjust(item)}
-                    className="text-blue-600 hover:underline mr-2"
-                  >
-                    입출고
-                  </button>
-                  <button
-                    onClick={() => { setTransferInventory(item); setShowTransferModal(true); }}
-                    className="text-green-600 hover:underline"
-                  >
-                    이동
-                  </button>
+          </thead>
+          <tbody>
+            {filteredFlat.length === 0 ? (
+              <tr>
+                <td colSpan={8} className="text-center text-slate-400 py-8">
+                  재고 데이터가 없습니다
                 </td>
               </tr>
-            );
-          })}
-          {!loading && inventories.length === 0 && (
-            <tr>
-              <td colSpan={7} className="text-center text-slate-400 py-8">
-                재고 데이터가 없습니다
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+            ) : filteredFlat.map((item) => {
+              const isLow = item.quantity < item.safety_stock;
+              return (
+                <tr key={item.id}>
+                  <td>{item.branch?.name}</td>
+                  <td className="font-mono text-xs">{item.product?.code}</td>
+                  <td>{item.product?.name}</td>
+                  <td className="font-mono text-xs text-slate-500">{item.product?.barcode || '-'}</td>
+                  <td className={isLow ? 'text-red-600 font-semibold' : ''}>
+                    {item.quantity}
+                  </td>
+                  <td>{item.safety_stock}</td>
+                  <td>
+                    {isLow ? (
+                      <span className="badge badge-error">부족</span>
+                    ) : (
+                      <span className="badge badge-success">정상</span>
+                    )}
+                  </td>
+                  <td>
+                    <button
+                      onClick={() => handleAdjust(item)}
+                      className="text-blue-600 hover:underline mr-2"
+                    >
+                      입출고
+                    </button>
+                    <button
+                      onClick={() => { setTransferInventory(item); setShowTransferModal(true); }}
+                      className="text-green-600 hover:underline"
+                    >
+                      이동
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
 
       {showModal && (
         <InventoryModal
