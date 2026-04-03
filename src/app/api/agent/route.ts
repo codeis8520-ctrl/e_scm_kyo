@@ -117,14 +117,21 @@ function parseQueryIntent(sql: string): { table: string; alias: string; filters:
 function buildQueryFromKeywords(message: string): string | null {
   const msg = message.toLowerCase();
   
-  if (msg.includes('고객') || msg.includes('고객') && msg.includes('조회')) {
-    if (msg.includes('리스트') || msg.includes('목록')) {
+  const koreanNamePattern = /([가-힣]{2,4})(?:동|님|씨|氏)/;
+  const nameMatch = message.match(koreanNamePattern);
+  
+  if (nameMatch && (msg.includes('고객') || msg.includes('정보') || msg.includes('조회'))) {
+    const name = nameMatch[1];
+    return `SELECT * FROM customers WHERE name LIKE '%${name}%' LIMIT 5`;
+  }
+  
+  if (msg.includes('고객')) {
+    if (msg.includes('리스트') || msg.includes('목록') || msg.includes('전체')) {
       return 'SELECT * FROM customers WHERE is_active = true ORDER BY created_at DESC LIMIT 20';
     }
-    const nameMatch = message.match(/([가-힣]{2,4})동|([가-힣]{2,4})님|([가-힣]{2,4})氏/);
     if (nameMatch) {
-      const name = nameMatch[1] || nameMatch[2] || nameMatch[3];
-      return `SELECT * FROM customers WHERE name LIKE '%${name}%' LIMIT 10`;
+      const name = nameMatch[1];
+      return `SELECT * FROM customers WHERE name LIKE '%${name}%' LIMIT 5`;
     }
     return 'SELECT * FROM customers WHERE is_active = true ORDER BY created_at DESC LIMIT 20';
   }
@@ -134,28 +141,27 @@ function buildQueryFromKeywords(message: string): string | null {
   }
   
   if (msg.includes('포인트') || msg.includes('적립금')) {
-    const nameMatch = message.match(/([가-힣]{2,4})동|([가-힣]{2,4})님/);
     if (nameMatch) {
-      const name = nameMatch[1] || nameMatch[2];
-      return `SELECT ph.*, c.name as customer_name FROM point_history ph JOIN customers c ON ph.customer_id = c.id WHERE c.name LIKE '%${name}%' ORDER BY ph.created_at DESC LIMIT 10`;
+      const name = nameMatch[1];
+      return `SELECT * FROM customers WHERE name LIKE '%${name}%' LIMIT 5`;
     }
     return null;
   }
   
   if (msg.includes('제품') || msg.includes('상품')) {
-    const nameMatch = message.match(/([가-힣]+)/);
-    if (nameMatch) {
-      return `SELECT * FROM products WHERE name LIKE '%${nameMatch[1]}%' AND is_active = true LIMIT 20`;
+    const productMatch = message.match(/([가-힣\w]+)(?:제품|상품)/);
+    if (productMatch) {
+      return `SELECT * FROM products WHERE name LIKE '%${productMatch[1]}%' AND is_active = true LIMIT 20`;
     }
     return 'SELECT * FROM products WHERE is_active = true ORDER BY name LIMIT 20';
   }
   
-  if (msg.includes('지점')) {
+  if (msg.includes('지점') && !msg.includes('고객')) {
     return 'SELECT * FROM branches WHERE is_active = true ORDER BY name';
   }
   
   if (msg.includes('재고')) {
-    return 'SELECT i.*, p.name as product_name, b.name as branch_name FROM inventories i JOIN products p ON i.product_id = p.id JOIN branches b ON i.branch_id = b.id LIMIT 20';
+    return 'SELECT * FROM inventories WHERE quantity > 0 LIMIT 20';
   }
   
   if (msg.includes('매출') || msg.includes('주문') || msg.includes('판매')) {
@@ -418,9 +424,44 @@ function formatSingleRecord(record: any, question: string): string {
 
 function formatMultipleRecords(records: any[], question: string): string {
   const q = question.toLowerCase();
+  const koreanNamePattern = /([가-힣]{2,4})(?:동|님|씨|氏)/;
+  const questionNameMatch = question.match(koreanNamePattern);
   
   const isCustomerList = records[0] && 'name' in records[0] && 'phone' in records[0];
   if (isCustomerList) {
+    if (records.length === 1) {
+      const c = records[0];
+      const gradeNames: Record<string, string> = { NORMAL: '일반', VIP: 'VIP', VVIP: 'VVIP' };
+      let msg = `${c.name} 고객 정보:\n`;
+      msg += `• 전화번호: ${c.phone || '없음'}\n`;
+      msg += `• 등급: ${gradeNames[c.grade] || c.grade || '일반'}\n`;
+      if (c.balance !== undefined && c.balance !== null) {
+        msg += `• 적립포인트: ${Number(c.balance).toLocaleString()}P\n`;
+      }
+      if (c.source) msg += `• 등록출처: ${c.source}\n`;
+      if (c.created_at) {
+        const date = new Date(c.created_at);
+        msg += `• 등록일: ${date.toLocaleDateString('ko-KR')}\n`;
+      }
+      return msg.trim();
+    }
+    
+    if (questionNameMatch) {
+      const name = questionNameMatch[1];
+      const filtered = records.filter((c: any) => c.name && c.name.includes(name));
+      if (filtered.length === 1) {
+        const c = filtered[0];
+        const gradeNames: Record<string, string> = { NORMAL: '일반', VIP: 'VIP', VVIP: 'VVIP' };
+        let msg = `${c.name} 고객 정보:\n`;
+        msg += `• 전화번호: ${c.phone || '없음'}\n`;
+        msg += `• 등급: ${gradeNames[c.grade] || c.grade || '일반'}\n`;
+        if (c.balance !== undefined && c.balance !== null) {
+          msg += `• 적립포인트: ${Number(c.balance).toLocaleString()}P\n`;
+        }
+        return msg.trim();
+      }
+    }
+    
     const gradeNames: Record<string, string> = { NORMAL: '일반', VIP: 'VIP', VVIP: 'VVIP' };
     const list = records.slice(0, 10).map((c: any, i: number) => {
       let line = `${i + 1}. ${c.name} (${c.phone || '전화번호 없음'})`;
