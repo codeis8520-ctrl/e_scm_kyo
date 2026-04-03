@@ -12,25 +12,14 @@ interface AgentRequest {
   };
 }
 
-interface IntentResult {
-  operation: string;
-  table: string;
-  data: Record<string, any>;
-  requiresConfirmation: boolean;
-  confirmationMessage: string;
-}
-
-function getCookie(name: string): string | null {
-  const cookies = document.cookie.split(';').reduce((acc, cookie) => {
-    const [key, value] = cookie.trim().split('=');
-    acc[key] = decodeURIComponent(value || '');
-    return acc;
-  }, {} as Record<string, string>);
-  return cookies[name] || null;
+function log(msg: string, data?: any) {
+  console.log(`[Agent] ${msg}`, data || '');
 }
 
 export async function POST(req: NextRequest) {
   try {
+    log('Request received');
+
     const body: AgentRequest = await req.json();
     const { message, context } = body;
 
@@ -38,64 +27,37 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: '메시지가 필요합니다.' }, { status: 400 });
     }
 
-    const supabase = await createClient();
+    log('Message received', message);
 
-    const fullPrompt = `
-${SYSTEM_PROMPT}
-
-${DB_SCHEMA}
-
-${BUSINESS_RULES}
-
-== 현재 사용자 context ==
-${context?.userId ? `사용자 ID: ${context.userId}` : ''}
-${context?.userRole ? `역할: ${context.userRole}` : ''}
-${context?.branchId ? `지점 ID: ${context.branchId}` : ''}
-
-== 사용자 명령 ==
-${message}
-
-위 명령을 해석하여 JSON 형식으로만 응답하세요. operation 가능한 값:
-- inventory_transfer (재고 이동)
-- inventory_adjust (재고 조정)
-- inventory_in (재고 입고)
-- inventory_out (재고 출고)
-- point_earn (포인트 적립)
-- point_use (포인트 사용)
-- point_query (포인트 조회)
-- customer_query (고객 조회)
-- customer_create (고객 등록)
-- order_query (주문 조회)
-- product_query (제품 조회)
-- info (일반 정보 조회)
-
-응답은 JSON 하나만, 설명 추가 금지.
-`;
+    const fullPrompt = `${SYSTEM_PROMPT}\n\n${DB_SCHEMA}\n\n${BUSINESS_RULES}\n\n== 현재 사용자 context ==\n${context?.userId ? `사용자 ID: ${context.userId}` : ''}\n${context?.userRole ? `역할: ${context.userRole}` : ''}\n${context?.branchId ? `지점 ID: ${context.branchId}` : ''}\n\n== 사용자 명령 ==\n${message}\n\n위 명령을 해석하여 JSON 형식으로만 응답하세요. operation 가능한 값:\n- inventory_transfer (재고 이동)\n- inventory_adjust (재고 조정)\n- inventory_in (재고 입고)\n- inventory_out (재고 출고)\n- point_earn (포인트 적립)\n- point_use (포인트 사용)\n- point_query (포인트 조회)\n- customer_query (고객 조회)\n- customer_create (고객 등록)\n- order_query (주문 조회)\n- product_query (제품 조회)\n- info (일반 정보 조회)\n\n응답은 JSON 하나만, 설명 추가 금지.`;
 
     const messages: MiniMaxMessage[] = [
       { role: 'system', content: fullPrompt },
       { role: 'user', content: message },
     ];
 
-    console.log('Calling MiniMax...');
+    log('Calling MiniMax API...');
     const response = await miniMaxClient.chat(messages);
-    console.log('MiniMax raw response:', response.substring(0, 500));
+    log('MiniMax response received', response.substring(0, 300));
 
-    let intent: IntentResult;
+    const cleaned = response.replace(/```json\n?/g, '').replace(/\n?```/g, '').trim();
+    log('Cleaned response', cleaned.substring(0, 200));
+
+    let intent;
     try {
-      const cleaned = response.replace(/```json\n?/g, '').replace(/\n?```/g, '').trim();
-      console.log('Cleaned response:', cleaned.substring(0, 200));
       intent = JSON.parse(cleaned);
     } catch (e: any) {
-      console.error('JSON parse error:', e.message);
+      log('JSON parse error', e.message);
       return NextResponse.json({
         type: 'error',
-        message: '명령을 이해하지 못했습니다. 다시 입력해주세요.',
+        message: '명령을 이해하지 못했습니다.',
         raw: response,
       });
     }
 
-    const { operation, table, data, requiresConfirmation, confirmationMessage } = intent;
+    log('Parsed intent', intent);
+
+    const { operation, data, requiresConfirmation, confirmationMessage } = intent;
 
     if (requiresConfirmation) {
       return NextResponse.json({
@@ -106,6 +68,7 @@ ${message}
       });
     }
 
+    const supabase = await createClient();
     const result = await executeOperation(supabase, operation, data);
 
     return NextResponse.json({
@@ -114,8 +77,8 @@ ${message}
       data: result.data,
     });
   } catch (error: any) {
-    console.error('Agent error:', error);
-    console.error('Error stack:', error.stack);
+    log('Error caught', error.message);
+    log('Error stack', error.stack);
     return NextResponse.json({
       type: 'error',
       message: error.message || '에러가 발생했습니다.',
@@ -125,6 +88,8 @@ ${message}
 }
 
 async function executeOperation(supabase: any, operation: string, data: Record<string, any>) {
+  log('Executing operation', operation);
+
   switch (operation) {
     case 'inventory_transfer': {
       const { fromBranchId, toBranchId, productId, quantity, memo } = data;
@@ -186,7 +151,7 @@ async function executeOperation(supabase: any, operation: string, data: Record<s
     }
 
     case 'inventory_adjust': {
-      const { branchId, productId, quantity, newQuantity, memo, reason } = data;
+      const { branchId, productId, newQuantity, memo, reason } = data;
 
       let inventory = await supabase
         .from('inventories')
@@ -238,7 +203,7 @@ async function executeOperation(supabase: any, operation: string, data: Record<s
         .limit(1)
         .maybeSingle();
 
-      const currentBalance = lastHistory?.data?.balance || 0;
+      const currentBalance = lastHistory?.balance || 0;
       const newBalance = currentBalance + points;
 
       await supabase.from('point_history').insert({
@@ -267,7 +232,7 @@ async function executeOperation(supabase: any, operation: string, data: Record<s
         .limit(1)
         .maybeSingle();
 
-      const currentBalance = lastHistory?.data?.balance || 0;
+      const currentBalance = lastHistory?.balance || 0;
 
       if (currentBalance < points) {
         throw new Error(`포인트가 부족합니다. (보유: ${currentBalance}P, 사용 요청: ${points}P)`);
@@ -350,6 +315,24 @@ async function executeOperation(supabase: any, operation: string, data: Record<s
       };
     }
 
+    case 'branch_query': {
+      const { search } = data;
+      let query = supabase.from('branches').select('*').eq('is_active', true);
+
+      if (search) {
+        query = query.or(`name.ilike.%${search}%,code.ilike.%${search}%`);
+      }
+
+      const { data: branches, error } = await query.order('name');
+
+      if (error) throw new Error(`지점 조회 실패: ${error.message}`);
+
+      return {
+        message: `${branches?.length || 0}개 지점 조회됨`,
+        data: branches,
+      };
+    }
+
     default:
       return {
         message: `알 수 없는 작업입니다: ${operation}`,
@@ -374,6 +357,7 @@ export async function GET(req: NextRequest) {
       'customer_create',
       'order_query',
       'product_query',
+      'branch_query',
     ],
   });
 }
