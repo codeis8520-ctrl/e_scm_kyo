@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { signOut } from '@/app/login/actions';
 import { createClient } from '@/lib/supabase/client';
+import AgentFloatingIcon from '@/components/AgentFloatingIcon';
 
 const ALL_NAV_ITEMS = [
   { href: '/', label: '대시보드', icon: '📊' },
@@ -229,6 +230,8 @@ export default function DashboardLayout({
           {children}
         </div>
       </main>
+
+      <AgentFloatingIcon />
     </div>
   );
 }
