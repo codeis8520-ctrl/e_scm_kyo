@@ -19,10 +19,10 @@ CREATE TABLE IF NOT EXISTS agent_memories (
   UNIQUE (source_key)
 );
 
-CREATE INDEX idx_agent_memories_active_usage
+CREATE INDEX IF NOT EXISTS idx_agent_memories_active_usage
   ON agent_memories (is_active, usage_count DESC);
 
-CREATE INDEX idx_agent_memories_category
+CREATE INDEX IF NOT EXISTS idx_agent_memories_category
   ON agent_memories (category, memory_type);
 
 COMMENT ON TABLE agent_memories IS
