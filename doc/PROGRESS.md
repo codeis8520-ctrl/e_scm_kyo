@@ -85,11 +85,9 @@ TOSS_SECRET_KEY=sk_test_xxx
 | `supabase/migrations/003_production.sql` | production_orders에 branch_id, started_at 컬럼 추가 | ✅ 완료 |
 | `supabase/migrations/004_security.sql` | session_tokens, audit_logs 테이블 | ✅ 완료 |
 | `supabase/migrations/005_notifications.sql` | notifications에 external_message_id, error_message, sent_by 추가 | ✅ 완료 |
-| `supabase/migrations/006_taxable_payment.sql` | products에 is_taxable 컬럼, payment_method 확장 (point, mixed) | ⚠️ 미적용 |
-| `supabase/migrations/007_grade_upgrade_threshold.sql` | customer_grades에 upgrade_threshold 컬럼 (VIP 100만, VVIP 300만 기본값) | ⚠️ 미적용 |
-| `supabase/migrations/008_agent_memories.sql` | AI 에이전트 학습 메모리 테이블 (agent_memories) | ⚠️ 미적용 |
-
-> **⚠️ 006~008 마이그레이션은 아직 Supabase에 적용되지 않았습니다. 반드시 실행해야 합니다.**
+| `supabase/migrations/006_taxable_payment.sql` | products에 is_taxable 컬럼, payment_method 확장 (point, mixed) | ✅ 완료 |
+| `supabase/migrations/007_grade_upgrade_threshold.sql` | customer_grades에 upgrade_threshold 컬럼 (VIP 100만, VVIP 300만 기본값) | ✅ 완료 |
+| `supabase/migrations/008_agent_memories.sql` | AI 에이전트 학습 메모리 테이블 (agent_memories) | ✅ 완료 |
 
 ---
 
