@@ -1,6 +1,7 @@
 # POS 관련 작업 예정
 
-> 최종 업데이트: 2026-04-04
+> 최종 업데이트: 2026-04-04  
+> 배포 환경: **Vercel**
 
 ---
 
@@ -15,49 +16,109 @@
 - [x] 환불 처리
 - [x] 모바일 슬라이드업 장바구니
 - [x] VAN 카드 단말기 연동 인프라 구축
-  - `src/lib/card-terminal.ts` 작성
-  - 카드 결제 2단계 흐름 (승인 요청 → 결제 완료)
-  - `sales_orders.approval_no` / `card_info` 컬럼 추가 (migration 011)
-  - 영수증에 승인번호·카드정보 표시
 - [x] 가상 단말기 테스트 모드 (`/api/card-terminal/mock`)
-  - env 미설정 시 자동 활성화, 2초 후 가짜 승인 반환
-  - POS 화면에 "테스트 모드" 배지 표시
 
 ---
 
 ## ⚡ VAN 에이전트 수령 시 즉시 적용 절차
 
-> 에이전트를 받는 즉시 아래 순서대로 진행. 코드 수정 최소화.
+### Step 1 — Vercel 환경변수 설정
 
-### Step 1 — 에이전트 설치 및 포트 확인
-
-VAN사 에이전트를 설치하고 **HTTP 로컬 포트 번호** 확인.
-(에이전트 설치 가이드 또는 설정 파일에 명시됨 — 보통 7001, 8080 등)
-
-### Step 2 — 환경변수 1줄 추가
-
-프로젝트 루트의 `.env.local` 파일에 추가:
+`.env.local` 이 아닌 **Vercel 대시보드**에서 설정:
 
 ```
-NEXT_PUBLIC_CARD_TERMINAL_URL=http://localhost:7001
+Vercel 대시보드 → 프로젝트 → Settings → Environment Variables
+
+키:   NEXT_PUBLIC_CARD_TERMINAL_URL
+값:   http://localhost:7001         ← 에이전트 포트로 교체
+환경: Production, Preview, Development 모두 체크
 ```
 
-> 포트번호를 실제 에이전트 포트로 교체.  
-> 이 줄 하나만 추가하면 테스트 mock이 자동 비활성화되고 실제 단말기로 전환됨.
+설정 후 **Redeploy** 필수 (환경변수는 빌드 시 번들에 포함됨).
 
-### Step 3 — 빌드 및 재시작
+---
 
-```bash
-npm run build
-npm run start
+### ⚠️ CORS 문제 — Vercel 환경 필수 확인
+
+**문제**: Vercel은 HTTPS(`https://앱.vercel.app`)로 서비스됨.  
+브라우저가 `https` 페이지에서 `http://localhost:7001` 을 호출하면  
+VAN 에이전트가 **CORS 헤더를 응답**해야 함.  
+한국 VAN 에이전트는 로컬 Windows 소프트웨어 전용으로 만들어져 CORS 미지원 가능성 높음.
+
+**에이전트 수령 후 먼저 확인할 것**:
+
+```
+브라우저 개발자도구(F12) → Console 탭에서
+"CORS" 또는 "Access-Control-Allow-Origin" 오류 여부 확인
 ```
 
-### Step 4 — 응답 필드명 확인 (필요 시만)
+---
 
-에이전트 문서를 받아 아래 필드명과 비교:
+### CORS 문제 발생 시 해결책
 
-| 항목 | 현재 코드가 인식하는 필드명 후보 |
-|------|-------------------------------|
+#### 방법 A — 로컬 CORS 프록시 (권장)
+
+POS PC에 아래 Node.js 스크립트를 시작프로그램에 등록:
+
+```js
+// cors-proxy.js  (Node.js 필요, 없으면 https://nodejs.org 설치)
+const http = require('http');
+
+const TARGET_PORT = 7001;   // VAN 에이전트 포트
+const PROXY_PORT  = 7002;   // 브라우저가 호출할 포트
+
+http.createServer((req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+
+  const chunks = [];
+  req.on('data', c => chunks.push(c));
+  req.on('end', () => {
+    const body = Buffer.concat(chunks);
+    const options = {
+      hostname: 'localhost', port: TARGET_PORT,
+      path: req.url, method: req.method,
+      headers: { ...req.headers, host: `localhost:${TARGET_PORT}` },
+    };
+    const proxy = http.request(options, (r) => {
+      res.writeHead(r.statusCode, r.headers);
+      r.pipe(res);
+    });
+    proxy.on('error', () => {
+      res.writeHead(502);
+      res.end(JSON.stringify({ resultCode: 'ERR', resultMsg: 'VAN 에이전트 연결 실패' }));
+    });
+    proxy.write(body);
+    proxy.end();
+  });
+}).listen(PROXY_PORT, () => console.log(`CORS proxy: ${PROXY_PORT} → ${TARGET_PORT}`));
+```
+
+실행: `node cors-proxy.js`  
+시작프로그램 등록: `Win + R → shell:startup → 바로가기 생성`
+
+Vercel 환경변수를 프록시 포트로 설정:
+```
+NEXT_PUBLIC_CARD_TERMINAL_URL=http://localhost:7002
+```
+
+#### 방법 B — VAN사에 CORS 지원 여부 문의
+
+일부 최신 에이전트는 CORS를 지원함. VAN사에 문의:  
+> "웹 브라우저(HTTPS)에서 로컬 에이전트 HTTP 호출 시 CORS 헤더 지원 가능한가요?"
+
+지원된다면 프록시 불필요, 직접 연결 가능.
+
+---
+
+### Step 2 — 응답 필드명 확인 (필요 시만)
+
+에이전트 문서의 응답 필드명과 비교:
+
+| 항목 | 현재 코드 인식 후보 |
+|------|-------------------|
 | 성공코드 | `resultCode`, `ResultCode`, `code`, `resCd`, `result` |
 | 성공값 | `0000`, `00`, `000`, `SUCCESS`, `APPROVED`, `OK` |
 | 승인번호 | `approvalNo`, `ApprovalNo`, `approval_no`, `authNo`, `AuthNo` |
@@ -66,63 +127,40 @@ npm run start
 | 할부 | `installment`, `Installment`, `quota` |
 | 오류메시지 | `resultMsg`, `ResultMsg`, `message`, `errMsg` |
 
-**위 목록에 없는 필드명이면** `src/lib/card-terminal.ts` 의 해당 `pick()` 호출에 추가:
+목록에 없는 필드명이면 `src/lib/card-terminal.ts` 의 해당 `pick()` 에 추가.
 
-```typescript
-// 예시 — 승인번호 필드명이 "authCode" 인 경우
-approvalNo: pick(data, 'approvalNo', 'ApprovalNo', 'authNo', 'AuthNo', 'authCode'),
+### Step 3 — 테스트 체크리스트
+
+- [ ] CORS 오류 없이 승인 요청 전달됨
+- [ ] 카드 승인 정상 흐름
+- [ ] 카드 승인 거절 처리
+- [ ] 타임아웃 60초 후 에러 메시지
+- [ ] 영수증 승인번호 · 카드정보 출력
+
+### Step 4 — Supabase migration 011 적용
+
+```sql
+-- Supabase SQL Editor에서 실행 (아직 미적용)
+ALTER TABLE sales_orders
+  ADD COLUMN IF NOT EXISTS approval_no  VARCHAR(20)  DEFAULT NULL,
+  ADD COLUMN IF NOT EXISTS card_info    VARCHAR(100) DEFAULT NULL;
 ```
 
-### Step 5 — 요청 바디 확인 (필요 시만)
+### Step 5 — Windows 시작프로그램 등록
 
-에이전트가 다른 요청 포맷을 요구하면 `src/lib/card-terminal.ts` 의 `requestCardApproval()` 내 body 수정:
-
-```typescript
-body: JSON.stringify({
-  reqType: 'APPROVAL',   // VAN사 요구 필드명으로 교체
-  tradeType: '01',
-  amount,
-  taxAmount,
-  supplyAmount: amount - taxAmount,
-  serviceAmount: 0,
-  installment: '00',
-}),
-```
-
-### Step 6 — 테스트 체크리스트
-
-- [ ] 카드 승인 정상 흐름 (신용카드 일시불)
-- [ ] 카드 승인 거절 처리 (한도 초과 등)
-- [ ] 타임아웃 — 60초 내 응답 없을 때 에러 메시지 표시
-- [ ] 영수증에 승인번호 · 카드정보 정상 출력
-
-### Step 7 — Windows 시작프로그램 등록
-
-에이전트가 PC 재부팅 후에도 자동 실행되도록 등록:
-
-```
-Win + R → shell:startup → 에이전트 바로가기 붙여넣기
-```
-
-또는 VAN사 에이전트가 Windows 서비스로 설치되는 경우 자동 등록됨.
+- VAN 에이전트 바로가기: `Win + R → shell:startup`
+- CORS 프록시 사용 시 `cors-proxy.js` 도 함께 등록
 
 ---
 
 ## 추후 검토 항목
 
-- [ ] **카드 취소(환불) 자동 연동** — 현재 환불 시 VAN 취소 요청 미연결
+- [ ] **카드 취소(환불) 자동 연동**
   - `src/app/(dashboard)/pos/RefundModal.tsx` → `requestCardCancel()` 호출 추가
-  - 원승인번호를 `sales_orders.approval_no` 에서 조회해 취소 요청
-  - 구현 위치: `RefundModal` 의 환불 확정 직전 단계
+  - 원승인번호: `sales_orders.approval_no` 에서 조회
 - [ ] **할부 선택 UI** — 현재 일시불(`00`) 고정
   - 카드 선택 시 0/3/6/12개월 버튼 추가
-  - `requestCardApproval(amount, taxAmount, installment)` 인자 추가
-- [ ] **Supabase migration 011 적용** (아직 미적용)
-  ```sql
-  ALTER TABLE sales_orders
-    ADD COLUMN IF NOT EXISTS approval_no  VARCHAR(20)  DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS card_info    VARCHAR(100) DEFAULT NULL;
-  ```
+- [ ] **오프라인 모드** — 네트워크 단절 시 임시 저장 후 복구
 
 ---
 
@@ -144,5 +182,6 @@ Win + R → shell:startup → 에이전트 바로가기 붙여넣기
 | `src/app/api/card-terminal/mock/route.ts` | 테스트용 가상 단말기 |
 | `src/app/(dashboard)/pos/page.tsx` | POS UI, 카드 승인 흐름 |
 | `src/app/(dashboard)/pos/ReceiptModal.tsx` | 영수증, 승인번호 표시 |
-| `src/lib/actions.ts` → `processPosCheckout()` | DB 저장, approval_no/card_info |
+| `src/lib/actions.ts` → `processPosCheckout()` | DB 저장 |
 | `supabase/migrations/011_card_approval.sql` | DB 컬럼 추가 (미적용) |
+| `docs/cors-proxy.js` | CORS 프록시 스크립트 (필요 시 사용) |
