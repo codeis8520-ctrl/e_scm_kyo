@@ -30,14 +30,16 @@ export async function createProduct(formData: FormData) {
   const randomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
   const code = `KYO-${nameCode}-${randomCode}`;
 
+  const rawCategoryId = formData.get('category_id') as string;
+  const rawBarcode = formData.get('barcode') as string;
   const productData = {
     name,
     code,
-    category_id: formData.get('category_id') as string || null,
+    category_id: (rawCategoryId && rawCategoryId !== 'null') ? rawCategoryId : null,
     unit: formData.get('unit') as string || '개',
     price: parseInt(formData.get('price') as string),
     cost: parseInt(formData.get('cost') as string) || null,
-    barcode: formData.get('barcode') as string || null,
+    barcode: (rawBarcode && rawBarcode !== 'null') ? rawBarcode : null,
     is_taxable: formData.get('is_taxable') !== 'false',
   };
 
@@ -74,14 +76,16 @@ export async function updateProduct(id: string, formData: FormData) {
   const supabase = await createClient();
   
 
+  const rawCategoryId = formData.get('category_id') as string;
+  const rawBarcode = formData.get('barcode') as string;
   const productData = {
     name: formData.get('name') as string,
     code: formData.get('code') as string,
-    category_id: formData.get('category_id') as string || null,
+    category_id: (rawCategoryId && rawCategoryId !== 'null') ? rawCategoryId : null,
     unit: formData.get('unit') as string || '개',
     price: parseInt(formData.get('price') as string),
     cost: parseInt(formData.get('cost') as string) || null,
-    barcode: formData.get('barcode') as string || null,
+    barcode: (rawBarcode && rawBarcode !== 'null') ? rawBarcode : null,
     is_active: formData.get('is_active') === 'true',
     is_taxable: formData.get('is_taxable') !== 'false',
   };

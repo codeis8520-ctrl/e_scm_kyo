@@ -74,7 +74,7 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
 
     const form = new FormData();
     Object.entries(formData).forEach(([key, value]) => {
-      form.append(key, String(value));
+      if (value !== null) form.append(key, String(value));
     });
 
     const result = product?.id
