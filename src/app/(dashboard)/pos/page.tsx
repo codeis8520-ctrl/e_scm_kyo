@@ -63,6 +63,8 @@ export default function POSPage() {
   const [receiptData, setReceiptData] = useState<any>(null);
   const [editingQtyId, setEditingQtyId] = useState<string | null>(null);
   const [editingQtyVal, setEditingQtyVal] = useState('');
+  const [discountType, setDiscountType] = useState<'amount' | 'percent'>('amount');
+  const [discountInput, setDiscountInput] = useState('');
   // quick register
   const [showQuickReg, setShowQuickReg] = useState(false);
   const [quickName, setQuickName] = useState('');
@@ -265,7 +267,14 @@ export default function POSPage() {
 
   // ── 금액 계산 ──────────────────────────────────────────────────────────────
   const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
-  const finalAmount = usePoints && selectedCustomer ? Math.max(0, total - pointsToUse) : total;
+  const discountRaw = parseInt(discountInput.replace(/,/g, '')) || 0;
+  const discountAmount = discountType === 'percent'
+    ? Math.round(total * Math.min(discountRaw, 100) / 100)
+    : Math.min(discountRaw, total);
+  const afterDiscount = Math.max(0, total - discountAmount);
+  const finalAmount = usePoints && selectedCustomer
+    ? Math.max(0, afterDiscount - pointsToUse)
+    : afterDiscount;
   const cashReceivedNum = parseInt(cashReceived.replace(/,/g, '')) || 0;
   const change = paymentMethod === 'cash' && cashReceivedNum > 0 ? cashReceivedNum - finalAmount : 0;
 
@@ -291,7 +300,7 @@ export default function POSPage() {
         gradePointRate: selectedCustomer?.grade_point_rate || 1.0,
         cart,
         totalAmount: total,
-        discountAmount: usePoints ? pointsToUse : 0,
+        discountAmount: discountAmount + (usePoints ? pointsToUse : 0),
         finalAmount,
         paymentMethod,
         usePoints,
@@ -321,7 +330,7 @@ export default function POSPage() {
         orderNumber: orderNumber!, branchName: selectedBranchData?.name || '',
         customerName: selectedCustomer?.name,
         items: cart.map(item => ({ name: item.name, quantity: item.quantity, unitPrice: item.price, totalPrice: item.price * item.quantity })),
-        totalAmount: total, discountAmount: usePoints ? pointsToUse : 0,
+        totalAmount: total, discountAmount: discountAmount + (usePoints ? pointsToUse : 0),
         finalAmount, pointsUsed: usePoints ? pointsToUse : 0, pointsEarned: pointsEarned || 0,
         paymentMethod, cashReceived: paymentMethod === 'cash' && cashReceivedNum > 0 ? cashReceivedNum : undefined,
         change: paymentMethod === 'cash' && change > 0 ? change : undefined,
@@ -333,6 +342,7 @@ export default function POSPage() {
       setCustomerSearch('');
       setUsePoints(false);
       setPointsToUse(0);
+      setDiscountInput('');
       setCashReceived('');
 
     } catch (err: any) {
@@ -515,6 +525,40 @@ export default function POSPage() {
             {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
           </select>
 
+          {/* 할인 */}
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-slate-500 whitespace-nowrap">할인</span>
+            <div className="flex rounded-md overflow-hidden border border-slate-200 shrink-0">
+              <button
+                onClick={() => { setDiscountType('amount'); setDiscountInput(''); }}
+                className={`px-2.5 py-1 text-xs font-medium transition-colors ${discountType === 'amount' ? 'bg-blue-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+              >원</button>
+              <button
+                onClick={() => { setDiscountType('percent'); setDiscountInput(''); }}
+                className={`px-2.5 py-1 text-xs font-medium transition-colors ${discountType === 'percent' ? 'bg-blue-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+              >%</button>
+            </div>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={discountInput}
+              onChange={e => {
+                const raw = e.target.value.replace(/[^0-9]/g, '');
+                if (discountType === 'percent') {
+                  setDiscountInput(raw ? String(Math.min(parseInt(raw), 100)) : '');
+                } else {
+                  setDiscountInput(raw ? parseInt(raw).toLocaleString() : '');
+                }
+              }}
+              onFocus={e => e.target.select()}
+              placeholder={discountType === 'percent' ? '0%' : '0원'}
+              className="input text-right text-sm flex-1 min-w-0"
+            />
+            {discountInput && (
+              <button onClick={() => setDiscountInput('')} className="text-slate-400 hover:text-slate-600 text-sm shrink-0">✕</button>
+            )}
+          </div>
+
           {/* 고객 */}
           <div className="relative">
             {selectedCustomer ? (
@@ -539,7 +583,7 @@ export default function POSPage() {
                       type="checkbox" id="usePoints" checked={usePoints}
                       onChange={e => {
                         setUsePoints(e.target.checked);
-                        setPointsToUse(e.target.checked ? Math.min(selectedCustomer.currentPoints || 0, total) : 0);
+                        setPointsToUse(e.target.checked ? Math.min(selectedCustomer.currentPoints || 0, afterDiscount) : 0);
                       }}
                       className="w-4 h-4"
                     />
@@ -550,10 +594,10 @@ export default function POSPage() {
                       <input
                         type="number"
                         value={pointsToUse}
-                        onChange={e => setPointsToUse(Math.min(parseInt(e.target.value) || 0, Math.min(selectedCustomer.currentPoints || 0, total)))}
+                        onChange={e => setPointsToUse(Math.min(parseInt(e.target.value) || 0, Math.min(selectedCustomer.currentPoints || 0, afterDiscount)))}
                         onFocus={e => e.target.select()}
                         className="input w-20 text-right text-xs py-1"
-                        min="0" max={Math.min(selectedCustomer.currentPoints || 0, total)}
+                        min="0" max={Math.min(selectedCustomer.currentPoints || 0, afterDiscount)}
                       />
                     )}
                   </div>
@@ -645,6 +689,12 @@ export default function POSPage() {
             <div className="flex justify-between text-slate-500">
               <span>소계</span><span>{total.toLocaleString()}원</span>
             </div>
+            {discountAmount > 0 && (
+              <div className="flex justify-between text-red-500">
+                <span>할인 {discountType === 'percent' ? `(${Math.min(parseInt(discountInput) || 0, 100)}%)` : ''}</span>
+                <span>-{discountAmount.toLocaleString()}원</span>
+              </div>
+            )}
             {usePoints && pointsToUse > 0 && (
               <div className="flex justify-between text-green-600">
                 <span>포인트 할인</span><span>-{pointsToUse.toLocaleString()}P</span>
@@ -652,7 +702,7 @@ export default function POSPage() {
             )}
             <div className="flex justify-between font-bold text-base pt-1 border-t">
               <span>결제 금액</span>
-              <span className={usePoints && pointsToUse > 0 ? 'text-green-600' : ''}>{finalAmount.toLocaleString()}원</span>
+              <span className={(discountAmount > 0 || (usePoints && pointsToUse > 0)) ? 'text-red-600' : ''}>{finalAmount.toLocaleString()}원</span>
             </div>
           </div>
 
