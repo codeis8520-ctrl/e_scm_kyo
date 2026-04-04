@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { processPosCheckout } from '@/lib/actions';
-import { requestCardApproval } from '@/lib/card-terminal';
+import { requestCardApproval, isUsingMock } from '@/lib/card-terminal';
 import RefundModal from './RefundModal';
 import ReceiptModal from './ReceiptModal';
 
@@ -55,7 +55,7 @@ export default function POSPage() {
   const [customerSearch, setCustomerSearch] = useState('');
   const [customerResults, setCustomerResults] = useState<Customer[]>([]);
   const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'kakao'>('cash');
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'kakao'>('card');
   const [cashReceived, setCashReceived] = useState('');
   const [processing, setProcessing] = useState(false);
   const [usePoints, setUsePoints] = useState(false);
@@ -825,13 +825,20 @@ export default function POSPage() {
               )}
 
               {cardApprovalState !== 'approved' ? (
-                <button
-                  onClick={handleCardApproval}
-                  disabled={cart.length === 0 || !selectedBranch || cardApprovalState === 'waiting'}
-                  className="w-full btn-primary py-3 text-base font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {cardApprovalState === 'waiting' ? '승인 대기 중...' : `카드 승인 요청 (${finalAmount.toLocaleString()}원)`}
-                </button>
+                <div className="space-y-1">
+                  {isUsingMock() && (
+                    <p className="text-center text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded py-1">
+                      테스트 모드 — 가상 단말기 응답 (2초 후 자동 승인)
+                    </p>
+                  )}
+                  <button
+                    onClick={handleCardApproval}
+                    disabled={cart.length === 0 || !selectedBranch || cardApprovalState === 'waiting'}
+                    className="w-full btn-primary py-3 text-base font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {cardApprovalState === 'waiting' ? '승인 대기 중...' : `카드 승인 요청 (${finalAmount.toLocaleString()}원)`}
+                  </button>
+                </div>
               ) : (
                 <button
                   onClick={handlePayment}

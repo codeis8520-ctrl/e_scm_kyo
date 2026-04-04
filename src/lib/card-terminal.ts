@@ -26,7 +26,11 @@ export interface CardCancelResult {
 function getBaseUrl(): string {
   return (typeof window !== 'undefined' && (window as any).__CARD_TERMINAL_URL__)
     || process.env.NEXT_PUBLIC_CARD_TERMINAL_URL
-    || 'http://localhost:7001';
+    || '/api/card-terminal/mock';   // env 미설정 시 내부 mock 사용 (테스트용)
+}
+
+export function isUsingMock(): boolean {
+  return !process.env.NEXT_PUBLIC_CARD_TERMINAL_URL;
 }
 
 function getTimeout(): number {
@@ -60,7 +64,8 @@ export async function requestCardApproval(
   amount: number,
   taxAmount: number,
 ): Promise<CardApprovalResult> {
-  const url = `${getBaseUrl()}/card/approve`;
+  const base = getBaseUrl();
+  const url = base.startsWith('/') ? base : `${base}/card/approve`;
   const supplyAmount = amount - taxAmount;
 
   const controller = new AbortController();
@@ -124,7 +129,8 @@ export async function requestCardCancel(
   amount: number,
   taxAmount: number,
 ): Promise<CardCancelResult> {
-  const url = `${getBaseUrl()}/card/cancel`;
+  const base = getBaseUrl();
+  const url = base.startsWith('/') ? base : `${base}/card/cancel`;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30000);
