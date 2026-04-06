@@ -8,13 +8,13 @@ export const AGENT_TOOLS: MiniMaxTool[] = [
     type: 'function',
     function: {
       name: 'get_inventory',
-      description: '지점별 재고 현황을 조회합니다. 지점명, 제품명으로 필터링 가능. 재고 부족 여부 포함.',
+      description: '지점별 재고 현황 조회. "재고 얼마야?", "경옥고 재고 확인해줘", "강남점 재고" 등에 사용. 안전재고 미달 여부 포함.',
       parameters: {
         type: 'object',
         properties: {
-          branch_name: { type: 'string', description: '지점명 (예: 강남점). 생략 시 전체 지점.' },
-          product_name: { type: 'string', description: '제품명 키워드. 생략 시 해당 지점 전체.' },
-          include_zero: { type: 'boolean', description: '재고 0인 항목도 포함 여부 (기본 false)' },
+          branch_name: { type: 'string', description: '지점명 키워드. 예: "강남", "본점". 생략 시 전체 지점.' },
+          product_name: { type: 'string', description: '제품명 키워드. 예: "경옥고", "홍삼". 생략 시 전체 제품.' },
+          include_zero: { type: 'boolean', description: '재고 0인 품절 항목 포함 여부. 기본 false.' },
         },
       },
     },
@@ -23,11 +23,11 @@ export const AGENT_TOOLS: MiniMaxTool[] = [
     type: 'function',
     function: {
       name: 'get_low_stock',
-      description: '안전재고 미달 품목 목록을 조회합니다. 재고 보충이 필요한 품목 파악에 사용.',
+      description: '안전재고 미달(재고 부족) 품목 조회. "부족한 거 뭐야?", "보충 필요한 거", "재고 경고" 등에 사용.',
       parameters: {
         type: 'object',
         properties: {
-          branch_name: { type: 'string', description: '지점명 필터 (생략 시 전체)' },
+          branch_name: { type: 'string', description: '지점명 키워드. 생략 시 전체 지점 통합 조회.' },
         },
       },
     },
@@ -62,12 +62,12 @@ export const AGENT_TOOLS: MiniMaxTool[] = [
     type: 'function',
     function: {
       name: 'get_customer',
-      description: '고객을 이름 또는 전화번호로 검색합니다. 포인트 잔액, 등급, 구매이력 요약 포함.',
+      description: '고객 검색. 포인트 잔액, 등급, 최근 구매 이력 포함. 고객 이름이나 전화번호 중 하나만 있어도 검색 가능. 포인트 조정·등급 변경 전 반드시 먼저 호출해서 고객 확인.',
       parameters: {
         type: 'object',
         properties: {
-          name: { type: 'string', description: '고객 이름 (부분 일치)' },
-          phone: { type: 'string', description: '전화번호' },
+          name: { type: 'string', description: '고객 이름 (부분 일치). 예: "김", "홍길동"' },
+          phone: { type: 'string', description: '전화번호. 예: "010-1234-5678" 또는 "01012345678"' },
         },
       },
     },
@@ -116,13 +116,13 @@ export const AGENT_TOOLS: MiniMaxTool[] = [
     type: 'function',
     function: {
       name: 'get_sales_summary',
-      description: '기간별 매출 합계, 채널별/지점별 매출 분석을 조회합니다. "이번달 매출", "오늘 매출" 등에 활용.',
+      description: '기간별 매출 합계·건수·채널별 분석. "이번달 매출", "오늘 얼마 팔렸어?", "강남점 이번주 매출" 등에 사용. date_from/date_to는 오늘 날짜 기준으로 계산해서 전달.',
       parameters: {
         type: 'object',
         properties: {
-          date_from: { type: 'string', description: '시작일 (YYYY-MM-DD). 생략 시 이번달 1일.' },
-          date_to: { type: 'string', description: '종료일 (YYYY-MM-DD). 생략 시 오늘.' },
-          branch_name: { type: 'string', description: '지점명 필터 (선택)' },
+          date_from: { type: 'string', description: '시작일 YYYY-MM-DD. 이번달 1일, 오늘, 이번주 월요일 등 계산해서 입력.' },
+          date_to: { type: 'string', description: '종료일 YYYY-MM-DD. 보통 오늘 날짜.' },
+          branch_name: { type: 'string', description: '지점명 키워드. 생략 시 전체 합산.' },
         },
       },
     },

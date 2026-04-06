@@ -78,7 +78,7 @@ export class MiniMaxClient {
         return msg;
       }),
       temperature: 0.1,
-      max_tokens: 2048,
+      max_tokens: 4096,
     };
 
     if (tools && tools.length > 0) {
