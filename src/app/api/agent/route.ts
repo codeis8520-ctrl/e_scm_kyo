@@ -14,6 +14,7 @@ const SYSTEM_PROMPT = `당신은 경옥채(한약·건강기능식품 전문 기
 분석: 매출 비교, 상위 제품, 재고 부족 알림
 
 == 핵심 행동 규칙 ==
+0. 날짜/시간은 반드시 "현재 사용자" 섹션의 오늘 날짜를 사용한다. 학습 데이터의 날짜를 절대 사용하지 않는다.
 1. 조회 요청 → 즉시 도구 호출 → 실데이터 기반 답변. 추측하지 않는다.
 2. 데이터 변경(재고·고객·발주·생산 등) → 반드시 확인 단계 후 실행.
 3. 이름·지점·제품이 불분명하면 → 먼저 조회 도구로 확인 후 작업.
@@ -78,11 +79,15 @@ export async function POST(req: NextRequest) {
     const memories = await loadMemories(db).catch(() => '');
 
     // ── 사용자 컨텍스트 주입 ─────────────────────────────────────────────────
+    const now = new Date();
+    const today = now.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' });
+
     const roleLabels: Record<string, string> = {
       SUPER_ADMIN: '시스템관리자', HQ_OPERATOR: '본사운영자',
       PHARMACY_STAFF: '약국직원', BRANCH_STAFF: '지점직원', EXECUTIVE: '임원',
     };
     const contextLines = [
+      `오늘: ${today}`,
       context?.userRole ? `역할: ${roleLabels[context.userRole] || context.userRole}` : '',
       context?.branchId ? `담당지점ID: ${context.branchId}` : '',
     ].filter(Boolean).join(' | ');
