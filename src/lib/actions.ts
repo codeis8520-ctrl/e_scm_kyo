@@ -32,6 +32,7 @@ export async function createProduct(formData: FormData) {
 
   const rawCategoryId = formData.get('category_id') as string;
   const rawBarcode = formData.get('barcode') as string;
+  const rawImageUrl = formData.get('image_url') as string;
   const productData = {
     name,
     code,
@@ -41,6 +42,7 @@ export async function createProduct(formData: FormData) {
     cost: parseInt(formData.get('cost') as string) || null,
     barcode: (rawBarcode && rawBarcode !== 'null') ? rawBarcode : null,
     is_taxable: formData.get('is_taxable') !== 'false',
+    image_url: rawImageUrl || null,
   };
 
   // @ts-ignore
@@ -78,6 +80,7 @@ export async function updateProduct(id: string, formData: FormData) {
 
   const rawCategoryId = formData.get('category_id') as string;
   const rawBarcode = formData.get('barcode') as string;
+  const rawImageUrl = formData.get('image_url') as string;
   const productData = {
     name: formData.get('name') as string,
     category_id: (rawCategoryId && rawCategoryId !== 'null') ? rawCategoryId : null,
@@ -87,6 +90,7 @@ export async function updateProduct(id: string, formData: FormData) {
     barcode: (rawBarcode && rawBarcode !== 'null') ? rawBarcode : null,
     is_active: formData.get('is_active') === 'true',
     is_taxable: formData.get('is_taxable') !== 'false',
+    image_url: rawImageUrl || null,
   };
 
   // @ts-ignore
