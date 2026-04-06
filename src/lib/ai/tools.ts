@@ -1,13 +1,15 @@
-import type { AnthropicTool } from './client';
+import type { MiniMaxTool } from './client';
 
 // ─── Tool Definitions ──────────────────────────────────────────────────────
 
-export const AGENT_TOOLS: AnthropicTool[] = [
+export const AGENT_TOOLS: MiniMaxTool[] = [
   // ── 조회 ──────────────────────────────────────────────────────────────────
   {
+    type: 'function',
+    function: {
       name: 'get_inventory',
       description: '지점별 재고 현황을 조회합니다. 지점명, 제품명으로 필터링 가능. 재고 부족 여부 포함.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           branch_name: { type: 'string', description: '지점명 (예: 강남점). 생략 시 전체 지점.' },
@@ -15,57 +17,75 @@ export const AGENT_TOOLS: AnthropicTool[] = [
           include_zero: { type: 'boolean', description: '재고 0인 항목도 포함 여부 (기본 false)' },
         },
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'get_low_stock',
       description: '안전재고 미달 품목 목록을 조회합니다. 재고 보충이 필요한 품목 파악에 사용.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           branch_name: { type: 'string', description: '지점명 필터 (생략 시 전체)' },
         },
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'get_products',
       description: '제품 목록과 단가, 원가, 바코드를 조회합니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           name: { type: 'string', description: '제품명 키워드' },
         },
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'get_branches',
       description: '지점 목록(이름, 채널, 주소, 전화, 운영상태)을 조회합니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           name: { type: 'string', description: '지점명 키워드 (선택)' },
         },
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'get_customer',
       description: '고객을 이름 또는 전화번호로 검색합니다. 포인트 잔액, 등급, 구매이력 요약 포함.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           name: { type: 'string', description: '고객 이름 (부분 일치)' },
           phone: { type: 'string', description: '전화번호' },
         },
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'get_customer_grades',
       description: '고객 등급별 적립률과 혜택을 조회합니다.',
-      input_schema: { type: 'object', properties: {} },
+      parameters: { type: 'object', properties: {} },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'get_point_history',
       description: '특정 고객의 포인트 적립/사용/조정 이력을 조회합니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           customer_name: { type: 'string', description: '고객 이름' },
@@ -73,11 +93,14 @@ export const AGENT_TOOLS: AnthropicTool[] = [
           limit: { type: 'number', description: '최대 조회 건수 (기본 20)' },
         },
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'get_orders',
       description: '판매 주문(매출) 내역을 조회합니다. 기간, 지점, 고객으로 필터링 가능.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           branch_name: { type: 'string', description: '지점명 필터' },
@@ -87,11 +110,14 @@ export const AGENT_TOOLS: AnthropicTool[] = [
           limit: { type: 'number', description: '최대 조회 건수 (기본 20)' },
         },
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'get_sales_summary',
       description: '기간별 매출 합계, 채널별/지점별 매출 분석을 조회합니다. "이번달 매출", "오늘 매출" 등에 활용.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           date_from: { type: 'string', description: '시작일 (YYYY-MM-DD). 생략 시 이번달 1일.' },
@@ -99,21 +125,27 @@ export const AGENT_TOOLS: AnthropicTool[] = [
           branch_name: { type: 'string', description: '지점명 필터 (선택)' },
         },
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'get_suppliers',
       description: '공급업체(매입처) 목록을 조회합니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           name: { type: 'string', description: '공급업체명 키워드 (선택)' },
         },
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'get_purchase_orders',
       description: '매입 발주서 목록과 상태를 조회합니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           status: {
@@ -125,11 +157,14 @@ export const AGENT_TOOLS: AnthropicTool[] = [
           limit: { type: 'number', description: '최대 조회 건수 (기본 20)' },
         },
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'get_production_orders',
       description: '생산 지시서 목록과 진행 상태를 조회합니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           status: {
@@ -141,13 +176,16 @@ export const AGENT_TOOLS: AnthropicTool[] = [
           limit: { type: 'number', description: '최대 조회 건수 (기본 20)' },
         },
       },
+    },
   },
 
   // ── 재고 관련 쓰기 ──────────────────────────────────────────────────────────
   {
+    type: 'function',
+    function: {
       name: 'bulk_adjust_inventory',
       description: '여러 지점/제품을 한 번에 재고 조정합니다. "모든 점포", "전체 제품" 같은 대량 작업에 사용. branch_name 또는 product_name을 생략하면 전체 대상으로 처리됩니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           branch_name: { type: 'string', description: '지점명. 생략하면 전체 지점 대상.' },
@@ -162,11 +200,14 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['movement_type', 'quantity'],
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'adjust_inventory',
       description: '특정 지점의 특정 제품 1건 재고를 입고(+), 출고(-), 실사(=) 방식으로 조정합니다. 단일 건에만 사용하고, 여러 지점/제품이면 bulk_adjust_inventory를 사용하세요.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           branch_name: { type: 'string', description: '지점명' },
@@ -181,11 +222,14 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['branch_name', 'product_name', 'movement_type', 'quantity'],
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'transfer_inventory',
       description: '지점 간 재고를 이동합니다. 출발 지점 재고가 차감되고 도착 지점에 추가됩니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           from_branch_name: { type: 'string', description: '출발 지점명' },
@@ -195,13 +239,16 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['from_branch_name', 'to_branch_name', 'product_name', 'quantity'],
       },
+    },
   },
 
   // ── 고객 관련 쓰기 ──────────────────────────────────────────────────────────
   {
+    type: 'function',
+    function: {
       name: 'create_customer',
       description: '새 고객을 등록합니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           name: { type: 'string', description: '고객 이름' },
@@ -213,11 +260,14 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['name', 'phone'],
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'update_customer',
       description: '고객 정보(전화번호, 이메일, 주소, 건강메모, 등급)를 수정합니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           customer_name: { type: 'string', description: '찾을 고객 이름' },
@@ -229,11 +279,14 @@ export const AGENT_TOOLS: AnthropicTool[] = [
           grade: { type: 'string', enum: ['NORMAL', 'VIP', 'VVIP'], description: '변경할 등급' },
         },
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'add_customer_consultation',
       description: '고객 상담 기록을 추가합니다. 방문 예정, 전화 상담, 구매 상담, 민원 처리 등을 기록할 때 사용합니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           customer_name: { type: 'string', description: '고객 이름' },
@@ -247,11 +300,14 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['content', 'consultation_type'],
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'update_customer_grade',
       description: '특정 고객의 등급을 변경합니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           customer_name: { type: 'string', description: '고객 이름' },
@@ -260,16 +316,22 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['new_grade'],
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'upgrade_customer_grades',
       description: '누적 구매액 기준으로 전체 고객 등급을 자동 업그레이드합니다. (100만원↑→VIP, 300만원↑→VVIP)',
-      input_schema: { type: 'object', properties: {} },
+      parameters: { type: 'object', properties: {} },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'adjust_points',
       description: '고객 포인트를 수동으로 추가하거나 차감합니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           customer_name: { type: 'string', description: '고객 이름' },
@@ -279,13 +341,16 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['points', 'reason'],
       },
+    },
   },
 
   // ── 지점/제품 관련 쓰기 ─────────────────────────────────────────────────────
   {
+    type: 'function',
+    function: {
       name: 'create_branch',
       description: '새 지점/매장을 추가합니다. 추가 시 모든 제품에 대해 재고 레코드(0개)가 자동 생성됩니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           name: { type: 'string', description: '지점명 (예: 송파점)' },
@@ -295,11 +360,14 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['name', 'channel'],
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'update_branch',
       description: '지점 정보(이름, 주소, 전화, 활성화여부)를 수정합니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           branch_name: { type: 'string', description: '수정할 지점명' },
@@ -310,11 +378,14 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['branch_name'],
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'create_product',
       description: '새 제품을 등록합니다. 등록 시 모든 지점에 재고 레코드(0개)가 자동 생성됩니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           name: { type: 'string', description: '제품명' },
@@ -325,13 +396,16 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['name', 'price'],
       },
+    },
   },
 
   // ── 매입(발주) 관련 쓰기 ───────────────────────────────────────────────────
   {
+    type: 'function',
+    function: {
       name: 'create_purchase_order',
       description: '공급업체에 제품 발주서를 작성합니다. DRAFT 상태로 생성되며 확정 전 수정 가능.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           supplier_name: { type: 'string', description: '공급업체명' },
@@ -343,22 +417,28 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['supplier_name', 'branch_name', 'product_name', 'quantity', 'unit_price'],
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'confirm_purchase_order',
       description: '발주서를 DRAFT에서 CONFIRMED(확정) 상태로 변경합니다. 확정 후 수정 불가.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           order_number: { type: 'string', description: '발주서 번호 (PO-...)' },
         },
         required: ['order_number'],
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'receive_purchase_order',
       description: '발주서에 대한 실제 입고를 처리합니다. 재고가 자동으로 증가하고 회계 분개가 생성됩니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           order_number: { type: 'string', description: '발주서 번호 (PO-...)' },
@@ -366,13 +446,16 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['order_number'],
       },
+    },
   },
 
   // ── 생산 관련 쓰기 ──────────────────────────────────────────────────────────
   {
+    type: 'function',
+    function: {
       name: 'create_production_order',
       description: '제품 생산 지시서를 생성합니다. BOM이 등록된 제품만 가능. PENDING 상태로 생성.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           product_name: { type: 'string', description: '생산할 완제품명' },
@@ -382,35 +465,44 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['product_name', 'branch_name', 'quantity'],
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'start_production_order',
       description: '생산 지시서를 착수(PENDING→IN_PROGRESS) 상태로 변경합니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           order_number: { type: 'string', description: '생산 지시서 번호 (WO-...)' },
         },
         required: ['order_number'],
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'complete_production_order',
       description: '생산을 완료 처리합니다. BOM 원재료가 재고에서 차감되고 완제품 재고가 증가합니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           order_number: { type: 'string', description: '생산 지시서 번호 (WO-...)' },
         },
         required: ['order_number'],
       },
+    },
   },
 
   // ── 알림 ────────────────────────────────────────────────────────────────────
   {
+    type: 'function',
+    function: {
       name: 'send_sms',
       description: 'SMS를 발송합니다. 고객 이름/전화번호로 특정 고객에게, 또는 전화번호를 직접 지정하여 발송.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           customer_name: { type: 'string', description: '발송할 고객 이름 (phone 대신 사용 가능)' },
@@ -419,11 +511,14 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['message'],
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'update_product',
       description: '제품의 판매가, 원가, 이름, 단위를 수정합니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           product_name: { type: 'string', description: '수정할 제품명 키워드' },
@@ -434,11 +529,14 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['product_name'],
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'bulk_update_product_costs',
       description: '전체 또는 특정 제품의 원가를 판매가 대비 비율로 일괄 업데이트합니다. "원가를 판매가의 50%로 설정해줘" 같은 요청에 사용.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           cost_ratio: { type: 'number', description: '판매가 대비 원가 비율 (0~1). 예: 0.5 = 50%' },
@@ -446,11 +544,14 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['cost_ratio'],
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'bulk_send_sms',
       description: '특정 등급 또는 전체 고객에게 동일한 SMS를 일괄 발송합니다. 프로모션, 공지사항 등에 사용.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           grade: { type: 'string', enum: ['NORMAL', 'VIP', 'VVIP', 'ALL'], description: '발송 대상 등급. ALL이면 전체 고객.' },
@@ -459,11 +560,14 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['grade', 'message'],
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'create_and_confirm_purchase_order',
       description: '발주서를 작성하고 즉시 확정합니다. "발주하고 확정까지 해줘" 요청에 사용.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           supplier_name: { type: 'string', description: '공급업체 이름 키워드' },
@@ -475,11 +579,14 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['supplier_name', 'branch_name', 'product_name', 'quantity', 'unit_price'],
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'replenish_low_stock',
       description: '안전재고 미달 품목을 자동으로 보충합니다. 안전재고 수준까지 채우거나 지정 수량만큼 입고 처리.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           branch_name: { type: 'string', description: '지점명 (생략 시 전체 지점)' },
@@ -488,11 +595,14 @@ export const AGENT_TOOLS: AnthropicTool[] = [
           memo: { type: 'string', description: '메모' },
         },
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'get_top_products',
       description: '기간별 판매량/매출액 상위 제품을 조회합니다.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           start_date: { type: 'string', description: '조회 시작일 YYYY-MM-DD (기본: 이번 달 1일)' },
@@ -501,11 +611,14 @@ export const AGENT_TOOLS: AnthropicTool[] = [
           branch_name: { type: 'string', description: '지점 필터 (생략 시 전체)' },
         },
       },
+    },
   },
   {
+    type: 'function',
+    function: {
       name: 'compare_sales',
       description: '두 기간의 매출을 비교합니다. "이번달 vs 지난달", "이번주 vs 지난주" 등의 요청에 사용.',
-      input_schema: {
+      parameters: {
         type: 'object',
         properties: {
           period1_start: { type: 'string', description: '비교 기간1 시작일 YYYY-MM-DD' },
@@ -516,6 +629,7 @@ export const AGENT_TOOLS: AnthropicTool[] = [
         },
         required: ['period1_start', 'period1_end', 'period2_start', 'period2_end'],
       },
+    },
   },
 ];
 
