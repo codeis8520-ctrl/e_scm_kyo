@@ -284,6 +284,20 @@ export const AGENT_TOOLS: MiniMaxTool[] = [
   {
     type: 'function',
     function: {
+      name: 'get_customer_consultations',
+      description: '고객 상담 기록 목록 조회. 상담 내용, 유형, 날짜, ID 포함. 상담 기록 삭제 전 반드시 먼저 호출해서 ID 확인.',
+      parameters: {
+        type: 'object',
+        properties: {
+          customer_name: { type: 'string', description: '고객 이름' },
+          phone: { type: 'string', description: '고객 전화번호' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'add_customer_consultation',
       description: '고객 상담 기록을 추가합니다. 방문 예정, 전화 상담, 구매 상담, 민원 처리 등을 기록할 때 사용합니다.',
       parameters: {
@@ -631,6 +645,29 @@ export const AGENT_TOOLS: MiniMaxTool[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_record',
+      description: `레코드 삭제. 잘못 입력된 상담 기록, 메모, 알림 등 허용된 테이블의 항목을 ID로 삭제.
+허용 테이블: customer_consultations(상담기록), notifications(발송이력).
+삭제 전 반드시 get_customer_consultations 등으로 ID를 확인한 후 사용.
+sales_orders·inventories 등 핵심 거래 테이블은 삭제 불가.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          table: {
+            type: 'string',
+            enum: ['customer_consultations', 'notifications'],
+            description: '삭제할 테이블명',
+          },
+          record_id: { type: 'string', description: '삭제할 레코드의 UUID' },
+          reason: { type: 'string', description: '삭제 사유 (예: "잘못 입력된 상담 기록")' },
+        },
+        required: ['table', 'record_id'],
+      },
+    },
+  },
 ];
 
 export const WRITE_TOOLS = new Set([
@@ -658,6 +695,7 @@ export const WRITE_TOOLS = new Set([
   'replenish_low_stock',
   'update_product',
   'bulk_update_product_costs',
+  'delete_record',
 ]);
 
 // ─── Shared Helpers ──────────────────────────────────────────────────────────
@@ -729,6 +767,8 @@ export async function executeTool(toolName: string, args: Record<string, any>, s
       case 'compare_sales':            return execCompareSales(sb, args as any);
       case 'update_product':           return execUpdateProduct(sb, args as any);
       case 'bulk_update_product_costs':return execBulkUpdateProductCosts(sb, args as any);
+      case 'get_customer_consultations':return execGetCustomerConsultations(sb, args as any);
+      case 'delete_record':            return execDeleteRecord(sb, args as any);
       default: return JSON.stringify({ error: `알 수 없는 도구: ${toolName}` });
     }
   } catch (e: any) {
@@ -2065,5 +2105,60 @@ async function execBulkUpdateProductCosts(sb: any, args: { cost_ratio: number; p
     처리건수: successCount,
     상세: details.slice(0, 10),
     안내: details.length > 10 ? `외 ${details.length - 10}개` : undefined,
+  });
+}
+
+// ── 상담 기록 조회 ────────────────────────────────────────────────────────────
+
+async function execGetCustomerConsultations(sb: any, args: { customer_name?: string; phone?: string }): Promise<string> {
+  const customer = await findCustomer(sb, args);
+  if (!customer) return JSON.stringify({ error: '고객을 찾을 수 없습니다.' });
+
+  const { data, error } = await sb.from('customer_consultations')
+    .select('id, consultation_type, content, created_at')
+    .eq('customer_id', customer.id)
+    .order('created_at', { ascending: false })
+    .limit(20);
+
+  if (error) return JSON.stringify({ error: error.message });
+  if (!data?.length) return JSON.stringify({ 결과: `${customer.name} 고객의 상담 기록이 없습니다.` });
+
+  return JSON.stringify({
+    고객: customer.name,
+    상담기록: (data as any[]).map(r => ({
+      id: r.id,
+      유형: r.consultation_type,
+      내용: r.content?.text || JSON.stringify(r.content),
+      일시: r.created_at?.slice(0, 16).replace('T', ' '),
+    })),
+    안내: '삭제 시 id 값을 delete_record에 전달하세요.',
+  });
+}
+
+// ── 범용 레코드 삭제 ──────────────────────────────────────────────────────────
+
+const DELETABLE_TABLES: Record<string, string> = {
+  customer_consultations: '상담 기록',
+  notifications: '발송 이력',
+};
+
+async function execDeleteRecord(sb: any, args: { table: string; record_id: string; reason?: string }): Promise<string> {
+  if (!DELETABLE_TABLES[args.table]) {
+    return JSON.stringify({ error: `"${args.table}" 테이블은 삭제가 허용되지 않습니다. 허용: ${Object.keys(DELETABLE_TABLES).join(', ')}` });
+  }
+
+  // 삭제 전 존재 확인
+  const { data: existing } = await sb.from(args.table).select('id').eq('id', args.record_id).single();
+  if (!existing) return JSON.stringify({ error: `해당 ID의 ${DELETABLE_TABLES[args.table]}을 찾을 수 없습니다.` });
+
+  const { error } = await sb.from(args.table).delete().eq('id', args.record_id);
+  if (error) return JSON.stringify({ error: error.message });
+
+  return JSON.stringify({
+    성공: true,
+    메시지: `${DELETABLE_TABLES[args.table]} 삭제 완료`,
+    테이블: args.table,
+    삭제ID: args.record_id,
+    사유: args.reason || '미지정',
   });
 }

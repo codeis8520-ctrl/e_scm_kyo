@@ -354,6 +354,15 @@ function buildConfirmDescription(toolName: string, args: Record<string, any>): s
       lines.push('⚠️ 대상 제품 전체의 원가(cost)가 변경됩니다.');
       break;
     }
+    case 'delete_record': {
+      const tableLabels: Record<string, string> = { customer_consultations: '상담 기록', notifications: '발송 이력' };
+      lines.push(`🗑️ ${tableLabels[args.table] || args.table} 삭제 확인`);
+      add('테이블', tableLabels[args.table] || args.table);
+      add('레코드 ID', args.record_id);
+      add('사유', args.reason);
+      lines.push('⚠️ 삭제 후 복구할 수 없습니다.');
+      break;
+    }
     default:
       return `⚠️ 작업 확인\n\n${JSON.stringify(args, null, 2)}`;
   }
