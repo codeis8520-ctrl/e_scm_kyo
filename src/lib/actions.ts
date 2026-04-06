@@ -913,6 +913,7 @@ export interface CartItem {
   name: string;
   price: number;
   quantity: number;
+  discount?: number;
 }
 
 export interface CheckoutPayload {
@@ -992,8 +993,8 @@ export async function processPosCheckout(payload: CheckoutPayload) {
       product_id: item.productId,
       quantity: item.quantity,
       unit_price: item.price,
-      discount_amount: 0,
-      total_price: item.price * item.quantity,
+      discount_amount: item.discount || 0,
+      total_price: item.price * item.quantity - (item.discount || 0),
     });
   }
 

@@ -29,6 +29,7 @@ interface CartItem {
   name: string;
   price: number;
   quantity: number;
+  discount: number;
   barcode?: string;
 }
 
@@ -64,6 +65,8 @@ export default function POSPage() {
   const [receiptData, setReceiptData] = useState<any>(null);
   const [editingQtyId, setEditingQtyId] = useState<string | null>(null);
   const [editingQtyVal, setEditingQtyVal] = useState('');
+  const [editingDiscountId, setEditingDiscountId] = useState<string | null>(null);
+  const [editingDiscountVal, setEditingDiscountVal] = useState('');
   const [discountType, setDiscountType] = useState<'amount' | 'percent'>('amount');
   const [discountInput, setDiscountInput] = useState('');
   const [cardApprovalState, setCardApprovalState] = useState<'idle' | 'waiting' | 'approved' | 'error'>('idle');
@@ -80,6 +83,7 @@ export default function POSPage() {
   const searchRef = useRef<HTMLInputElement>(null);
   const customerInputRef = useRef<HTMLInputElement>(null);
   const editingQtyRef = useRef<HTMLInputElement>(null);
+  const editingDiscountRef = useRef<HTMLInputElement>(null);
 
   const initialRole = getCookie('user_role');
   const initialBranchId = getCookie('user_branch_id');
@@ -160,6 +164,11 @@ export default function POSPage() {
     if (editingQtyId) editingQtyRef.current?.focus();
   }, [editingQtyId]);
 
+  // ── 할인 편집 포커스 ───────────────────────────────────────────────────────
+  useEffect(() => {
+    if (editingDiscountId) editingDiscountRef.current?.focus();
+  }, [editingDiscountId]);
+
   // ── 제품 필터 ─────────────────────────────────────────────────────────────
   const filteredProducts = products.filter(p =>
     p.name.includes(search) || p.code.includes(search)
@@ -184,7 +193,7 @@ export default function POSPage() {
           item.productId === product.id ? { ...item, quantity: item.quantity + 1 } : item
         );
       }
-      return [...prev, { productId: product.id, name: product.name, price: product.price, quantity: 1, barcode: product.barcode }];
+      return [...prev, { productId: product.id, name: product.name, price: product.price, quantity: 1, discount: 0, barcode: product.barcode }];
     });
     setSearch('');
     searchRef.current?.focus();
@@ -269,13 +278,29 @@ export default function POSPage() {
     setQuickRegLoading(false);
   };
 
+  // ── 품목 할인 ──────────────────────────────────────────────────────────────
+  const updateDiscount = (productId: string, discount: number) => {
+    setCart(prev => prev.map(item =>
+      item.productId === productId ? { ...item, discount: Math.max(0, Math.min(discount, item.price * item.quantity)) } : item
+    ));
+  };
+
+  const commitDiscountEdit = (productId: string) => {
+    const val = parseInt(editingDiscountVal.replace(/,/g, '')) || 0;
+    updateDiscount(productId, val);
+    setEditingDiscountId(null);
+    setEditingDiscountVal('');
+  };
+
   // ── 금액 계산 ──────────────────────────────────────────────────────────────
+  const itemDiscountTotal = cart.reduce((sum, item) => sum + (item.discount || 0), 0);
   const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const subtotal = total - itemDiscountTotal;
   const discountRaw = parseInt(discountInput.replace(/,/g, '')) || 0;
   const discountAmount = discountType === 'percent'
-    ? Math.round(total * Math.min(discountRaw, 100) / 100)
-    : Math.min(discountRaw, total);
-  const afterDiscount = Math.max(0, total - discountAmount);
+    ? Math.round(subtotal * Math.min(discountRaw, 100) / 100)
+    : Math.min(discountRaw, subtotal);
+  const afterDiscount = Math.max(0, subtotal - discountAmount);
   const finalAmount = usePoints && selectedCustomer
     ? Math.max(0, afterDiscount - pointsToUse)
     : afterDiscount;
@@ -329,7 +354,7 @@ export default function POSPage() {
         gradePointRate: selectedCustomer?.grade_point_rate || 1.0,
         cart,
         totalAmount: total,
-        discountAmount: discountAmount + (usePoints ? pointsToUse : 0),
+        discountAmount: itemDiscountTotal + discountAmount + (usePoints ? pointsToUse : 0),
         finalAmount,
         paymentMethod,
         usePoints,
@@ -360,8 +385,8 @@ export default function POSPage() {
       setReceiptData({
         orderNumber: orderNumber!, branchName: selectedBranchData?.name || '',
         customerName: selectedCustomer?.name,
-        items: cart.map(item => ({ name: item.name, quantity: item.quantity, unitPrice: item.price, totalPrice: item.price * item.quantity })),
-        totalAmount: total, discountAmount: discountAmount + (usePoints ? pointsToUse : 0),
+        items: cart.map(item => ({ name: item.name, quantity: item.quantity, unitPrice: item.price, totalPrice: item.price * item.quantity - (item.discount || 0), discount: item.discount || 0 })),
+        totalAmount: total, discountAmount: itemDiscountTotal + discountAmount + (usePoints ? pointsToUse : 0),
         finalAmount, pointsUsed: usePoints ? pointsToUse : 0, pointsEarned: pointsEarned || 0,
         paymentMethod, cashReceived: paymentMethod === 'cash' && cashReceivedNum > 0 ? cashReceivedNum : undefined,
         change: paymentMethod === 'cash' && change > 0 ? change : undefined,
@@ -511,35 +536,80 @@ export default function POSPage() {
         {/* 장바구니 목록 */}
         <div className="flex-1 overflow-auto p-3 space-y-2">
           {cart.map(item => (
-            <div key={item.productId} className="flex items-center gap-2 p-2.5 bg-slate-50 rounded-lg">
-              <div className="flex-1 min-w-0">
-                <p className="font-medium text-sm truncate">{item.name}</p>
-                <p className="text-xs text-slate-500">{item.price.toLocaleString()}원 × {item.quantity} = <strong>{(item.price * item.quantity).toLocaleString()}원</strong></p>
+            <div key={item.productId} className="p-2.5 bg-slate-50 rounded-lg space-y-1.5">
+              <div className="flex items-center gap-2">
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-sm truncate">{item.name}</p>
+                  <p className="text-xs text-slate-500">
+                    {item.price.toLocaleString()}원 × {item.quantity}
+                    {item.discount > 0 && <span className="text-orange-500"> -할인 {item.discount.toLocaleString()}원</span>}
+                    {' = '}<strong className={item.discount > 0 ? 'text-orange-600' : ''}>{(item.price * item.quantity - item.discount).toLocaleString()}원</strong>
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button onClick={() => updateQuantity(item.productId, item.quantity - 1)} className="w-7 h-7 bg-slate-200 rounded text-sm hover:bg-slate-300">-</button>
+                  {editingQtyId === item.productId ? (
+                    <input
+                      ref={editingQtyRef}
+                      type="number"
+                      value={editingQtyVal}
+                      onChange={e => setEditingQtyVal(e.target.value)}
+                      onBlur={() => commitQtyEdit(item.productId)}
+                      onKeyDown={e => { if (e.key === 'Enter') commitQtyEdit(item.productId); if (e.key === 'Escape') { setEditingQtyId(null); setEditingQtyVal(''); } }}
+                      className="w-12 text-center border border-blue-400 rounded text-sm px-1 py-0.5"
+                      min="1"
+                    />
+                  ) : (
+                    <button
+                      onClick={() => { setEditingQtyId(item.productId); setEditingQtyVal(String(item.quantity)); }}
+                      title="클릭하여 수량 직접 입력"
+                      className="w-8 text-center font-semibold text-sm hover:bg-blue-50 rounded py-0.5"
+                    >
+                      {item.quantity}
+                    </button>
+                  )}
+                  <button onClick={() => updateQuantity(item.productId, item.quantity + 1)} className="w-7 h-7 bg-slate-200 rounded text-sm hover:bg-slate-300">+</button>
+                  <button onClick={() => removeFromCart(item.productId)} className="w-7 h-7 bg-red-100 text-red-500 rounded text-xs hover:bg-red-200">✕</button>
+                </div>
               </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                <button onClick={() => updateQuantity(item.productId, item.quantity - 1)} className="w-7 h-7 bg-slate-200 rounded text-sm hover:bg-slate-300">-</button>
-                {editingQtyId === item.productId ? (
-                  <input
-                    ref={editingQtyRef}
-                    type="number"
-                    value={editingQtyVal}
-                    onChange={e => setEditingQtyVal(e.target.value)}
-                    onBlur={() => commitQtyEdit(item.productId)}
-                    onKeyDown={e => { if (e.key === 'Enter') commitQtyEdit(item.productId); if (e.key === 'Escape') { setEditingQtyId(null); setEditingQtyVal(''); } }}
-                    className="w-12 text-center border border-blue-400 rounded text-sm px-1 py-0.5"
-                    min="1"
-                  />
+              {/* 품목 할인 */}
+              <div className="flex items-center gap-1.5">
+                {editingDiscountId === item.productId ? (
+                  <>
+                    <span className="text-xs text-orange-600 whitespace-nowrap">할인</span>
+                    <input
+                      ref={editingDiscountRef}
+                      type="text"
+                      inputMode="numeric"
+                      value={editingDiscountVal}
+                      onChange={e => {
+                        const raw = e.target.value.replace(/[^0-9]/g, '');
+                        setEditingDiscountVal(raw ? parseInt(raw).toLocaleString() : '');
+                      }}
+                      onBlur={() => commitDiscountEdit(item.productId)}
+                      onKeyDown={e => { if (e.key === 'Enter') commitDiscountEdit(item.productId); if (e.key === 'Escape') { setEditingDiscountId(null); setEditingDiscountVal(''); } }}
+                      placeholder="0"
+                      className="flex-1 border border-orange-400 rounded text-xs px-2 py-1 text-right"
+                    />
+                    <span className="text-xs text-slate-400">원</span>
+                    <button onClick={() => { setEditingDiscountId(null); setEditingDiscountVal(''); }} className="text-xs text-slate-400 hover:text-slate-600">취소</button>
+                  </>
                 ) : (
                   <button
-                    onClick={() => { setEditingQtyId(item.productId); setEditingQtyVal(String(item.quantity)); }}
-                    title="클릭하여 수량 직접 입력"
-                    className="w-8 text-center font-semibold text-sm hover:bg-blue-50 rounded py-0.5"
+                    onClick={() => {
+                      setEditingQtyId(null);
+                      setEditingDiscountId(item.productId);
+                      setEditingDiscountVal(item.discount > 0 ? item.discount.toLocaleString() : '');
+                    }}
+                    className={`text-xs px-2 py-0.5 rounded border transition-colors ${
+                      item.discount > 0
+                        ? 'border-orange-300 bg-orange-50 text-orange-600 hover:bg-orange-100'
+                        : 'border-slate-200 text-slate-400 hover:border-orange-300 hover:text-orange-500'
+                    }`}
                   >
-                    {item.quantity}
+                    {item.discount > 0 ? `할인 -${item.discount.toLocaleString()}원 ✎` : '할인 적용'}
                   </button>
                 )}
-                <button onClick={() => updateQuantity(item.productId, item.quantity + 1)} className="w-7 h-7 bg-slate-200 rounded text-sm hover:bg-slate-300">+</button>
-                <button onClick={() => removeFromCart(item.productId)} className="w-7 h-7 bg-red-100 text-red-500 rounded text-xs hover:bg-red-200">✕</button>
               </div>
             </div>
           ))}
@@ -725,9 +795,15 @@ export default function POSPage() {
             <div className="flex justify-between text-slate-500">
               <span>소계</span><span>{total.toLocaleString()}원</span>
             </div>
+            {itemDiscountTotal > 0 && (
+              <div className="flex justify-between text-orange-500">
+                <span>품목 할인</span>
+                <span>-{itemDiscountTotal.toLocaleString()}원</span>
+              </div>
+            )}
             {discountAmount > 0 && (
               <div className="flex justify-between text-red-500">
-                <span>할인 {discountType === 'percent' ? `(${Math.min(parseInt(discountInput) || 0, 100)}%)` : ''}</span>
+                <span>추가 할인 {discountType === 'percent' ? `(${Math.min(parseInt(discountInput) || 0, 100)}%)` : ''}</span>
                 <span>-{discountAmount.toLocaleString()}원</span>
               </div>
             )}
