@@ -68,7 +68,7 @@ async function upsertMemory(
     .single();
 
   if (existing) {
-    await db
+    const { error: updErr } = await db
       .from('agent_memories')
       .update({
         content: opts.content,
@@ -76,14 +76,16 @@ async function upsertMemory(
         last_used_at: new Date().toISOString(),
       })
       .eq('id', existing.id);
+    if (updErr) console.error('[Memory] update 실패:', updErr.message, opts.source_key);
   } else {
-    await db.from('agent_memories').insert({
+    const { error: insErr } = await db.from('agent_memories').insert({
       memory_type: opts.memory_type,
       category: opts.category,
       source_key: opts.source_key,
       content: opts.content,
       source_query: opts.source_query || null,
     });
+    if (insErr) console.error('[Memory] insert 실패:', insErr.message, opts.source_key);
   }
 }
 
@@ -116,22 +118,14 @@ export async function extractMemory(
     // 고객 검색 결과 → alias 기억
     case 'get_customer': {
       const customers = parsed.고객 || parsed.customers || [];
-      if (customers.length === 1) {
-        const c = customers[0];
+      // 검색된 고객 각각 alias 저장 (최대 5명)
+      for (const c of customers.slice(0, 5)) {
         await upsertMemory(db, {
           memory_type: 'alias',
           category: 'customer',
           source_key: `alias:customer:${normalizeKey(c.name)}`,
           content: `고객 "${c.name}" → 전화:${c.phone}, 등급:${c.grade}${c.primary_branch ? ', 지점:' + c.primary_branch : ''}`,
           source_query: args.name || args.phone,
-        });
-      } else if (customers.length > 3) {
-        await upsertMemory(db, {
-          memory_type: 'insight',
-          category: 'customer',
-          source_key: `insight:customer:count`,
-          content: `현재 활성 고객 수 약 ${customers.length}명`,
-          source_query: 'get_customer',
         });
       }
       break;
@@ -264,7 +258,7 @@ export async function extractMemoryFromWrite(
   }
 
   // 고객 등록 성공
-  if (toolName === 'create_customer' && result?.고객id) {
+  if (toolName === 'create_customer' && result?.성공) {
     await upsertMemory(db, {
       memory_type: 'alias',
       category: 'customer',

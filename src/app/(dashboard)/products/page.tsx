@@ -15,6 +15,7 @@ interface Product {
   barcode: string | null;
   is_active: boolean;
   is_taxable: boolean;
+  image_url: string | null;
   category?: { id: string; name: string };
 }
 
@@ -96,6 +97,7 @@ export default function ProductsPage() {
         <table className="table min-w-[750px]">
           <thead>
             <tr>
+              <th></th>
               <th>제품코드</th>
               <th>제품명</th>
               <th>바코드</th>
@@ -120,6 +122,11 @@ export default function ProductsPage() {
               const m = marginPct(product);
               return (
                 <tr key={product.id} className={!product.is_active ? 'opacity-50' : ''}>
+                  <td>
+                    {product.image_url
+                      ? <img src={product.image_url} alt="" className="w-8 h-8 object-cover rounded" />
+                      : <div className="w-8 h-8 bg-slate-100 rounded" />}
+                  </td>
                   <td className="font-mono text-xs text-slate-500">{product.code}</td>
                   <td className="font-medium">{product.name}</td>
                   <td className="font-mono text-xs text-slate-400">{product.barcode || '-'}</td>

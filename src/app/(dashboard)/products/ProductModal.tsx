@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { createProduct, updateProduct, deleteProduct, getCategories } from '@/lib/actions';
 import { validators } from '@/lib/validators';
 
@@ -15,6 +15,7 @@ interface Product {
   barcode: string | null;
   is_active: boolean;
   is_taxable: boolean;
+  image_url?: string | null;
 }
 
 interface Props {
@@ -35,14 +36,68 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
     barcode: product?.barcode || null,
     is_active: product?.is_active ?? true,
     is_taxable: product?.is_taxable ?? true,
+    image_url: product?.image_url || null,
   });
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
+  const [imageUploading, setImageUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     getCategories().then(res => setCategories(res.data || []));
   }, []);
+
+  const resizeImage = (file: File, maxSize = 300): Promise<Blob> =>
+    new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const ratio = Math.min(maxSize / img.width, maxSize / img.height, 1);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * ratio);
+        canvas.height = Math.round(img.height * ratio);
+        canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('리사이징 실패')), 'image/jpeg', 0.85);
+      };
+      img.onerror = reject;
+      img.src = url;
+    });
+
+  const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setImageUploading(true);
+    setError('');
+
+    try {
+      const resized = await resizeImage(file);
+      const thumbFile = new File([resized], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' });
+
+      const uploadForm = new FormData();
+      uploadForm.append('file', thumbFile);
+
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        body: uploadForm,
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || '이미지 업로드에 실패했습니다.');
+      }
+
+      const data = await res.json();
+      setFormData(prev => ({ ...prev, image_url: data.url }));
+    } catch (err: any) {
+      setError(err.message || '이미지 업로드에 실패했습니다.');
+    } finally {
+      setImageUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -68,7 +123,11 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
 
     const form = new FormData();
     Object.entries(formData).forEach(([key, value]) => {
-      if (value !== null) form.append(key, String(value));
+      if (key === 'image_url') {
+        form.append('image_url', value ?? '');
+      } else if (value !== null) {
+        form.append(key, String(value));
+      }
     });
 
     const result = product?.id
@@ -86,7 +145,7 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
   const handleDelete = async () => {
     if (!product?.id) return;
     if (!confirm('정말 삭제하시겠습니까?')) return;
-    
+
     setLoading(true);
     await deleteProduct(product.id);
     onSuccess();
@@ -126,6 +185,48 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
             {fieldErrors.name && (
               <p className="mt-1 text-xs text-red-500">{fieldErrors.name}</p>
             )}
+          </div>
+
+          {/* 이미지 업로드 섹션 */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">제품 이미지</label>
+            <div className="flex items-center gap-3">
+              {formData.image_url && (
+                <img
+                  src={formData.image_url}
+                  alt="제품 이미지"
+                  className="w-20 h-20 object-cover rounded-md border border-slate-200"
+                />
+              )}
+              <div className="flex flex-col gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleImageChange}
+                  disabled={imageUploading}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={imageUploading}
+                  className="px-3 py-1.5 text-sm bg-slate-100 text-slate-700 rounded-md hover:bg-slate-200 disabled:opacity-50"
+                >
+                  {imageUploading ? '업로드 중...' : '이미지 선택'}
+                </button>
+                {formData.image_url && (
+                  <button
+                    type="button"
+                    onClick={() => setFormData(prev => ({ ...prev, image_url: null }))}
+                    disabled={imageUploading}
+                    className="px-3 py-1.5 text-sm bg-red-50 text-red-600 rounded-md hover:bg-red-100 disabled:opacity-50"
+                  >
+                    삭제
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
 
           {product?.id && (
@@ -270,7 +371,7 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
             <button
               type="submit"
               id="product-submit"
-              disabled={loading}
+              disabled={loading || imageUploading}
               className="flex-1 btn-primary"
             >
               {loading ? '처리 중...' : (product?.id ? '수정' : '등록')}
@@ -279,7 +380,7 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
               <button
                 type="button"
                 onClick={handleDelete}
-                disabled={loading}
+                disabled={loading || imageUploading}
                 className="px-4 py-2 bg-red-100 text-red-600 rounded-md hover:bg-red-200"
               >
                 삭제
