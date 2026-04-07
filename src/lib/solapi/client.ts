@@ -202,3 +202,49 @@ export async function sendKakaoMessages(messages: KakaoMessage[]): Promise<BulkS
     results,
   };
 }
+
+export interface SolapiKakaoTemplate {
+  templateId: string;
+  name: string;
+  content: string;
+  status: string;       // APPROVED, PENDING 등
+  variables: string[];  // ["#{고객명}", "#{상품명}"] 등
+  pfId: string;
+}
+
+/**
+ * 솔라피에 등록된 카카오 알림톡 템플릿 목록 조회
+ * 승인된(APPROVED) 템플릿만 반환
+ */
+export async function getKakaoTemplates(): Promise<SolapiKakaoTemplate[]> {
+  if (!process.env.SOLAPI_API_KEY || !process.env.SOLAPI_API_SECRET) {
+    return [];
+  }
+
+  const pfId = process.env.SOLAPI_KAKAO_PFID;
+  const params = new URLSearchParams({ limit: '100', status: 'APPROVED' });
+  if (pfId) params.set('pfId', pfId);
+
+  try {
+    const res = await fetch(`${BASE_URL}/kakao/v2/templates?${params}`, {
+      headers: { Authorization: makeAuthHeader() },
+      cache: 'no-store',
+    });
+
+    if (!res.ok) return [];
+
+    const data = await res.json().catch(() => ({}));
+    const list: any[] = data.templateList ?? data.data ?? [];
+
+    return list.map((t: any) => ({
+      templateId: t.templateId ?? t.id ?? '',
+      name: t.name ?? t.templateName ?? '',
+      content: t.content ?? t.templateContent ?? '',
+      status: t.status ?? '',
+      variables: Array.isArray(t.variables) ? t.variables : [],
+      pfId: t.pfId ?? '',
+    }));
+  } catch {
+    return [];
+  }
+}

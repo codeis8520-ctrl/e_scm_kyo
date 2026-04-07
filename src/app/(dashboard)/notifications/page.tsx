@@ -37,11 +37,7 @@ export default function NotificationsPage() {
         status: statusFilter || undefined,
         type:   typeFilter   || undefined,
       }),
-      (async () => {
-        const supabase = createClient() as any;
-        const { data } = await supabase.from('notification_templates').select('*').eq('is_active', true).order('created_at');
-        return data || [];
-      })(),
+      fetch('/api/solapi/templates').then(r => r.json()).then(d => d.templates ?? []),
       (async () => {
         const supabase = createClient() as any;
         const { data } = await supabase.from('customers').select('id, name, phone, grade').eq('is_active', true).order('name');
@@ -205,6 +201,7 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
   const [message, setMessage]                     = useState('');
   const [submitting, setSubmitting]               = useState(false);
   const [result, setResult]                       = useState<{ successCount: number; failCount: number } | null>(null);
+  const [templateVariables, setTemplateVariables] = useState<Record<string, string>>({});
 
   const filteredCustomers = customers
     .filter(c => {
@@ -243,15 +240,14 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
     if (type === 'sms') {
       res = await sendSmsAction({ targets, message });
     } else {
-      const template = templates.find(t => t.id === templateId);
-      if (!template?.solapi_template_id) {
-        alert('선택한 템플릿에 Solapi 템플릿 ID가 등록되어 있지 않습니다.\n템플릿 관리 페이지에서 Solapi 템플릿 ID(KA01TP...)를 먼저 입력해주세요.');
+      if (!templateId) {
+        alert('템플릿을 선택해주세요.');
         setSubmitting(false);
         return;
       }
       res = await sendKakaoAction({
         targets,
-        templateId: template.solapi_template_id,
+        templateId,
         message,
       });
     }
@@ -374,20 +370,50 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
 
           {/* 알림톡 템플릿 */}
           {type === 'kakao' && (
-            <div>
-              <label className="block text-sm font-medium mb-1">알림톡 템플릿</label>
-              <select
-                value={templateId}
-                onChange={e => {
-                  setTemplateId(e.target.value);
-                  const t = templates.find(t => t.id === e.target.value);
-                  if (t) setMessage(t.message_template);
-                }}
-                className="input"
-              >
-                <option value="">템플릿 선택</option>
-                {templates.map(t => <option key={t.id} value={t.id}>{t.template_name}</option>)}
-              </select>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium mb-1">알림톡 템플릿</label>
+                {templates.length === 0 ? (
+                  <p className="text-sm text-amber-600">⚠️ 솔라피에 승인된 템플릿이 없거나 환경변수 미설정</p>
+                ) : (
+                  <select
+                    value={templateId}
+                    onChange={e => {
+                      setTemplateId(e.target.value);
+                      const t = templates.find((t: any) => t.templateId === e.target.value);
+                      if (t) {
+                        setMessage(t.content);
+                        setTemplateVariables(
+                          t.variables.reduce((acc: Record<string, string>, v: string) => ({ ...acc, [v]: '' }), {})
+                        );
+                      }
+                    }}
+                    className="input"
+                  >
+                    <option value="">템플릿 선택</option>
+                    {templates.map((t: any) => (
+                      <option key={t.templateId} value={t.templateId}>{t.name}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              {/* 변수 입력 */}
+              {Object.keys(templateVariables).length > 0 && (
+                <div className="bg-slate-50 rounded-lg p-3 space-y-2">
+                  <p className="text-xs font-medium text-slate-600">템플릿 변수 입력</p>
+                  {Object.entries(templateVariables).map(([key, val]) => (
+                    <div key={key}>
+                      <label className="text-xs text-slate-500">{key}</label>
+                      <input
+                        className="input mt-0.5"
+                        value={val as string}
+                        onChange={e => setTemplateVariables(prev => ({ ...prev, [key]: e.target.value }))}
+                        placeholder={key}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
