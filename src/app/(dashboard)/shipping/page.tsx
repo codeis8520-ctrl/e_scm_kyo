@@ -129,10 +129,30 @@ export default function ShippingPage() {
   const [importPreview, setImportPreview] = useState<ImportRow[]>([]);
   const [importSaving, setImportSaving] = useState(false);
 
+  // 배송 목록 선택
+  const [selectedShipments, setSelectedShipments] = useState<Set<string>>(new Set());
+
   // 배송 추적
   const [trackingId, setTrackingId] = useState<string | null>(null); // 개별 추적 중인 shipment id
   const [batchTracking, setBatchTracking] = useState(false);
   const [batchProgress, setBatchProgress] = useState('');
+
+  // ── Daum 우편번호 스크립트 로드 ──────────────────────────────────────────
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = 'https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js';
+    script.async = true;
+    document.head.appendChild(script);
+    return () => { document.head.removeChild(script); };
+  }, []);
+
+  const openDaumPostcode = (onComplete: (zipcode: string, address: string) => void) => {
+    new (window as any).daum.Postcode({
+      oncomplete(data: any) {
+        onComplete(data.zonecode, data.roadAddress || data.address);
+      },
+    }).open();
+  };
 
   // ── 초기 로드 ─────────────────────────────────────────────────────────────
   const fetchShipments = async () => {
@@ -440,6 +460,46 @@ export default function ShippingPage() {
   // ── 목록 탭 핸들러 ────────────────────────────────────────────────────────
   const filteredShipments = statusFilter === 'ALL' ? shipments : shipments.filter(s => s.status === statusFilter);
 
+  const toggleShipmentSelect = (id: string) => {
+    setSelectedShipments(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedShipments.size === filteredShipments.length) {
+      setSelectedShipments(new Set());
+    } else {
+      setSelectedShipments(new Set(filteredShipments.map(s => s.id)));
+    }
+  };
+
+  const exportSelectedToExcel = () => {
+    const toExport = filteredShipments.filter(s => selectedShipments.has(s.id));
+    if (toExport.length === 0) return;
+    const rows = toExport.map(s => ({
+      '등록일': s.created_at?.slice(0, 10) ?? '',
+      '출처': s.source === 'CAFE24' ? '카페24' : '직접입력',
+      '발송자': s.sender_name,
+      '발송자 전화': s.sender_phone,
+      '수령자': s.recipient_name,
+      '수령자 전화': s.recipient_phone,
+      '우편번호': s.recipient_zipcode ?? '',
+      '주소': s.recipient_address,
+      '상세주소': s.recipient_address_detail ?? '',
+      '배송 메모': s.delivery_message ?? '',
+      '품목': s.items_summary ?? '',
+      '상태': STATUS_LABEL[s.status] ?? s.status,
+      '송장번호': s.tracking_number ?? '',
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, '배송목록');
+    XLSX.writeFile(wb, `배송목록_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
   const handleEditOpen = (s: Shipment) => { setEditShipment(s); setEditForm({ ...s }); setEditError(''); };
   const handleEditClose = () => { setEditShipment(null); setEditForm({}); setEditError(''); };
   const handleEditSave = async () => {
@@ -623,15 +683,16 @@ export default function ShippingPage() {
                 <input className="input w-full" value={manualForm.recipient_phone} onChange={e => handleManualChange('recipient_phone', e.target.value)} placeholder="010-0000-0000" />
               </div>
             </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div>
-                <label className="text-xs text-slate-500 block mb-1">우편번호</label>
-                <input className="input w-full" value={manualForm.recipient_zipcode} onChange={e => handleManualChange('recipient_zipcode', e.target.value)} placeholder="12345" />
+            <div>
+              <label className="text-xs text-slate-500 block mb-1">주소 <span className="text-red-500">*</span></label>
+              <div className="flex gap-2 mb-1">
+                <input className="input w-24" value={manualForm.recipient_zipcode} readOnly placeholder="우편번호" />
+                <button type="button" className="px-3 py-1.5 rounded bg-slate-600 text-white text-xs whitespace-nowrap"
+                  onClick={() => openDaumPostcode((zip, addr) => setManualForm(f => ({ ...f, recipient_zipcode: zip, recipient_address: addr })))}>
+                  주소 검색
+                </button>
               </div>
-              <div className="col-span-2">
-                <label className="text-xs text-slate-500 block mb-1">주소 <span className="text-red-500">*</span></label>
-                <input className="input w-full" value={manualForm.recipient_address} onChange={e => handleManualChange('recipient_address', e.target.value)} placeholder="서울시 강남구 테헤란로 123" />
-              </div>
+              <input className="input w-full" value={manualForm.recipient_address} onChange={e => handleManualChange('recipient_address', e.target.value)} placeholder="도로명 주소" />
             </div>
             <div>
               <label className="text-xs text-slate-500 block mb-1">상세주소</label>
@@ -691,6 +752,14 @@ export default function ShippingPage() {
               <button onClick={downloadCjExcel} className="px-3 py-2 rounded text-sm font-medium bg-green-600 text-white hover:bg-green-700">
                 대한통운 엑셀 다운로드
               </button>
+              {/* 선택 엑셀 익스포트 */}
+              <button
+                onClick={exportSelectedToExcel}
+                disabled={selectedShipments.size === 0}
+                className="px-3 py-2 rounded text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40"
+              >
+                선택 엑셀 익스포트 ({selectedShipments.size}건)
+              </button>
             </div>
           </div>
 
@@ -703,44 +772,75 @@ export default function ShippingPage() {
               <div className="overflow-x-auto">
                 <table className="table w-full">
                   <thead>
-                    <tr>
-                      <th>출처</th><th>등록일</th><th>발송자</th><th>수령자</th>
-                      <th>주소</th><th>품목</th><th>상태</th><th>송장번호</th><th>액션</th>
+                    <tr className="bg-slate-50">
+                      <th className="w-10 px-3">
+                        <input type="checkbox" className="w-4 h-4"
+                          checked={filteredShipments.length > 0 && selectedShipments.size === filteredShipments.length}
+                          onChange={toggleSelectAll}
+                        />
+                      </th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-24">등록일</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">수령자</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">발송자</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">배송지 주소</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">품목</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-20">출처</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-24">상태</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">송장번호</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-24">액션</th>
                     </tr>
                   </thead>
-                  <tbody>
+                  <tbody className="divide-y divide-slate-100">
                     {filteredShipments.map(s => (
-                      <tr key={s.id}>
-                        <td><span className={SOURCE_BADGE[s.source]}>{s.source}</span></td>
-                        <td className="text-sm text-slate-600">{s.created_at?.slice(0, 10)}</td>
-                        <td className="text-sm">
-                          <div>{s.sender_name}</div>
-                          <div className="text-slate-400 text-xs">{s.sender_phone}</div>
+                      <tr key={s.id} className={`hover:bg-slate-50 transition-colors ${selectedShipments.has(s.id) ? 'bg-blue-50' : ''}`}>
+                        <td className="px-3 py-3">
+                          <input type="checkbox" className="w-4 h-4"
+                            checked={selectedShipments.has(s.id)}
+                            onChange={() => toggleShipmentSelect(s.id)}
+                          />
                         </td>
-                        <td className="text-sm">
-                          <div>{s.recipient_name}</div>
-                          <div className="text-slate-400 text-xs">{s.recipient_phone}</div>
+                        <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{s.created_at?.slice(0, 10)}</td>
+                        <td className="px-3 py-3">
+                          <div className="font-medium text-sm text-slate-800">{s.recipient_name}</div>
+                          <div className="text-xs text-slate-400 mt-0.5">{s.recipient_phone}</div>
                         </td>
-                        <td className="text-sm text-slate-600 max-w-[160px] truncate">
-                          {s.recipient_address}{s.recipient_address_detail && ` ${s.recipient_address_detail}`}
+                        <td className="px-3 py-3">
+                          <div className="text-sm text-slate-700">{s.sender_name}</div>
+                          <div className="text-xs text-slate-400 mt-0.5">{s.sender_phone}</div>
                         </td>
-                        <td className="text-sm text-slate-600 max-w-[120px] truncate">{s.items_summary || '-'}</td>
-                        <td><span className={STATUS_BADGE[s.status]}>{STATUS_LABEL[s.status]}</span></td>
-                        <td className="text-sm">
+                        <td className="px-3 py-3 max-w-[200px]">
+                          <div className="text-sm text-slate-700 truncate">{s.recipient_address}</div>
+                          {s.recipient_address_detail && (
+                            <div className="text-xs text-slate-400 mt-0.5 truncate">{s.recipient_address_detail}</div>
+                          )}
+                          {s.delivery_message && (
+                            <div className="text-xs text-amber-600 mt-0.5 truncate">💬 {s.delivery_message}</div>
+                          )}
+                        </td>
+                        <td className="px-3 py-3 max-w-[160px]">
+                          <div className="text-sm text-slate-600 truncate">{s.items_summary || <span className="text-slate-300">-</span>}</div>
+                        </td>
+                        <td className="px-3 py-3">
+                          <span className={`${SOURCE_BADGE[s.source]} text-xs`}>{s.source === 'CAFE24' ? '카페24' : '직접'}</span>
+                        </td>
+                        <td className="px-3 py-3">
+                          <span className={`${STATUS_BADGE[s.status]} text-xs`}>{STATUS_LABEL[s.status]}</span>
+                        </td>
+                        <td className="px-3 py-3">
                           {s.tracking_number ? (
                             <a href={`https://trace.cjlogistics.com/web/detail.jsp?slipno=${s.tracking_number}`}
                               target="_blank" rel="noopener noreferrer"
-                              className="font-mono text-blue-600 hover:underline text-xs">
+                              className="font-mono text-blue-600 hover:underline text-xs font-medium">
                               {s.tracking_number}
                             </a>
-                          ) : <span className="text-slate-400">-</span>}
+                          ) : <span className="text-slate-300 text-xs">-</span>}
                         </td>
-                        <td>
-                          <div className="flex gap-1.5 flex-wrap">
-                            <button className="text-xs text-blue-600 hover:underline" onClick={() => handleEditOpen(s)}>수정</button>
+                        <td className="px-3 py-3">
+                          <div className="flex items-center gap-2">
+                            <button className="text-xs text-blue-600 hover:text-blue-800 font-medium" onClick={() => handleEditOpen(s)}>수정</button>
                             {s.tracking_number && (
                               <button
-                                className="text-xs text-indigo-600 hover:underline disabled:opacity-40"
+                                className="text-xs text-indigo-600 hover:text-indigo-800 font-medium disabled:opacity-40"
                                 onClick={() => trackOne(s)}
                                 disabled={trackingId === s.id}
                               >
@@ -748,7 +848,7 @@ export default function ShippingPage() {
                               </button>
                             )}
                             {s.status === 'PENDING' && (
-                              <button className="text-xs text-red-500 hover:underline" onClick={() => handleDelete(s.id)}>삭제</button>
+                              <button className="text-xs text-red-500 hover:text-red-700 font-medium" onClick={() => handleDelete(s.id)}>삭제</button>
                             )}
                           </div>
                         </td>
@@ -876,15 +976,16 @@ export default function ShippingPage() {
                   <input className="input w-full" value={editForm.recipient_phone ?? ''} onChange={e => setEditForm(f => ({ ...f, recipient_phone: e.target.value }))} />
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="text-xs text-slate-500 block mb-1">우편번호</label>
-                  <input className="input w-full" value={editForm.recipient_zipcode ?? ''} onChange={e => setEditForm(f => ({ ...f, recipient_zipcode: e.target.value || null }))} />
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">주소</label>
+                <div className="flex gap-2 mb-1">
+                  <input className="input w-24" value={editForm.recipient_zipcode ?? ''} readOnly placeholder="우편번호" />
+                  <button type="button" className="px-3 py-1.5 rounded bg-slate-600 text-white text-xs whitespace-nowrap"
+                    onClick={() => openDaumPostcode((zip, addr) => setEditForm(f => ({ ...f, recipient_zipcode: zip, recipient_address: addr })))}>
+                    주소 검색
+                  </button>
                 </div>
-                <div className="col-span-2">
-                  <label className="text-xs text-slate-500 block mb-1">주소</label>
-                  <input className="input w-full" value={editForm.recipient_address ?? ''} onChange={e => setEditForm(f => ({ ...f, recipient_address: e.target.value }))} />
-                </div>
+                <input className="input w-full" value={editForm.recipient_address ?? ''} onChange={e => setEditForm(f => ({ ...f, recipient_address: e.target.value }))} placeholder="도로명 주소" />
               </div>
               <div>
                 <label className="text-xs text-slate-500 block mb-1">상세주소</label>
