@@ -70,6 +70,7 @@ export type Cafe24WebhookEventType =
   | 'order.paid'
   | 'order.shipped'
   | 'order.delivered'
+  | 'order.confirmed'
   | 'order.cancelled'
   | 'order.refunded';
 
@@ -105,9 +106,15 @@ export const CAFE24_ORDER_STATUS_MAP: Record<Cafe24OrderStatus, string> = {
 };
 
 export const CAFE24_STATUS_TO_LOCAL: Record<string, string> = {
-  N: 'PENDING',
+  N: 'PENDING',       // 입금전
+  F: 'CONFIRMED',     // 결제완료
+  M: 'CONFIRMED',     // 배송준비중
+  A: 'SHIPPED',       // 배송중
+  B: 'DELIVERED',     // 배송완료 (구매확정 전)
+  C: 'CANCELLED',     // 취소
+  R: 'REFUNDED',      // 반품완료
+  // 하위호환
   P: 'CONFIRMED',
   S: 'SHIPPED',
-  D: 'COMPLETED',
-  C: 'CANCELLED',
+  D: 'DELIVERED',     // 구버전 D → DELIVERED (COMPLETED 아님)
 };

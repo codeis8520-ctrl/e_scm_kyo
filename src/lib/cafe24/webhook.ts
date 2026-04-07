@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { Cafe24WebhookEvent, CAFE24_STATUS_TO_LOCAL } from './types';
 import { Cafe24Client, generateCafe24OrderCode } from './client';
+import { createSaleJournal } from '@/lib/accounting-actions';
 
 let supabase: SupabaseClient | null = null;
 
@@ -59,10 +60,12 @@ export async function processCafe24Webhook(event: Cafe24WebhookEvent): Promise<{
         return await handleOrderShipped(orderCode, status_code, event);
       case 'order.delivered':
         return await handleOrderDelivered(orderCode, event);
+      case 'order.confirmed':
+        return await handleOrderConfirmed(orderCode, order_no, event);
       case 'order.cancelled':
         return await handleOrderCancelled(orderCode);
       case 'order.refunded':
-        return await handleOrderRefunded(orderCode);
+        return await handleOrderRefunded(orderCode, event);
       default:
         return { success: true, message: `Event type ${event_type} not handled` };
     }
@@ -272,7 +275,7 @@ async function handleOrderDelivered(
   if (order) {
     await getSupabase()
       .from('sales_orders')
-      .update({ status: 'COMPLETED' })
+      .update({ status: 'DELIVERED' })
       .eq('id', order.id);
   }
 
@@ -289,6 +292,58 @@ async function handleOrderDelivered(
 
   await logSyncEvent('order_delivered', orderCode, null, 'success');
   return { success: true, message: 'Order delivered', orderId: order?.id };
+}
+
+async function handleOrderConfirmed(
+  orderCode: string,
+  orderNo: number,
+  event: Cafe24WebhookEvent
+): Promise<{ success: boolean; message: string; orderId?: string }> {
+  const now = new Date().toISOString();
+
+  // sales_orders 조회
+  const { data: order } = await getSupabase()
+    .from('sales_orders')
+    .select('id, order_number, total_amount, payment_method, ordered_at')
+    .eq('order_number', orderCode)
+    .maybeSingle();
+
+  if (!order) {
+    await logSyncEvent('order_confirmed_not_found', orderCode, event, 'failed', 'Order not found in DB');
+    return { success: false, message: 'Order not found' };
+  }
+
+  // 상태를 COMPLETED(구매확정=매출확정)로 업데이트
+  const { error: updateError } = await getSupabase()
+    .from('sales_orders')
+    .update({
+      status: 'COMPLETED',
+      purchase_confirmed_at: now,
+    })
+    .eq('id', order.id);
+
+  if (updateError) {
+    await logSyncEvent('order_confirmed_error', orderCode, event, 'failed', updateError.message);
+    return { success: false, message: updateError.message };
+  }
+
+  // 매출 분개 생성 (구매확정 시점에 수익 인식)
+  try {
+    await createSaleJournal({
+      orderId: order.id,
+      orderNumber: order.order_number,
+      orderDate: now.slice(0, 10),
+      totalAmount: Number(order.total_amount),
+      paymentMethod: order.payment_method ?? 'card',
+      cogs: 0, // 원가는 별도 계산 필요 시 추가
+    });
+  } catch (journalErr) {
+    // 분개 실패는 경고만 — 주문 상태 업데이트는 이미 완료
+    await logSyncEvent('order_confirmed_journal_warn', orderCode, { journalErr }, 'success', '분개 생성 실패(무시됨)');
+  }
+
+  await logSyncEvent('order_confirmed', orderCode, { purchase_confirmed_at: now }, 'success');
+  return { success: true, message: 'Order purchase confirmed, revenue recognized', orderId: order.id };
 }
 
 async function handleOrderCancelled(
@@ -319,9 +374,58 @@ async function handleOrderCancelled(
 }
 
 async function handleOrderRefunded(
-  orderCode: string
+  orderCode: string,
+  event?: Cafe24WebhookEvent
 ): Promise<{ success: boolean; message: string; orderId?: string }> {
-  return handleOrderCancelled(orderCode);
+  // 카페24의 refund_price 정보가 있으면 부분환불, 없으면 전체환불
+  const refundAmount = (event as any)?.refund_price ? Number((event as any).refund_price) : null;
+
+  const { data: order } = await getSupabase()
+    .from('sales_orders')
+    .select('id, order_number, total_amount, payment_method, status, ordered_at')
+    .eq('order_number', orderCode)
+    .maybeSingle();
+
+  if (!order) {
+    return { success: false, message: 'Order not found' };
+  }
+
+  const isPartial = refundAmount !== null && refundAmount < Number(order.total_amount);
+  const newStatus = isPartial ? 'PARTIALLY_REFUNDED' : 'REFUNDED';
+  const actualRefundAmount = refundAmount ?? Number(order.total_amount);
+
+  const { error } = await getSupabase()
+    .from('sales_orders')
+    .update({
+      status: newStatus,
+      refund_amount: actualRefundAmount,
+    })
+    .eq('id', order.id);
+
+  if (error) {
+    await logSyncEvent('order_refunded_error', orderCode, event ?? null, 'failed', error.message);
+    return { success: false, message: error.message };
+  }
+
+  // 구매확정(COMPLETED) 상태였다면 역분개 생성
+  if (order.status === 'COMPLETED') {
+    try {
+      // 매출 역분개: 미수금 대변, 매출 차변 (반대 방향)
+      await createSaleJournal({
+        orderId: order.id,
+        orderNumber: `REFUND-${order.order_number}`,
+        orderDate: new Date().toISOString().slice(0, 10),
+        totalAmount: -actualRefundAmount, // 음수로 역분개
+        paymentMethod: order.payment_method ?? 'card',
+        cogs: 0,
+      });
+    } catch {
+      // 역분개 실패는 경고만
+    }
+  }
+
+  await logSyncEvent('order_refunded', orderCode, { newStatus, refundAmount: actualRefundAmount }, 'success');
+  return { success: true, message: `Order ${newStatus}`, orderId: order.id };
 }
 
 async function logSyncEvent(
