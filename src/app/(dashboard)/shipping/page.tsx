@@ -10,6 +10,7 @@ interface Shipment {
   cafe24_order_id: string | null;
   sender_name: string;
   sender_phone: string;
+  sender_address: string | null;
   recipient_name: string;
   recipient_phone: string;
   recipient_zipcode: string | null;
@@ -74,6 +75,7 @@ export default function ShippingPage() {
   const [manualForm, setManualForm] = useState({
     sender_name: '',
     sender_phone: '',
+    sender_address: '',
     recipient_name: '',
     recipient_phone: '',
     recipient_zipcode: '',
@@ -134,7 +136,7 @@ export default function ShippingPage() {
       '선불',
       s.sender_name,
       s.sender_phone,
-      '',
+      s.sender_address || '',
     ]);
 
     const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
@@ -222,6 +224,7 @@ export default function ShippingPage() {
         source: 'STORE',
         sender_name: manualForm.sender_name,
         sender_phone: manualForm.sender_phone,
+        sender_address: manualForm.sender_address || undefined,
         recipient_name: manualForm.recipient_name,
         recipient_phone: manualForm.recipient_phone,
         recipient_zipcode: manualForm.recipient_zipcode || undefined,
@@ -233,6 +236,7 @@ export default function ShippingPage() {
       setManualForm({
         sender_name: '',
         sender_phone: '',
+        sender_address: '',
         recipient_name: '',
         recipient_phone: '',
         recipient_zipcode: '',
@@ -445,6 +449,15 @@ export default function ShippingPage() {
                   placeholder="010-0000-0000"
                 />
               </div>
+            </div>
+            <div>
+              <label className="text-xs text-slate-500 block mb-1">발송자 주소 <span className="text-xs text-slate-400">(대한통운 엑셀 필수)</span></label>
+              <input
+                className="input w-full"
+                value={manualForm.sender_address}
+                onChange={e => handleManualChange('sender_address', e.target.value)}
+                placeholder="서울시 강남구 청담동 11-1"
+              />
             </div>
           </div>
 
@@ -688,6 +701,15 @@ export default function ShippingPage() {
                     onChange={e => setEditForm(f => ({ ...f, sender_phone: e.target.value }))}
                   />
                 </div>
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">발송자 주소</label>
+                <input
+                  className="input w-full"
+                  value={(editForm as any).sender_address ?? ''}
+                  onChange={e => setEditForm(f => ({ ...f, sender_address: e.target.value }))}
+                  placeholder="서울시 강남구 청담동 11-1"
+                />
               </div>
             </div>
 
