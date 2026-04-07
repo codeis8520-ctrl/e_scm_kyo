@@ -190,6 +190,30 @@ interface SendModalProps {
   onSuccess: () => void;
 }
 
+// 시스템에서 자동 제공 불가 → 사용자 직접 입력 필요한 변수 감지
+const PRODUCT_PAT  = /^(상품명|제품명|품목|상품)$/;
+const ORDER_PAT    = /^(주문번호|주문_번호|오더번호)$/;
+const TRACKING_PAT = /^(송장번호|운송장번호|배송번호|운송번호)$/;
+const AMOUNT_PAT   = /^(금액|결제금액|주문금액|가격|amount)$/i;
+const AUTH_PAT     = /^(인증번호|인증코드|otp)$/i;
+// 자동 처리 패턴 (고객명, 전화번호, 등급, 지점명, URL 등)
+const AUTO_PAT = /^([가-힣]{2,3}|고객명|이름|성함|회원명|구매자명|주문자명|수신자명|신청자명|고객이름|회원이름|받는분|구매자|주문자|수신자|고객|전화번호|연락처|핸드폰|휴대폰|휴대전화|등급|회원등급|고객등급|상점명|상점|매장명|매장|브랜드명|브랜드|업체명|업체|회사명|회사|가게명|가게|샵명|샵|url|링크|사이트|홈페이지|주소)$/i;
+
+interface ManualField { key: string; label: string; contextKey: string; }
+
+function detectManualFields(keys: string[]): ManualField[] {
+  return keys.flatMap(key => {
+    const inner = key.replace(/^#\{/, '').replace(/\}$/, '').trim();
+    if (PRODUCT_PAT.test(inner))  return [{ key, label: '상품명', contextKey: 'productName' }];
+    if (ORDER_PAT.test(inner))    return [{ key, label: '주문번호', contextKey: 'orderNo' }];
+    if (TRACKING_PAT.test(inner)) return [{ key, label: '송장번호', contextKey: 'trackingNo' }];
+    if (AMOUNT_PAT.test(inner))   return [{ key, label: '결제금액', contextKey: 'amount' }];
+    if (AUTH_PAT.test(inner))     return [{ key, label: '인증번호', contextKey: 'authCode' }];
+    if (!AUTO_PAT.test(inner))    return [{ key, label: inner, contextKey: inner }];
+    return [];
+  });
+}
+
 function SendModal({ type, templates, customers, onClose, onSuccess }: SendModalProps) {
   const [sendMode, setSendMode]                   = useState<'bulk' | 'single'>('bulk');
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<string[]>([]);
@@ -200,6 +224,8 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
   const [templateId, setTemplateId]               = useState('');
   const [templateContent, setTemplateContent]     = useState('');
   const [variableKeys, setVariableKeys]           = useState<string[]>([]);
+  const [manualFields, setManualFields]           = useState<ManualField[]>([]);
+  const [manualVars, setManualVars]               = useState<Record<string, string>>({});
   const [message, setMessage]                     = useState('');
   const [submitting, setSubmitting]               = useState(false);
   const [result, setResult]                       = useState<{ successCount: number; failCount: number } | null>(null);
@@ -246,11 +272,17 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
         setSubmitting(false);
         return;
       }
+      // manualVars: { '#{상품명}': '경옥채 크림' } → context: { productName: '경옥채 크림' }
+      const context: Record<string, string> = {};
+      manualFields.forEach(f => {
+        if (manualVars[f.key]) context[f.contextKey] = manualVars[f.key];
+      });
       res = await sendKakaoAction({
         targets,
         templateId,
         templateContent,
         variableKeys,
+        context: context as any,
       });
     }
 
@@ -385,8 +417,11 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
                       const t = templates.find((t: any) => t.templateId === e.target.value);
                       if (t) {
                         setTemplateContent(t.content);
-                        setVariableKeys(t.variables.map((v: any) => v.name ?? v));
+                        const keys = t.variables.map((v: any) => v.name ?? v);
+                        setVariableKeys(keys);
                         setMessage(t.content);
+                        setManualFields(detectManualFields(keys));
+                        setManualVars({});
                       }
                     }}
                     className="input"
@@ -399,12 +434,33 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
                 )}
               </div>
               {variableKeys.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {variableKeys.map(k => (
-                    <span key={k} className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full">
-                      {k} 자동입력
-                    </span>
-                  ))}
+                <div className="space-y-2">
+                  <div className="flex flex-wrap gap-1.5">
+                    {variableKeys
+                      .filter(k => !manualFields.find(f => f.key === k))
+                      .map(k => (
+                        <span key={k} className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full">
+                          {k} 자동입력
+                        </span>
+                      ))}
+                  </div>
+                  {manualFields.length > 0 && (
+                    <div className="space-y-2 border border-amber-200 bg-amber-50 rounded-lg p-3">
+                      <p className="text-xs font-medium text-amber-700">직접 입력 필요</p>
+                      {manualFields.map(f => (
+                        <div key={f.key}>
+                          <label className="block text-xs text-slate-600 mb-0.5">{f.label} <span className="text-slate-400">({f.key})</span></label>
+                          <input
+                            type="text"
+                            value={manualVars[f.key] || ''}
+                            onChange={e => setManualVars(prev => ({ ...prev, [f.key]: e.target.value }))}
+                            className="input text-sm py-1.5"
+                            placeholder={f.label + ' 입력'}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
