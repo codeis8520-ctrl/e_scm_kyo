@@ -198,9 +198,20 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
   const [phone, setPhone]                         = useState('');
   const [phoneError, setPhoneError]               = useState('');
   const [templateId, setTemplateId]               = useState('');
+  const [templateContent, setTemplateContent]     = useState('');
+  const [variables, setVariables]                 = useState<Record<string, string>>({});
   const [message, setMessage]                     = useState('');
   const [submitting, setSubmitting]               = useState(false);
   const [result, setResult]                       = useState<{ successCount: number; failCount: number } | null>(null);
+
+  // 변수 입력 시 메시지 미리보기 자동 업데이트
+  const updatePreview = (content: string, vars: Record<string, string>) => {
+    let preview = content;
+    Object.entries(vars).forEach(([key, val]) => {
+      preview = preview.replaceAll(key, val || key);
+    });
+    setMessage(preview);
+  };
 
   const filteredCustomers = customers
     .filter(c => {
@@ -248,6 +259,7 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
         targets,
         templateId,
         message,
+        variables,
       });
     }
 
@@ -380,7 +392,15 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
                     onChange={e => {
                       setTemplateId(e.target.value);
                       const t = templates.find((t: any) => t.templateId === e.target.value);
-                      if (t) setMessage(t.content);
+                      if (t) {
+                        setTemplateContent(t.content);
+                        const initVars = t.variables.reduce((acc: Record<string, string>, v: any) => {
+                          acc[v.name ?? v] = '';
+                          return acc;
+                        }, {});
+                        setVariables(initVars);
+                        updatePreview(t.content, initVars);
+                      }
                     }}
                     className="input"
                   >
@@ -391,6 +411,27 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
                   </select>
                 )}
               </div>
+              {/* 변수 입력 */}
+              {Object.keys(variables).length > 0 && (
+                <div className="bg-slate-50 rounded-lg p-3 space-y-2">
+                  <p className="text-xs font-medium text-slate-600">변수 입력</p>
+                  {Object.entries(variables).map(([key]) => (
+                    <div key={key}>
+                      <label className="text-xs text-slate-500">{key}</label>
+                      <input
+                        className="input mt-0.5"
+                        value={variables[key]}
+                        placeholder={key}
+                        onChange={e => {
+                          const updated = { ...variables, [key]: e.target.value };
+                          setVariables(updated);
+                          updatePreview(templateContent, updated);
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
