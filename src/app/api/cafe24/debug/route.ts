@@ -39,16 +39,37 @@ export async function GET() {
       });
       const json = await res.json().catch(() => null);
       const firstOrder = json?.orders?.[0];
+      const orderId = firstOrder?.order_id;
+
+      // 단건 주문 상세 API 호출 (수신자/상품 포함)
+      let detailTest: any = null;
+      if (orderId) {
+        const detailUrl = `https://${mallId}.cafe24api.com/api/v2/admin/orders/${orderId}?shop_no=${process.env.CAFE24_SHOP_NO ?? '1'}&embed=items,shippingaddress`;
+        const detailRes = await fetch(detailUrl, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'X-Cafe24-Api-Version': '2026-03-01',
+          },
+        });
+        const detailJson = await detailRes.json().catch(() => null);
+        const o = detailJson?.order;
+        detailTest = {
+          status: detailRes.status,
+          keys: o ? Object.keys(o) : [],
+          billing_name: o?.billing_name,
+          billing_phone: o?.billing_phone,
+          billing_cellphone: o?.billing_cellphone,
+          shippingaddress: o?.shippingaddress,
+          receivers: o?.receivers,
+          items: o?.items?.slice(0, 2),
+        };
+      }
+
       apiTest = {
         status: res.status,
         order_count: json?.orders?.length ?? 0,
-        first_order_keys: firstOrder ? Object.keys(firstOrder) : [],
-        billing_name: firstOrder?.billing_name,
-        billing_phone: firstOrder?.billing_phone,
-        billing_cellphone: firstOrder?.billing_cellphone,
-        payment_amount: firstOrder?.payment_amount,
-        receivers: firstOrder?.receivers,
-        items: firstOrder?.items,
+        first_order_id: orderId,
+        detailTest,
       };
     } catch (e: any) {
       apiTest = { error: e.message };
