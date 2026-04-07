@@ -34,7 +34,7 @@ export async function GET() {
       const res = await fetch(url, {
         headers: {
           Authorization: `Bearer ${accessToken}`,
-          'X-Cafe24-Api-Version': '2024-03-01',
+          'X-Cafe24-Api-Version': '2026-03-01',
         },
       });
       const text = await res.text();

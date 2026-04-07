@@ -104,7 +104,7 @@ export async function GET(request: NextRequest) {
     const apiRes = await fetch(apiUrl, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        'X-Cafe24-Api-Version': '2024-03-01',
+        'X-Cafe24-Api-Version': '2026-03-01',
         'Content-Type': 'application/json',
       },
     });
