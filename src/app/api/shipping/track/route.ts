@@ -20,6 +20,9 @@ export async function GET(req: NextRequest) {
       { headers: { Authorization: `KakaoAK ${apiKey}` } }
     );
 
+    if (res.status === 429) {
+      return NextResponse.json({ error: 'quota_exceeded' }, { status: 429 });
+    }
     if (!res.ok) {
       return NextResponse.json({ error: `Tracker API ${res.status}` });
     }

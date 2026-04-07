@@ -288,8 +288,12 @@ export default function ShippingPage() {
     setTrackingId(s.id);
     try {
       const res = await fetch(`/api/shipping/track?trackingNo=${s.tracking_number}`);
+      if (res.status === 429 || !res.ok) {
+        window.open(`https://trace.cjlogistics.com/web/detail.jsp?slipno=${s.tracking_number}`, '_blank');
+        return;
+      }
       const data = await res.json();
-      if (data.error === 'API_KEY_NOT_SET') {
+      if (data.error === 'API_KEY_NOT_SET' || data.error?.includes('quota') || data.error?.includes('rate') || data.error?.includes('429')) {
         window.open(`https://trace.cjlogistics.com/web/detail.jsp?slipno=${s.tracking_number}`, '_blank');
         return;
       }
@@ -316,7 +320,21 @@ export default function ShippingPage() {
       setBatchProgress(`${i + 1}/${targets.length} 처리중...`);
       try {
         const res = await fetch(`/api/shipping/track?trackingNo=${s.tracking_number}`);
+        if (res.status === 429) {
+          setBatchTracking(false);
+          setBatchProgress('');
+          alert(`API 한도 초과 — ${updated}건 업데이트 후 중단됨.\n개별 송장번호 클릭으로 대한통운 공식 페이지에서 확인하세요.`);
+          await fetchShipments();
+          return;
+        }
         const data = await res.json();
+        if (data.error?.includes('quota') || data.error?.includes('rate') || data.error?.includes('429')) {
+          setBatchTracking(false);
+          setBatchProgress('');
+          alert(`API 한도 초과 — ${updated}건 업데이트 후 중단됨.\n개별 송장번호 클릭으로 대한통운 공식 페이지에서 확인하세요.`);
+          await fetchShipments();
+          return;
+        }
         if (!data.error && data.status !== s.status) {
           await updateShipment(s.id, { status: data.status });
           updated++;
