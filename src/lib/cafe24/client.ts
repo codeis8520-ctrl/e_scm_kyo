@@ -5,7 +5,7 @@ import {
   Cafe24Member,
 } from './types';
 
-const CAFE24_API_VERSION = '2024-01-01';
+const CAFE24_API_VERSION = '2024-03-01';
 
 export class Cafe24Client {
   private mallId: string;
