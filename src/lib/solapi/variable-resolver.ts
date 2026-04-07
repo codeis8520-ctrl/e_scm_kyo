@@ -16,12 +16,14 @@ export interface VariableContext {
   authCode?: string;       // 인증번호 (필요 시 생성 후 전달)
 }
 
-const NAME_PATTERNS    = /^[가-힣]{2,3}$|^(고객명|이름|성함|회원명)$/;
+// 이름 패턴: 순한글 2-3자(예:홍길동), 또는 이름 관련 키워드
+const NAME_PATTERNS    = /^[가-힣]{2,3}$|^(고객명|이름|성함|회원명|구매자명|주문자명|수신자명|신청자명|고객이름|회원이름|받는분|구매자|주문자|수신자|고객)$/;
 const PHONE_PATTERNS   = /^(전화번호|연락처|핸드폰|휴대폰|휴대전화)$/;
 const URL_PATTERNS     = /^(url|URL|링크|사이트|홈페이지|주소)$/i;
 const ORDER_PATTERNS   = /^(주문번호|주문_번호|오더번호)$/;
 const TRACKING_PATTERNS = /^(송장번호|운송장번호|배송번호|운송번호)$/;
 const AMOUNT_PATTERNS  = /^(금액|결제금액|주문금액|가격|amount)$/i;
+const STORE_PATTERNS   = /^(상점명|상점|매장명|매장|브랜드명|브랜드|업체명|업체|회사명|회사|가게명|가게|샵명|샵)$/;
 const PRODUCT_PATTERNS = /^(상품명|제품명|품목|상품)$/;
 const GRADE_PATTERNS   = /^(등급|회원등급|고객등급)$/;
 const AUTH_PATTERNS    = /^(인증번호|인증코드|otp|OTP)$/;
@@ -33,6 +35,7 @@ export function resolveVariable(key: string, ctx: VariableContext): string {
   if (NAME_PATTERNS.test(inner))     return ctx.customerName  ?? key;
   if (PHONE_PATTERNS.test(inner))    return ctx.customerPhone ?? key;
   if (GRADE_PATTERNS.test(inner))    return ctx.customerGrade ?? key;
+  if (STORE_PATTERNS.test(inner))    return ctx.branchName    ?? key;
   if (ORDER_PATTERNS.test(inner))    return ctx.orderNo       ?? key;
   if (TRACKING_PATTERNS.test(inner)) return ctx.trackingNo    ?? key;
   if (AMOUNT_PATTERNS.test(inner))   return ctx.amount        ?? key;

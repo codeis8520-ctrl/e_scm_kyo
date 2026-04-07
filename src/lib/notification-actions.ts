@@ -70,8 +70,18 @@ export async function sendKakaoAction(params: SendKakaoParams) {
   let session;
   try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
 
-  const { targets, templateId, templateContent, variableKeys, context = {} } = params;
+  const { targets, templateId, templateContent, variableKeys, context: extraContext = {} } = params;
   if (!targets.length) return { error: '발송 대상이 없습니다.' };
+
+  // 지점명 자동 조회 (#{상점명} 변수용)
+  const supabase = await createClient();
+  let branchName = process.env.NEXT_PUBLIC_BRAND_NAME ?? '';
+  if (session.branch_id) {
+    const { data: branch } = await (supabase as any)
+      .from('branches').select('name').eq('id', session.branch_id).maybeSingle();
+    branchName = branch?.name ?? branchName;
+  }
+  const context = { ...extraContext, branchName };
 
   const result = await sendKakaoMessages(
     targets.map(t => {
@@ -93,9 +103,8 @@ export async function sendKakaoAction(params: SendKakaoParams) {
     })
   );
 
-  const supabase = await createClient();
   const db = supabase as any;
-  // 각 수신자별 렌더링된 메시지 재계산
+  // 각 수신자별 렌더링된 메시지 재계산 (DB 기록용)
   const renderedMessages = targets.map(t => {
     const vars = resolveAllVariables(variableKeys, { ...context, customerName: t.name, customerPhone: t.phone });
     let msg = templateContent;
