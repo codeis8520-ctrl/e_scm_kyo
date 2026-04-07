@@ -2,8 +2,6 @@
 
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import { getMonthlyTrend, getProductMargins } from '@/lib/accounting-actions';
 
 function getCookie(name: string): string | null {
@@ -447,133 +445,162 @@ export default function ReportsPage() {
   };
 
   const downloadPDF = () => {
-    const doc = new jsPDF();
-    const pageWidth = doc.internal.pageSize.getWidth();
-    let yPos = 20;
+    const branchLabel = filterBranch ? branches.find(b => b.id === filterBranch)?.name || '' : '전체 지점';
+    const channelLabel = filterChannel ? (CHANNEL_NAMES[filterChannel] || filterChannel) : '전체 채널';
+    const generatedAt = new Date().toLocaleString('ko-KR');
+    const netSalesVal = salesData.totalAmount - salesData.totalDiscount;
 
-    doc.setFontSize(18);
-    doc.setFont('helvetica', 'bold');
-    doc.text('경옥채 매출 보고서', pageWidth / 2, yPos, { align: 'center' });
-    yPos += 12;
+    const buildTable = (headers: string[], rows: string[][], colAligns?: string[]) => {
+      const thStyle = 'background:#1e3a5f;color:#fff;padding:8px 12px;text-align:left;font-weight:600;font-size:12px;border:none;';
+      const tdBase  = 'padding:7px 12px;font-size:12px;border-bottom:1px solid #e5e7eb;';
+      const ths = headers.map((h, i) => {
+        const align = colAligns?.[i] === 'right' ? 'text-align:right;' : '';
+        return `<th style="${thStyle}${align}">${h}</th>`;
+      }).join('');
+      const trs = rows.map((row, ri) => {
+        const bg = ri % 2 === 0 ? '#ffffff' : '#f8fafc';
+        const tds = row.map((cell, ci) => {
+          const align = colAligns?.[ci] === 'right' ? 'text-align:right;' : '';
+          return `<td style="${tdBase}${align}background:${bg};">${cell}</td>`;
+        }).join('');
+        return `<tr>${tds}</tr>`;
+      }).join('');
+      return `<table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
+        <thead><tr>${ths}</tr></thead>
+        <tbody>${trs}</tbody>
+      </table>`;
+    };
 
-    doc.setFontSize(10);
-    doc.setFont('helvetica', 'normal');
-    doc.text(`기간: ${startDate} ~ ${endDate}`, pageWidth / 2, yPos, { align: 'center' });
-    yPos += 8;
+    const sectionTitle = (title: string) =>
+      `<h2 style="font-size:14px;font-weight:700;color:#1e3a5f;margin:24px 0 10px;padding-bottom:6px;border-bottom:2px solid #1e3a5f;">${title}</h2>`;
 
-    const filterText: string[] = [];
-    if (filterBranch) {
-      const branch = branches.find(b => b.id === filterBranch);
-      filterText.push(`지점: ${branch?.name || filterBranch}`);
-    }
-    if (filterChannel) {
-      filterText.push(`채널: ${CHANNEL_NAMES[filterChannel] || filterChannel}`);
-    }
-    if (filterText.length > 0) {
-      doc.text(filterText.join(' | '), pageWidth / 2, yPos, { align: 'center' });
-      yPos += 8;
-    }
-
-    yPos += 5;
-    doc.setFontSize(14);
-    doc.setFont('helvetica', 'bold');
-    doc.text('매출 요약', 14, yPos);
-    yPos += 8;
-
-    const summaryData = [
+    const summaryRows = [
       ['총 매출 (정상가)', `${salesData.totalAmount.toLocaleString()}원`],
-      ['포인트 할인', `-${salesData.totalDiscount.toLocaleString()}원`],
-      ['순매출', `${(salesData.totalAmount - salesData.totalDiscount).toLocaleString()}원`],
+      ['할인액', `-${salesData.totalDiscount.toLocaleString()}원`],
+      ['순매출', `<strong>${netSalesVal.toLocaleString()}원</strong>`],
       ['총 주문 건수', `${salesData.totalOrders}건`],
-      ['평균 객단가', `${salesData.avgOrderValue.toLocaleString()}원`],
+      ['평균 객단가', `${Math.round(salesData.avgOrderValue).toLocaleString()}원`],
       ['적립 포인트', `+${salesData.totalPointsEarned.toLocaleString()}P`],
       ['사용 포인트', `-${salesData.totalPointsUsed.toLocaleString()}P`],
     ];
 
-    autoTable(doc, {
-      startY: yPos,
-      head: [['항목', '금액']],
-      body: summaryData,
-      theme: 'striped',
-      headStyles: { fillColor: [59, 130, 246] },
-      columnStyles: { 1: { halign: 'right' } },
-      margin: { left: 14, right: 14 },
-    });
-
-    yPos = (doc as any).lastAutoTable.finalY + 15;
-
-    doc.setFontSize(14);
-    doc.setFont('helvetica', 'bold');
-    doc.text('채널별 매출', 14, yPos);
-    yPos += 8;
-
-    const channelData = channelSales.map(ch => [
+    const channelRows = channelSales.map(ch => [
       ch.channelName,
       `${ch.amount.toLocaleString()}원`,
       `${ch.count}건`,
       `${ch.percentage}%`,
     ]);
 
-    autoTable(doc, {
-      startY: yPos,
-      head: [['채널', '매출액', '주문수', '비율']],
-      body: channelData,
-      theme: 'striped',
-      headStyles: { fillColor: [59, 130, 246] },
-      columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' } },
-      margin: { left: 14, right: 14 },
-    });
-
-    yPos = (doc as any).lastAutoTable.finalY + 15;
-
-    doc.setFontSize(14);
-    doc.setFont('helvetica', 'bold');
-    doc.text('지점별 매출', 14, yPos);
-    yPos += 8;
-
-    const branchData = branchSales.map(br => [
+    const branchRows = branchSales.map(br => [
       br.branchName,
       `${br.amount.toLocaleString()}원`,
       `${br.count}건`,
       `${br.percentage}%`,
     ]);
 
-    autoTable(doc, {
-      startY: yPos,
-      head: [['지점', '매출액', '주문수', '비율']],
-      body: branchData,
-      theme: 'striped',
-      headStyles: { fillColor: [59, 130, 246] },
-      columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' } },
-      margin: { left: 14, right: 14 },
-    });
-
-    yPos = (doc as any).lastAutoTable.finalY + 15;
-
-    doc.setFontSize(14);
-    doc.setFont('helvetica', 'bold');
-    doc.text('인기 제품 (판매금액 기준)', 14, yPos);
-    yPos += 8;
-
-    const productData = productSales.map((p, i) => [
+    const productRows = productSales.map((p, i) => [
       `${i + 1}`,
       p.productName,
-      `${p.quantity.toLocaleString()}`,
+      `${p.quantity.toLocaleString()}개`,
       `${p.amount.toLocaleString()}원`,
     ]);
 
-    autoTable(doc, {
-      startY: yPos,
-      head: [['순위', '제품명', '판매수량', '판매금액']],
-      body: productData,
-      theme: 'striped',
-      headStyles: { fillColor: [59, 130, 246] },
-      columnStyles: { 2: { halign: 'right' }, 3: { halign: 'right' } },
-      margin: { left: 14, right: 14 },
-    });
+    const paymentRows = paymentSales.map(pm => [
+      pm.label,
+      `${pm.amount.toLocaleString()}원`,
+      `${pm.count}건`,
+      `${pm.percentage}%`,
+    ]);
 
-    const date = new Date().toISOString().slice(0, 10);
-    doc.save(`매출보고서_${date}.pdf`);
+    const html = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif; color:#1f2937; background:#fff; padding:32px 40px; font-size:13px; }
+  .header { text-align:center; margin-bottom:28px; padding-bottom:20px; border-bottom:3px solid #1e3a5f; }
+  .header h1 { font-size:22px; font-weight:800; color:#1e3a5f; margin-bottom:6px; }
+  .header .meta { font-size:12px; color:#6b7280; margin-top:4px; }
+  .summary-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:24px; }
+  .summary-card { background:#f0f4ff; border-radius:8px; padding:14px 16px; }
+  .summary-card .label { font-size:11px; color:#6b7280; margin-bottom:4px; }
+  .summary-card .value { font-size:17px; font-weight:700; color:#1e3a5f; }
+  .summary-card.accent { background:#1e3a5f; }
+  .summary-card.accent .label { color:#93c5fd; }
+  .summary-card.accent .value { color:#fff; }
+  .two-col { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+  .footer { margin-top:32px; text-align:center; font-size:11px; color:#9ca3af; border-top:1px solid #e5e7eb; padding-top:12px; }
+  @media print {
+    body { padding:20px 28px; }
+    @page { size:A4; margin:15mm 15mm; }
+  }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>경옥채 매출 보고서</h1>
+  <div class="meta">조회 기간: ${startDate} ~ ${endDate}</div>
+  <div class="meta">${branchLabel} · ${channelLabel}</div>
+  <div class="meta" style="margin-top:6px;color:#9ca3af;">생성일시: ${generatedAt}</div>
+</div>
+
+<div class="summary-grid">
+  <div class="summary-card accent">
+    <div class="label">순매출</div>
+    <div class="value">${netSalesVal.toLocaleString()}원</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">총 주문</div>
+    <div class="value">${salesData.totalOrders}건</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">평균 객단가</div>
+    <div class="value">${Math.round(salesData.avgOrderValue).toLocaleString()}원</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">총 매출 (정상가)</div>
+    <div class="value">${salesData.totalAmount.toLocaleString()}원</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">할인액</div>
+    <div class="value" style="color:#ef4444;">-${salesData.totalDiscount.toLocaleString()}원</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">포인트 적립/사용</div>
+    <div class="value" style="font-size:14px;">+${salesData.totalPointsEarned.toLocaleString()} / -${salesData.totalPointsUsed.toLocaleString()}P</div>
+  </div>
+</div>
+
+<div class="two-col">
+  <div>
+    ${sectionTitle('채널별 매출')}
+    ${buildTable(['채널', '매출액', '주문수', '비율'], channelRows, ['left','right','right','right'])}
+  </div>
+  <div>
+    ${sectionTitle('결제 수단별')}
+    ${buildTable(['결제수단', '금액', '건수', '비율'], paymentRows, ['left','right','right','right'])}
+  </div>
+</div>
+
+${sectionTitle('지점별 매출')}
+${buildTable(['지점', '매출액', '주문수', '비율'], branchRows, ['left','right','right','right'])}
+
+${sectionTitle('인기 제품 TOP ' + productRows.length + ' (판매금액 기준)')}
+${buildTable(['순위', '제품명', '판매수량', '판매금액'], productRows, ['left','left','right','right'])}
+
+<div class="footer">경옥채 사내 ERP · 본 문서는 내부용입니다</div>
+</body>
+</html>`;
+
+    const win = window.open('', '_blank', 'width=900,height=700');
+    if (!win) { alert('팝업이 차단되었습니다. 팝업 허용 후 다시 시도하세요.'); return; }
+    win.document.write(html);
+    win.document.close();
+    win.onload = () => {
+      win.focus();
+      win.print();
+    };
   };
 
   const totalPurchaseAmount = purchaseData.reduce((s: number, p: any) => s + (p.total_amount || 0), 0);
