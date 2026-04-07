@@ -32,15 +32,16 @@ export function resolveVariable(key: string, ctx: VariableContext): string {
   // key 형식: #{변수명} → 변수명 추출
   const inner = key.replace(/^#\{/, '').replace(/\}$/, '').trim();
 
-  if (NAME_PATTERNS.test(inner))     return ctx.customerName  ?? key;
-  if (PHONE_PATTERNS.test(inner))    return ctx.customerPhone ?? key;
-  if (GRADE_PATTERNS.test(inner))    return ctx.customerGrade ?? key;
-  if (STORE_PATTERNS.test(inner))    return ctx.branchName    ?? key;
-  if (ORDER_PATTERNS.test(inner))    return ctx.orderNo       ?? key;
-  if (TRACKING_PATTERNS.test(inner)) return ctx.trackingNo    ?? key;
-  if (AMOUNT_PATTERNS.test(inner))   return ctx.amount        ?? key;
-  if (PRODUCT_PATTERNS.test(inner))  return ctx.productName   ?? key;
-  if (AUTH_PATTERNS.test(inner))     return ctx.authCode      ?? key;
+  // 구체적인 패턴 먼저 — 이름 패턴([가-힣]{2,3})이 상품명/상점명도 잡으므로 마지막에 검사
+  if (STORE_PATTERNS.test(inner))    return ctx.branchName    || key;
+  if (PRODUCT_PATTERNS.test(inner))  return ctx.productName   || key;
+  if (ORDER_PATTERNS.test(inner))    return ctx.orderNo       || key;
+  if (TRACKING_PATTERNS.test(inner)) return ctx.trackingNo    || key;
+  if (AMOUNT_PATTERNS.test(inner))   return ctx.amount        || key;
+  if (AUTH_PATTERNS.test(inner))     return ctx.authCode      || key;
+  if (PHONE_PATTERNS.test(inner))    return ctx.customerPhone || key;
+  if (GRADE_PATTERNS.test(inner))    return ctx.customerGrade || key;
+  if (NAME_PATTERNS.test(inner))     return ctx.customerName  || key;
 
   if (URL_PATTERNS.test(inner)) {
     const base = process.env.NEXT_PUBLIC_SITE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL?.split('/rest')[0] ?? '';
