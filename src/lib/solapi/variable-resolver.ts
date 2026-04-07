@@ -44,8 +44,7 @@ export function resolveVariable(key: string, ctx: VariableContext): string {
   if (NAME_PATTERNS.test(inner))     return ctx.customerName  || key;
 
   if (URL_PATTERNS.test(inner)) {
-    const base = process.env.NEXT_PUBLIC_SITE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL?.split('/rest')[0] ?? '';
-    return base;
+    return process.env.NEXT_PUBLIC_SITE_URL || key;
   }
 
   // 해석 불가 → 원래 플레이스홀더 유지
