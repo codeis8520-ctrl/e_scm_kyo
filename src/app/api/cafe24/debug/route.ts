@@ -38,7 +38,7 @@ export async function GET() {
         },
       });
       const text = await res.text();
-      apiTest = { status: res.status, body: text.slice(0, 500) };
+      apiTest = { status: res.status, body: text.slice(0, 3000) };
     } catch (e: any) {
       apiTest = { error: e.message };
     }
