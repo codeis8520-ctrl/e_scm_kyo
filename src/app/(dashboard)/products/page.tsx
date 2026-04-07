@@ -26,6 +26,7 @@ export default function ProductsPage() {
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editProduct, setEditProduct] = useState<Product | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   const fetchProducts = useCallback(async () => {
     setLoading(true);
@@ -52,6 +53,11 @@ export default function ProductsPage() {
         (p.barcode || '').toLowerCase().includes(search.toLowerCase())
       )
     : products;
+
+  const handleEdit = (product: Product) => {
+    setEditProduct(product);
+    setShowModal(true);
+  };
 
   const marginPct = (p: Product) => {
     if (!p.cost || !p.price) return null;
@@ -124,7 +130,12 @@ export default function ProductsPage() {
                 <tr key={product.id} className={!product.is_active ? 'opacity-50' : ''}>
                   <td>
                     {product.image_url
-                      ? <img src={product.image_url} alt="" className="w-8 h-8 object-cover rounded" />
+                      ? <img
+                          src={product.image_url}
+                          alt=""
+                          className="w-8 h-8 object-cover rounded cursor-pointer hover:opacity-80 transition-opacity"
+                          onClick={() => setPreviewUrl(product.image_url)}
+                        />
                       : <div className="w-8 h-8 bg-slate-100 rounded" />}
                   </td>
                   <td className="font-mono text-xs text-slate-500">{product.code}</td>
@@ -166,6 +177,26 @@ export default function ProductsPage() {
           </tbody>
         </table>
       </div>
+
+      {previewUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+          onClick={() => setPreviewUrl(null)}
+        >
+          <img
+            src={previewUrl}
+            alt="제품 이미지"
+            className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          />
+          <button
+            className="absolute top-4 right-4 text-white text-3xl leading-none hover:text-slate-300"
+            onClick={() => setPreviewUrl(null)}
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {showModal && (
         <ProductModal

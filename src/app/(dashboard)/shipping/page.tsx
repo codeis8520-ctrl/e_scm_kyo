@@ -66,8 +66,12 @@ export default function ShippingPage() {
   const [activeTab, setActiveTab] = useState<TabType>('cafe24');
 
   // ── Cafe24 탭 ─────────────────────────────────────────────────────────────
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const today = new Date();
+  const oneMonthAgo = new Date(today);
+  oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  const [startDate, setStartDate] = useState(fmt(oneMonthAgo));
+  const [endDate, setEndDate] = useState(fmt(today));
   const [cafe24Orders, setCafe24Orders] = useState<Cafe24OrderForShipping[]>([]);
   const [cafe24Loading, setCafe24Loading] = useState(false);
   const [cafe24Error, setCafe24Error] = useState('');
