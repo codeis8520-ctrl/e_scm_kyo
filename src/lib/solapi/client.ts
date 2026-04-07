@@ -34,7 +34,8 @@ export interface SmsMessage {
 export interface KakaoMessage {
   to: string;
   templateId: string;    // Solapi 카카오 알림톡 템플릿 ID (KA01TP...)
-  variables: Record<string, string>;  // #{변수명}: 값
+  variables: Record<string, string>;  // #{변수명}: 값 (치환 전 키)
+  text: string;          // 변수 치환 완료된 최종 메시지 내용
   customerId?: string;
 }
 
@@ -150,6 +151,7 @@ export async function sendKakaoMessages(messages: KakaoMessage[]): Promise<BulkS
       to: m.to.replace(/-/g, ''),
       from: sender,
       type: 'ATA',
+      text: m.text,   // 치환 완료된 최종 내용 (필수)
       kakaoOptions: {
         ...(pfId ? { pfId } : {}),
         templateId: m.templateId,

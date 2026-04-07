@@ -80,15 +80,15 @@ export async function sendKakaoAction(params: SendKakaoParams) {
         customerName:  t.name,
         customerPhone: t.phone,
       });
-      // 메시지 미리보기: 변수 치환
-      let renderedMsg = templateContent;
-      Object.entries(vars).forEach(([k, v]) => { renderedMsg = renderedMsg.replaceAll(k, v); });
+      // 변수 치환된 최종 메시지
+      let text = templateContent;
+      Object.entries(vars).forEach(([k, v]) => { text = text.replaceAll(k, v); });
       return {
         to: t.phone,
         templateId,
         variables: vars,
+        text,
         customerId: t.customerId || undefined,
-        _renderedMsg: renderedMsg,
       };
     })
   );
