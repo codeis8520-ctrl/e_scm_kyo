@@ -54,11 +54,6 @@ export default function ProductsPage() {
       )
     : products;
 
-  const handleEdit = (product: Product) => {
-    setEditProduct(product);
-    setShowModal(true);
-  };
-
   const marginPct = (p: Product) => {
     if (!p.cost || !p.price) return null;
     return Math.round((1 - p.cost / p.price) * 100);
