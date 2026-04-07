@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { requireSession } from '@/lib/session';
 import { sendMessages, sendKakaoMessages } from '@/lib/solapi/client';
+import { resolveAllVariables, type VariableContext } from '@/lib/solapi/variable-resolver';
 
 export interface SendTarget {
   customerId: string | null;
@@ -18,9 +19,9 @@ interface SendSmsParams {
 interface SendKakaoParams {
   targets: SendTarget[];
   templateId: string;       // Solapi 템플릿 ID (KA01TP...)
-  message: string;          // 미리보기/기록용 렌더링된 메시지
-  variables?: Record<string, string>;   // 수동 입력 변수 (공통)
-  nameVariableKey?: string; // 고객명 자동입력 변수 키 (예: #{홍길동})
+  templateContent: string;  // 원본 템플릿 내용 (변수 치환용)
+  variableKeys: string[];   // 템플릿 변수 키 목록 (예: ['#{홍길동}', '#{url}'])
+  context?: Omit<VariableContext, 'customerName' | 'customerPhone'>;  // 공통 컨텍스트 (주문번호 등)
 }
 
 // ─── SMS 발송 ──────────────────────────────────────────────────────────────────
@@ -69,22 +70,39 @@ export async function sendKakaoAction(params: SendKakaoParams) {
   let session;
   try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
 
-  const { targets, templateId, message, variables = {}, nameVariableKey } = params;
+  const { targets, templateId, templateContent, variableKeys, context = {} } = params;
   if (!targets.length) return { error: '발송 대상이 없습니다.' };
 
   const result = await sendKakaoMessages(
-    targets.map(t => ({
-      to: t.phone,
-      templateId,
-      variables: nameVariableKey && (t as any).name
-        ? { ...variables, [nameVariableKey]: (t as any).name }
-        : variables,
-      customerId: t.customerId || undefined,
-    }))
+    targets.map(t => {
+      const vars = resolveAllVariables(variableKeys, {
+        ...context,
+        customerName:  t.name,
+        customerPhone: t.phone,
+      });
+      // 메시지 미리보기: 변수 치환
+      let renderedMsg = templateContent;
+      Object.entries(vars).forEach(([k, v]) => { renderedMsg = renderedMsg.replaceAll(k, v); });
+      return {
+        to: t.phone,
+        templateId,
+        variables: vars,
+        customerId: t.customerId || undefined,
+        _renderedMsg: renderedMsg,
+      };
+    })
   );
 
   const supabase = await createClient();
   const db = supabase as any;
+  // 각 수신자별 렌더링된 메시지 재계산
+  const renderedMessages = targets.map(t => {
+    const vars = resolveAllVariables(variableKeys, { ...context, customerName: t.name, customerPhone: t.phone });
+    let msg = templateContent;
+    Object.entries(vars).forEach(([k, v]) => { msg = msg.replaceAll(k, v); });
+    return msg;
+  });
+
   const rows = targets.map((t, i) => {
     const r = result.results[i];
     return {
@@ -93,7 +111,7 @@ export async function sendKakaoAction(params: SendKakaoParams) {
       template_id: templateId || null,
       template_code: templateId,
       phone: t.phone,
-      message,
+      message: renderedMessages[i],
       status: r.success ? 'sent' : 'failed',
       external_message_id: r.messageId || null,
       error_message: r.error || null,

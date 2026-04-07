@@ -199,24 +199,10 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
   const [phoneError, setPhoneError]               = useState('');
   const [templateId, setTemplateId]               = useState('');
   const [templateContent, setTemplateContent]     = useState('');
-  const [nameVarKey, setNameVarKey]               = useState('');   // 고객명 자동입력 변수 키
-  const [manualVars, setManualVars]               = useState<Record<string, string>>({});  // 수동 입력 변수
+  const [variableKeys, setVariableKeys]           = useState<string[]>([]);
   const [message, setMessage]                     = useState('');
   const [submitting, setSubmitting]               = useState(false);
   const [result, setResult]                       = useState<{ successCount: number; failCount: number } | null>(null);
-
-  // 이름 변수 감지: #{순한글 2-3글자} → 이름으로 간주 (예: #{홍길동})
-  const isNameVar = (key: string) => /^#\{[가-힣]{2,3}\}$/.test(key);
-
-  // 미리보기 업데이트 (이름 변수는 '(수신자 이름)' 플레이스홀더)
-  const updatePreview = (content: string, vars: Record<string, string>, nameKey: string) => {
-    let preview = content;
-    if (nameKey) preview = preview.replaceAll(nameKey, '(수신자 이름)');
-    Object.entries(vars).forEach(([key, val]) => {
-      preview = preview.replaceAll(key, val || key);
-    });
-    setMessage(preview);
-  };
 
   const filteredCustomers = customers
     .filter(c => {
@@ -249,7 +235,7 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
       targets = [{ customerId: null, phone }];
     }
 
-    if (!message.trim()) { alert('메시지를 입력해주세요.'); setSubmitting(false); return; }
+    if (type === 'sms' && !message.trim()) { alert('메시지를 입력해주세요.'); setSubmitting(false); return; }
 
     let res;
     if (type === 'sms') {
@@ -263,9 +249,8 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
       res = await sendKakaoAction({
         targets,
         templateId,
-        message,
-        variables: manualVars,
-        nameVariableKey: nameVarKey,
+        templateContent,
+        variableKeys,
       });
     }
 
@@ -400,14 +385,8 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
                       const t = templates.find((t: any) => t.templateId === e.target.value);
                       if (t) {
                         setTemplateContent(t.content);
-                        const keys: string[] = t.variables.map((v: any) => v.name ?? v);
-                        const nameKey = keys.find(isNameVar) ?? '';
-                        setNameVarKey(nameKey);
-                        const initManual = keys
-                          .filter(k => k !== nameKey)
-                          .reduce((acc: Record<string, string>, k) => { acc[k] = ''; return acc; }, {});
-                        setManualVars(initManual);
-                        updatePreview(t.content, initManual, nameKey);
+                        setVariableKeys(t.variables.map((v: any) => v.name ?? v));
+                        setMessage(t.content);
                       }
                     }}
                     className="input"
@@ -419,29 +398,12 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
                   </select>
                 )}
               </div>
-              {/* 변수 표시 */}
-              {(nameVarKey || Object.keys(manualVars).length > 0) && (
-                <div className="bg-slate-50 rounded-lg p-3 space-y-2">
-                  {nameVarKey && (
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-slate-500 w-24 shrink-0">{nameVarKey}</span>
-                      <span className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded">수신자 이름 자동 입력</span>
-                    </div>
-                  )}
-                  {Object.entries(manualVars).map(([key, val]) => (
-                    <div key={key}>
-                      <label className="text-xs text-slate-500">{key}</label>
-                      <input
-                        className="input mt-0.5"
-                        value={val}
-                        placeholder={`${key} 값 입력`}
-                        onChange={e => {
-                          const updated = { ...manualVars, [key]: e.target.value };
-                          setManualVars(updated);
-                          updatePreview(templateContent, updated, nameVarKey);
-                        }}
-                      />
-                    </div>
+              {variableKeys.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {variableKeys.map(k => (
+                    <span key={k} className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full">
+                      {k} 자동입력
+                    </span>
                   ))}
                 </div>
               )}
@@ -470,7 +432,7 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
               placeholder={type === 'kakao' ? '템플릿을 선택하거나 직접 입력...' : '전송할 SMS 메시지를 입력하세요'}
             />
             {type === 'kakao' && (
-              <p className="text-xs text-slate-400 mt-1">{"변수 형식: #{홍길동}, #{인증번호} 등 (솔라피 템플릿 기준)"}</p>
+              <p className="text-xs text-slate-400 mt-1">변수는 발송 시 수신자 정보로 자동 치환됩니다</p>
             )}
           </div>
 
