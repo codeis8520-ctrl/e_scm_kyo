@@ -98,67 +98,69 @@ export async function GET(request: NextRequest) {
   }
 
   const shopNo = process.env.CAFE24_SHOP_NO ?? '1';
-  const apiUrl = `https://${mallId}.cafe24api.com/api/v2/admin/orders?start_date=${startDate}&end_date=${endDate}&limit=100&shop_no=${shopNo}&embed=items,receivers`;
+  const base = `https://${mallId}.cafe24api.com/api/v2`;
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    'X-Cafe24-Api-Version': '2026-03-01',
+  };
 
   try {
-    const apiRes = await fetch(apiUrl, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'X-Cafe24-Api-Version': '2026-03-01',
-        'Content-Type': 'application/json',
-      },
-    });
-
-    if (!apiRes.ok) {
-      const errText = await apiRes.text();
-      console.error(`Cafe24 Orders API 오류: ${apiRes.status} ${errText}`);
-      // API 오류 시 데모 데이터 폴백
-      const orders: Cafe24OrderForShipping[] = DEMO_ORDERS.map((order) => ({
-        ...order,
-        already_added: existingIds.has(order.cafe24_order_id),
-      }));
-      return NextResponse.json({ orders });
+    // 1. 주문 목록
+    const listRes = await fetch(
+      `${base}/admin/orders?start_date=${startDate}&end_date=${endDate}&limit=100&shop_no=${shopNo}`,
+      { headers }
+    );
+    if (!listRes.ok) {
+      console.error(`Cafe24 Orders 목록 오류: ${listRes.status}`);
+      return NextResponse.json({ orders: DEMO_ORDERS.map(o => ({ ...o, already_added: existingIds.has(o.cafe24_order_id) })) });
     }
 
-    const json = await apiRes.json();
-    const rawOrders: any[] = json.orders ?? [];
+    const listJson = await listRes.json();
+    const rawOrders: any[] = listJson.orders ?? [];
 
-    const orders: Cafe24OrderForShipping[] = rawOrders.map((o: any) => {
-      // receivers는 배열 — 첫 번째 수신자 사용
-      const receiver = Array.isArray(o.receivers) ? o.receivers[0] : null;
+    // 2. 주문별 상세(items) + receivers 병렬 조회
+    const orders: Cafe24OrderForShipping[] = await Promise.all(
+      rawOrders.map(async (o: any) => {
+        const orderId = String(o.order_id ?? '');
 
-      const address = [
-        receiver?.address1 ?? o.receiver_address ?? '',
-        receiver?.address2 ?? o.receiver_address_detail ?? '',
-      ].filter(Boolean).join(' ');
+        const [detailRes, recvRes] = await Promise.all([
+          fetch(`${base}/admin/orders/${orderId}?shop_no=${shopNo}&embed=items`, { headers }),
+          fetch(`${base}/admin/orders/${orderId}/receivers?shop_no=${shopNo}`, { headers }),
+        ]);
 
-      const itemsSummary = Array.isArray(o.items)
-        ? o.items.map((item: any) => `${item.product_name ?? ''} x${item.quantity ?? 1}`).join(', ')
-        : '';
+        const detail = detailRes.ok ? await detailRes.json() : null;
+        const recvData = recvRes.ok ? await recvRes.json() : null;
 
-      return {
-        cafe24_order_id: String(o.order_id ?? ''),
-        order_date: (o.order_date ?? '').split('T')[0],
-        orderer_name: o.billing_name ?? o.buyer_name ?? '',
-        orderer_phone: o.billing_phone ?? o.billing_cellphone ?? o.buyer_cellphone ?? '',
-        recipient_name: receiver?.name ?? o.receiver_name ?? '',
-        recipient_phone: receiver?.phone ?? receiver?.cellphone ?? o.receiver_cellphone ?? o.receiver_phone ?? '',
-        recipient_address: address,
-        delivery_message: receiver?.shipping_message ?? o.delivery_message ?? '',
-        items_summary: itemsSummary,
-        total_price: Number(o.payment_amount ?? o.actual_order_amount?.payment_amount ?? 0),
-        already_added: existingIds.has(String(o.order_id ?? '')),
-      };
-    });
+        const receiver = recvData?.receivers?.[0] ?? null;
+        const items: any[] = detail?.order?.items ?? [];
+
+        const itemsSummary = items.length > 0
+          ? items.map((i: any) => `${i.product_name ?? ''} x${i.quantity ?? 1}`).join(', ')
+          : '';
+
+        const address = receiver?.address_full
+          ?? [receiver?.address1, receiver?.address2].filter(Boolean).join(' ')
+          ?? '';
+
+        return {
+          cafe24_order_id: orderId,
+          order_date: (o.order_date ?? '').split('T')[0],
+          orderer_name: o.billing_name ?? '',
+          orderer_phone: receiver?.cellphone ?? receiver?.phone ?? '',
+          recipient_name: receiver?.name ?? '',
+          recipient_phone: receiver?.cellphone ?? receiver?.phone ?? '',
+          recipient_address: address,
+          delivery_message: receiver?.shipping_message ?? '',
+          items_summary: itemsSummary,
+          total_price: Number(o.payment_amount ?? 0),
+          already_added: existingIds.has(orderId),
+        };
+      })
+    );
 
     return NextResponse.json({ orders });
   } catch (err: unknown) {
-    console.error('Cafe24 Orders API 네트워크 오류:', err);
-    // 네트워크 오류 시 데모 데이터 폴백
-    const orders: Cafe24OrderForShipping[] = DEMO_ORDERS.map((order) => ({
-      ...order,
-      already_added: existingIds.has(order.cafe24_order_id),
-    }));
-    return NextResponse.json({ orders });
+    console.error('Cafe24 Orders API 오류:', err);
+    return NextResponse.json({ orders: DEMO_ORDERS.map(o => ({ ...o, already_added: existingIds.has(o.cafe24_order_id) })) });
   }
 }
