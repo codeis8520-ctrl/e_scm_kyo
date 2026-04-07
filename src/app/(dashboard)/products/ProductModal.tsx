@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { createProduct, updateProduct, deleteProduct, getCategories } from '@/lib/actions';
+import { createProduct, updateProduct, deleteProduct, getCategories, addProductFile, deleteProductFile } from '@/lib/actions';
+import { createClient } from '@/lib/supabase/client';
 import { validators } from '@/lib/validators';
 
 interface Product {
@@ -16,6 +17,8 @@ interface Product {
   is_active: boolean;
   is_taxable: boolean;
   image_url?: string | null;
+  spec?: Record<string, string> | null;
+  description?: string | null;
 }
 
 interface Props {
@@ -44,9 +47,32 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
   const [imageUploading, setImageUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // spec / description state
+  const [specRows, setSpecRows] = useState<{ key: string; value: string }[]>(
+    Object.entries(product?.spec || {}).map(([key, value]) => ({ key, value: String(value) }))
+  );
+  const [description, setDescription] = useState(product?.description || '');
+
+  // product_files state
+  const [productFiles, setProductFiles] = useState<any[]>([]);
+  const [fileUploading, setFileUploading] = useState(false);
+  const docFileInputRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     getCategories().then(res => setCategories(res.data || []));
   }, []);
+
+  // edit 모드에서만 파일 목록 로드
+  useEffect(() => {
+    if (!product?.id) return;
+    const supabase = createClient();
+    supabase
+      .from('product_files')
+      .select('*')
+      .eq('product_id', product.id)
+      .order('sort_order')
+      .then(({ data }) => setProductFiles(data || []));
+  }, [product?.id]);
 
   const resizeImage = (file: File, maxSize = 300): Promise<Blob> =>
     new Promise((resolve, reject) => {
@@ -99,6 +125,48 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
     }
   };
 
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !product?.id) return;
+
+    const isImage = file.type.startsWith('image/');
+    const fileType: 'image' | 'document' = isImage ? 'image' : 'document';
+
+    setFileUploading(true);
+    try {
+      const uploadForm = new FormData();
+      if (isImage) {
+        const resized = await resizeImage(file, 800);
+        const thumb = new File([resized], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' });
+        uploadForm.append('file', thumb);
+      } else {
+        uploadForm.append('file', file);
+      }
+
+      const res = await fetch('/api/upload', { method: 'POST', body: uploadForm });
+      if (!res.ok) throw new Error('업로드 실패');
+      const { url } = await res.json();
+
+      const result = await addProductFile(product.id, url, file.name, fileType);
+      if (result?.error) throw new Error(result.error);
+
+      setProductFiles(prev => [
+        ...prev,
+        { id: Date.now().toString(), file_url: url, file_name: file.name, file_type: fileType },
+      ]);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setFileUploading(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleDeleteFile = async (fileId: string) => {
+    await deleteProductFile(fileId);
+    setProductFiles(prev => prev.filter(f => f.id !== fileId));
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -130,6 +198,12 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
       }
     });
 
+    // spec 직렬화
+    const specObj: Record<string, string> = {};
+    specRows.forEach(({ key, value }) => { if (key.trim()) specObj[key.trim()] = value; });
+    form.append('spec', JSON.stringify(specObj));
+    form.append('description', description);
+
     const result = product?.id
       ? await updateProduct(product.id, form)
       : await createProduct(form);
@@ -153,7 +227,7 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 w-full max-w-md">
+      <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[85vh] overflow-y-auto">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-lg font-bold">
             {product?.id ? '제품 수정' : '제품 등록'}
@@ -235,10 +309,10 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
               <input
                 type="text"
                 value={formData.code}
-                readOnly
-                className="mt-1 input bg-slate-50 text-slate-500 cursor-default"
+                onChange={(e) => setFormData({ ...formData, code: e.target.value.toUpperCase() })}
+                className="mt-1 input font-mono"
               />
-              <p className="mt-1 text-xs text-slate-400">제품코드는 변경할 수 없습니다</p>
+              <p className="mt-1 text-xs text-slate-400">고유 코드 — 중복 불가</p>
             </div>
           )}
 
@@ -364,6 +438,107 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
                 onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })}
               />
               <label htmlFor="is_active" className="text-sm text-gray-700">활성 상태</label>
+            </div>
+          )}
+
+          {/* 규격 정보 섹션 */}
+          <div className="border-t pt-4">
+            <p className="text-sm font-semibold text-slate-700 mb-3">규격 정보</p>
+            <div className="space-y-2">
+              {specRows.map((row, i) => (
+                <div key={i} className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="항목명 (예: 용량)"
+                    value={row.key}
+                    onChange={e => setSpecRows(prev => prev.map((r, j) => j === i ? { ...r, key: e.target.value } : r))}
+                    className="input w-2/5"
+                  />
+                  <input
+                    type="text"
+                    placeholder="값 (예: 80g)"
+                    value={row.value}
+                    onChange={e => setSpecRows(prev => prev.map((r, j) => j === i ? { ...r, value: e.target.value } : r))}
+                    className="input flex-1"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setSpecRows(prev => prev.filter((_, j) => j !== i))}
+                    className="px-2 text-slate-400 hover:text-red-500"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => setSpecRows(prev => [...prev, { key: '', value: '' }])}
+                className="text-sm text-blue-600 hover:underline"
+              >
+                + 항목 추가
+              </button>
+            </div>
+          </div>
+
+          {/* 상세 설명 */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700">상세 설명</label>
+            <textarea
+              value={description}
+              onChange={e => setDescription(e.target.value)}
+              rows={3}
+              placeholder="제품 상세 설명..."
+              className="mt-1 input resize-none"
+            />
+          </div>
+
+          {/* 추가 이미지 / 파일 섹션 (edit 모드 전용) */}
+          {product?.id && (
+            <div className="border-t pt-4">
+              <p className="text-sm font-semibold text-slate-700 mb-3">추가 이미지 / 파일</p>
+              {productFiles.length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {productFiles.map(f => (
+                    <div key={f.id} className="relative group">
+                      {f.file_type === 'image' ? (
+                        <img
+                          src={f.file_url}
+                          alt={f.file_name}
+                          className="w-20 h-20 object-cover rounded border"
+                        />
+                      ) : (
+                        <div className="w-20 h-20 flex flex-col items-center justify-center bg-slate-100 rounded border text-xs text-slate-500 p-1 text-center">
+                          📄 {f.file_name}
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteFile(f.id)}
+                        className="absolute -top-1 -right-1 hidden group-hover:flex w-5 h-5 bg-red-500 text-white rounded-full items-center justify-center text-xs"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <input
+                  ref={docFileInputRef}
+                  type="file"
+                  accept="image/*,.pdf,.xlsx,.docx"
+                  className="hidden"
+                  onChange={handleFileUpload}
+                />
+                <button
+                  type="button"
+                  disabled={fileUploading}
+                  onClick={() => docFileInputRef.current?.click()}
+                  className="px-3 py-1.5 text-sm bg-slate-100 text-slate-700 rounded hover:bg-slate-200 disabled:opacity-50"
+                >
+                  {fileUploading ? '업로드 중...' : '+ 이미지 / 파일 추가'}
+                </button>
+              </div>
             </div>
           )}
 

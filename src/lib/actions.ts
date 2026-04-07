@@ -33,6 +33,7 @@ export async function createProduct(formData: FormData) {
   const rawCategoryId = formData.get('category_id') as string;
   const rawBarcode = formData.get('barcode') as string;
   const rawImageUrl = formData.get('image_url') as string;
+  const rawSpec = formData.get('spec') as string;
   const productData = {
     name,
     code,
@@ -43,6 +44,8 @@ export async function createProduct(formData: FormData) {
     barcode: (rawBarcode && rawBarcode !== 'null') ? rawBarcode : null,
     is_taxable: formData.get('is_taxable') !== 'false',
     image_url: rawImageUrl || null,
+    spec: rawSpec ? JSON.parse(rawSpec) : {},
+    description: (formData.get('description') as string) || null,
   };
 
   // @ts-ignore
@@ -81,8 +84,11 @@ export async function updateProduct(id: string, formData: FormData) {
   const rawCategoryId = formData.get('category_id') as string;
   const rawBarcode = formData.get('barcode') as string;
   const rawImageUrl = formData.get('image_url') as string;
+  const rawCode = (formData.get('code') as string)?.trim().toUpperCase();
+  const rawSpec = formData.get('spec') as string;
   const productData = {
     name: formData.get('name') as string,
+    ...(rawCode ? { code: rawCode } : {}),
     category_id: (rawCategoryId && rawCategoryId !== 'null') ? rawCategoryId : null,
     unit: formData.get('unit') as string || '개',
     price: parseInt(formData.get('price') as string),
@@ -91,6 +97,8 @@ export async function updateProduct(id: string, formData: FormData) {
     is_active: formData.get('is_active') === 'true',
     is_taxable: formData.get('is_taxable') !== 'false',
     image_url: rawImageUrl || null,
+    ...(rawSpec ? { spec: JSON.parse(rawSpec) } : {}),
+    description: (formData.get('description') as string) || null,
   };
 
   // @ts-ignore
@@ -1046,4 +1054,42 @@ export async function processPosCheckout(payload: CheckoutPayload) {
   }
 
   return { orderNumber, pointsEarned, stockUpdates };
+}
+
+// ============ Product Files ============
+
+export async function addProductFile(
+  productId: string,
+  fileUrl: string,
+  fileName: string,
+  fileType: 'image' | 'document'
+) {
+  const supabase = await createClient();
+
+  const { error } = await supabase.from('product_files').insert({
+    product_id: productId,
+    file_url: fileUrl,
+    file_name: fileName,
+    file_type: fileType,
+  } as any);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidatePath('/products');
+  return { success: true };
+}
+
+export async function deleteProductFile(fileId: string) {
+  const supabase = await createClient();
+
+  const { error } = await supabase.from('product_files').delete().eq('id', fileId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidatePath('/products');
+  return { success: true };
 }
