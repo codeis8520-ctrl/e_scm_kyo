@@ -53,21 +53,19 @@ export async function GET() {
         });
         const detailJson = await detailRes.json().catch(() => null);
         const o = detailJson?.order;
-        // 수신자 주소 별도 엔드포인트
-        const shipUrl = `https://${mallId}.cafe24api.com/api/v2/admin/orders/${orderId}/shippingaddress?shop_no=${process.env.CAFE24_SHOP_NO ?? '1'}`;
-        const shipRes = await fetch(shipUrl, {
-          headers: { Authorization: `Bearer ${accessToken}`, 'X-Cafe24-Api-Version': '2026-03-01' },
-        });
-        const shipJson = await shipRes.json().catch(() => null);
+        const shopNo = process.env.CAFE24_SHOP_NO ?? '1';
+        const headers = { Authorization: `Bearer ${accessToken}`, 'X-Cafe24-Api-Version': '2026-03-01' };
+
+        // receivers 엔드포인트 시도
+        const recvRes = await fetch(`https://${mallId}.cafe24api.com/api/v2/admin/orders/${orderId}/receivers?shop_no=${shopNo}`, { headers });
+        const recvJson = await recvRes.json().catch(() => null);
 
         detailTest = {
           status: detailRes.status,
           billing_name: o?.billing_name,
-          billing_phone: o?.billing_phone,
-          billing_cellphone: o?.billing_cellphone,
           items_sample: o?.items?.slice(0, 1)?.map((i: any) => ({ product_name: i.product_name, quantity: i.quantity })),
-          shippingaddress_status: shipRes.status,
-          shippingaddress: shipJson,
+          receivers_status: recvRes.status,
+          receivers: recvJson,
         };
       }
 
