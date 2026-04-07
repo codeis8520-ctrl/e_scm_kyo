@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import { validators, formatPhone } from '@/lib/validators';
 import { sendSmsAction, sendKakaoAction, getNotifications } from '@/lib/notification-actions';
@@ -80,9 +81,14 @@ export default function NotificationsPage() {
             </button>
           ))}
         </div>
-        <button onClick={() => setShowSendModal(true)} className="btn-primary text-sm">
-          + {activeTab === 'sms' ? 'SMS' : '알림톡'} 발송
-        </button>
+        <div className="flex gap-2">
+          <Link href="/notifications/templates" className="px-3 py-2 rounded text-sm font-medium bg-slate-100 text-slate-600 hover:bg-slate-200">
+            템플릿 관리
+          </Link>
+          <button onClick={() => setShowSendModal(true)} className="btn-primary text-sm">
+            + {activeTab === 'sms' ? 'SMS' : '알림톡'} 발송
+          </button>
+        </div>
       </div>
 
       {/* 통계 */}
