@@ -37,8 +37,19 @@ export async function GET() {
           'X-Cafe24-Api-Version': '2026-03-01',
         },
       });
-      const text = await res.text();
-      apiTest = { status: res.status, body: text.slice(0, 3000) };
+      const json = await res.json().catch(() => null);
+      const firstOrder = json?.orders?.[0];
+      apiTest = {
+        status: res.status,
+        order_count: json?.orders?.length ?? 0,
+        first_order_keys: firstOrder ? Object.keys(firstOrder) : [],
+        billing_name: firstOrder?.billing_name,
+        billing_phone: firstOrder?.billing_phone,
+        billing_cellphone: firstOrder?.billing_cellphone,
+        payment_amount: firstOrder?.payment_amount,
+        receivers: firstOrder?.receivers,
+        items: firstOrder?.items,
+      };
     } catch (e: any) {
       apiTest = { error: e.message };
     }
