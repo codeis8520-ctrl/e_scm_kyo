@@ -81,24 +81,15 @@ export async function GET(request: NextRequest) {
   const mallId = process.env.CAFE24_MALL_ID;
 
   if (!mallId) {
-    // 환경변수 없음 → 데모 데이터 반환
-    const orders: Cafe24OrderForShipping[] = DEMO_ORDERS.map((order) => ({
-      ...order,
-      already_added: existingIds.has(order.cafe24_order_id),
-    }));
-    return NextResponse.json({ orders });
+    const orders = DEMO_ORDERS.map(o => ({ ...o, already_added: existingIds.has(o.cafe24_order_id) }));
+    return NextResponse.json({ orders, is_demo: true, demo_reason: 'CAFE24_MALL_ID 환경변수 없음' });
   }
 
-  // 실 API 시도: 유효한 access_token이 있으면 Cafe24 API 호출
   const accessToken = await getValidAccessToken();
 
   if (!accessToken) {
-    // 토큰 없음 → 데모 데이터 폴백
-    const orders: Cafe24OrderForShipping[] = DEMO_ORDERS.map((order) => ({
-      ...order,
-      already_added: existingIds.has(order.cafe24_order_id),
-    }));
-    return NextResponse.json({ orders });
+    const orders = DEMO_ORDERS.map(o => ({ ...o, already_added: existingIds.has(o.cafe24_order_id) }));
+    return NextResponse.json({ orders, is_demo: true, demo_reason: '카페24 토큰 만료 또는 미인증' });
   }
 
   const shopNo = process.env.CAFE24_SHOP_NO ?? '1';
@@ -163,9 +154,10 @@ export async function GET(request: NextRequest) {
       })
     );
 
-    return NextResponse.json({ orders });
+    return NextResponse.json({ orders, is_demo: false });
   } catch (err: unknown) {
     console.error('Cafe24 Orders API 오류:', err);
-    return NextResponse.json({ orders: DEMO_ORDERS.map(o => ({ ...o, already_added: existingIds.has(o.cafe24_order_id) })) });
+    const orders = DEMO_ORDERS.map(o => ({ ...o, already_added: existingIds.has(o.cafe24_order_id) }));
+    return NextResponse.json({ orders, is_demo: true, demo_reason: 'API 호출 오류' });
   }
 }

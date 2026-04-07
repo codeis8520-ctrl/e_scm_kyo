@@ -86,6 +86,8 @@ export default function ShippingPage() {
   const [cafe24Orders, setCafe24Orders] = useState<Cafe24OrderForShipping[]>([]);
   const [cafe24Loading, setCafe24Loading] = useState(false);
   const [cafe24Error, setCafe24Error] = useState('');
+  const [isDemo, setIsDemo] = useState(false);
+  const [demoReason, setDemoReason] = useState('');
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
   const [addingOrders, setAddingOrders] = useState(false);
   const [addError, setAddError] = useState('');
@@ -392,6 +394,8 @@ export default function ShippingPage() {
       if (!res.ok) throw new Error('불러오기 실패');
       const data = await res.json();
       setCafe24Orders(data.orders ?? []);
+      setIsDemo(!!data.is_demo);
+      setDemoReason(data.demo_reason ?? '');
     } catch (e: any) {
       setCafe24Error(e.message || '오류');
     } finally { setCafe24Loading(false); }
@@ -559,6 +563,14 @@ export default function ShippingPage() {
               </button>
             </div>
             {cafe24Error && <p className="text-red-500 text-sm mt-2">{cafe24Error}</p>}
+            {isDemo && (
+              <div className="mt-3 flex items-center gap-3 px-4 py-2.5 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+                <span>⚠️ 데모 데이터 표시 중 ({demoReason})</span>
+                <a href="/api/cafe24/auth" className="ml-auto px-3 py-1 rounded bg-amber-600 text-white text-xs font-medium hover:bg-amber-700 whitespace-nowrap">
+                  카페24 재인증
+                </a>
+              </div>
+            )}
           </div>
 
           {cafe24Orders.length > 0 && (
