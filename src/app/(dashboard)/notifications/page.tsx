@@ -199,14 +199,19 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
   const [phoneError, setPhoneError]               = useState('');
   const [templateId, setTemplateId]               = useState('');
   const [templateContent, setTemplateContent]     = useState('');
-  const [variables, setVariables]                 = useState<Record<string, string>>({});
+  const [nameVarKey, setNameVarKey]               = useState('');   // 고객명 자동입력 변수 키
+  const [manualVars, setManualVars]               = useState<Record<string, string>>({});  // 수동 입력 변수
   const [message, setMessage]                     = useState('');
   const [submitting, setSubmitting]               = useState(false);
   const [result, setResult]                       = useState<{ successCount: number; failCount: number } | null>(null);
 
-  // 변수 입력 시 메시지 미리보기 자동 업데이트
-  const updatePreview = (content: string, vars: Record<string, string>) => {
+  // 이름 변수 감지: #{순한글 2-3글자} → 이름으로 간주 (예: #{홍길동})
+  const isNameVar = (key: string) => /^#\{[가-힣]{2,3}\}$/.test(key);
+
+  // 미리보기 업데이트 (이름 변수는 '(수신자 이름)' 플레이스홀더)
+  const updatePreview = (content: string, vars: Record<string, string>, nameKey: string) => {
     let preview = content;
+    if (nameKey) preview = preview.replaceAll(nameKey, '(수신자 이름)');
     Object.entries(vars).forEach(([key, val]) => {
       preview = preview.replaceAll(key, val || key);
     });
@@ -230,13 +235,13 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
     setSubmitting(true);
     setResult(null);
 
-    let targets: { customerId: string | null; phone: string }[];
+    let targets: { customerId: string | null; phone: string; name?: string }[];
 
     if (sendMode === 'bulk') {
       if (selectedCustomerIds.length === 0) { alert('발송 대상을 선택해주세요.'); setSubmitting(false); return; }
       targets = selectedCustomerIds.map(id => {
         const c = customers.find(c => c.id === id);
-        return { customerId: id, phone: c?.phone || '' };
+        return { customerId: id, phone: c?.phone || '', name: c?.name };
       });
     } else {
       const err = validators.phone(phone);
@@ -259,7 +264,8 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
         targets,
         templateId,
         message,
-        variables,
+        variables: manualVars,
+        nameVariableKey: nameVarKey,
       });
     }
 
@@ -394,12 +400,14 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
                       const t = templates.find((t: any) => t.templateId === e.target.value);
                       if (t) {
                         setTemplateContent(t.content);
-                        const initVars = t.variables.reduce((acc: Record<string, string>, v: any) => {
-                          acc[v.name ?? v] = '';
-                          return acc;
-                        }, {});
-                        setVariables(initVars);
-                        updatePreview(t.content, initVars);
+                        const keys: string[] = t.variables.map((v: any) => v.name ?? v);
+                        const nameKey = keys.find(isNameVar) ?? '';
+                        setNameVarKey(nameKey);
+                        const initManual = keys
+                          .filter(k => k !== nameKey)
+                          .reduce((acc: Record<string, string>, k) => { acc[k] = ''; return acc; }, {});
+                        setManualVars(initManual);
+                        updatePreview(t.content, initManual, nameKey);
                       }
                     }}
                     className="input"
@@ -411,21 +419,26 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
                   </select>
                 )}
               </div>
-              {/* 변수 입력 */}
-              {Object.keys(variables).length > 0 && (
+              {/* 변수 표시 */}
+              {(nameVarKey || Object.keys(manualVars).length > 0) && (
                 <div className="bg-slate-50 rounded-lg p-3 space-y-2">
-                  <p className="text-xs font-medium text-slate-600">변수 입력</p>
-                  {Object.entries(variables).map(([key]) => (
+                  {nameVarKey && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-500 w-24 shrink-0">{nameVarKey}</span>
+                      <span className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded">수신자 이름 자동 입력</span>
+                    </div>
+                  )}
+                  {Object.entries(manualVars).map(([key, val]) => (
                     <div key={key}>
                       <label className="text-xs text-slate-500">{key}</label>
                       <input
                         className="input mt-0.5"
-                        value={variables[key]}
-                        placeholder={key}
+                        value={val}
+                        placeholder={`${key} 값 입력`}
                         onChange={e => {
-                          const updated = { ...variables, [key]: e.target.value };
-                          setVariables(updated);
-                          updatePreview(templateContent, updated);
+                          const updated = { ...manualVars, [key]: e.target.value };
+                          setManualVars(updated);
+                          updatePreview(templateContent, updated, nameVarKey);
                         }}
                       />
                     </div>

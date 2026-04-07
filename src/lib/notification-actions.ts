@@ -7,6 +7,7 @@ import { sendMessages, sendKakaoMessages } from '@/lib/solapi/client';
 export interface SendTarget {
   customerId: string | null;
   phone: string;
+  name?: string;
 }
 
 interface SendSmsParams {
@@ -18,7 +19,8 @@ interface SendKakaoParams {
   targets: SendTarget[];
   templateId: string;       // Solapi 템플릿 ID (KA01TP...)
   message: string;          // 미리보기/기록용 렌더링된 메시지
-  variables?: Record<string, string>;
+  variables?: Record<string, string>;   // 수동 입력 변수 (공통)
+  nameVariableKey?: string; // 고객명 자동입력 변수 키 (예: #{홍길동})
 }
 
 // ─── SMS 발송 ──────────────────────────────────────────────────────────────────
@@ -67,14 +69,16 @@ export async function sendKakaoAction(params: SendKakaoParams) {
   let session;
   try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
 
-  const { targets, templateId, message, variables } = params;
+  const { targets, templateId, message, variables = {}, nameVariableKey } = params;
   if (!targets.length) return { error: '발송 대상이 없습니다.' };
 
   const result = await sendKakaoMessages(
     targets.map(t => ({
       to: t.phone,
       templateId,
-      variables: variables || {},
+      variables: nameVariableKey && (t as any).name
+        ? { ...variables, [nameVariableKey]: (t as any).name }
+        : variables,
       customerId: t.customerId || undefined,
     }))
   );
