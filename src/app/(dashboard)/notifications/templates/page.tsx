@@ -56,6 +56,7 @@ export default function NotificationTemplatesPage() {
           <tr>
             <th>템플릿 코드</th>
             <th>템플릿명</th>
+            <th>Solapi 템플릿 ID</th>
             <th>메시지 미리보기</th>
             <th>상태</th>
             <th>관리</th>
@@ -64,12 +65,17 @@ export default function NotificationTemplatesPage() {
         <tbody>
           {loading ? (
             <tr>
-              <td colSpan={5} className="text-center text-slate-400 py-8">로딩 중...</td>
+              <td colSpan={6} className="text-center text-slate-400 py-8">로딩 중...</td>
             </tr>
           ) : templates.map((template) => (
             <tr key={template.id}>
               <td className="font-mono text-sm">{template.template_code}</td>
               <td>{template.template_name}</td>
+              <td>
+                {template.solapi_template_id
+                  ? <span className="font-mono text-xs text-slate-600">{template.solapi_template_id}</span>
+                  : <span className="text-xs text-amber-500">⚠️ 미등록</span>}
+              </td>
               <td className="max-w-xs text-sm truncate">{template.message_template}</td>
               <td>
                 <span className={template.is_active ? 'badge badge-success' : 'badge badge-error'}>
@@ -83,7 +89,7 @@ export default function NotificationTemplatesPage() {
           ))}
           {!loading && templates.length === 0 && (
             <tr>
-              <td colSpan={5} className="text-center text-slate-400 py-8">등록된 템플릿이 없습니다</td>
+              <td colSpan={6} className="text-center text-slate-400 py-8">등록된 템플릿이 없습니다</td>
             </tr>
           )}
         </tbody>
@@ -106,6 +112,7 @@ function TemplateModal({ template, onClose, onSuccess }: any) {
   const [formData, setFormData] = useState({
     template_code: template?.template_code || '',
     template_name: template?.template_name || '',
+    solapi_template_id: template?.solapi_template_id || '',
     message_template: template?.message_template || '',
   } as any);
   const [error, setError] = useState('');
@@ -173,6 +180,21 @@ function TemplateModal({ template, onClose, onSuccess }: any) {
               className="mt-1 input"
               placeholder="주문 완료 알림"
             />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">
+              Solapi 템플릿 ID
+              <span className="ml-1 text-xs text-slate-400">(알림톡 발송 시 필수 — KA01TP...)</span>
+            </label>
+            <input
+              type="text"
+              value={formData.solapi_template_id}
+              onChange={(e) => setFormData({ ...formData, solapi_template_id: e.target.value })}
+              className="mt-1 input font-mono"
+              placeholder="KA01TP..."
+            />
+            <p className="text-xs text-slate-400 mt-1">솔라피 콘솔 → 알림톡 → 템플릿 관리에서 확인</p>
           </div>
 
           <div>

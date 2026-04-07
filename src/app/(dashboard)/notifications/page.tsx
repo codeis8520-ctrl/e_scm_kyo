@@ -238,9 +238,14 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
       res = await sendSmsAction({ targets, message });
     } else {
       const template = templates.find(t => t.id === templateId);
+      if (!template?.solapi_template_id) {
+        alert('선택한 템플릿에 Solapi 템플릿 ID가 등록되어 있지 않습니다.\n템플릿 관리 페이지에서 Solapi 템플릿 ID(KA01TP...)를 먼저 입력해주세요.');
+        setSubmitting(false);
+        return;
+      }
       res = await sendKakaoAction({
         targets,
-        templateId,
+        templateId: template.solapi_template_id,
         message,
       });
     }
