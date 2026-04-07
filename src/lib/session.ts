@@ -1,7 +1,6 @@
 'use server';
 
 import { cookies } from 'next/headers';
-import { createClient } from '@/lib/supabase/server';
 
 export interface SessionUser {
   id: string;
@@ -18,25 +17,20 @@ export interface SessionUser {
 export async function getSession(): Promise<SessionUser | null> {
   try {
     const cookieStore = await cookies();
-    const token = (cookieStore as any).get('session_token')?.value as string | undefined;
-    if (!token) return null;
+    const token   = (cookieStore as any).get('session_token')?.value as string | undefined;
+    const userId  = (cookieStore as any).get('user_id')?.value     as string | undefined;
+    const name    = (cookieStore as any).get('user_name')?.value   as string | undefined;
+    const role    = (cookieStore as any).get('user_role')?.value   as string | undefined;
+    const branchId = (cookieStore as any).get('user_branch_id')?.value as string | undefined;
 
-    const supabase = await createClient();
-    const { data } = await (supabase as any)
-      .from('session_tokens')
-      .select('user_id, expires_at, user:users(id, name, role, branch_id)')
-      .eq('token_hash', token)
-      .gt('expires_at', new Date().toISOString())
-      .maybeSingle();
+    if (!token || !userId || !role) return null;
 
-    if (!data) return null;
-
-    const user = data.user as any;
+    // 쿠키에서 직접 반환 (미들웨어가 이미 session_token 유효성 검증)
     return {
-      id: user.id,
-      name: user.name,
-      role: user.role,
-      branch_id: user.branch_id,
+      id: userId,
+      name: name || '',
+      role,
+      branch_id: branchId || null,
     };
   } catch {
     return null;
