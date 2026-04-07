@@ -358,7 +358,8 @@ export default function ShippingPage() {
     try {
       const res = await fetch(`/api/cafe24/orders?start_date=${startDate}&end_date=${endDate}`);
       if (!res.ok) throw new Error('불러오기 실패');
-      setCafe24Orders(await res.json());
+      const data = await res.json();
+      setCafe24Orders(data.orders ?? []);
     } catch (e: any) {
       setCafe24Error(e.message || '오류');
     } finally { setCafe24Loading(false); }
