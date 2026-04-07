@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 // DeliveryTracker v2 API — https://tracker.delivery
-// 환경변수: DELIVERY_TRACKER_API_KEY (미설정 시 API_KEY_NOT_SET 반환)
+// 가입: https://console.tracker.delivery (Google/email 가입 → Create Project → Credentials)
+// 환경변수: DELIVERY_TRACKER_CLIENT_ID, DELIVERY_TRACKER_CLIENT_SECRET
+// Authorization: TRACKQL-API-KEY {clientId}:{clientSecret}
 
 export async function GET(req: NextRequest) {
   const trackingNo = req.nextUrl.searchParams.get('trackingNo');
@@ -9,15 +11,16 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'trackingNo required' }, { status: 400 });
   }
 
-  const apiKey = process.env.DELIVERY_TRACKER_API_KEY;
-  if (!apiKey) {
+  const clientId = process.env.DELIVERY_TRACKER_CLIENT_ID;
+  const clientSecret = process.env.DELIVERY_TRACKER_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
     return NextResponse.json({ error: 'API_KEY_NOT_SET' });
   }
 
   try {
     const res = await fetch(
       `https://apis.tracker.delivery/carriers/kr.cjlogistics/tracks/${trackingNo}`,
-      { headers: { Authorization: `KakaoAK ${apiKey}` } }
+      { headers: { Authorization: `TRACKQL-API-KEY ${clientId}:${clientSecret}` } }
     );
 
     if (res.status === 429) {
