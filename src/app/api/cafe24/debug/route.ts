@@ -80,11 +80,24 @@ export async function GET() {
     }
   }
 
+  // orders 라우트 직접 호출 테스트
+  const today = new Date().toISOString().split('T')[0];
+  let ordersRouteTest: any = null;
+  try {
+    const host = process.env.CAFE24_REDIRECT_URI?.replace('/api/cafe24/callback', '') ?? 'https://e-scm-kyo.vercel.app';
+    const r = await fetch(`${host}/api/cafe24/orders?start_date=${today}&end_date=${today}`);
+    const j = await r.json();
+    ordersRouteTest = { status: r.status, order_count: j.orders?.length, first: j.orders?.[0] };
+  } catch (e: any) {
+    ordersRouteTest = { error: e.message };
+  }
+
   return NextResponse.json({
     envCheck,
     tokenInDB: tokenRow ?? null,
     tokenDbError: tokenError?.message ?? null,
     hasValidToken: !!accessToken,
     apiTest,
+    ordersRouteTest,
   });
 }
