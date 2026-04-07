@@ -33,7 +33,7 @@ export interface SmsMessage {
 
 export interface KakaoMessage {
   to: string;
-  templateCode: string;  // Solapi 카카오 채널에 등록된 템플릿 코드
+  templateId: string;    // Solapi 카카오 알림톡 템플릿 ID (KA01TP...)
   variables: Record<string, string>;  // #{변수명}: 값
   customerId?: string;
 }
@@ -148,8 +148,9 @@ export async function sendKakaoMessages(messages: KakaoMessage[]): Promise<BulkS
       type: 'ATA',
       kakaoOptions: {
         pfId,
-        templateCode: m.templateCode,
+        templateId: m.templateId,
         variables: m.variables,
+        disableSms: false,  // 알림톡 실패 시 SMS 자동 대체
       },
     })),
   };

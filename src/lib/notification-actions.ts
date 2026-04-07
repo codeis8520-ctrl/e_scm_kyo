@@ -16,8 +16,7 @@ interface SendSmsParams {
 
 interface SendKakaoParams {
   targets: SendTarget[];
-  templateId: string;
-  templateCode: string;
+  templateId: string;       // Solapi 템플릿 ID (KA01TP...)
   message: string;          // 미리보기/기록용 렌더링된 메시지
   variables?: Record<string, string>;
 }
@@ -68,13 +67,13 @@ export async function sendKakaoAction(params: SendKakaoParams) {
   let session;
   try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
 
-  const { targets, templateCode, message, variables } = params;
+  const { targets, templateId, message, variables } = params;
   if (!targets.length) return { error: '발송 대상이 없습니다.' };
 
   const result = await sendKakaoMessages(
     targets.map(t => ({
       to: t.phone,
-      templateCode,
+      templateId,
       variables: variables || {},
       customerId: t.customerId || undefined,
     }))
@@ -87,8 +86,8 @@ export async function sendKakaoAction(params: SendKakaoParams) {
     return {
       customer_id: t.customerId,
       notification_type: 'KAKAO',
-      template_id: params.templateId || null,
-      template_code: templateCode,
+      template_id: templateId || null,
+      template_code: templateId,
       phone: t.phone,
       message,
       status: r.success ? 'sent' : 'failed',

@@ -241,7 +241,6 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
       res = await sendKakaoAction({
         targets,
         templateId,
-        templateCode: template?.template_code || '',
         message,
       });
     }
