@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { getShipments, createShipment, updateShipment, deleteShipment } from '@/lib/shipping-actions';
+import * as XLSX from 'xlsx';
 
 interface Shipment {
   id: string;
@@ -108,6 +109,49 @@ export default function ShippingPage() {
       fetchShipments();
     }
   }, [activeTab]);
+
+  // ── 대한통운 엑셀 다운로드 ─────────────────────────────────────────────────
+  const downloadCjExcel = () => {
+    const targets = statusFilter === 'ALL' ? shipments : shipments.filter(s => s.status === statusFilter);
+    if (targets.length === 0) { alert('다운로드할 배송 건이 없습니다.'); return; }
+
+    const header = [
+      '받는분성명', '받는분전화번호', '받는분기타연락처',
+      '받는분주소(전체, 분할)', '배송메세지1',
+      '품목명', '내품명', '내품수량', '운임구분',
+      '보내는분성명', '보내는분전화번호', '보내는분주소(전체, 분할)',
+    ];
+
+    const rows = targets.map(s => [
+      s.recipient_name,
+      s.recipient_phone,
+      '',
+      [s.recipient_address, s.recipient_address_detail].filter(Boolean).join(' '),
+      s.delivery_message || '',
+      s.items_summary || '',
+      '',
+      '',
+      '선불',
+      s.sender_name,
+      s.sender_phone,
+      '',
+    ]);
+
+    const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+
+    // 컬럼 너비 설정
+    ws['!cols'] = [
+      { wch: 12 }, { wch: 16 }, { wch: 14 }, { wch: 50 }, { wch: 30 },
+      { wch: 24 }, { wch: 16 }, { wch: 8 },  { wch: 8 },
+      { wch: 12 }, { wch: 16 }, { wch: 40 },
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'sheet1');
+
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    XLSX.writeFile(wb, `CJ대한통운_${date}.xlsx`);
+  };
 
   // Cafe24 tab handlers
   const handleLoadCafe24Orders = async () => {
@@ -517,12 +561,11 @@ export default function ShippingPage() {
                 </button>
               ))}
             </div>
-            {/* Excel download (disabled) */}
             <button
-              className="px-4 py-2 rounded text-sm font-medium bg-slate-200 text-slate-400 cursor-not-allowed"
-              disabled
+              onClick={downloadCjExcel}
+              className="px-4 py-2 rounded text-sm font-medium bg-green-600 text-white hover:bg-green-700 transition-colors"
             >
-              대한통운 엑셀 다운로드 (준비중)
+              대한통운 엑셀 다운로드
             </button>
           </div>
 
