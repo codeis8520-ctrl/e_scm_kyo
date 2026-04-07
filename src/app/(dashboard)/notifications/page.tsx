@@ -384,7 +384,7 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
                       if (t) {
                         setMessage(t.content);
                         setTemplateVariables(
-                          t.variables.reduce((acc: Record<string, string>, v: string) => ({ ...acc, [v]: '' }), {})
+                          t.variables.reduce((acc: Record<string, string>, v: any) => ({ ...acc, [v.name ?? v]: '' }), {})
                         );
                       }
                     }}
@@ -439,7 +439,7 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
               placeholder={type === 'kakao' ? '템플릿을 선택하거나 직접 입력...' : '전송할 SMS 메시지를 입력하세요'}
             />
             {type === 'kakao' && (
-              <p className="text-xs text-slate-400 mt-1">변수: {'{{customer_name}}'}, {'{{amount}}'}, {'{{product_name}}'} 등</p>
+              <p className="text-xs text-slate-400 mt-1">변수 형식: #{'{''}홍길동{'}'}, #{'{''}인증번호{'}'} 등 (솔라피 템플릿 기준)</p>
             )}
           </div>
 

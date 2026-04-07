@@ -50,7 +50,7 @@ export async function GET() {
             variables: Array.isArray(t.variables) ? t.variables : [],
             pfId: t.pfId ?? '',
           }));
-          return NextResponse.json({ templates, debug: { usedEndpoint: ep } });
+          return NextResponse.json({ templates });
         }
       }
     } catch (e: any) {
