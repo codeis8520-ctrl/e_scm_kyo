@@ -201,7 +201,6 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
   const [message, setMessage]                     = useState('');
   const [submitting, setSubmitting]               = useState(false);
   const [result, setResult]                       = useState<{ successCount: number; failCount: number } | null>(null);
-  const [templateVariables, setTemplateVariables] = useState<Record<string, string>>({});
 
   const filteredCustomers = customers
     .filter(c => {
@@ -381,12 +380,7 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
                     onChange={e => {
                       setTemplateId(e.target.value);
                       const t = templates.find((t: any) => t.templateId === e.target.value);
-                      if (t) {
-                        setMessage(t.content);
-                        setTemplateVariables(
-                          t.variables.reduce((acc: Record<string, string>, v: any) => ({ ...acc, [v.name ?? v]: '' }), {})
-                        );
-                      }
+                      if (t) setMessage(t.content);
                     }}
                     className="input"
                   >
@@ -397,23 +391,6 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
                   </select>
                 )}
               </div>
-              {/* 변수 입력 */}
-              {Object.keys(templateVariables).length > 0 && (
-                <div className="bg-slate-50 rounded-lg p-3 space-y-2">
-                  <p className="text-xs font-medium text-slate-600">템플릿 변수 입력</p>
-                  {Object.entries(templateVariables).map(([key, val]) => (
-                    <div key={key}>
-                      <label className="text-xs text-slate-500">{key}</label>
-                      <input
-                        className="input mt-0.5"
-                        value={val as string}
-                        onChange={e => setTemplateVariables(prev => ({ ...prev, [key]: e.target.value }))}
-                        placeholder={key}
-                      />
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
           )}
 
