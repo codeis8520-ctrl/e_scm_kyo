@@ -44,7 +44,10 @@ export function resolveVariable(key: string, ctx: VariableContext): string {
   if (NAME_PATTERNS.test(inner))     return ctx.customerName  || key;
 
   if (URL_PATTERNS.test(inner)) {
-    return process.env.NEXT_PUBLIC_SITE_URL || key;
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || '';
+    if (!siteUrl) return key;
+    // 버튼 URL 템플릿이 "https://#{url}" 형식 — 프로토콜 제거 후 도메인/경로만 반환
+    return siteUrl.replace(/^https?:\/\//, '');
   }
 
   // 해석 불가 → 원래 플레이스홀더 유지
