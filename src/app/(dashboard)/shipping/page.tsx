@@ -36,7 +36,18 @@ interface Cafe24OrderForShipping {
   items_summary: string;
   total_price: number;
   already_added: boolean;
+  cafe24_status: string;
 }
+
+const CAFE24_STATUS_LABEL: Record<string, string> = {
+  N: '입금전', F: '결제완료', M: '배송준비중',
+  A: '배송중', B: '배송완료', C: '취소', R: '반품', E: '교환',
+};
+const CAFE24_STATUS_BADGE: Record<string, string> = {
+  N: 'badge', F: 'badge badge-info', M: 'badge badge-info',
+  A: 'badge badge-warning', B: 'badge badge-success',
+  C: 'badge badge-error', R: 'badge badge-error', E: 'badge badge-error',
+};
 
 interface ImportRow {
   trackingNo: string;
@@ -503,7 +514,7 @@ export default function ShippingPage() {
               </div>
               <div className="overflow-x-auto">
                 <table className="table w-full">
-                  <thead><tr><th className="w-10"></th><th>주문일</th><th>주문자</th><th>수령자</th><th>주소</th><th>품목</th><th>금액</th><th></th></tr></thead>
+                  <thead><tr><th className="w-10"></th><th>주문일</th><th>주문자</th><th>수령자</th><th>주소</th><th>품목</th><th>금액</th><th>카페24 상태</th><th></th></tr></thead>
                   <tbody>
                     {cafe24Orders.map(order => (
                       <tr key={order.cafe24_order_id} className={order.already_added ? 'opacity-40' : ''}>
@@ -514,7 +525,8 @@ export default function ShippingPage() {
                         <td className="text-sm text-slate-600 max-w-[180px] truncate">{order.recipient_address}</td>
                         <td className="text-sm text-slate-600 max-w-[140px] truncate">{order.items_summary}</td>
                         <td className="text-sm text-slate-700">{order.total_price.toLocaleString()}원</td>
-                        <td>{order.already_added && <span className="badge badge-info text-xs">이미 추가됨</span>}</td>
+                        <td><span className={`${CAFE24_STATUS_BADGE[order.cafe24_status] ?? 'badge'} text-xs`}>{CAFE24_STATUS_LABEL[order.cafe24_status] ?? order.cafe24_status}</span></td>
+                        <td>{order.already_added && <span className="badge badge-info text-xs">추가됨</span>}</td>
                       </tr>
                     ))}
                   </tbody>

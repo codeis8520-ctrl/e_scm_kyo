@@ -58,7 +58,7 @@ export async function processCafe24Webhook(event: Cafe24WebhookEvent): Promise<{
       case 'order.shipped':
         return await handleOrderShipped(orderCode, status_code, event);
       case 'order.delivered':
-        return await handleOrderDelivered(orderCode);
+        return await handleOrderDelivered(orderCode, event);
       case 'order.cancelled':
         return await handleOrderCancelled(orderCode);
       case 'order.refunded':
@@ -224,56 +224,71 @@ async function handleOrderShipped(
   event: Cafe24WebhookEvent
 ): Promise<{ success: boolean; message: string; orderId?: string }> {
   const localStatus = CAFE24_STATUS_TO_LOCAL[statusCode] || 'SHIPPED';
+  const orderNoStr = event.order_no?.toString() ?? '';
 
+  // sales_orders 업데이트
   const { data: order } = await getSupabase()
     .from('sales_orders')
     .select('id')
     .eq('order_number', orderCode)
-    .single();
+    .maybeSingle();
 
-  if (!order) {
-    return { success: false, message: 'Order not found' };
+  if (order) {
+    await getSupabase()
+      .from('sales_orders')
+      .update({ status: localStatus })
+      .eq('id', order.id);
   }
 
-  const { error } = await getSupabase()
-    .from('sales_orders')
-    .update({ status: localStatus })
-    .eq('id', order.id);
-
-  if (error) {
-    await logSyncEvent('order_shipped_error', orderCode, event, 'failed', error.message);
-    return { success: false, message: error.message };
+  // shipments 업데이트 (카페24에서 배송처리한 경우)
+  if (orderNoStr) {
+    await getSupabase()
+      .from('shipments')
+      .update({
+        status: 'SHIPPED',
+        tracking_number: event.tracking_no ?? null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('cafe24_order_id', orderNoStr);
   }
 
   await logSyncEvent('order_shipped', orderCode, { status: localStatus, tracking: event.tracking_no }, 'success');
-  return { success: true, message: 'Order shipped status updated', orderId: order.id };
+  return { success: true, message: 'Order shipped status updated', orderId: order?.id };
 }
 
 async function handleOrderDelivered(
-  orderCode: string
+  orderCode: string,
+  event?: Cafe24WebhookEvent
 ): Promise<{ success: boolean; message: string; orderId?: string }> {
+  const orderNoStr = event?.order_no?.toString() ?? '';
+
+  // sales_orders 업데이트
   const { data: order } = await getSupabase()
     .from('sales_orders')
     .select('id')
     .eq('order_number', orderCode)
-    .single();
+    .maybeSingle();
 
-  if (!order) {
-    return { success: false, message: 'Order not found' };
+  if (order) {
+    await getSupabase()
+      .from('sales_orders')
+      .update({ status: 'COMPLETED' })
+      .eq('id', order.id);
   }
 
-  const { error } = await getSupabase()
-    .from('sales_orders')
-    .update({ status: 'COMPLETED' })
-    .eq('id', order.id);
-
-  if (error) {
-    await logSyncEvent('order_delivered_error', orderCode, null, 'failed', error.message);
-    return { success: false, message: error.message };
+  // shipments 업데이트
+  if (orderNoStr) {
+    await getSupabase()
+      .from('shipments')
+      .update({
+        status: 'DELIVERED',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('cafe24_order_id', orderNoStr);
   }
 
   await logSyncEvent('order_delivered', orderCode, null, 'success');
-  return { success: true, message: 'Order delivered', orderId: order.id };
+  return { success: true, message: 'Order delivered', orderId: order?.id };
 }
 
 async function handleOrderCancelled(

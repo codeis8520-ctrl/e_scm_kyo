@@ -14,6 +14,7 @@ interface Cafe24OrderForShipping {
   items_summary: string;
   total_price: number;
   already_added: boolean;
+  cafe24_status: string;
 }
 
 const DEMO_ORDERS: Omit<Cafe24OrderForShipping, 'already_added'>[] = [
@@ -28,6 +29,7 @@ const DEMO_ORDERS: Omit<Cafe24OrderForShipping, 'already_added'>[] = [
     delivery_message: '부재 시 경비실에 맡겨주세요.',
     items_summary: '경옥고 80g x1, 공진단 10환 x2',
     total_price: 185000,
+    cafe24_status: 'F',
   },
   {
     cafe24_order_id: 'CAFE24-2024-0002',
@@ -40,6 +42,7 @@ const DEMO_ORDERS: Omit<Cafe24OrderForShipping, 'already_added'>[] = [
     delivery_message: '',
     items_summary: '경옥고 160g x1',
     total_price: 98000,
+    cafe24_status: 'A',
   },
   {
     cafe24_order_id: 'CAFE24-2024-0003',
@@ -52,6 +55,7 @@ const DEMO_ORDERS: Omit<Cafe24OrderForShipping, 'already_added'>[] = [
     delivery_message: '문 앞에 놓아주세요.',
     items_summary: '공진단 5환 x1, 경옥고 80g x2',
     total_price: 142000,
+    cafe24_status: 'B',
   },
 ];
 
@@ -154,6 +158,7 @@ export async function GET(request: NextRequest) {
           items_summary: itemsSummary,
           total_price: Number(o.payment_amount ?? 0),
           already_added: existingIds.has(orderId),
+          cafe24_status: o.order_status ?? '',
         };
       })
     );
