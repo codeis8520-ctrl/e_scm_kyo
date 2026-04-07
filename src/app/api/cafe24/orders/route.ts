@@ -98,7 +98,7 @@ export async function GET(request: NextRequest) {
   }
 
   const shopNo = process.env.CAFE24_SHOP_NO ?? '1';
-  const apiUrl = `https://${mallId}.cafe24api.com/api/v2/admin/orders?start_date=${startDate}&end_date=${endDate}&limit=100&shop_no=${shopNo}`;
+  const apiUrl = `https://${mallId}.cafe24api.com/api/v2/admin/orders?start_date=${startDate}&end_date=${endDate}&limit=100&shop_no=${shopNo}&embed=items,receivers`;
 
   try {
     const apiRes = await fetch(apiUrl, {
@@ -124,9 +124,13 @@ export async function GET(request: NextRequest) {
     const rawOrders: any[] = json.orders ?? [];
 
     const orders: Cafe24OrderForShipping[] = rawOrders.map((o: any) => {
-      const address = [o.receiver_address, o.receiver_address_detail]
-        .filter(Boolean)
-        .join(' ');
+      // receivers는 배열 — 첫 번째 수신자 사용
+      const receiver = Array.isArray(o.receivers) ? o.receivers[0] : null;
+
+      const address = [
+        receiver?.address1 ?? o.receiver_address ?? '',
+        receiver?.address2 ?? o.receiver_address_detail ?? '',
+      ].filter(Boolean).join(' ');
 
       const itemsSummary = Array.isArray(o.items)
         ? o.items.map((item: any) => `${item.product_name ?? ''} x${item.quantity ?? 1}`).join(', ')
@@ -135,14 +139,14 @@ export async function GET(request: NextRequest) {
       return {
         cafe24_order_id: String(o.order_id ?? ''),
         order_date: (o.order_date ?? '').split('T')[0],
-        orderer_name: o.buyer_name ?? '',
-        orderer_phone: o.buyer_cellphone ?? o.buyer_phone ?? '',
-        recipient_name: o.receiver_name ?? '',
-        recipient_phone: o.receiver_cellphone ?? o.receiver_phone ?? '',
+        orderer_name: o.billing_name ?? o.buyer_name ?? '',
+        orderer_phone: o.billing_phone ?? o.billing_cellphone ?? o.buyer_cellphone ?? '',
+        recipient_name: receiver?.name ?? o.receiver_name ?? '',
+        recipient_phone: receiver?.phone ?? receiver?.cellphone ?? o.receiver_cellphone ?? o.receiver_phone ?? '',
         recipient_address: address,
-        delivery_message: o.delivery_message ?? '',
+        delivery_message: receiver?.shipping_message ?? o.delivery_message ?? '',
         items_summary: itemsSummary,
-        total_price: Number(o.actual_price ?? o.order_price ?? 0),
+        total_price: Number(o.payment_amount ?? o.actual_order_amount?.payment_amount ?? 0),
         already_added: existingIds.has(String(o.order_id ?? '')),
       };
     });
