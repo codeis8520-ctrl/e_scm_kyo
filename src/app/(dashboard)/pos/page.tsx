@@ -67,6 +67,7 @@ export default function POSPage() {
   const [editingQtyVal, setEditingQtyVal] = useState('');
   const [editingDiscountId, setEditingDiscountId] = useState<string | null>(null);
   const [editingDiscountVal, setEditingDiscountVal] = useState('');
+  const [editingDiscountType, setEditingDiscountType] = useState<'amount' | 'percent'>('amount');
   const [discountType, setDiscountType] = useState<'amount' | 'percent'>('amount');
   const [discountInput, setDiscountInput] = useState('');
   const [cardApprovalState, setCardApprovalState] = useState<'idle' | 'waiting' | 'approved' | 'error'>('idle');
@@ -286,10 +287,16 @@ export default function POSPage() {
   };
 
   const commitDiscountEdit = (productId: string) => {
-    const val = parseInt(editingDiscountVal.replace(/,/g, '')) || 0;
+    const raw = parseInt(editingDiscountVal.replace(/,/g, '')) || 0;
+    const item = cart.find(i => i.productId === productId);
+    const itemTotal = item ? item.price * item.quantity : 0;
+    const val = editingDiscountType === 'percent'
+      ? Math.round(itemTotal * Math.min(raw, 100) / 100)
+      : raw;
     updateDiscount(productId, val);
     setEditingDiscountId(null);
     setEditingDiscountVal('');
+    setEditingDiscountType('amount');
   };
 
   // ── 금액 계산 ──────────────────────────────────────────────────────────────
@@ -576,7 +583,16 @@ export default function POSPage() {
               <div className="flex items-center gap-1.5">
                 {editingDiscountId === item.productId ? (
                   <>
-                    <span className="text-xs text-orange-600 whitespace-nowrap">할인</span>
+                    <div className="flex rounded overflow-hidden border border-orange-300 shrink-0">
+                      <button
+                        onMouseDown={e => { e.preventDefault(); setEditingDiscountType('amount'); setEditingDiscountVal(''); }}
+                        className={`px-2 py-0.5 text-xs font-medium transition-colors ${editingDiscountType === 'amount' ? 'bg-orange-500 text-white' : 'bg-white text-slate-500 hover:bg-orange-50'}`}
+                      >원</button>
+                      <button
+                        onMouseDown={e => { e.preventDefault(); setEditingDiscountType('percent'); setEditingDiscountVal(''); }}
+                        className={`px-2 py-0.5 text-xs font-medium transition-colors ${editingDiscountType === 'percent' ? 'bg-orange-500 text-white' : 'bg-white text-slate-500 hover:bg-orange-50'}`}
+                      >%</button>
+                    </div>
                     <input
                       ref={editingDiscountRef}
                       type="text"
@@ -584,15 +600,23 @@ export default function POSPage() {
                       value={editingDiscountVal}
                       onChange={e => {
                         const raw = e.target.value.replace(/[^0-9]/g, '');
-                        setEditingDiscountVal(raw ? parseInt(raw).toLocaleString() : '');
+                        if (editingDiscountType === 'percent') {
+                          setEditingDiscountVal(raw ? String(Math.min(parseInt(raw), 100)) : '');
+                        } else {
+                          setEditingDiscountVal(raw ? parseInt(raw).toLocaleString() : '');
+                        }
                       }}
                       onBlur={() => commitDiscountEdit(item.productId)}
-                      onKeyDown={e => { if (e.key === 'Enter') commitDiscountEdit(item.productId); if (e.key === 'Escape') { setEditingDiscountId(null); setEditingDiscountVal(''); } }}
-                      placeholder="0"
-                      className="flex-1 border border-orange-400 rounded text-xs px-2 py-1 text-right"
+                      onKeyDown={e => { if (e.key === 'Enter') commitDiscountEdit(item.productId); if (e.key === 'Escape') { setEditingDiscountId(null); setEditingDiscountVal(''); setEditingDiscountType('amount'); } }}
+                      placeholder={editingDiscountType === 'percent' ? '0%' : '0원'}
+                      className="flex-1 border border-orange-400 rounded text-xs px-2 py-1 text-right min-w-0"
                     />
-                    <span className="text-xs text-slate-400">원</span>
-                    <button onClick={() => { setEditingDiscountId(null); setEditingDiscountVal(''); }} className="text-xs text-slate-400 hover:text-slate-600">취소</button>
+                    {editingDiscountType === 'percent' && editingDiscountVal && (
+                      <span className="text-xs text-orange-500 whitespace-nowrap">
+                        -{Math.round(item.price * item.quantity * Math.min(parseInt(editingDiscountVal) || 0, 100) / 100).toLocaleString()}원
+                      </span>
+                    )}
+                    <button onMouseDown={e => { e.preventDefault(); setEditingDiscountId(null); setEditingDiscountVal(''); setEditingDiscountType('amount'); }} className="text-xs text-slate-400 hover:text-slate-600 shrink-0">취소</button>
                   </>
                 ) : (
                   <button
