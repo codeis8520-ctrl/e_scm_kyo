@@ -161,6 +161,8 @@ export async function sendKakaoMessages(messages: KakaoMessage[]): Promise<BulkS
     })),
   };
 
+  console.log('[Solapi KakaoATA] request body:', JSON.stringify(body, null, 2));
+
   let res: Response;
   try {
     res = await fetch(`${BASE_URL}/messages/v4/send-many`, {
@@ -180,6 +182,7 @@ export async function sendKakaoMessages(messages: KakaoMessage[]): Promise<BulkS
   }
 
   const data = await res.json().catch(() => ({}));
+  console.log('[Solapi KakaoATA] response:', JSON.stringify(data, null, 2));
 
   if (!res.ok) {
     const errMsg = data?.message || `HTTP ${res.status}`;

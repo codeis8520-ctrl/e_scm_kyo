@@ -93,6 +93,7 @@ export async function sendKakaoAction(params: SendKakaoParams) {
       // 변수 치환된 최종 메시지
       let text = templateContent;
       Object.entries(vars).forEach(([k, v]) => { text = text.replaceAll(k, v); });
+      console.log('[sendKakaoAction] variableKeys:', variableKeys, '| vars:', vars, '| text:', text);
       return {
         to: t.phone,
         templateId,
