@@ -14,6 +14,7 @@ const ALL_NAV_ITEMS = [
   { href: '/production', label: '생산', icon: '🏭' },
   { href: '/inventory', label: '재고', icon: '🏪' },
   { href: '/purchases', label: '매입', icon: '🚚' },
+  { href: '/shipping', label: '배송', icon: '📫' },
   { href: '/accounting', label: '회계', icon: '📒' },
   { href: '/customers', label: '고객', icon: '👥' },
   { href: '/notifications', label: '알림', icon: '📱' },
