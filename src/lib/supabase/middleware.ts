@@ -9,7 +9,7 @@ export async function updateSession(request: NextRequest) {
   const sessionToken = request.cookies.get('session_token')?.value;
   const userId = request.cookies.get('user_id')?.value;
 
-  const publicPaths = ['/login'];
+  const publicPaths = ['/login', '/api/cafe24/auth', '/api/cafe24/callback', '/api/webhooks'];
   const isPublicPath = publicPaths.some(path => request.nextUrl.pathname.startsWith(path));
 
   if (!sessionToken && !userId && !isPublicPath) {
