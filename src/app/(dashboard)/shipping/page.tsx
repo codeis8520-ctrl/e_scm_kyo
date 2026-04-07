@@ -77,6 +77,7 @@ export default function ShippingPage() {
   const [cafe24Error, setCafe24Error] = useState('');
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
   const [addingOrders, setAddingOrders] = useState(false);
+  const [addError, setAddError] = useState('');
 
   // ── 직접 입력 탭 ──────────────────────────────────────────────────────────
   const [manualForm, setManualForm] = useState({
@@ -371,17 +372,29 @@ export default function ShippingPage() {
   const handleAddSelectedOrders = async () => {
     if (selectedOrders.size === 0) return;
     setAddingOrders(true);
+    setAddError('');
     try {
-      for (const order of cafe24Orders.filter(o => selectedOrders.has(o.cafe24_order_id))) {
-        await createShipment({
+      const toAdd = cafe24Orders.filter(o => selectedOrders.has(o.cafe24_order_id));
+      for (const order of toAdd) {
+        const result = await createShipment({
           source: 'CAFE24', cafe24_order_id: order.cafe24_order_id,
-          sender_name: order.orderer_name, sender_phone: order.orderer_phone,
-          recipient_name: order.recipient_name, recipient_phone: order.recipient_phone,
+          sender_name: order.orderer_name || order.recipient_name,
+          sender_phone: order.orderer_phone || order.recipient_phone,
+          recipient_name: order.recipient_name,
+          recipient_phone: order.recipient_phone,
           recipient_address: order.recipient_address,
           delivery_message: order.delivery_message, items_summary: order.items_summary,
         });
+        if (!result.success) {
+          setAddError(`주문 ${order.cafe24_order_id} 추가 실패: ${result.error}`);
+          return;
+        }
       }
-      await fetchShipments(); setActiveTab('list');
+      setSelectedOrders(new Set());
+      await fetchShipments();
+      setActiveTab('list');
+    } catch (e: any) {
+      setAddError(e.message ?? '배송 추가 중 오류가 발생했습니다.');
     } finally { setAddingOrders(false); }
   };
 
@@ -481,9 +494,12 @@ export default function ShippingPage() {
             <div className="card p-0 overflow-hidden">
               <div className="flex items-center justify-between p-4 border-b border-slate-100">
                 <span className="text-sm text-slate-600">총 {cafe24Orders.length}건</span>
-                <button className="btn-primary" onClick={handleAddSelectedOrders} disabled={selectedOrders.size === 0 || addingOrders}>
-                  {addingOrders ? '추가 중...' : `선택한 주문 배송 추가 (${selectedOrders.size}건)`}
-                </button>
+                <div className="flex items-center gap-3">
+                  {addError && <span className="text-red-500 text-sm">{addError}</span>}
+                  <button className="btn-primary" onClick={handleAddSelectedOrders} disabled={selectedOrders.size === 0 || addingOrders}>
+                    {addingOrders ? '추가 중...' : `선택한 주문 배송 추가 (${selectedOrders.size}건)`}
+                  </button>
+                </div>
               </div>
               <div className="overflow-x-auto">
                 <table className="table w-full">
