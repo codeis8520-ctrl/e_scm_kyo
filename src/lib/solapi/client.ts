@@ -141,16 +141,20 @@ export async function sendKakaoMessages(messages: KakaoMessage[]): Promise<BulkS
   const sender = process.env.SOLAPI_SENDER_PHONE!;
   const pfId   = process.env.SOLAPI_KAKAO_PFID;  // 플러스친구 채널 ID (선택)
 
+  // Solapi AlimTalk API: 변수 키에서 #{ } 제거 (예: "#{홍길동}" → "홍길동")
+  const stripBraces = (vars: Record<string, string>) =>
+    Object.fromEntries(Object.entries(vars).map(([k, v]) => [k.replace(/^#\{/, '').replace(/\}$/, ''), v]));
+
   const body = {
     messages: messages.map(m => ({
       to: m.to.replace(/-/g, ''),
       from: sender,
       type: 'ATA',
       kakaoOptions: {
-        pfId,
+        ...(pfId ? { pfId } : {}),
         templateId: m.templateId,
-        variables: m.variables,
-        disableSms: false,  // 알림톡 실패 시 SMS 자동 대체
+        variables: stripBraces(m.variables),
+        disableSms: false,
       },
     })),
   };
