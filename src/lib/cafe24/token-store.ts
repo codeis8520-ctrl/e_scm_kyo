@@ -1,8 +1,16 @@
-import { createClient } from '@/lib/supabase/server';
+import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 
 const MALL_ID = process.env.CAFE24_MALL_ID!;
 const CLIENT_ID = process.env.CAFE24_CLIENT_ID!;
 const CLIENT_SECRET = process.env.CAFE24_CLIENT_SECRET!;
+
+// 쿠키 컨텍스트 없이 직접 anon 클라이언트 사용 (OAuth 콜백 등 세션 없는 환경)
+function getSupabase() {
+  return createSupabaseClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  );
+}
 
 function tokenUrl() {
   return `https://${MALL_ID}.cafe24api.com/api/v2/oauth/token`;
@@ -21,12 +29,11 @@ export interface TokenRow {
 
 /** DB에서 토큰 로드 */
 export async function loadTokens(): Promise<TokenRow | null> {
-  const supabase = await createClient();
-  const { data } = await (supabase as any)
+  const { data } = await getSupabase()
     .from('cafe24_tokens')
     .select('*')
     .eq('mall_id', MALL_ID)
-    .single();
+    .maybeSingle();
   return data || null;
 }
 
@@ -80,19 +87,24 @@ export async function refreshAccessToken(refreshToken: string): Promise<TokenRow
 }
 
 async function upsertTokens(data: any) {
-  const supabase = await createClient();
-  await (supabase as any).from('cafe24_tokens').upsert(
-    {
-      mall_id: MALL_ID,
-      access_token: data.access_token,
-      refresh_token: data.refresh_token,
-      access_token_expires_at: data.expires_at,
-      refresh_token_expires_at: data.refresh_token_expires_at,
-      scopes: data.scopes || [],
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: 'mall_id' }
-  );
+  const { error } = await getSupabase()
+    .from('cafe24_tokens')
+    .upsert(
+      {
+        mall_id: MALL_ID,
+        access_token: data.access_token,
+        refresh_token: data.refresh_token,
+        access_token_expires_at: data.expires_at,
+        refresh_token_expires_at: data.refresh_token_expires_at,
+        scopes: data.scopes || [],
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'mall_id' }
+    );
+
+  if (error) {
+    throw new Error(`토큰 DB 저장 실패: ${error.message}`);
+  }
 }
 
 /** 유효한 access_token 반환 (만료 시 자동 갱신) */
