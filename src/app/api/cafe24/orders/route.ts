@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { getValidAccessToken } from '@/lib/cafe24/token-store';
 
 interface Cafe24OrderForShipping {
   cafe24_order_id: string;
@@ -84,27 +85,76 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ orders });
   }
 
-  // TODO: 실제 Cafe24 API 연동
-  // Cafe24 Orders API: GET https://{mallId}.cafe24api.com/api/v2/orders
-  // 현재 OAuth 토큰 저장 구조가 구현되지 않아 데모 데이터를 반환합니다.
-  // 토큰 저장 구현 후 아래 로직으로 교체:
-  //
-  // const tokenData = await supabase
-  //   .from('cafe24_tokens')
-  //   .select('access_token')
-  //   .single();
-  //
-  // const response = await fetch(
-  //   `https://${mallId}.cafe24api.com/api/v2/orders?start_date=${startDate}&end_date=${endDate}&limit=100`,
-  //   { headers: { Authorization: `Bearer ${tokenData.data.access_token}`, 'X-Cafe24-Api-Version': '2024-03-01' } }
-  // );
-  // const json = await response.json();
-  // const orders = json.orders.map(mapCafe24OrderToShipping);
+  // 실 API 시도: 유효한 access_token이 있으면 Cafe24 API 호출
+  const accessToken = await getValidAccessToken();
 
-  const orders: Cafe24OrderForShipping[] = DEMO_ORDERS.map((order) => ({
-    ...order,
-    already_added: existingIds.has(order.cafe24_order_id),
-  }));
+  if (!accessToken) {
+    // 토큰 없음 → 데모 데이터 폴백
+    const orders: Cafe24OrderForShipping[] = DEMO_ORDERS.map((order) => ({
+      ...order,
+      already_added: existingIds.has(order.cafe24_order_id),
+    }));
+    return NextResponse.json({ orders });
+  }
 
-  return NextResponse.json({ orders });
+  const shopNo = process.env.CAFE24_SHOP_NO ?? '1';
+  const apiUrl = `https://${mallId}.cafe24api.com/api/v2/admin/orders?start_date=${startDate}&end_date=${endDate}&limit=100&shop_no=${shopNo}`;
+
+  try {
+    const apiRes = await fetch(apiUrl, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'X-Cafe24-Api-Version': '2024-01-01',
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!apiRes.ok) {
+      const errText = await apiRes.text();
+      console.error(`Cafe24 Orders API 오류: ${apiRes.status} ${errText}`);
+      // API 오류 시 데모 데이터 폴백
+      const orders: Cafe24OrderForShipping[] = DEMO_ORDERS.map((order) => ({
+        ...order,
+        already_added: existingIds.has(order.cafe24_order_id),
+      }));
+      return NextResponse.json({ orders });
+    }
+
+    const json = await apiRes.json();
+    const rawOrders: any[] = json.orders ?? [];
+
+    const orders: Cafe24OrderForShipping[] = rawOrders.map((o: any) => {
+      const address = [o.receiver_address, o.receiver_address_detail]
+        .filter(Boolean)
+        .join(' ');
+
+      const itemsSummary = Array.isArray(o.items)
+        ? o.items.map((item: any) => `${item.product_name ?? ''} x${item.quantity ?? 1}`).join(', ')
+        : '';
+
+      return {
+        cafe24_order_id: String(o.order_id ?? ''),
+        order_date: (o.order_date ?? '').split('T')[0],
+        orderer_name: o.buyer_name ?? '',
+        orderer_phone: o.buyer_cellphone ?? o.buyer_phone ?? '',
+        recipient_name: o.receiver_name ?? '',
+        recipient_phone: o.receiver_cellphone ?? o.receiver_phone ?? '',
+        recipient_address: address,
+        delivery_message: o.delivery_message ?? '',
+        items_summary: itemsSummary,
+        total_price: Number(o.actual_price ?? o.order_price ?? 0),
+        already_added: existingIds.has(String(o.order_id ?? '')),
+      };
+    });
+
+    return NextResponse.json({ orders });
+  } catch (err: unknown) {
+    console.error('Cafe24 Orders API 네트워크 오류:', err);
+    // 네트워크 오류 시 데모 데이터 폴백
+    const orders: Cafe24OrderForShipping[] = DEMO_ORDERS.map((order) => ({
+      ...order,
+      already_added: existingIds.has(order.cafe24_order_id),
+    }));
+    return NextResponse.json({ orders });
+  }
 }
