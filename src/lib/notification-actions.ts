@@ -49,13 +49,23 @@ export async function sendSmsAction(params: SendSmsParams) {
       phone: t.phone,
       message,
       status: r.success ? 'sent' : 'failed',
+      sent_at: new Date().toISOString(),
       external_message_id: r.messageId || null,
       error_message: r.error || null,
       sent_by: session.id,
     };
   });
 
-  await db.from('notifications').insert(rows);
+  const { error: insertErr } = await db.from('notifications').insert(rows);
+  if (insertErr) {
+    console.error('[sendSmsAction] notifications insert 실패:', insertErr);
+    return {
+      success: true,
+      successCount: result.successCount,
+      failCount: result.failCount,
+      warning: `발송은 완료되었으나 이력 저장 실패: ${insertErr.message}`,
+    };
+  }
 
   return {
     success: true,
@@ -113,23 +123,35 @@ export async function sendKakaoAction(params: SendKakaoParams) {
     return msg;
   });
 
+  // notifications.template_id는 내부 notification_templates(id) UUID FK.
+  // Solapi의 templateId("KA01TP...")는 문자열이라 template_code에만 저장.
   const rows = targets.map((t, i) => {
     const r = result.results[i];
     return {
       customer_id: t.customerId,
       notification_type: 'KAKAO',
-      template_id: templateId || null,
-      template_code: templateId,
+      template_id: null,          // 내부 템플릿 UUID가 아니면 null
+      template_code: templateId,  // Solapi 템플릿 ID 문자열
       phone: t.phone,
       message: renderedMessages[i],
       status: r.success ? 'sent' : 'failed',
+      sent_at: new Date().toISOString(),
       external_message_id: r.messageId || null,
       error_message: r.error || null,
       sent_by: session.id,
     };
   });
 
-  await db.from('notifications').insert(rows);
+  const { error: insertErr } = await db.from('notifications').insert(rows);
+  if (insertErr) {
+    console.error('[sendKakaoAction] notifications insert 실패:', insertErr);
+    return {
+      success: true,
+      successCount: result.successCount,
+      failCount: result.failCount,
+      warning: `발송은 완료되었으나 이력 저장 실패: ${insertErr.message}`,
+    };
+  }
 
   return {
     success: true,
