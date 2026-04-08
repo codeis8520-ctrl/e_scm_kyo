@@ -193,32 +193,47 @@ async function handleOrderCreated(
 
 async function handleOrderPaid(
   orderCode: string,
-  statusCode: string
+  _statusCode: string
 ): Promise<{ success: boolean; message: string; orderId?: string }> {
-  const localStatus = CAFE24_STATUS_TO_LOCAL[statusCode] || 'CONFIRMED';
+  const now = new Date().toISOString();
 
   const { data: order } = await getSupabase()
     .from('sales_orders')
-    .select('id')
+    .select('id, order_number, total_amount, payment_method, ordered_at')
     .eq('order_number', orderCode)
-    .single();
+    .maybeSingle();
 
   if (!order) {
     return { success: false, message: 'Order not found' };
   }
 
+  // 결제 즉시 매출 인식 — COMPLETED로 바로 전환
   const { error } = await getSupabase()
     .from('sales_orders')
-    .update({ status: localStatus })
+    .update({ status: 'COMPLETED', purchase_confirmed_at: now })
     .eq('id', order.id);
 
   if (error) {
-    await logSyncEvent('order_status_update', orderCode, { status: localStatus }, 'failed', error.message);
+    await logSyncEvent('order_paid_error', orderCode, { status: 'COMPLETED' }, 'failed', error.message);
     return { success: false, message: error.message };
   }
 
-  await logSyncEvent('order_paid', orderCode, { status: localStatus }, 'success');
-  return { success: true, message: 'Order paid status updated', orderId: order.id };
+  // 매출 분개 생성 (결제 시점 수익 인식)
+  try {
+    await createSaleJournal({
+      orderId: order.id,
+      orderNumber: order.order_number,
+      orderDate: now.slice(0, 10),
+      totalAmount: Number(order.total_amount),
+      paymentMethod: order.payment_method ?? 'card',
+      cogs: 0,
+    });
+  } catch (journalErr) {
+    await logSyncEvent('order_paid_journal_warn', orderCode, { journalErr }, 'success', '분개 생성 실패(무시됨)');
+  }
+
+  await logSyncEvent('order_paid', orderCode, { status: 'COMPLETED', purchase_confirmed_at: now }, 'success');
+  return { success: true, message: 'Order paid — revenue recognized immediately', orderId: order.id };
 }
 
 async function handleOrderShipped(
@@ -313,13 +328,10 @@ async function handleOrderConfirmed(
     return { success: false, message: 'Order not found' };
   }
 
-  // 상태를 COMPLETED(구매확정=매출확정)로 업데이트
+  // 이미 order.paid에서 COMPLETED + 분개 처리됨 — purchase_confirmed_at만 기록
   const { error: updateError } = await getSupabase()
     .from('sales_orders')
-    .update({
-      status: 'COMPLETED',
-      purchase_confirmed_at: now,
-    })
+    .update({ purchase_confirmed_at: now })
     .eq('id', order.id);
 
   if (updateError) {
@@ -327,23 +339,8 @@ async function handleOrderConfirmed(
     return { success: false, message: updateError.message };
   }
 
-  // 매출 분개 생성 (구매확정 시점에 수익 인식)
-  try {
-    await createSaleJournal({
-      orderId: order.id,
-      orderNumber: order.order_number,
-      orderDate: now.slice(0, 10),
-      totalAmount: Number(order.total_amount),
-      paymentMethod: order.payment_method ?? 'card',
-      cogs: 0, // 원가는 별도 계산 필요 시 추가
-    });
-  } catch (journalErr) {
-    // 분개 실패는 경고만 — 주문 상태 업데이트는 이미 완료
-    await logSyncEvent('order_confirmed_journal_warn', orderCode, { journalErr }, 'success', '분개 생성 실패(무시됨)');
-  }
-
   await logSyncEvent('order_confirmed', orderCode, { purchase_confirmed_at: now }, 'success');
-  return { success: true, message: 'Order purchase confirmed, revenue recognized', orderId: order.id };
+  return { success: true, message: 'Order confirmed (revenue already recognized at payment)', orderId: order.id };
 }
 
 async function handleOrderCancelled(
