@@ -83,7 +83,10 @@
       "WebFetch(domain:sweettracker.github.io)",
       "WebFetch(domain:img.sweettracker.net)",
       "WebFetch(domain:weezip.treefeely.com)",
-      "WebFetch(domain:burndogfather.com)"
+      "WebFetch(domain:burndogfather.com)",
+      "Read(//c/dev//**)",
+      "Read(//c/dev/**)",
+      "Bash(find /c -maxdepth 2 -name \"e_sem_kyo\" -type d)"
     ]
   }
 }
