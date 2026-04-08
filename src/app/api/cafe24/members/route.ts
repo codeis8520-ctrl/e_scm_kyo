@@ -3,9 +3,19 @@ import { createClient } from '@/lib/supabase/server';
 import { getValidAccessToken } from '@/lib/cafe24/token-store';
 
 // 카페24 회원 목록 → customers 일괄 동기화
-// 페이지네이션으로 전체 회원을 가져와 cafe24_member_id 기준 upsert
-export async function POST() {
+// /admin/customers는 created_start_date/created_end_date 필수
+// 기본: 최근 5년 가입자 전체. body로 { startDate, endDate } 전달 가능
+export async function POST(request: Request) {
   const supabase = (await createClient()) as any;
+
+  let body: any = {};
+  try { body = await request.json(); } catch { /* 빈 body 허용 */ }
+
+  const today = new Date();
+  const fiveYearsAgo = new Date();
+  fiveYearsAgo.setFullYear(today.getFullYear() - 5);
+  const startDate: string = body.startDate || fiveYearsAgo.toISOString().slice(0, 10);
+  const endDate: string = body.endDate || today.toISOString().slice(0, 10);
 
   const mallId = process.env.CAFE24_MALL_ID;
   if (!mallId) {
@@ -36,7 +46,7 @@ export async function POST() {
     let offset = 0;
 
     for (let page = 0; page < MAX_PAGES; page++) {
-      const url = `${base}/admin/customers?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}`;
+      const url = `${base}/admin/customers?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}&created_start_date=${startDate}&created_end_date=${endDate}`;
       const res = await fetch(url, { headers, cache: 'no-store' });
 
       if (!res.ok) {
@@ -102,7 +112,7 @@ export async function POST() {
 
     return NextResponse.json({
       success: true,
-      message: `회원 동기화 완료 — 신규 ${created}명, 업데이트 ${updated}명, 건너뜀 ${skipped}명 (총 ${total}명)`,
+      message: `회원 동기화 완료 (${startDate}~${endDate}) — 신규 ${created}명, 업데이트 ${updated}명, 건너뜀 ${skipped}명 (총 ${total}명)`,
       detail: { total, created, updated, skipped },
     });
   } catch (error) {
