@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
     client_id: clientId,
     state: crypto.randomUUID(),
     redirect_uri: redirectUri,
-    scope: 'mall.read_order,mall.read_customer',
+    scope: 'mall.read_order,mall.read_customer,mall.read_privacy',
   });
 
   const authUrl = `https://${mallId}.cafe24api.com/api/v2/oauth/authorize?${params}`;
