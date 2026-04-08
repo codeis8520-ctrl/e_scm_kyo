@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { getShipments, createShipment, updateShipment, deleteShipment } from '@/lib/shipping-actions';
+import { refreshCafe24Token, syncCafe24PaidOrders } from '@/lib/cafe24-actions';
 import * as XLSX from 'xlsx';
 
 interface Shipment {
@@ -116,6 +117,29 @@ export default function ShippingPage() {
   const [cafe24Search, setCafe24Search]           = useState('');
   const [cafe24StatusFilter, setCafe24StatusFilter] = useState('');
   const [cafe24HideAdded, setCafe24HideAdded]     = useState(false);
+
+  // ── 카페24 토큰/매출 동기화 상태 ─────────────────────────────────────────
+  const [tokenRefreshing, setTokenRefreshing] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState('');
+
+  const handleRefreshToken = async () => {
+    setTokenRefreshing(true);
+    setSyncMessage('');
+    const r = await refreshCafe24Token();
+    setSyncMessage((r.success ? '✅ ' : '❌ ') + r.message);
+    setTokenRefreshing(false);
+  };
+
+  const handleSyncPaidOrders = async () => {
+    if (!startDate || !endDate) { setSyncMessage('❌ 시작일/종료일을 선택하세요.'); return; }
+    if (!confirm(`${startDate} ~ ${endDate} 결제완료 주문을 매출로 동기화하시겠습니까?`)) return;
+    setSyncing(true);
+    setSyncMessage('');
+    const r = await syncCafe24PaidOrders({ startDate, endDate });
+    setSyncMessage((r.success ? '✅ ' : '❌ ') + r.message);
+    setSyncing(false);
+  };
 
   // ── 배송 목록 탭 ──────────────────────────────────────────────────────────
   const [shipments, setShipments] = useState<Shipment[]>([]);
@@ -597,7 +621,30 @@ export default function ShippingPage() {
               <button className="btn-primary" onClick={handleLoadCafe24Orders} disabled={cafe24Loading || !startDate || !endDate}>
                 {cafe24Loading ? '불러오는 중...' : '불러오기'}
               </button>
+              <div className="ml-auto flex gap-2">
+                <button
+                  type="button"
+                  className="px-3 py-2 text-sm rounded border border-slate-300 hover:bg-slate-50 disabled:opacity-50"
+                  onClick={handleRefreshToken}
+                  disabled={tokenRefreshing}
+                  title="카페24 access_token / refresh_token 갱신"
+                >
+                  {tokenRefreshing ? '갱신 중...' : '🔄 토큰 갱신'}
+                </button>
+                <button
+                  type="button"
+                  className="px-3 py-2 text-sm rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                  onClick={handleSyncPaidOrders}
+                  disabled={syncing || !startDate || !endDate}
+                  title="결제완료 주문을 sales_orders에 매출로 동기화 (분개 자동 생성)"
+                >
+                  {syncing ? '동기화 중...' : '💰 결제완료 매출 동기화'}
+                </button>
+              </div>
             </div>
+            {syncMessage && (
+              <div className="mt-3 px-3 py-2 bg-slate-50 border border-slate-200 rounded text-sm">{syncMessage}</div>
+            )}
             {cafe24Orders.length > 0 && (
               <div className="flex flex-wrap items-center gap-3 mt-3 pt-3 border-t border-slate-100">
                 <input

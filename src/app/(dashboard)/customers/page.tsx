@@ -35,6 +35,7 @@ export default function CustomersPage() {
   const [showModal, setShowModal] = useState(false);
   const [editCustomer, setEditCustomer] = useState<Customer | null>(null);
   const [upgrading, setUpgrading] = useState(false);
+  const [syncingMembers, setSyncingMembers] = useState(false);
 
   const fetchCustomers = async () => {
     setLoading(true);
@@ -122,6 +123,26 @@ export default function CustomersPage() {
             className="btn-secondary py-2 px-4 text-sm"
           >
             {upgrading ? '처리 중...' : '등급 자동 업그레이드'}
+          </button>
+          <button
+            onClick={async () => {
+              if (!confirm('카페24 회원 전체를 customers 테이블로 동기화합니다.\n(cafe24_member_id 기준 upsert)\n계속하시겠습니까?')) return;
+              setSyncingMembers(true);
+              try {
+                const res = await fetch('/api/cafe24/members', { method: 'POST' });
+                const json = await res.json();
+                alert(json.success ? json.message : `실패: ${json.error}`);
+                if (json.success) fetchCustomers();
+              } catch (e: any) {
+                alert(`오류: ${e.message}`);
+              } finally {
+                setSyncingMembers(false);
+              }
+            }}
+            disabled={syncingMembers}
+            className="btn-secondary py-2 px-4 text-sm"
+          >
+            {syncingMembers ? '동기화 중...' : '카페24 회원 동기화'}
           </button>
           <button onClick={() => setShowModal(true)} className="btn-primary">
             + 고객 추가

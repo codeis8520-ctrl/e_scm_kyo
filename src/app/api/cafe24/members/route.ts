@@ -1,118 +1,121 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { Cafe24Member } from '@/lib/cafe24/types';
+import { getValidAccessToken } from '@/lib/cafe24/token-store';
 
+// 카페24 회원 목록 → customers 일괄 동기화
+// 페이지네이션으로 전체 회원을 가져와 cafe24_member_id 기준 upsert
 export async function POST() {
-  const supabase = await createClient() as any;
-  
+  const supabase = (await createClient()) as any;
+
+  const mallId = process.env.CAFE24_MALL_ID;
+  if (!mallId) {
+    return NextResponse.json({ success: false, error: 'CAFE24_MALL_ID 미설정' }, { status: 400 });
+  }
+
+  const accessToken = await getValidAccessToken();
+  if (!accessToken) {
+    return NextResponse.json({ success: false, error: '카페24 토큰 만료 — 재인증 필요' }, { status: 401 });
+  }
+
+  const shopNo = process.env.CAFE24_SHOP_NO ?? '1';
+  const base = `https://${mallId}.cafe24api.com/api/v2`;
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    'X-Cafe24-Api-Version': '2026-03-01',
+  };
+
+  let created = 0;
+  let updated = 0;
+  let skipped = 0;
+  let total = 0;
+
   try {
-    const mallId = process.env.CAFE24_MALL_ID;
-    const clientId = process.env.CAFE24_CLIENT_ID;
-    const clientSecret = process.env.CAFE24_CLIENT_SECRET;
+    // 카페24 customers API 페이지네이션 (최대 100건/페이지)
+    const LIMIT = 100;
+    const MAX_PAGES = 200; // 안전장치 (최대 2만명)
+    let offset = 0;
 
-    const isDemo = !mallId || !clientId || !clientSecret;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const url = `${base}/admin/customers?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}`;
+      const res = await fetch(url, { headers, cache: 'no-store' });
 
-    if (isDemo) {
-      console.log('Cafe24 데모 모드: 샘플 데이터로 동기화 진행');
-    }
+      if (!res.ok) {
+        const txt = await res.text();
+        return NextResponse.json(
+          { success: false, error: `카페24 회원 조회 실패: ${res.status} ${txt}` },
+          { status: 500 }
+        );
+      }
 
-    // Demo용: 샘플 회원 데이터 (실제 API 연동 시 Cafe24 API 호출로 대체)
-    const members: Cafe24Member[] = [
-      { member_id: 'demo_user_001', member_name: '홍길동', member_email: 'hong@example.com', member_phone: '010-1234-5678', created_date: '2024-01-15' },
-      { member_id: 'demo_user_002', member_name: '김철수', member_email: 'kim@example.com', member_phone: '010-2345-6789', created_date: '2024-02-20' },
-      { member_id: 'demo_user_003', member_name: '이영희', member_email: 'lee@example.com', member_phone: '010-3456-7890', created_date: '2024-03-10' },
-    ];
+      const json = await res.json();
+      const members: any[] = json.customers ?? [];
+      if (members.length === 0) break;
 
-    let created = 0;
-    let updated = 0;
-    let skipped = 0;
+      for (const m of members) {
+        total++;
+        const memberId: string = m.member_id;
+        if (!memberId) { skipped++; continue; }
 
-    for (const member of members) {
-      const existing = await supabase
-        .from('customers')
-        .select('id, name, cafe24_member_id')
-        .eq('cafe24_member_id', member.member_id)
-        .single();
+        const name = m.member_name || m.name || `고객_${memberId}`;
+        const email = m.email || m.member_email || null;
+        const phone = m.cellphone || m.phone || `cafe24_${memberId}`;
 
-      if (existing.data) {
-        await supabase
+        const { data: existing } = await supabase
           .from('customers')
-          .update({
-            name: member.member_name,
-            email: member.member_email || null,
-            phone: member.member_phone || member.member_cellphone || null,
-            source: 'CAFE24',
-          })
-          .eq('id', existing.data.id);
-        updated++;
-      } else {
-        const { error } = await supabase
-          .from('customers')
-          .insert({
-            name: member.member_name,
-            email: member.member_email || null,
-            phone: member.member_phone || member.member_cellphone || `cafe24_${member.member_id}`,
-            cafe24_member_id: member.member_id,
-            grade: 'NORMAL',
-            source: 'CAFE24',
-          });
+          .select('id')
+          .eq('cafe24_member_id', memberId)
+          .maybeSingle();
 
-        if (error) {
-          console.error(`회원 생성 실패: ${member.member_id}`, error);
-          skipped++;
+        if (existing) {
+          await supabase
+            .from('customers')
+            .update({ name, email, phone })
+            .eq('id', existing.id);
+          updated++;
         } else {
-          created++;
+          const { error } = await supabase
+            .from('customers')
+            .insert({
+              name,
+              email,
+              phone,
+              cafe24_member_id: memberId,
+              grade: 'NORMAL',
+              is_active: true,
+            });
+          if (error) skipped++;
+          else created++;
         }
       }
+
+      if (members.length < LIMIT) break;
+      offset += LIMIT;
     }
 
     await supabase.from('cafe24_sync_logs').insert({
       sync_type: 'member_batch_sync',
       cafe24_order_id: 'batch',
-      data: { total: members.length, created, updated, skipped },
+      data: { total, created, updated, skipped },
       status: 'success',
       processed_at: new Date().toISOString(),
     });
 
     return NextResponse.json({
       success: true,
-      message: `동기화 완료: ${created}명 생성, ${updated}명 업데이트, ${skipped}명 건너뜀`,
-      detail: { total: members.length, created, updated, skipped },
+      message: `회원 동기화 완료 — 신규 ${created}명, 업데이트 ${updated}명, 건너뜀 ${skipped}명 (총 ${total}명)`,
+      detail: { total, created, updated, skipped },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : '알 수 없는 오류';
-    return NextResponse.json(
-      { success: false, error: message },
-      { status: 500 }
-    );
+    return NextResponse.json({ success: false, error: message }, { status: 500 });
   }
 }
 
 export async function GET() {
-  const supabase = await createClient() as any;
-  
-  try {
-    const logs = await supabase
-      .from('cafe24_sync_logs')
-      .select('*')
-      .eq('sync_type', 'member_batch_sync')
-      .order('processed_at', { ascending: false })
-      .limit(10);
-
-    const { count } = await supabase
-      .from('customers')
-      .select('*', { count: 'exact', head: true })
-      .not('cafe24_member_id', 'is', null);
-
-    return NextResponse.json({
-      syncedCustomers: count || 0,
-      recentLogs: logs.data || [],
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : '알 수 없는 오류';
-    return NextResponse.json(
-      { success: false, error: message },
-      { status: 500 }
-    );
-  }
+  const supabase = (await createClient()) as any;
+  const { count } = await supabase
+    .from('customers')
+    .select('*', { count: 'exact', head: true })
+    .not('cafe24_member_id', 'is', null);
+  return NextResponse.json({ syncedCustomers: count || 0 });
 }
