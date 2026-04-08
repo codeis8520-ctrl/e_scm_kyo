@@ -46,7 +46,9 @@ export async function POST(request: Request) {
     let offset = 0;
 
     for (let page = 0; page < MAX_PAGES; page++) {
-      const url = `${base}/admin/customers?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}&created_start_date=${startDate}&created_end_date=${endDate}`;
+      // /admin/customers는 cellphone/member_id 단건 검색 전용.
+      // 전체 목록은 /admin/customersprivacy 사용 (offset/limit 페이지네이션)
+      const url = `${base}/admin/customersprivacy?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}&created_start_date=${startDate}&created_end_date=${endDate}`;
       const res = await fetch(url, { headers, cache: 'no-store' });
 
       if (!res.ok) {
@@ -58,7 +60,7 @@ export async function POST(request: Request) {
       }
 
       const json = await res.json();
-      const members: any[] = json.customers ?? [];
+      const members: any[] = json.customersprivacy ?? json.customers ?? [];
       if (members.length === 0) break;
 
       for (const m of members) {
