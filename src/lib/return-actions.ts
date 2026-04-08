@@ -247,6 +247,51 @@ export async function getReturnOrders(branchId?: string) {
   return { data: data || [] };
 }
 
+// ─── 주문 검색 (환불 처리용 — 고객명/날짜/최근거래) ──────────────────────────
+
+export async function searchSalesOrdersForRefund(params: {
+  branchId?: string;
+  customerQuery?: string;
+  startDate?: string; // YYYY-MM-DD
+  endDate?: string;   // YYYY-MM-DD
+  limit?: number;
+}) {
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  let q = db
+    .from('sales_orders')
+    .select(`
+      id, order_number, ordered_at, total_amount, payment_method, status,
+      customer:customers(id, name, phone),
+      branch:branches(id, name, code)
+    `)
+    .in('status', ['COMPLETED', 'PARTIALLY_REFUNDED'])
+    .order('ordered_at', { ascending: false })
+    .limit(params.limit || 30);
+
+  if (params.branchId) q = q.eq('branch_id', params.branchId);
+  if (params.startDate) q = q.gte('ordered_at', `${params.startDate}T00:00:00`);
+  if (params.endDate) q = q.lte('ordered_at', `${params.endDate}T23:59:59`);
+
+  // 고객명/전화 검색은 customer 조인 필터가 까다로워 customer_id로 1차 필터
+  if (params.customerQuery && params.customerQuery.trim()) {
+    const cq = params.customerQuery.trim();
+    const { data: cust } = await db
+      .from('customers')
+      .select('id')
+      .or(`name.ilike.%${cq}%,phone.ilike.%${cq}%`)
+      .limit(50);
+    const ids = (cust || []).map((c: any) => c.id);
+    if (ids.length === 0) return { data: [] };
+    q = q.in('customer_id', ids);
+  }
+
+  const { data, error } = await q;
+  if (error) return { data: [], error: error.message };
+  return { data: data || [] };
+}
+
 // ─── 주문 조회 (환불 처리용) ──────────────────────────────────────────────────
 
 export async function getSalesOrderForRefund(orderNumber: string) {

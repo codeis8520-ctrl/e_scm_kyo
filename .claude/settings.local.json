@@ -71,7 +71,19 @@
       "Bash(grep -n \"production_orders\\\\|inventory_movements\\\\|sales_order\" /c/dev/e_sem_kyo/supabase/migrations/*.sql)",
       "Bash(grep:*)",
       "Bash(echo \"EXIT:$?\")",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "WebFetch(domain:solapi.com)",
+      "WebFetch(domain:docs.solapi.com)",
+      "WebFetch(domain:solapi.zendesk.com)",
+      "WebFetch(domain:developers.solapi.dev)",
+      "WebFetch(domain:solapi.dev)",
+      "WebFetch(domain:tracker.delivery)",
+      "WebFetch(domain:tracking.sweettracker.co.kr)",
+      "WebFetch(domain:info.sweettracker.co.kr)",
+      "WebFetch(domain:sweettracker.github.io)",
+      "WebFetch(domain:img.sweettracker.net)",
+      "WebFetch(domain:weezip.treefeely.com)",
+      "WebFetch(domain:burndogfather.com)"
     ]
   }
 }

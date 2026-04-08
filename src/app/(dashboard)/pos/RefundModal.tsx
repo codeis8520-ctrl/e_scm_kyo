@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { getSalesOrderForRefund, processRefund } from '@/lib/return-actions';
+import { useEffect, useState } from 'react';
+import { getSalesOrderForRefund, processRefund, searchSalesOrdersForRefund } from '@/lib/return-actions';
 
 const REFUND_REASONS = [
   { value: 'DEFECTIVE', label: '불량/하자' },
@@ -23,9 +23,20 @@ interface Props {
   onSuccess: (returnNumber: string) => void;
 }
 
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const daysAgoISO = (n: number) => {
+  const d = new Date(); d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+};
+
 export default function RefundModal({ branchId, onClose, onSuccess }: Props) {
   const [step, setStep] = useState<'search' | 'select'>('search');
+  const [searchMode, setSearchMode] = useState<'orderNumber' | 'customer'>('customer');
   const [orderNumber, setOrderNumber] = useState('');
+  const [customerQuery, setCustomerQuery] = useState('');
+  const [startDate, setStartDate] = useState(daysAgoISO(7));
+  const [endDate, setEndDate] = useState(todayISO());
+  const [results, setResults] = useState<any[]>([]);
   const [searching, setSearching] = useState(false);
   const [order, setOrder] = useState<any>(null);
   const [searchError, setSearchError] = useState('');
@@ -36,18 +47,15 @@ export default function RefundModal({ branchId, onClose, onSuccess }: Props) {
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState('');
 
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!orderNumber.trim()) return;
+  const loadOrderDetail = async (orderNum: string) => {
     setSearching(true);
     setSearchError('');
-    const result = await getSalesOrderForRefund(orderNumber.trim().toUpperCase());
+    const result = await getSalesOrderForRefund(orderNum);
     if (result.error || !result.data) {
       setSearchError(result.error || '주문을 찾을 수 없습니다.');
       setSearching(false);
       return;
     }
-
     const o = result.data;
     if (o.status === 'CANCELLED') {
       setSearchError('취소된 주문입니다.');
@@ -59,17 +67,43 @@ export default function RefundModal({ branchId, onClose, onSuccess }: Props) {
       setSearching(false);
       return;
     }
-
     setOrder(o);
-    // 기본값: 전체 수량으로 초기화
     const defaults: Record<string, number> = {};
-    for (const item of (o.items || [])) {
-      defaults[item.id] = item.quantity;
-    }
+    for (const item of (o.items || [])) defaults[item.id] = item.quantity;
     setSelectedItems(defaults);
     setStep('select');
     setSearching(false);
   };
+
+  const handleSearchByOrderNumber = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!orderNumber.trim()) return;
+    await loadOrderDetail(orderNumber.trim().toUpperCase());
+  };
+
+  const handleSearchByCustomer = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    setSearching(true);
+    setSearchError('');
+    const result = await searchSalesOrdersForRefund({
+      branchId,
+      customerQuery,
+      startDate,
+      endDate,
+      limit: 30,
+    });
+    if (result.error) setSearchError(result.error);
+    setResults(result.data || []);
+    setSearching(false);
+  };
+
+  // 모달 열리면 최근 거래 자동 로드
+  useEffect(() => {
+    if (searchMode === 'customer' && step === 'search' && results.length === 0) {
+      handleSearchByCustomer();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchMode]);
 
   const updateQty = (itemId: string, val: number, max: number) => {
     setSelectedItems(prev => ({ ...prev, [itemId]: Math.min(Math.max(0, val), max) }));
@@ -123,20 +157,118 @@ export default function RefundModal({ branchId, onClose, onSuccess }: Props) {
 
         {step === 'search' && (
           <div className="p-6">
-            <p className="text-sm text-slate-500 mb-4">환불할 주문의 전표번호를 입력하세요.</p>
-            <form onSubmit={handleSearch} className="flex gap-3">
-              <input
-                type="text"
-                value={orderNumber}
-                onChange={e => setOrderNumber(e.target.value)}
-                placeholder="SA-BRANCH-YYYYMMDD-XXXX"
-                className="input flex-1 font-mono"
-                autoFocus
-              />
-              <button type="submit" disabled={searching || !orderNumber.trim()} className="btn-primary px-5">
-                {searching ? '조회 중...' : '조회'}
+            {/* 탭 */}
+            <div className="flex gap-1 mb-4 border-b">
+              <button
+                type="button"
+                onClick={() => setSearchMode('customer')}
+                className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+                  searchMode === 'customer' ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                고객·날짜 / 최근 거래
               </button>
-            </form>
+              <button
+                type="button"
+                onClick={() => setSearchMode('orderNumber')}
+                className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+                  searchMode === 'orderNumber' ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                전표번호
+              </button>
+            </div>
+
+            {searchMode === 'orderNumber' && (
+              <>
+                <p className="text-sm text-slate-500 mb-3">환불할 주문의 전표번호를 입력하세요.</p>
+                <form onSubmit={handleSearchByOrderNumber} className="flex gap-3">
+                  <input
+                    type="text"
+                    value={orderNumber}
+                    onChange={e => setOrderNumber(e.target.value)}
+                    placeholder="SA-BRANCH-YYYYMMDD-XXXX"
+                    className="input flex-1 font-mono"
+                    autoFocus
+                  />
+                  <button type="submit" disabled={searching || !orderNumber.trim()} className="btn-primary px-5">
+                    {searching ? '조회 중...' : '조회'}
+                  </button>
+                </form>
+              </>
+            )}
+
+            {searchMode === 'customer' && (
+              <>
+                <form onSubmit={handleSearchByCustomer} className="grid grid-cols-12 gap-2 mb-4">
+                  <input
+                    type="text"
+                    value={customerQuery}
+                    onChange={e => setCustomerQuery(e.target.value)}
+                    placeholder="고객명 또는 전화번호"
+                    className="input col-span-5"
+                  />
+                  <input
+                    type="date"
+                    value={startDate}
+                    onChange={e => setStartDate(e.target.value)}
+                    className="input col-span-3"
+                  />
+                  <input
+                    type="date"
+                    value={endDate}
+                    onChange={e => setEndDate(e.target.value)}
+                    className="input col-span-3"
+                  />
+                  <button type="submit" disabled={searching} className="btn-primary col-span-1">
+                    {searching ? '...' : '검색'}
+                  </button>
+                </form>
+
+                <div className="border rounded-lg overflow-hidden max-h-[55vh] overflow-y-auto">
+                  {results.length === 0 && !searching && (
+                    <div className="p-8 text-center text-sm text-slate-400">결과가 없습니다.</div>
+                  )}
+                  {results.length > 0 && (
+                    <table className="table">
+                      <thead className="sticky top-0 bg-slate-50">
+                        <tr>
+                          <th>일시</th>
+                          <th>전표</th>
+                          <th>고객</th>
+                          <th className="text-right">금액</th>
+                          <th>상태</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {results.map((o: any) => (
+                          <tr
+                            key={o.id}
+                            onClick={() => loadOrderDetail(o.order_number)}
+                            className="cursor-pointer hover:bg-blue-50"
+                          >
+                            <td className="text-xs whitespace-nowrap">
+                              {o.ordered_at?.slice(5, 16).replace('T', ' ')}
+                            </td>
+                            <td className="font-mono text-xs text-blue-700">{o.order_number}</td>
+                            <td className="text-sm">
+                              {o.customer ? `${o.customer.name}` : <span className="text-slate-400">비회원</span>}
+                            </td>
+                            <td className="text-right text-sm">{(o.total_amount || 0).toLocaleString()}원</td>
+                            <td className="text-xs">
+                              {o.status === 'PARTIALLY_REFUNDED'
+                                ? <span className="text-orange-600">부분환불</span>
+                                : <span className="text-emerald-600">완료</span>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </>
+            )}
+
             {searchError && (
               <div className="mt-3 p-3 bg-red-50 text-red-600 rounded-lg text-sm">{searchError}</div>
             )}
