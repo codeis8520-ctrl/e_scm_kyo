@@ -86,7 +86,10 @@
       "WebFetch(domain:burndogfather.com)",
       "Read(//c/dev//**)",
       "Read(//c/dev/**)",
-      "Bash(find /c -maxdepth 2 -name \"e_sem_kyo\" -type d)"
+      "Bash(find /c -maxdepth 2 -name \"e_sem_kyo\" -type d)",
+      "Bash(pdftotext -layout \"doc/경옥채_사내통합시스템_PRD_v2.pdf\" /tmp/prd2.txt)",
+      "Read(//tmp/**)",
+      "Bash(pdftotext -layout \"doc/경옥채_사내통합시스템_PRD_v2.pdf\" \"doc/_prd2.txt\")"
     ]
   }
 }
