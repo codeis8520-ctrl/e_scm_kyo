@@ -78,7 +78,8 @@ export async function syncCafe24PaidOrders(params: { startDate: string; endDate:
     let errors = 0;
 
     for (const o of paidOrders) {
-      const orderNo = Number(o.order_id);
+      // 카페24 order_id는 "20260408-0000001" 형태의 문자열 — Number 변환 X
+      const orderNo: any = o.order_id;
       if (!orderNo) continue;
 
       try {
