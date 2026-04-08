@@ -363,6 +363,47 @@ function buildConfirmDescription(toolName: string, args: Record<string, any>): s
       lines.push('⚠️ 삭제 후 복구할 수 없습니다.');
       break;
     }
+    // ── Phase B ─────────────────────────────────────────────────────────
+    case 'refund_sales_order': {
+      const reasonLabels: Record<string, string> = {
+        DEFECTIVE: '불량/하자', WRONG_ITEM: '오배송', CHANGE_OF_MIND: '단순 변심', DUPLICATE: '중복 구매', OTHER: '기타',
+      };
+      lines.push('💸 환불 처리 확인');
+      add('원주문번호', args.order_number);
+      add('환불 사유', reasonLabels[args.reason] || args.reason);
+      add('환불 유형', args.full_refund !== false && !args.items?.length ? '전액 환불' : '부분 환불');
+      if (args.items?.length) {
+        lines.push('• 환불 항목:');
+        (args.items as any[]).slice(0, 5).forEach(it => lines.push(`  - ${it.product_name} × ${it.quantity}`));
+      }
+      add('환불 수단', args.refund_method || '원 결제수단과 동일');
+      lines.push('⚠️ 재고 복원 + 포인트 차감 + 환불 전표가 자동 생성됩니다.');
+      break;
+    }
+    case 'receive_purchase_order_partial':
+      lines.push('📥 부분 입고 처리 확인');
+      add('발주번호', args.order_number);
+      lines.push('• 입고 항목:');
+      (args.items as any[] || []).slice(0, 8).forEach(it => lines.push(`  - ${it.product_name} × ${it.quantity}개`));
+      add('메모', args.memo);
+      lines.push('• 재고가 자동으로 증가하며, 미입고분은 PARTIALLY_RECEIVED로 유지됩니다.');
+      break;
+    case 'update_shipment_tracking':
+      lines.push('🚚 배송 송장번호 등록 확인');
+      add('수령자', args.recipient_name);
+      add('카페24 주문ID', args.cafe24_order_id);
+      add('송장번호', args.tracking_number);
+      lines.push('• 상태가 자동으로 "발송완료"로 전환됩니다.');
+      break;
+    case 'refresh_cafe24_token':
+      lines.push('🔄 카페24 토큰 갱신 확인');
+      lines.push('• access_token / refresh_token을 카페24 API로 재발급합니다.');
+      break;
+    case 'sync_cafe24_paid_orders':
+      lines.push('💰 카페24 결제완료 매출 동기화 확인');
+      add('기간', `${args.start_date} ~ ${args.end_date}`);
+      lines.push('⚠️ 기간 내 결제완료 주문을 sales_orders에 일괄 upsert하고 매출 분개를 생성합니다.');
+      break;
     default:
       return `⚠️ 작업 확인\n\n${JSON.stringify(args, null, 2)}`;
   }

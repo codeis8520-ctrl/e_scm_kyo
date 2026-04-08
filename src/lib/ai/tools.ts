@@ -1,4 +1,6 @@
 import type { MiniMaxTool } from './client';
+import { processRefund, getSalesOrderForRefund } from '@/lib/return-actions';
+import { refreshCafe24Token, syncCafe24PaidOrders } from '@/lib/cafe24-actions';
 
 // ─── Tool Definitions ──────────────────────────────────────────────────────
 
@@ -668,6 +670,158 @@ sales_orders·inventories 등 핵심 거래 테이블은 삭제 불가.`,
       },
     },
   },
+  // ── Phase B: 환불 ─────────────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'refund_sales_order',
+      description: `POS 판매 주문 환불 처리. 전액 또는 부분 환불 지원. 환불 시 재고 자동 복원, 적립 포인트 비율만큼 차감, 환불 전표 생성.
+사용 예: "SA-GN-20260408-ABCD 환불해줘", "어제 김철수 주문 환불".
+주의: 원본 주문이 COMPLETED 또는 PARTIALLY_REFUNDED 상태여야 함.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          order_number: { type: 'string', description: '원본 주문의 order_number (예: SA-GN-20260408-ABCD)' },
+          reason: {
+            type: 'string',
+            enum: ['DEFECTIVE', 'WRONG_ITEM', 'CHANGE_OF_MIND', 'DUPLICATE', 'OTHER'],
+            description: '환불 사유 (DEFECTIVE:불량, WRONG_ITEM:오배송, CHANGE_OF_MIND:단순변심, DUPLICATE:중복, OTHER:기타)',
+          },
+          reason_detail: { type: 'string', description: '상세 사유 (선택)' },
+          refund_method: {
+            type: 'string',
+            enum: ['cash', 'card', 'point'],
+            description: '환불 방법 (cash:현금, card:카드취소, point:포인트전환). 기본 원 결제수단과 동일.',
+          },
+          full_refund: { type: 'boolean', description: 'true면 전체 환불, false이면 items 파라미터로 부분 환불. 기본 true.' },
+          items: {
+            type: 'array',
+            description: '부분 환불 시 환불할 항목 목록. 각 항목은 {product_name, quantity}',
+            items: {
+              type: 'object',
+              properties: {
+                product_name: { type: 'string' },
+                quantity: { type: 'number' },
+              },
+            },
+          },
+        },
+        required: ['order_number', 'reason'],
+      },
+    },
+  },
+  // ── Phase B: 부분 입고 ────────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'receive_purchase_order_partial',
+      description: `발주의 일부 수량만 입고 처리. 100개 발주 중 50개만 받은 경우 사용.
+발주 상태는 전체 입고 시 RECEIVED, 부분 입고 시 PARTIALLY_RECEIVED로 전환.
+잔여 수량은 후속 receive_purchase_order(_partial) 호출로 이어서 입고 가능.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          order_number: { type: 'string', description: '발주번호 (예: PO-20260408-ABC)' },
+          items: {
+            type: 'array',
+            description: '입고할 품목 목록. 각 항목: {product_name, quantity}',
+            items: {
+              type: 'object',
+              properties: {
+                product_name: { type: 'string' },
+                quantity: { type: 'number' },
+              },
+              required: ['product_name', 'quantity'],
+            },
+          },
+          memo: { type: 'string', description: '입고 메모 (선택)' },
+        },
+        required: ['order_number', 'items'],
+      },
+    },
+  },
+  // ── Phase B: 배송 관리 ────────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'get_shipments',
+      description: `배송 목록 조회. 상태/수령자명/송장번호로 필터링. "오늘 미발송 건", "배송중인 거", "홍길동 배송 어디쯤"에 사용.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          status: { type: 'string', enum: ['PENDING', 'PRINTED', 'SHIPPED', 'DELIVERED'], description: '배송 상태 필터' },
+          recipient_name: { type: 'string', description: '수령자명 키워드' },
+          tracking_number: { type: 'string', description: '송장번호' },
+          limit: { type: 'number', description: '최대 건수 (기본 20)' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_shipment_tracking',
+      description: `배송 건에 송장번호를 등록하거나 수정. 등록 시 상태가 자동으로 SHIPPED로 전환.
+수령자명과 송장번호로 식별. 같은 수령자가 여러 건이면 가장 최근 PENDING 건에 반영.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          recipient_name: { type: 'string', description: '수령자명' },
+          tracking_number: { type: 'string', description: '송장번호 (필수)' },
+          cafe24_order_id: { type: 'string', description: '카페24 주문 ID로 식별하는 경우' },
+        },
+        required: ['tracking_number'],
+      },
+    },
+  },
+  // ── Phase B: 카페24 동기화 ────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'refresh_cafe24_token',
+      description: `카페24 API 토큰(access_token / refresh_token) 수동 갱신. 카페24 연동 오류 발생 시 또는 수시 갱신용.`,
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'sync_cafe24_paid_orders',
+      description: `카페24에서 결제완료 주문을 끌어와 sales_orders에 매출로 동기화. Webhook 누락 보완용.
+각 주문에 대해 신규 생성 + COMPLETED 상태 + 매출 분개까지 일괄 처리.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          start_date: { type: 'string', description: '시작일 YYYY-MM-DD' },
+          end_date: { type: 'string', description: '종료일 YYYY-MM-DD' },
+        },
+        required: ['start_date', 'end_date'],
+      },
+    },
+  },
+  // ── Phase B: 고객 세분화 ──────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'customer_segment_analysis',
+      description: `고객 세분화 분석. 기간별 매출 상위 고객, 휴면 고객(최근 N일 미구매), 구매 빈도 상위 등.
+"VIP 중 매출 TOP 5", "최근 90일 미구매 고객", "경옥고 자주 사는 고객" 등에 사용.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          mode: {
+            type: 'string',
+            enum: ['top_spenders', 'dormant', 'frequent_buyers', 'grade_breakdown'],
+            description: 'top_spenders=매출상위, dormant=휴면, frequent_buyers=자주구매, grade_breakdown=등급별분포',
+          },
+          days: { type: 'number', description: '분석 기간 (일수). 기본 90' },
+          grade: { type: 'string', enum: ['NORMAL', 'VIP', 'VVIP'], description: '등급 필터' },
+          limit: { type: 'number', description: '반환 건수 (기본 10)' },
+        },
+        required: ['mode'],
+      },
+    },
+  },
 ];
 
 export const WRITE_TOOLS = new Set([
@@ -696,6 +850,12 @@ export const WRITE_TOOLS = new Set([
   'update_product',
   'bulk_update_product_costs',
   'delete_record',
+  // Phase B
+  'refund_sales_order',
+  'receive_purchase_order_partial',
+  'update_shipment_tracking',
+  'refresh_cafe24_token',
+  'sync_cafe24_paid_orders',
 ]);
 
 // ─── Shared Helpers ──────────────────────────────────────────────────────────
@@ -842,6 +1002,14 @@ export async function executeTool(
       case 'bulk_update_product_costs':return execBulkUpdateProductCosts(sb, args as any, ctx);
       case 'get_customer_consultations':return execGetCustomerConsultations(sb, args as any);
       case 'delete_record':            return execDeleteRecord(sb, args as any, ctx);
+      // Phase B
+      case 'refund_sales_order':       return execRefundSalesOrder(sb, args as any, ctx);
+      case 'receive_purchase_order_partial': return execReceivePurchaseOrderPartial(sb, args as any, ctx);
+      case 'get_shipments':            return execGetShipments(sb, args as any, ctx);
+      case 'update_shipment_tracking': return execUpdateShipmentTracking(sb, args as any, ctx);
+      case 'refresh_cafe24_token':     return execRefreshCafe24Token(ctx);
+      case 'sync_cafe24_paid_orders':  return execSyncCafe24PaidOrders(sb, args as any, ctx);
+      case 'customer_segment_analysis':return execCustomerSegmentAnalysis(sb, args as any);
       default: return JSON.stringify({ error: `알 수 없는 도구: ${toolName}` });
     }
   } catch (e: any) {
@@ -2272,5 +2440,382 @@ async function execDeleteRecord(sb: any, args: { table: string; record_id: strin
     테이블: args.table,
     삭제ID: args.record_id,
     사유: args.reason || '미지정',
+  });
+}
+
+// ═══ Phase B ═══════════════════════════════════════════════════════════════
+
+// ── 환불 처리 ────────────────────────────────────────────────────────────────
+async function execRefundSalesOrder(sb: any, args: {
+  order_number: string;
+  reason: string;
+  reason_detail?: string;
+  refund_method?: string;
+  full_refund?: boolean;
+  items?: Array<{ product_name: string; quantity: number }>;
+}, ctx: ToolContext): Promise<string> {
+  // 1) 원본 주문 조회
+  const lookup = await getSalesOrderForRefund(args.order_number);
+  if (lookup.error || !lookup.data) {
+    return JSON.stringify({ error: lookup.error || `주문 "${args.order_number}"을(를) 찾을 수 없습니다.` });
+  }
+  const order: any = lookup.data;
+
+  if (order.status === 'CANCELLED') return JSON.stringify({ error: '취소된 주문은 환불할 수 없습니다.' });
+  if (order.status === 'REFUNDED') return JSON.stringify({ error: '이미 전액 환불된 주문입니다.' });
+
+  // 2) 지점 권한 검증
+  const denied = assertBranchAccess(ctx, order.branch?.id, order.branch?.name || '지점');
+  if (denied) return denied;
+
+  // 3) 환불 항목 구성
+  const fullRefund = args.full_refund !== false && (!args.items || args.items.length === 0);
+  let refundItems: Array<{ sales_order_item_id: string; product_id: string; quantity: number; unit_price: number }> = [];
+
+  if (fullRefund) {
+    refundItems = (order.items || []).map((i: any) => ({
+      sales_order_item_id: i.id,
+      product_id: i.product.id,
+      quantity: i.quantity,
+      unit_price: i.unit_price,
+    }));
+  } else {
+    // 부분 환불 — product_name 매핑
+    for (const req of args.items || []) {
+      const match = (order.items || []).find((i: any) =>
+        String(i.product?.name || '').toLowerCase().includes(String(req.product_name).toLowerCase())
+      );
+      if (!match) {
+        return JSON.stringify({ error: `주문에 "${req.product_name}" 항목이 없습니다.` });
+      }
+      if (req.quantity <= 0 || req.quantity > match.quantity) {
+        return JSON.stringify({ error: `${match.product.name}의 환불 수량은 1~${match.quantity} 범위여야 합니다.` });
+      }
+      refundItems.push({
+        sales_order_item_id: match.id,
+        product_id: match.product.id,
+        quantity: req.quantity,
+        unit_price: match.unit_price,
+      });
+    }
+  }
+
+  if (refundItems.length === 0) {
+    return JSON.stringify({ error: '환불할 항목이 없습니다.' });
+  }
+
+  // 4) processRefund 호출 (재고 복원 + 포인트 차감 + 분개까지 포함)
+  const result = await processRefund({
+    originalOrderId: order.id,
+    branchId: order.branch.id,
+    reason: args.reason,
+    reasonDetail: args.reason_detail,
+    refundMethod: args.refund_method || order.payment_method || 'cash',
+    items: refundItems,
+  });
+
+  if (result.error) return JSON.stringify({ error: result.error });
+
+  const refundAmount = refundItems.reduce((s, i) => s + i.quantity * i.unit_price, 0);
+  return JSON.stringify({
+    성공: true,
+    메시지: `환불 처리 완료`,
+    환불번호: result.returnNumber,
+    원주문: args.order_number,
+    환불금액: `${refundAmount.toLocaleString()}원`,
+    환불수단: args.refund_method || order.payment_method || 'cash',
+    유형: fullRefund ? '전액 환불' : '부분 환불',
+  });
+}
+
+// ── 부분 입고 ────────────────────────────────────────────────────────────────
+async function execReceivePurchaseOrderPartial(sb: any, args: {
+  order_number: string;
+  items: Array<{ product_name: string; quantity: number }>;
+  memo?: string;
+}, ctx: ToolContext): Promise<string> {
+  const { data: po } = await sb.from('purchase_orders')
+    .select('id, status, branch_id, order_number, branches(name)')
+    .eq('order_number', args.order_number).single();
+  if (!po) return JSON.stringify({ error: `발주서 "${args.order_number}" 없음` });
+  const denied = assertBranchAccess(ctx, (po as any).branch_id, (po as any).branches?.name || '지점');
+  if (denied) return denied;
+  if (!['CONFIRMED', 'PARTIALLY_RECEIVED'].includes((po as any).status)) {
+    return JSON.stringify({ error: `입고 불가 상태: ${(po as any).status}` });
+  }
+
+  const { data: orderItems } = await sb.from('purchase_order_items')
+    .select('id, product_id, ordered_quantity, received_quantity, unit_price, products(name)')
+    .eq('purchase_order_id', (po as any).id);
+
+  if (!orderItems?.length) return JSON.stringify({ error: '발주 항목이 없습니다.' });
+
+  // product_name 매핑 + 잔여수량 검증
+  const toReceive: Array<{ item: any; qty: number }> = [];
+  for (const req of args.items) {
+    const match = (orderItems as any[]).find(oi =>
+      String(oi.products?.name || '').toLowerCase().includes(String(req.product_name).toLowerCase())
+    );
+    if (!match) return JSON.stringify({ error: `발주에 "${req.product_name}" 항목이 없습니다.` });
+    const remaining = match.ordered_quantity - match.received_quantity;
+    if (req.quantity <= 0) return JSON.stringify({ error: `${match.products.name}: 수량은 1 이상이어야 합니다.` });
+    if (req.quantity > remaining) {
+      return JSON.stringify({ error: `${match.products.name}: 잔여 입고 가능 ${remaining}개, 요청 ${req.quantity}개` });
+    }
+    toReceive.push({ item: match, qty: req.quantity });
+  }
+
+  // 입고 전표 생성
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const suffix = Math.random().toString(36).substring(2, 5).toUpperCase();
+  const receiptNumber = `GR-${today}-${suffix}`;
+  const totalAmount = toReceive.reduce((s, r) => s + r.item.unit_price * r.qty, 0);
+
+  const { data: receipt, error: receiptErr } = await sb.from('purchase_receipts').insert({
+    purchase_order_id: (po as any).id,
+    receipt_number: receiptNumber,
+    branch_id: (po as any).branch_id,
+    total_amount: totalAmount,
+    received_at: new Date().toISOString(),
+    memo: args.memo || 'AI 부분 입고',
+  }).select('id').single();
+  if (receiptErr) return JSON.stringify({ error: receiptErr.message });
+
+  const detail: string[] = [];
+  for (const { item, qty } of toReceive) {
+    // 입고 항목
+    await sb.from('purchase_receipt_items').insert({
+      purchase_receipt_id: (receipt as any).id,
+      product_id: item.product_id,
+      quantity: qty,
+      unit_price: item.unit_price,
+    });
+    // 재고 증가
+    const { data: inv } = await sb.from('inventories')
+      .select('id, quantity')
+      .eq('branch_id', (po as any).branch_id)
+      .eq('product_id', item.product_id).single();
+    if (inv) {
+      await sb.from('inventories').update({ quantity: (inv as any).quantity + qty }).eq('id', (inv as any).id);
+    } else {
+      await sb.from('inventories').insert({ branch_id: (po as any).branch_id, product_id: item.product_id, quantity: qty, safety_stock: 0 });
+    }
+    await sb.from('inventory_movements').insert({
+      branch_id: (po as any).branch_id,
+      product_id: item.product_id,
+      movement_type: 'IN',
+      quantity: qty,
+      reference_id: (po as any).id,
+      reference_type: 'PURCHASE_RECEIPT',
+      memo: `부분 입고 ${receiptNumber} (AI)`,
+    });
+    // 발주 항목 received_quantity 누적
+    await sb.from('purchase_order_items')
+      .update({ received_quantity: item.received_quantity + qty })
+      .eq('id', item.id);
+    detail.push(`${item.products.name} ${qty}개`);
+  }
+
+  // 전체 입고 여부 판단 → PO 상태 업데이트
+  const { data: refreshed } = await sb.from('purchase_order_items')
+    .select('ordered_quantity, received_quantity')
+    .eq('purchase_order_id', (po as any).id);
+  const allReceived = (refreshed as any[] || []).every(r => r.received_quantity >= r.ordered_quantity);
+  const newStatus = allReceived ? 'RECEIVED' : 'PARTIALLY_RECEIVED';
+  await sb.from('purchase_orders').update({ status: newStatus }).eq('id', (po as any).id);
+
+  return JSON.stringify({
+    성공: true,
+    메시지: `부분 입고 처리 완료 (${newStatus === 'RECEIVED' ? '전량 입고됨' : '잔여 있음'})`,
+    입고전표: receiptNumber,
+    입고항목: detail,
+    발주상태: newStatus,
+  });
+}
+
+// ── 배송 조회 ────────────────────────────────────────────────────────────────
+async function execGetShipments(sb: any, args: {
+  status?: string;
+  recipient_name?: string;
+  tracking_number?: string;
+  limit?: number;
+}, ctx: ToolContext): Promise<string> {
+  let q = sb.from('shipments').select('*').order('created_at', { ascending: false });
+  if (args.status) q = q.eq('status', args.status);
+  if (args.tracking_number) q = q.eq('tracking_number', args.tracking_number);
+  if (args.recipient_name) q = q.ilike('recipient_name', `%${args.recipient_name}%`);
+  // Staff 지점 필터
+  if (isStaffRole(ctx.userRole) && ctx.branchId) q = q.eq('branch_id', ctx.branchId);
+  q = q.limit(args.limit || 20);
+
+  const { data, error } = await q;
+  if (error) return JSON.stringify({ error: error.message });
+  if (!data?.length) return JSON.stringify({ 결과: '조건에 맞는 배송 건이 없습니다.' });
+
+  const statusLabel: Record<string, string> = { PENDING: '대기', PRINTED: '송장출력', SHIPPED: '발송완료', DELIVERED: '배송완료' };
+  return JSON.stringify({
+    총건수: data.length,
+    배송목록: (data as any[]).map((s: any) => ({
+      수령자: s.recipient_name,
+      전화: s.recipient_phone,
+      주소: [s.recipient_address, s.recipient_address_detail].filter(Boolean).join(' '),
+      품목: s.items_summary || '-',
+      송장번호: s.tracking_number || '미등록',
+      상태: statusLabel[s.status] || s.status,
+      출처: s.source === 'CAFE24' ? '카페24' : '매장',
+      등록일: s.created_at?.slice(0, 10),
+    })),
+  });
+}
+
+// ── 배송 송장 업데이트 ───────────────────────────────────────────────────────
+async function execUpdateShipmentTracking(sb: any, args: {
+  recipient_name?: string;
+  tracking_number: string;
+  cafe24_order_id?: string;
+}, ctx: ToolContext): Promise<string> {
+  if (!args.tracking_number) return JSON.stringify({ error: '송장번호가 필요합니다.' });
+
+  let q = sb.from('shipments').select('id, recipient_name, status, branch_id');
+  if (args.cafe24_order_id) {
+    q = q.eq('cafe24_order_id', args.cafe24_order_id);
+  } else if (args.recipient_name) {
+    q = q.ilike('recipient_name', `%${args.recipient_name}%`).in('status', ['PENDING', 'PRINTED']);
+  } else {
+    return JSON.stringify({ error: '수령자명 또는 cafe24_order_id 중 하나가 필요합니다.' });
+  }
+  if (isStaffRole(ctx.userRole) && ctx.branchId) q = q.eq('branch_id', ctx.branchId);
+  q = q.order('created_at', { ascending: false }).limit(1);
+
+  const { data: rows } = await q;
+  const target = (rows as any[])?.[0];
+  if (!target) return JSON.stringify({ error: '대상 배송 건을 찾을 수 없습니다.' });
+
+  const { error } = await sb.from('shipments').update({
+    tracking_number: args.tracking_number,
+    status: 'SHIPPED',
+    updated_at: new Date().toISOString(),
+  }).eq('id', target.id);
+  if (error) return JSON.stringify({ error: error.message });
+
+  return JSON.stringify({
+    성공: true,
+    메시지: `송장번호 등록 완료 (${target.recipient_name})`,
+    송장번호: args.tracking_number,
+    수령자: target.recipient_name,
+    상태: '발송완료',
+  });
+}
+
+// ── 카페24 토큰 갱신 ─────────────────────────────────────────────────────────
+async function execRefreshCafe24Token(ctx: ToolContext): Promise<string> {
+  const denied = requireHq(ctx, '카페24 토큰 갱신');
+  if (denied) return denied;
+  const r = await refreshCafe24Token();
+  if (!r.success) return JSON.stringify({ error: r.message });
+  return JSON.stringify({ 성공: true, 메시지: r.message });
+}
+
+// ── 카페24 결제완료 매출 동기화 ─────────────────────────────────────────────
+async function execSyncCafe24PaidOrders(sb: any, args: { start_date: string; end_date: string }, ctx: ToolContext): Promise<string> {
+  const denied = requireHq(ctx, '카페24 매출 동기화');
+  if (denied) return denied;
+  const r = await syncCafe24PaidOrders({ startDate: args.start_date, endDate: args.end_date });
+  if (!r.success) return JSON.stringify({ error: r.message });
+  return JSON.stringify({ 성공: true, 메시지: r.message, 처리건수: r.processed });
+}
+
+// ── 고객 세분화 분석 ─────────────────────────────────────────────────────────
+async function execCustomerSegmentAnalysis(sb: any, args: {
+  mode: 'top_spenders' | 'dormant' | 'frequent_buyers' | 'grade_breakdown';
+  days?: number;
+  grade?: string;
+  limit?: number;
+}): Promise<string> {
+  const days = args.days || 90;
+  const limit = args.limit || 10;
+  const since = new Date();
+  since.setDate(since.getDate() - days);
+  const sinceIso = since.toISOString();
+
+  if (args.mode === 'grade_breakdown') {
+    const { data: customers } = await sb.from('customers').select('grade').eq('is_active', true);
+    const bucket: Record<string, number> = { NORMAL: 0, VIP: 0, VVIP: 0 };
+    (customers || []).forEach((c: any) => { bucket[c.grade] = (bucket[c.grade] || 0) + 1; });
+    return JSON.stringify({
+      모드: '등급별 분포',
+      총고객: (customers || []).length,
+      분포: { 일반: bucket.NORMAL, VIP: bucket.VIP, VVIP: bucket.VVIP },
+    });
+  }
+
+  if (args.mode === 'dormant') {
+    // 최근 days일 내 구매가 없는 활성 고객
+    const { data: recent } = await sb.from('sales_orders')
+      .select('customer_id')
+      .gte('ordered_at', sinceIso)
+      .eq('status', 'COMPLETED')
+      .not('customer_id', 'is', null);
+    const activeIds = new Set(((recent || []) as any[]).map(r => r.customer_id));
+
+    let custQ = sb.from('customers').select('id, name, phone, grade').eq('is_active', true);
+    if (args.grade) custQ = custQ.eq('grade', args.grade);
+    const { data: allCust } = await custQ;
+    const dormant = (allCust || []).filter((c: any) => !activeIds.has(c.id)).slice(0, limit);
+
+    return JSON.stringify({
+      모드: `${days}일 미구매 휴면 고객`,
+      총건수: dormant.length,
+      고객목록: dormant.map((c: any) => ({
+        이름: c.name,
+        전화: c.phone,
+        등급: ({ NORMAL: '일반', VIP: 'VIP', VVIP: 'VVIP' } as any)[c.grade] || c.grade,
+      })),
+    });
+  }
+
+  // top_spenders / frequent_buyers
+  let soQ = sb.from('sales_orders')
+    .select('customer_id, total_amount, customers(name, phone, grade)')
+    .eq('status', 'COMPLETED')
+    .gte('ordered_at', sinceIso)
+    .not('customer_id', 'is', null);
+  const { data: orders } = await soQ;
+
+  const agg = new Map<string, { name: string; phone: string; grade: string; spent: number; count: number }>();
+  for (const o of (orders || []) as any[]) {
+    const id = o.customer_id;
+    const cur = agg.get(id) || {
+      name: o.customers?.name || '',
+      phone: o.customers?.phone || '',
+      grade: o.customers?.grade || 'NORMAL',
+      spent: 0, count: 0,
+    };
+    cur.spent += Number(o.total_amount) || 0;
+    cur.count += 1;
+    agg.set(id, cur);
+  }
+
+  let rows = Array.from(agg.values());
+  if (args.grade) rows = rows.filter(r => r.grade === args.grade);
+
+  if (args.mode === 'top_spenders') {
+    rows.sort((a, b) => b.spent - a.spent);
+  } else {
+    rows.sort((a, b) => b.count - a.count);
+  }
+  rows = rows.slice(0, limit);
+
+  return JSON.stringify({
+    모드: args.mode === 'top_spenders' ? `최근 ${days}일 매출 상위` : `최근 ${days}일 구매 빈도 상위`,
+    총건수: rows.length,
+    결과: rows.map((r, i) => ({
+      순위: i + 1,
+      이름: r.name,
+      전화: r.phone,
+      등급: ({ NORMAL: '일반', VIP: 'VIP', VVIP: 'VVIP' } as any)[r.grade] || r.grade,
+      누적매출: `${r.spent.toLocaleString()}원`,
+      구매건수: `${r.count}건`,
+    })),
   });
 }
