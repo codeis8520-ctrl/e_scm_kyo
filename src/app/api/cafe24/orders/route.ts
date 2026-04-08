@@ -126,8 +126,9 @@ export async function GET(request: NextRequest) {
         const detail = detailRes.ok ? await detailRes.json() : null;
         const recvData = recvRes.ok ? await recvRes.json() : null;
 
+        const detailOrder = detail?.order ?? null;
         const receiver = recvData?.receivers?.[0] ?? null;
-        const items: any[] = detail?.order?.items ?? [];
+        const items: any[] = detailOrder?.items ?? [];
 
         const itemsSummary = items.length > 0
           ? items.map((i: any) => `${i.product_name ?? ''} x${i.quantity ?? 1}`).join(', ')
@@ -137,19 +138,25 @@ export async function GET(request: NextRequest) {
           ?? [receiver?.address1, receiver?.address2].filter(Boolean).join(' ')
           ?? '';
 
+        // order_status: 목록 API에 없을 경우 상세 API에서 가져옴
+        // paid/canceled boolean으로 파생 (최후 수단)
+        const rawStatus = o.order_status
+          || detailOrder?.order_status
+          || (o.canceled === 'T' ? 'C' : o.paid === 'T' ? 'F' : 'N');
+
         return {
           cafe24_order_id: orderId,
           order_date: (o.order_date ?? '').split('T')[0],
-          orderer_name: o.billing_name ?? '',
+          orderer_name: o.billing_name ?? detailOrder?.billing_name ?? '',
           orderer_phone: receiver?.cellphone ?? receiver?.phone ?? '',
           recipient_name: receiver?.name ?? '',
           recipient_phone: receiver?.cellphone ?? receiver?.phone ?? '',
           recipient_address: address,
           delivery_message: receiver?.shipping_message ?? '',
           items_summary: itemsSummary,
-          total_price: Number(o.payment_amount ?? 0),
+          total_price: Number(o.payment_amount ?? detailOrder?.payment_amount ?? 0),
           already_added: existingIds.has(orderId),
-          cafe24_status: o.order_status ?? '',
+          cafe24_status: rawStatus,
         };
       })
     );
