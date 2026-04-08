@@ -112,10 +112,16 @@ export default function ShippingPage() {
   const senderInputRef = useRef<HTMLInputElement>(null);
   const recipientInputRef = useRef<HTMLInputElement>(null);
 
+  // ── 카페24 탭 검색 필터 ───────────────────────────────────────────────────
+  const [cafe24Search, setCafe24Search]           = useState('');
+  const [cafe24StatusFilter, setCafe24StatusFilter] = useState('');
+  const [cafe24HideAdded, setCafe24HideAdded]     = useState(false);
+
   // ── 배송 목록 탭 ──────────────────────────────────────────────────────────
   const [shipments, setShipments] = useState<Shipment[]>([]);
   const [listLoading, setListLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
+  const [listSearch, setListSearch] = useState('');
   const [editShipment, setEditShipment] = useState<Shipment | null>(null);
   const [editForm, setEditForm] = useState<Partial<Shipment>>({});
   const [editSaving, setEditSaving] = useState(false);
@@ -461,8 +467,38 @@ export default function ShippingPage() {
     } finally { setManualSaving(false); }
   };
 
+  // ── 카페24 탭 필터 ────────────────────────────────────────────────────────
+  const filteredCafe24Orders = cafe24Orders.filter(o => {
+    if (cafe24HideAdded && o.already_added) return false;
+    if (cafe24StatusFilter && o.cafe24_status !== cafe24StatusFilter) return false;
+    if (cafe24Search) {
+      const q = cafe24Search.toLowerCase().replace(/-/g, '');
+      return (
+        o.orderer_name.toLowerCase().includes(q) ||
+        o.recipient_name.toLowerCase().includes(q) ||
+        o.orderer_phone.replace(/-/g, '').includes(q) ||
+        o.recipient_phone.replace(/-/g, '').includes(q) ||
+        o.items_summary.toLowerCase().includes(q)
+      );
+    }
+    return true;
+  });
+
   // ── 목록 탭 핸들러 ────────────────────────────────────────────────────────
-  const filteredShipments = statusFilter === 'ALL' ? shipments : shipments.filter(s => s.status === statusFilter);
+  const filteredShipments = shipments.filter(s => {
+    if (statusFilter !== 'ALL' && s.status !== statusFilter) return false;
+    if (listSearch) {
+      const q = listSearch.toLowerCase().replace(/-/g, '');
+      return (
+        (s.recipient_name || '').toLowerCase().includes(q) ||
+        (s.recipient_phone || '').replace(/-/g, '').includes(q) ||
+        (s.tracking_number || '').includes(q) ||
+        (s.recipient_address || '').toLowerCase().includes(q) ||
+        (s.items_description || '').toLowerCase().includes(q)
+      );
+    }
+    return true;
+  });
 
   const toggleShipmentSelect = (id: string) => {
     setSelectedShipments(prev => {
@@ -562,6 +598,30 @@ export default function ShippingPage() {
                 {cafe24Loading ? '불러오는 중...' : '불러오기'}
               </button>
             </div>
+            {cafe24Orders.length > 0 && (
+              <div className="flex flex-wrap items-center gap-3 mt-3 pt-3 border-t border-slate-100">
+                <input
+                  type="text"
+                  value={cafe24Search}
+                  onChange={e => setCafe24Search(e.target.value)}
+                  placeholder="주문자 / 수령자 / 품목 검색"
+                  className="input text-sm py-1.5 w-52"
+                />
+                <select value={cafe24StatusFilter} onChange={e => setCafe24StatusFilter(e.target.value)} className="input text-sm py-1.5 w-36">
+                  <option value="">전체 상태</option>
+                  <option value="N">입금전</option>
+                  <option value="F">결제완료</option>
+                  <option value="M">배송준비중</option>
+                  <option value="A">배송중</option>
+                  <option value="B">배송완료</option>
+                  <option value="C">취소</option>
+                </select>
+                <label className="flex items-center gap-1.5 text-sm text-slate-600 cursor-pointer">
+                  <input type="checkbox" checked={cafe24HideAdded} onChange={e => setCafe24HideAdded(e.target.checked)} className="w-4 h-4" />
+                  미추가만 보기
+                </label>
+              </div>
+            )}
             {cafe24Error && <p className="text-red-500 text-sm mt-2">{cafe24Error}</p>}
             {isDemo && (
               <div className="mt-3 flex items-center gap-3 px-4 py-2.5 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
@@ -576,7 +636,7 @@ export default function ShippingPage() {
           {cafe24Orders.length > 0 && (
             <div className="card p-0 overflow-hidden">
               <div className="flex items-center justify-between p-4 border-b border-slate-100">
-                <span className="text-sm text-slate-600">총 {cafe24Orders.length}건</span>
+                <span className="text-sm text-slate-600">총 {filteredCafe24Orders.length}건 {filteredCafe24Orders.length !== cafe24Orders.length && <span className="text-slate-400">(전체 {cafe24Orders.length}건)</span>}</span>
                 <div className="flex items-center gap-3">
                   {addError && <span className="text-red-500 text-sm">{addError}</span>}
                   <button className="btn-primary" onClick={handleAddSelectedOrders} disabled={selectedOrders.size === 0 || addingOrders}>
@@ -588,7 +648,7 @@ export default function ShippingPage() {
                 <table className="table w-full">
                   <thead><tr><th className="w-10"></th><th>주문일</th><th>주문자</th><th>수령자</th><th>주소</th><th>품목</th><th>금액</th><th>카페24 상태</th><th></th></tr></thead>
                   <tbody>
-                    {cafe24Orders.map(order => (
+                    {filteredCafe24Orders.map(order => (
                       <tr key={order.cafe24_order_id} className={order.already_added ? 'opacity-40' : ''}>
                         <td><input type="checkbox" checked={selectedOrders.has(order.cafe24_order_id)} onChange={() => toggleOrderSelect(order.cafe24_order_id)} disabled={order.already_added} className="w-4 h-4" /></td>
                         <td className="text-sm text-slate-600">{order.order_date?.slice(0, 10)}</td>
@@ -733,7 +793,7 @@ export default function ShippingPage() {
       {activeTab === 'list' && (
         <div className="space-y-4">
           <div className="flex items-center justify-between flex-wrap gap-3">
-            <div className="flex gap-1 flex-wrap">
+            <div className="flex flex-wrap items-center gap-2">
               {(['ALL','PENDING','PRINTED','SHIPPED','DELIVERED'] as StatusFilter[]).map(f => (
                 <button key={f} onClick={() => setStatusFilter(f)}
                   className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
@@ -742,6 +802,13 @@ export default function ShippingPage() {
                   {f === 'ALL' ? '전체' : STATUS_LABEL[f]}
                 </button>
               ))}
+              <input
+                type="text"
+                value={listSearch}
+                onChange={e => setListSearch(e.target.value)}
+                placeholder="수령자 / 전화번호 / 송장번호 / 주소"
+                className="input text-sm py-1.5 w-64"
+              />
             </div>
             <div className="flex gap-2 flex-wrap">
               {/* 배송상태 일괄 추적 */}
