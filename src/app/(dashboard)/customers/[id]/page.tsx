@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { formatPhone } from '@/lib/validators';
+import { settleCreditOrder } from '@/lib/accounting-actions';
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -72,6 +73,7 @@ const GRADE_LABELS: Record<string, string> = {
 
 const PAYMENT_LABELS: Record<string, string> = {
   cash: '현금', card: '카드', kakao: '카카오페이',
+  card_keyin: '카드(키인)', credit: '외상',
 };
 
 function formatDate(date: Date): string {
@@ -103,6 +105,7 @@ export default function CustomerDetailPage() {
 
   const [purchaseDateRange, setPurchaseDateRange] = useState(getDefaultDateRange);
   const [consultDateRange, setConsultDateRange] = useState(getDefaultDateRange);
+  const [settlingOrderId, setSettlingOrderId] = useState<string | null>(null);
   const [purchaseProductSearch, setPurchaseProductSearch] = useState('');
   const [purchaseBranchFilter, setPurchaseBranchFilter] = useState('');
 
@@ -138,6 +141,8 @@ export default function CustomerDetailPage() {
           status,
           total_amount,
           payment_method,
+          credit_settled,
+          credit_settled_method,
           points_earned,
           points_used,
           branch_id,
@@ -242,6 +247,20 @@ export default function CustomerDetailPage() {
     
     fetchData();
     setShowConsultModal(false);
+  };
+
+  const handleSettleCredit = async (orderId: string, method: 'cash' | 'card' | 'kakao' | 'card_keyin') => {
+    setSettlingOrderId(orderId);
+    try {
+      const result = await settleCreditOrder({ orderId, settledMethod: method });
+      if (result.success) {
+        fetchData();
+      } else {
+        alert(`수금 처리 실패: ${result.error}`);
+      }
+    } finally {
+      setSettlingOrderId(null);
+    }
   };
 
   const purchaseStats = {
@@ -547,6 +566,9 @@ export default function CustomerDetailPage() {
                             </div>
                           </div>
                           <div className="flex items-center gap-3">
+                            {order.payment_method === 'credit' && !order.credit_settled && (
+                              <span className="badge text-xs bg-orange-100 text-orange-700">수금 전</span>
+                            )}
                             <span className={`badge text-xs ${statusColor[order.status] || ''}`}>
                               {statusLabel[order.status] || order.status}
                             </span>
@@ -588,6 +610,11 @@ export default function CustomerDetailPage() {
                               {order.payment_method && (
                                 <span>결제: {PAYMENT_LABELS[order.payment_method] || order.payment_method}</span>
                               )}
+                              {order.payment_method === 'credit' && order.credit_settled && (
+                                <span className="text-green-600">
+                                  수금완료 ({PAYMENT_LABELS[order.credit_settled_method] || order.credit_settled_method})
+                                </span>
+                              )}
                               {order.points_used > 0 && (
                                 <span className="text-amber-600">포인트 사용: -{order.points_used.toLocaleString()}P</span>
                               )}
@@ -595,6 +622,23 @@ export default function CustomerDetailPage() {
                                 <span className="text-blue-600">포인트 적립: +{order.points_earned.toLocaleString()}P</span>
                               )}
                             </div>
+                            {order.payment_method === 'credit' && !order.credit_settled && (
+                              <div className="mt-3 pt-3 border-t border-slate-200">
+                                <p className="text-xs text-slate-500 mb-2">수금 처리</p>
+                                <div className="flex flex-wrap gap-2">
+                                  {(['cash', 'card', 'card_keyin', 'kakao'] as const).map(m => (
+                                    <button
+                                      key={m}
+                                      disabled={settlingOrderId === order.id}
+                                      onClick={() => handleSettleCredit(order.id, m)}
+                                      className="text-xs px-3 py-1.5 rounded border border-slate-300 hover:bg-slate-100 disabled:opacity-50"
+                                    >
+                                      {settlingOrderId === order.id ? '처리 중...' : PAYMENT_LABELS[m]}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>

@@ -363,7 +363,7 @@ export async function createSaleJournal(params: {
   orderNumber: string;
   orderDate: string;
   totalAmount: number;
-  paymentMethod: string; // cash | card | kakao
+  paymentMethod: string; // cash | card | kakao | card_keyin | credit
   cogs: number;
 }) {
   const sb = await createClient() as any;
@@ -372,12 +372,15 @@ export async function createSaleJournal(params: {
   const { data: accounts } = await sb
     .from('gl_accounts')
     .select('id, code')
-    .in('code', ['1110', '1120', '4110', '5110', '1130']);
+    .in('code', ['1110', '1115', '1120', '4110', '5110', '1130']);
 
   const accMap = Object.fromEntries((accounts || []).map((a: any) => [a.code, a.id]));
 
-  // 현금 vs 카드 결정
-  const receivableCode = params.paymentMethod === 'cash' ? '1110' : '1120';
+  // 현금 vs 외상 vs 카드 결정
+  const receivableCode =
+    params.paymentMethod === 'cash'   ? '1110' :
+    params.paymentMethod === 'credit' ? '1115' : // 외상매출금
+    '1120'; // card, kakao, card_keyin
   const receivableId   = accMap[receivableCode];
   const revenueId      = accMap['4110'];
   const cogsId         = accMap['5110'];
@@ -463,4 +466,84 @@ export async function createPurchaseReceiptJournal(params: {
     { journal_entry_id: entry.id, account_id: inventoryId, debit: params.totalAmount, credit: 0, memo: params.receiptNumber },
     { journal_entry_id: entry.id, account_id: payableId, debit: 0, credit: params.totalAmount, memo: params.receiptNumber },
   ]);
+}
+
+// ─── 외상 수금 처리 ────────────────────────────────────────────────────────
+
+export async function settleCreditOrder(params: {
+  orderId: string;
+  settledMethod: 'cash' | 'card' | 'kakao' | 'card_keyin';
+}): Promise<{ success: boolean; error?: string }> {
+  const sb = await createClient() as any;
+
+  // 1. 주문 조회
+  const { data: order, error: fetchErr } = await sb
+    .from('sales_orders')
+    .select('id, order_number, total_amount, credit_settled, ordered_at')
+    .eq('id', params.orderId)
+    .eq('payment_method', 'credit')
+    .single();
+
+  if (fetchErr || !order) return { success: false, error: '외상 주문을 찾을 수 없습니다.' };
+  if (order.credit_settled) return { success: false, error: '이미 수금 처리된 주문입니다.' };
+
+  const now = new Date().toISOString();
+
+  // 2. 수금 처리 업데이트
+  const { error: updateErr } = await sb
+    .from('sales_orders')
+    .update({
+      credit_settled: true,
+      credit_settled_at: now,
+      credit_settled_method: params.settledMethod,
+    })
+    .eq('id', params.orderId);
+
+  if (updateErr) return { success: false, error: updateErr.message };
+
+  // 3. 수금 분개: 차변 현금/카드(1110/1120) ← 대변 외상매출금(1115)
+  try {
+    const { data: accounts } = await sb
+      .from('gl_accounts')
+      .select('id, code')
+      .in('code', ['1110', '1115', '1120']);
+
+    const accMap: Record<string, string> = {};
+    (accounts || []).forEach((a: any) => { accMap[a.code] = a.id; });
+
+    const debitCode = params.settledMethod === 'cash' ? '1110' : '1120';
+    const debitId   = accMap[debitCode];
+    const creditId  = accMap['1115'];
+
+    if (!debitId || !creditId) throw new Error('GL 계정 없음');
+
+    const amount = Number(order.total_amount);
+    const jeNumber = `JE-CR-${now.slice(0, 10).replace(/-/g, '')}-${order.order_number.slice(-4)}`;
+
+    const { data: entry, error: jeErr } = await sb
+      .from('journal_entries')
+      .insert({
+        entry_number: jeNumber,
+        entry_date: now.slice(0, 10),
+        description: `외상 수금 — ${order.order_number}`,
+        source_type: 'CREDIT_SETTLE',
+        source_id: params.orderId,
+        total_debit: amount,
+        total_credit: amount,
+      })
+      .select('id')
+      .single();
+
+    if (jeErr) throw jeErr;
+
+    await sb.from('journal_entry_lines').insert([
+      { journal_entry_id: entry.id, account_id: debitId,  debit: amount, credit: 0,      memo: '수금' },
+      { journal_entry_id: entry.id, account_id: creditId, debit: 0,      credit: amount, memo: '외상매출금 회수' },
+    ]);
+  } catch (journalErr: any) {
+    // 분개 실패는 경고만 — 수금 처리 자체는 완료됨
+    console.warn('수금 분개 생성 실패(무시):', journalErr?.message);
+  }
+
+  return { success: true };
 }

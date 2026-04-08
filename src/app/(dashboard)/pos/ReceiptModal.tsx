@@ -31,7 +31,9 @@ interface Props {
 const PAYMENT_LABELS: Record<string, string> = {
   cash: '현금',
   card: '카드',
+  card_keyin: '카드(키인)',
   kakao: '카카오페이',
+  credit: '외상',
 };
 
 export default function ReceiptModal({

@@ -56,7 +56,7 @@ export default function POSPage() {
   const [customerSearch, setCustomerSearch] = useState('');
   const [customerResults, setCustomerResults] = useState<Customer[]>([]);
   const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'kakao'>('card');
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'kakao' | 'card_keyin' | 'credit'>('card');
   const [cashReceived, setCashReceived] = useState('');
   const [processing, setProcessing] = useState(false);
   const [usePoints, setUsePoints] = useState(false);
@@ -844,15 +844,21 @@ export default function POSPage() {
 
           {/* 결제 수단 */}
           <div className="grid grid-cols-3 gap-1.5">
-            {(['cash', 'card', 'kakao'] as const).map(m => (
+            {([
+              { id: 'cash', label: '현금' },
+              { id: 'card', label: '카드' },
+              { id: 'card_keyin', label: '카드(키인)' },
+              { id: 'kakao', label: '카카오' },
+              { id: 'credit', label: '외상' },
+            ] as const).map(({ id, label }) => (
               <button
-                key={m}
-                onClick={() => { setPaymentMethod(m); setCashReceived(''); setCardApprovalState('idle'); setCardApprovalResult(null); setCardApprovalError(''); }}
+                key={id}
+                onClick={() => { setPaymentMethod(id); setCashReceived(''); setCardApprovalState('idle'); setCardApprovalResult(null); setCardApprovalError(''); }}
                 className={`py-2 rounded-md text-sm font-medium transition-colors ${
-                  paymentMethod === m ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  paymentMethod === id ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                 }`}
               >
-                {m === 'cash' ? '현금' : m === 'card' ? '카드' : '카카오'}
+                {label}
               </button>
             ))}
           </div>
@@ -901,7 +907,7 @@ export default function POSPage() {
             </div>
           )}
 
-          {/* 결제 버튼 — 카드: 승인 → 결제완료 2단계 */}
+          {/* 결제 버튼 — 카드(단말기): 승인 → 결제완료 2단계 / 나머지: 즉시 결제 */}
           {paymentMethod === 'card' ? (
             <div className="space-y-2">
               {/* 카드 승인 상태 표시 */}

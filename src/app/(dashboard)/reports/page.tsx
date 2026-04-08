@@ -102,6 +102,7 @@ interface TaxSales {
 
 const PAYMENT_LABELS_KO: Record<string, string> = {
   cash: '현금', card: '카드', kakao: '카카오페이', point: '포인트', mixed: '복합결제',
+  card_keyin: '카드(키인)', credit: '외상',
 };
 
 export default function ReportsPage() {
