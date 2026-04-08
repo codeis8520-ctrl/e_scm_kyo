@@ -142,9 +142,16 @@ export async function sendKakaoMessages(messages: KakaoMessage[]): Promise<BulkS
   const sender = process.env.SOLAPI_SENDER_PHONE!;
   const pfId   = process.env.SOLAPI_KAKAO_PFID;  // 플러스친구 채널 ID (선택)
 
-  // Solapi AlimTalk API: 변수 키에서 #{ } 제거 (예: "#{홍길동}" → "홍길동")
-  const stripBraces = (vars: Record<string, string>) =>
-    Object.fromEntries(Object.entries(vars).map(([k, v]) => [k.replace(/^#\{/, '').replace(/\}$/, ''), v]));
+  // Solapi AlimTalk API: 변수 키는 반드시 "#{변수명}" 형태로 전달
+  // (이전엔 stripBraces로 중괄호를 제거했으나 "템플릿 내용과 변수가 일치하지 않습니다"
+  //  오류가 발생해 원복. Solapi 공식 스펙은 #{} 포함 형태.)
+  const ensureBraces = (vars: Record<string, string>) =>
+    Object.fromEntries(
+      Object.entries(vars).map(([k, v]) => {
+        const keyWithBraces = k.startsWith('#{') ? k : `#{${k.replace(/^#?\{?/, '').replace(/\}?$/, '')}}`;
+        return [keyWithBraces, v];
+      })
+    );
 
   const body = {
     messages: messages.map(m => ({
@@ -155,7 +162,7 @@ export async function sendKakaoMessages(messages: KakaoMessage[]): Promise<BulkS
       kakaoOptions: {
         ...(pfId ? { pfId } : {}),
         templateId: m.templateId,
-        variables: stripBraces(m.variables),
+        variables: ensureBraces(m.variables),
         disableSms: false,
       },
     })),

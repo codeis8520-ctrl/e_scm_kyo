@@ -45,10 +45,41 @@ export async function POST(request: Request) {
     const MAX_PAGES = 200; // 안전장치 (최대 2만명)
     let offset = 0;
 
+    // 전화 정리: "010-1234-5678" / "01012345678" 형태만 허용
+    const normalizePhone = (raw: any): string | null => {
+      if (!raw) return null;
+      const s = String(raw).trim();
+      if (!s) return null;
+      const digits = s.replace(/[^0-9]/g, '');
+      if (digits.length < 9 || digits.length > 11) return null;
+      // 010-XXXX-XXXX 형태로 반환
+      if (digits.length === 11) return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
+      if (digits.length === 10) return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+      return digits;
+    };
+
+    // 이름이 실제 사람 이름인지 간이 검증: member_id 형태(@k, @n, 숫자+@문자) 거부
+    const isValidName = (name: any): boolean => {
+      if (!name || typeof name !== 'string') return false;
+      const s = name.trim();
+      if (!s) return false;
+      // "@k", "@n" 등 소셜 로그인 member_id 패턴 배제
+      if (/@[a-z]/i.test(s)) return false;
+      // 숫자로만 구성된 경우 배제
+      if (/^\d+$/.test(s)) return false;
+      // 너무 긴 이름(20자 초과)은 member_id일 가능성 높음
+      if (s.length > 20) return false;
+      return true;
+    };
+
     for (let page = 0; page < MAX_PAGES; page++) {
       // /admin/customers는 cellphone/member_id 단건 검색 전용.
       // 전체 목록은 /admin/customersprivacy 사용 (offset/limit 페이지네이션)
-      const url = `${base}/admin/customersprivacy?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}&created_start_date=${startDate}&created_end_date=${endDate}`;
+      // unmasking=T 파라미터로 마스킹 해제 (mall.read_privacy_mobile 스코프 필요)
+      const fields = 'member_id,name,cellphone,email,created_date,last_login_date';
+      const url = `${base}/admin/customersprivacy?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}` +
+        `&created_start_date=${startDate}&created_end_date=${endDate}` +
+        `&unmasking=T&fields=${fields}`;
       const res = await fetch(url, { headers, cache: 'no-store' });
 
       if (!res.ok) {
@@ -68,9 +99,19 @@ export async function POST(request: Request) {
         const memberId: string = m.member_id;
         if (!memberId) { skipped++; continue; }
 
-        const name = m.member_name || m.name || `고객_${memberId}`;
+        // 마스킹/익명 회원은 dummy 데이터로 저장하지 않고 스킵
+        const rawName = m.name || m.member_name;
+        const rawPhone = normalizePhone(m.cellphone || m.phone);
         const email = m.email || m.member_email || null;
-        const phone = m.cellphone || m.phone || `cafe24_${memberId}`;
+
+        if (!isValidName(rawName) || !rawPhone) {
+          // 실명·전화 없는 회원은 건너뜀 (마스킹 해제 실패 or 소셜 로그인 등)
+          skipped++;
+          continue;
+        }
+
+        const name = String(rawName).trim();
+        const phone = rawPhone;
 
         const { data: existing } = await supabase
           .from('customers')
