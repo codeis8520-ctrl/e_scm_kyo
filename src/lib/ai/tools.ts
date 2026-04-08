@@ -724,9 +724,82 @@ async function getPoints(sb: any, customerId: string): Promise<number> {
   return data?.balance ?? 0;
 }
 
+// ─── RBAC ────────────────────────────────────────────────────────────────────
+
+export interface ToolContext {
+  userId?: string;
+  userRole?: string;
+  branchId?: string;
+}
+
+const STAFF_ROLES = new Set(['BRANCH_STAFF', 'PHARMACY_STAFF']);
+const HQ_ROLES = new Set(['SUPER_ADMIN', 'HQ_OPERATOR', 'EXECUTIVE']);
+
+function isStaffRole(role?: string): boolean {
+  return !!role && STAFF_ROLES.has(role);
+}
+function isHqRole(role?: string): boolean {
+  return !!role && HQ_ROLES.has(role);
+}
+
+/** 본사 전용 작업 가드 — staff 역할이면 에러 JSON 반환 */
+function requireHq(ctx: ToolContext, actionLabel: string): string | null {
+  // role 미지정(로컬/테스트)은 허용
+  if (!ctx.userRole) return null;
+  if (isHqRole(ctx.userRole)) return null;
+  return JSON.stringify({ error: `${actionLabel}은(는) 본사 권한이 필요합니다.` });
+}
+
+/**
+ * 쓰기 대상 지점을 해결한다.
+ * - Staff: 본인 지점 강제 (branch_name 인자가 있어도 본인 지점과 일치해야 함)
+ * - HQ / role 미지정: branch_name 인자로 탐색
+ */
+async function resolveBranchForWrite(
+  sb: any,
+  ctx: ToolContext,
+  branchNameArg?: string
+): Promise<{ ok: true; branch: { id: string; name: string } } | { ok: false; error: string }> {
+  if (isStaffRole(ctx.userRole)) {
+    if (!ctx.branchId) return { ok: false, error: '담당 지점이 지정되지 않았습니다.' };
+    const { data: b } = await sb.from('branches').select('id, name').eq('id', ctx.branchId).maybeSingle();
+    if (!b) return { ok: false, error: '담당 지점을 찾을 수 없습니다.' };
+    // 사용자가 다른 지점명을 지정한 경우 차단
+    if (branchNameArg) {
+      const nameMatch =
+        String(b.name).toLowerCase().includes(String(branchNameArg).toLowerCase()) ||
+        String(branchNameArg).toLowerCase().includes(String(b.name).toLowerCase());
+      if (!nameMatch) {
+        return { ok: false, error: `담당 지점(${b.name})만 작업할 수 있습니다.` };
+      }
+    }
+    return { ok: true, branch: b as any };
+  }
+  // HQ/미지정
+  if (!branchNameArg) return { ok: false, error: '지점명을 지정해주세요.' };
+  const branch = await findBranch(sb, branchNameArg);
+  if (!branch) return { ok: false, error: `지점 "${branchNameArg}" 없음` };
+  return { ok: true, branch };
+}
+
+/** 이미 찾은 지점 ID가 staff의 담당 지점과 일치하는지 검증 */
+function assertBranchAccess(ctx: ToolContext, targetBranchId: string, branchLabel: string): string | null {
+  if (!isStaffRole(ctx.userRole)) return null;
+  if (!ctx.branchId) return JSON.stringify({ error: '담당 지점이 지정되지 않았습니다.' });
+  if (ctx.branchId !== targetBranchId) {
+    return JSON.stringify({ error: `담당 지점만 작업할 수 있습니다. (요청: ${branchLabel})` });
+  }
+  return null;
+}
+
 // ─── Tool Executors ──────────────────────────────────────────────────────────
 
-export async function executeTool(toolName: string, args: Record<string, any>, sb: any): Promise<string> {
+export async function executeTool(
+  toolName: string,
+  args: Record<string, any>,
+  sb: any,
+  ctx: ToolContext = {}
+): Promise<string> {
   try {
     switch (toolName) {
       case 'get_inventory':            return execGetInventory(sb, args);
@@ -741,34 +814,34 @@ export async function executeTool(toolName: string, args: Record<string, any>, s
       case 'get_suppliers':            return execGetSuppliers(sb, args);
       case 'get_purchase_orders':      return execGetPurchaseOrders(sb, args);
       case 'get_production_orders':    return execGetProductionOrders(sb, args);
-      case 'bulk_adjust_inventory':     return execBulkAdjustInventory(sb, args as any);
-      case 'adjust_inventory':         return execAdjustInventory(sb, args as any);
-      case 'transfer_inventory':       return execTransferInventory(sb, args as any);
+      case 'bulk_adjust_inventory':    return execBulkAdjustInventory(sb, args as any, ctx);
+      case 'adjust_inventory':         return execAdjustInventory(sb, args as any, ctx);
+      case 'transfer_inventory':       return execTransferInventory(sb, args as any, ctx);
       case 'create_customer':          return execCreateCustomer(sb, args as any);
       case 'update_customer':          return execUpdateCustomer(sb, args as any);
       case 'add_customer_consultation':return execAddCustomerConsultation(sb, args as any);
       case 'update_customer_grade':    return execUpdateCustomerGrade(sb, args as any);
-      case 'upgrade_customer_grades':  return execUpgradeCustomerGrades(sb);
+      case 'upgrade_customer_grades':  return execUpgradeCustomerGrades(sb, ctx);
       case 'adjust_points':            return execAdjustPoints(sb, args as any);
-      case 'create_branch':            return execCreateBranch(sb, args as any);
-      case 'update_branch':            return execUpdateBranch(sb, args as any);
-      case 'create_product':           return execCreateProduct(sb, args as any);
-      case 'create_purchase_order':    return execCreatePurchaseOrder(sb, args as any);
-      case 'confirm_purchase_order':   return execConfirmPurchaseOrder(sb, args as any);
-      case 'receive_purchase_order':   return execReceivePurchaseOrder(sb, args as any);
-      case 'create_production_order':  return execCreateProductionOrder(sb, args as any);
-      case 'start_production_order':   return execStartProductionOrder(sb, args as any);
-      case 'complete_production_order':return execCompleteProductionOrder(sb, args as any);
+      case 'create_branch':            return execCreateBranch(sb, args as any, ctx);
+      case 'update_branch':            return execUpdateBranch(sb, args as any, ctx);
+      case 'create_product':           return execCreateProduct(sb, args as any, ctx);
+      case 'create_purchase_order':    return execCreatePurchaseOrder(sb, args as any, ctx);
+      case 'confirm_purchase_order':   return execConfirmPurchaseOrder(sb, args as any, ctx);
+      case 'receive_purchase_order':   return execReceivePurchaseOrder(sb, args as any, ctx);
+      case 'create_production_order':  return execCreateProductionOrder(sb, args as any, ctx);
+      case 'start_production_order':   return execStartProductionOrder(sb, args as any, ctx);
+      case 'complete_production_order':return execCompleteProductionOrder(sb, args as any, ctx);
       case 'send_sms':                 return execSendSms(sb, args as any);
-      case 'bulk_send_sms':            return execBulkSendSms(sb, args as any);
-      case 'create_and_confirm_purchase_order': return execCreateAndConfirmPurchaseOrder(sb, args as any);
-      case 'replenish_low_stock':      return execReplenishLowStock(sb, args as any);
+      case 'bulk_send_sms':            return execBulkSendSms(sb, args as any, ctx);
+      case 'create_and_confirm_purchase_order': return execCreateAndConfirmPurchaseOrder(sb, args as any, ctx);
+      case 'replenish_low_stock':      return execReplenishLowStock(sb, args as any, ctx);
       case 'get_top_products':         return execGetTopProducts(sb, args as any);
       case 'compare_sales':            return execCompareSales(sb, args as any);
-      case 'update_product':           return execUpdateProduct(sb, args as any);
-      case 'bulk_update_product_costs':return execBulkUpdateProductCosts(sb, args as any);
+      case 'update_product':           return execUpdateProduct(sb, args as any, ctx);
+      case 'bulk_update_product_costs':return execBulkUpdateProductCosts(sb, args as any, ctx);
       case 'get_customer_consultations':return execGetCustomerConsultations(sb, args as any);
-      case 'delete_record':            return execDeleteRecord(sb, args as any);
+      case 'delete_record':            return execDeleteRecord(sb, args as any, ctx);
       default: return JSON.stringify({ error: `알 수 없는 도구: ${toolName}` });
     }
   } catch (e: any) {
@@ -1128,10 +1201,15 @@ async function execBulkAdjustInventory(sb: any, args: {
   movement_type: string;
   quantity: number;
   memo?: string;
-}): Promise<string> {
-  // 대상 지점 목록
+}, ctx: ToolContext): Promise<string> {
+  // 대상 지점 목록 — staff는 자기 지점만
   let branchesQ = sb.from('branches').select('id, name').eq('is_active', true);
-  if (args.branch_name) branchesQ = branchesQ.ilike('name', `%${args.branch_name}%`);
+  if (isStaffRole(ctx.userRole)) {
+    if (!ctx.branchId) return JSON.stringify({ error: '담당 지점이 지정되지 않았습니다.' });
+    branchesQ = branchesQ.eq('id', ctx.branchId);
+  } else if (args.branch_name) {
+    branchesQ = branchesQ.ilike('name', `%${args.branch_name}%`);
+  }
   const { data: branches } = await branchesQ;
   if (!branches?.length) return JSON.stringify({ error: '대상 지점이 없습니다.' });
 
@@ -1207,9 +1285,10 @@ async function execBulkAdjustInventory(sb: any, args: {
   });
 }
 
-async function execAdjustInventory(sb: any, args: { branch_name: string; product_name: string; movement_type: string; quantity: number; memo?: string }): Promise<string> {
-  const branch = await findBranch(sb, args.branch_name);
-  if (!branch) return JSON.stringify({ error: `지점 "${args.branch_name}" 없음` });
+async function execAdjustInventory(sb: any, args: { branch_name: string; product_name: string; movement_type: string; quantity: number; memo?: string }, ctx: ToolContext): Promise<string> {
+  const r = await resolveBranchForWrite(sb, ctx, args.branch_name);
+  if (!r.ok) return JSON.stringify({ error: r.error });
+  const branch = r.branch;
 
   const product = await findProduct(sb, args.product_name);
   if (!product) return JSON.stringify({ error: `제품 "${args.product_name}" 없음` });
@@ -1248,11 +1327,16 @@ async function execAdjustInventory(sb: any, args: { branch_name: string; product
   });
 }
 
-async function execTransferInventory(sb: any, args: { from_branch_name: string; to_branch_name: string; product_name: string; quantity: number }): Promise<string> {
+async function execTransferInventory(sb: any, args: { from_branch_name: string; to_branch_name: string; product_name: string; quantity: number }, ctx: ToolContext): Promise<string> {
   const from = await findBranch(sb, args.from_branch_name);
   if (!from) return JSON.stringify({ error: `출발 지점 "${args.from_branch_name}" 없음` });
   const to = await findBranch(sb, args.to_branch_name);
   if (!to) return JSON.stringify({ error: `도착 지점 "${args.to_branch_name}" 없음` });
+  // Staff: 출발 지점이 본인 지점이어야 함
+  if (isStaffRole(ctx.userRole)) {
+    const denied = assertBranchAccess(ctx, from.id, from.name);
+    if (denied) return denied;
+  }
   const product = await findProduct(sb, args.product_name);
   if (!product) return JSON.stringify({ error: `제품 "${args.product_name}" 없음` });
 
@@ -1347,7 +1431,9 @@ async function execUpdateCustomerGrade(sb: any, args: any): Promise<string> {
   });
 }
 
-async function execUpgradeCustomerGrades(sb: any): Promise<string> {
+async function execUpgradeCustomerGrades(sb: any, ctx: ToolContext): Promise<string> {
+  const denied = requireHq(ctx, '전체 고객 등급 자동 업그레이드');
+  if (denied) return denied;
   const { data: customers } = await sb.from('customers').select('id, name, grade').eq('is_active', true);
   if (!customers?.length) return JSON.stringify({ 결과: '활성 고객 없음' });
 
@@ -1402,7 +1488,9 @@ async function execAdjustPoints(sb: any, args: any): Promise<string> {
 
 // ── 지점/제품 쓰기 ───────────────────────────────────────────────────────────
 
-async function execCreateBranch(sb: any, args: any): Promise<string> {
+async function execCreateBranch(sb: any, args: any, ctx: ToolContext): Promise<string> {
+  const denied = requireHq(ctx, '지점 생성');
+  if (denied) return denied;
   const code = 'BR-' + Date.now().toString(36).toUpperCase();
   const { error } = await sb.from('branches').insert({
     name: args.name, code, channel: args.channel,
@@ -1412,7 +1500,9 @@ async function execCreateBranch(sb: any, args: any): Promise<string> {
   return JSON.stringify({ 성공: true, 메시지: `${args.name} 지점 추가 완료`, 지점코드: code });
 }
 
-async function execUpdateBranch(sb: any, args: any): Promise<string> {
+async function execUpdateBranch(sb: any, args: any, ctx: ToolContext): Promise<string> {
+  const denied = requireHq(ctx, '지점 정보 수정');
+  if (denied) return denied;
   const branch = await findBranch(sb, args.branch_name);
   if (!branch) return JSON.stringify({ error: `지점 "${args.branch_name}" 없음` });
 
@@ -1427,7 +1517,9 @@ async function execUpdateBranch(sb: any, args: any): Promise<string> {
   return JSON.stringify({ 성공: true, 메시지: `${branch.name} 지점 수정 완료` });
 }
 
-async function execCreateProduct(sb: any, args: any): Promise<string> {
+async function execCreateProduct(sb: any, args: any, ctx: ToolContext): Promise<string> {
+  const denied = requireHq(ctx, '제품 등록');
+  if (denied) return denied;
   const code = `KYO-${Date.now().toString(36).toUpperCase()}`;
   const { data: product, error } = await sb.from('products').insert({
     name: args.name, code, price: args.price,
@@ -1451,13 +1543,14 @@ async function execCreateProduct(sb: any, args: any): Promise<string> {
 
 // ── 매입(발주) 쓰기 ──────────────────────────────────────────────────────────
 
-async function execCreatePurchaseOrder(sb: any, args: any): Promise<string> {
+async function execCreatePurchaseOrder(sb: any, args: any, ctx: ToolContext): Promise<string> {
   // 공급업체 찾기
   const { data: supplier } = await sb.from('suppliers').select('id, name').ilike('name', `%${args.supplier_name}%`).eq('is_active', true).limit(1).single();
   if (!supplier) return JSON.stringify({ error: `공급업체 "${args.supplier_name}" 없음. get_suppliers로 목록 확인 후 정확한 이름 사용.` });
 
-  const branch = await findBranch(sb, args.branch_name);
-  if (!branch) return JSON.stringify({ error: `지점 "${args.branch_name}" 없음` });
+  const br = await resolveBranchForWrite(sb, ctx, args.branch_name);
+  if (!br.ok) return JSON.stringify({ error: br.error });
+  const branch = br.branch;
 
   const product = await findProduct(sb, args.product_name);
   if (!product) return JSON.stringify({ error: `제품 "${args.product_name}" 없음` });
@@ -1500,9 +1593,11 @@ async function execCreatePurchaseOrder(sb: any, args: any): Promise<string> {
   });
 }
 
-async function execConfirmPurchaseOrder(sb: any, args: { order_number: string }): Promise<string> {
-  const { data: po } = await (sb as any).from('purchase_orders').select('id, status, order_number').eq('order_number', args.order_number).single();
+async function execConfirmPurchaseOrder(sb: any, args: { order_number: string }, ctx: ToolContext): Promise<string> {
+  const { data: po } = await (sb as any).from('purchase_orders').select('id, status, order_number, branch_id, branches(name)').eq('order_number', args.order_number).single();
   if (!po) return JSON.stringify({ error: `발주서 "${args.order_number}" 없음` });
+  const denied1 = assertBranchAccess(ctx, (po as any).branch_id, (po as any).branches?.name || '지점');
+  if (denied1) return denied1;
   if ((po as any).status !== 'DRAFT') return JSON.stringify({ error: `이미 "${(po as any).status}" 상태. DRAFT 상태만 확정 가능.` });
 
   const { error } = await (sb as any).from('purchase_orders').update({ status: 'CONFIRMED' }).eq('id', (po as any).id);
@@ -1510,11 +1605,13 @@ async function execConfirmPurchaseOrder(sb: any, args: { order_number: string })
   return JSON.stringify({ 성공: true, 메시지: `발주서 ${args.order_number} 확정 완료. 이제 입고 처리 가능.` });
 }
 
-async function execReceivePurchaseOrder(sb: any, args: { order_number: string; memo?: string }): Promise<string> {
+async function execReceivePurchaseOrder(sb: any, args: { order_number: string; memo?: string }, ctx: ToolContext): Promise<string> {
   const { data: po } = await (sb as any).from('purchase_orders')
     .select('id, status, branch_id, order_number, branches(name)')
     .eq('order_number', args.order_number).single();
   if (!po) return JSON.stringify({ error: `발주서 "${args.order_number}" 없음` });
+  const denied2 = assertBranchAccess(ctx, (po as any).branch_id, (po as any).branches?.name || '지점');
+  if (denied2) return denied2;
   if (!['CONFIRMED', 'PARTIALLY_RECEIVED'].includes((po as any).status))
     return JSON.stringify({ error: `입고 불가 상태: ${(po as any).status}. CONFIRMED 또는 PARTIALLY_RECEIVED 상태만 가능.` });
 
@@ -1589,12 +1686,13 @@ async function execReceivePurchaseOrder(sb: any, args: { order_number: string; m
 
 // ── 생산 쓰기 ────────────────────────────────────────────────────────────────
 
-async function execCreateProductionOrder(sb: any, args: any): Promise<string> {
+async function execCreateProductionOrder(sb: any, args: any, ctx: ToolContext): Promise<string> {
   const product = await findProduct(sb, args.product_name);
   if (!product) return JSON.stringify({ error: `제품 "${args.product_name}" 없음` });
 
-  const branch = await findBranch(sb, args.branch_name);
-  if (!branch) return JSON.stringify({ error: `지점 "${args.branch_name}" 없음` });
+  const br3 = await resolveBranchForWrite(sb, ctx, args.branch_name);
+  if (!br3.ok) return JSON.stringify({ error: br3.error });
+  const branch = br3.branch;
 
   // BOM 확인
   const { data: bom } = await (sb as any).from('bom')
@@ -1627,21 +1725,25 @@ async function execCreateProductionOrder(sb: any, args: any): Promise<string> {
   });
 }
 
-async function execStartProductionOrder(sb: any, args: { order_number: string }): Promise<string> {
-  const { data: po } = await (sb as any).from('production_orders').select('id, status').eq('order_number', args.order_number).single();
+async function execStartProductionOrder(sb: any, args: { order_number: string }, ctx: ToolContext): Promise<string> {
+  const { data: po } = await (sb as any).from('production_orders').select('id, status, branch_id, branches(name)').eq('order_number', args.order_number).single();
   if (!po) return JSON.stringify({ error: `생산 지시서 "${args.order_number}" 없음` });
+  const d = assertBranchAccess(ctx, (po as any).branch_id, (po as any).branches?.name || '지점');
+  if (d) return d;
   if ((po as any).status !== 'PENDING') return JSON.stringify({ error: `현재 상태: ${(po as any).status}. PENDING 상태만 착수 가능.` });
 
   await (sb as any).from('production_orders').update({ status: 'IN_PROGRESS', started_at: new Date().toISOString() }).eq('id', (po as any).id);
   return JSON.stringify({ 성공: true, 메시지: `${args.order_number} 생산 착수 완료 (PENDING → 진행중)` });
 }
 
-async function execCompleteProductionOrder(sb: any, args: { order_number: string }): Promise<string> {
+async function execCompleteProductionOrder(sb: any, args: { order_number: string }, ctx: ToolContext): Promise<string> {
   const { data: po } = await (sb as any).from('production_orders')
     .select('id, status, product_id, branch_id, quantity, products(name), branches(name)')
     .eq('order_number', args.order_number).single();
 
   if (!po) return JSON.stringify({ error: `생산 지시서 "${args.order_number}" 없음` });
+  const dd = assertBranchAccess(ctx, (po as any).branch_id, (po as any).branches?.name || '지점');
+  if (dd) return dd;
   if ((po as any).status !== 'IN_PROGRESS') return JSON.stringify({ error: `현재 상태: ${(po as any).status}. IN_PROGRESS 상태만 완료 가능.` });
 
   // BOM 조회
@@ -1718,7 +1820,14 @@ async function execSendSms(sb: any, args: { customer_name?: string; phone?: stri
 
   if (!recipientPhone) return JSON.stringify({ error: '수신자 전화번호 또는 고객 이름이 필요합니다.' });
 
-  // DB 기록 (Solapi 설정 여부와 무관하게)
+  // Solapi 미설정 시 즉시 에러 (DB에 잘못된 'sent' 기록 방지)
+  if (!SOLAPI_API_KEY || !SOLAPI_API_SECRET || !SOLAPI_SENDER) {
+    return JSON.stringify({
+      error: 'SMS 발송 미설정 — 관리자에게 Solapi 환경변수(SOLAPI_API_KEY/SECRET/SENDER_PHONE) 설정을 요청하세요.',
+    });
+  }
+
+  // DB 기록 (pending)
   if (recipientName) {
     const { data: cust } = await sb.from('customers').select('id').eq('phone', recipientPhone).single();
     if (cust) {
@@ -1726,18 +1835,10 @@ async function execSendSms(sb: any, args: { customer_name?: string; phone?: stri
         customer_id: (cust as any).id,
         type: 'SMS',
         message: args.message,
-        status: SOLAPI_API_KEY ? 'pending' : 'sent',
+        status: 'pending',
         sent_at: new Date().toISOString(),
       });
     }
-  }
-
-  if (!SOLAPI_API_KEY || !SOLAPI_API_SECRET || !SOLAPI_SENDER) {
-    return JSON.stringify({
-      결과: 'DB 기록 완료 (실제 발송 미설정)',
-      안내: 'Solapi API 키가 설정되지 않아 실제 발송은 되지 않았습니다. .env.local에 SOLAPI_API_KEY, SOLAPI_API_SECRET, SOLAPI_SENDER_PHONE을 설정하세요.',
-      수신자: recipientPhone, 내용: args.message,
-    });
   }
 
   // Solapi 발송
@@ -1779,10 +1880,14 @@ async function execSendSms(sb: any, args: { customer_name?: string; phone?: stri
 
 // ── 일괄 SMS ─────────────────────────────────────────────────────────────────
 
-async function execBulkSendSms(sb: any, args: { grade: string; message: string; branch_name?: string }): Promise<string> {
+async function execBulkSendSms(sb: any, args: { grade: string; message: string; branch_name?: string }, ctx: ToolContext): Promise<string> {
   let q = sb.from('customers').select('id, name, phone, grade').eq('is_active', true);
   if (args.grade !== 'ALL') q = q.eq('grade', args.grade);
-  if (args.branch_name) {
+  // Staff는 본인 지점으로 강제
+  if (isStaffRole(ctx.userRole)) {
+    if (!ctx.branchId) return JSON.stringify({ error: '담당 지점이 지정되지 않았습니다.' });
+    q = q.eq('primary_branch_id', ctx.branchId);
+  } else if (args.branch_name) {
     const branch = await findBranch(sb, args.branch_name);
     if (!branch) return JSON.stringify({ error: `지점 "${args.branch_name}" 없음` });
     q = q.eq('primary_branch_id', branch.id);
@@ -1795,29 +1900,26 @@ async function execBulkSendSms(sb: any, args: { grade: string; message: string; 
   const SOLAPI_API_SECRET = process.env.SOLAPI_API_SECRET;
   const SOLAPI_SENDER = process.env.SOLAPI_SENDER_PHONE;
 
+  const gradeLabel: Record<string, string> = { NORMAL: '일반', VIP: 'VIP', VVIP: 'VVIP', ALL: '전체' };
+
+  // Solapi 미설정 시 즉시 에러 — 가짜 성공 표시 방지
+  if (!SOLAPI_API_KEY || !SOLAPI_API_SECRET || !SOLAPI_SENDER) {
+    return JSON.stringify({
+      error: 'SMS 발송 미설정 — 관리자에게 Solapi 환경변수(SOLAPI_API_KEY/SECRET/SENDER_PHONE) 설정을 요청하세요.',
+    });
+  }
+
   const now = new Date().toISOString();
   const notifications = (customers as any[]).map(c => ({
     customer_id: c.id,
     type: 'SMS',
     message: args.message,
-    status: SOLAPI_API_KEY ? 'pending' : 'sent',
+    status: 'pending',
     sent_at: now,
   }));
 
   // DB 기록 (배치 삽입)
   await sb.from('notifications').insert(notifications);
-
-  const gradeLabel: Record<string, string> = { NORMAL: '일반', VIP: 'VIP', VVIP: 'VVIP', ALL: '전체' };
-
-  if (!SOLAPI_API_KEY || !SOLAPI_API_SECRET || !SOLAPI_SENDER) {
-    return JSON.stringify({
-      성공: true,
-      메시지: `일괄 SMS DB 기록 완료 (실제 발송 미설정)`,
-      대상등급: gradeLabel[args.grade] || args.grade,
-      발송대상: `${customers.length}명`,
-      안내: 'Solapi 키 미설정 — DB에만 기록되었습니다.',
-    });
-  }
 
   // Solapi 일괄 발송
   try {
@@ -1857,13 +1959,14 @@ async function execBulkSendSms(sb: any, args: { grade: string; message: string; 
 async function execCreateAndConfirmPurchaseOrder(sb: any, args: {
   supplier_name: string; branch_name: string; product_name: string;
   quantity: number; unit_price: number; memo?: string;
-}): Promise<string> {
+}, ctx: ToolContext): Promise<string> {
   // 공급업체 조회
   const { data: supplier } = await sb.from('suppliers').select('id, name').ilike('name', `%${args.supplier_name}%`).eq('is_active', true).limit(1).single();
   if (!supplier) return JSON.stringify({ error: `공급업체 "${args.supplier_name}" 없음` });
 
-  const branch = await findBranch(sb, args.branch_name);
-  if (!branch) return JSON.stringify({ error: `지점 "${args.branch_name}" 없음` });
+  const br2 = await resolveBranchForWrite(sb, ctx, args.branch_name);
+  if (!br2.ok) return JSON.stringify({ error: br2.error });
+  const branch = br2.branch;
 
   const product = await findProduct(sb, args.product_name);
   if (!product) return JSON.stringify({ error: `제품 "${args.product_name}" 없음` });
@@ -1911,10 +2014,13 @@ async function execCreateAndConfirmPurchaseOrder(sb: any, args: {
 
 async function execReplenishLowStock(sb: any, args: {
   branch_name?: string; fill_to_safety?: boolean; fixed_quantity?: number; memo?: string;
-}): Promise<string> {
+}, ctx: ToolContext): Promise<string> {
   let branchIds: string[] | null = null;
 
-  if (args.branch_name) {
+  if (isStaffRole(ctx.userRole)) {
+    if (!ctx.branchId) return JSON.stringify({ error: '담당 지점이 지정되지 않았습니다.' });
+    branchIds = [ctx.branchId];
+  } else if (args.branch_name) {
     const b = await findBranch(sb, args.branch_name);
     if (!b) return JSON.stringify({ error: `지점 "${args.branch_name}" 없음` });
     branchIds = [b.id];
@@ -2056,7 +2162,9 @@ async function execCompareSales(sb: any, args: {
 
 async function execUpdateProduct(sb: any, args: {
   product_name: string; new_price?: number; new_cost?: number; new_name?: string; new_unit?: string;
-}): Promise<string> {
+}, ctx: ToolContext): Promise<string> {
+  const denied = requireHq(ctx, '제품 정보 수정');
+  if (denied) return denied;
   const product = await findProduct(sb, args.product_name);
   if (!product) return JSON.stringify({ error: `제품 "${args.product_name}" 없음` });
 
@@ -2079,7 +2187,9 @@ async function execUpdateProduct(sb: any, args: {
   return JSON.stringify({ 성공: true, 메시지: `${product.name} 수정 완료`, 변경내용: changeLines });
 }
 
-async function execBulkUpdateProductCosts(sb: any, args: { cost_ratio: number; product_name?: string }): Promise<string> {
+async function execBulkUpdateProductCosts(sb: any, args: { cost_ratio: number; product_name?: string }, ctx: ToolContext): Promise<string> {
+  const denied = requireHq(ctx, '제품 원가 일괄 수정');
+  if (denied) return denied;
   let q = sb.from('products').select('id, name, price').eq('is_active', true);
   if (args.product_name) q = q.ilike('name', `%${args.product_name}%`);
   const { data: products, error } = await q;
@@ -2142,7 +2252,9 @@ const DELETABLE_TABLES: Record<string, string> = {
   notifications: '발송 이력',
 };
 
-async function execDeleteRecord(sb: any, args: { table: string; record_id: string; reason?: string }): Promise<string> {
+async function execDeleteRecord(sb: any, args: { table: string; record_id: string; reason?: string }, ctx: ToolContext): Promise<string> {
+  const denied = requireHq(ctx, '레코드 삭제');
+  if (denied) return denied;
   if (!DELETABLE_TABLES[args.table]) {
     return JSON.stringify({ error: `"${args.table}" 테이블은 삭제가 허용되지 않습니다. 허용: ${Object.keys(DELETABLE_TABLES).join(', ')}` });
   }

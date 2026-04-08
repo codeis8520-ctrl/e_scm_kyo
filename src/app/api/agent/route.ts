@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
 
     // ── 확정된 쓰기 작업: LLM 없이 바로 실행 ────────────────────────────────
     if (confirm && pending_action) {
-      const result = await executeTool(pending_action.tool, pending_action.args, supabase);
+      const result = await executeTool(pending_action.tool, pending_action.args, supabase, context || {});
       const parsed = JSON.parse(result);
       // 쓰기 결과 메모리 저장 (비동기 fire-and-forget)
       extractMemoryFromWrite(db, pending_action.tool, pending_action.args, parsed).catch(() => {});
@@ -132,7 +132,7 @@ export async function POST(req: NextRequest) {
         }
 
         // 읽기 도구 → 즉시 실행 + 메모리 추출
-        const result = await executeTool(toolName, args, supabase);
+        const result = await executeTool(toolName, args, supabase, context || {});
         extractMemory(db, toolName, args, result).catch(() => {});
         messages.push({
           role: 'tool',
