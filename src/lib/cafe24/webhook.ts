@@ -187,8 +187,20 @@ async function handleOrderCreated(
       branch_id: branchId,
       customer_id: customerId,
       ordered_by: orderedById,
-      total_amount: cafe24Order.total_order_price,
-      discount_amount: cafe24Order.total_discount_price,
+      total_amount:
+        Number(
+          (cafe24Order as any).payment_amount ??
+          (cafe24Order as any).order_price_amount ??
+          (cafe24Order as any).total_order_price ??
+          (cafe24Order as any).actual_payment_amount ??
+          0
+        ) || 0,
+      discount_amount:
+        Number(
+          (cafe24Order as any).total_discount_price ??
+          (cafe24Order as any).order_discount_amount ??
+          0
+        ) || 0,
       status: 'PENDING',
       payment_method: mapPaymentMethod(cafe24Order.payment_method),
       cafe24_order_id: orderNo.toString(),
