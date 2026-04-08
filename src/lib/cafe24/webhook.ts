@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { Cafe24WebhookEvent, CAFE24_STATUS_TO_LOCAL } from './types';
 import { Cafe24Client, generateCafe24OrderCode } from './client';
+import { getValidAccessToken } from './token-store';
 import { createSaleJournal } from '@/lib/accounting-actions';
 
 let supabase: SupabaseClient | null = null;
@@ -86,6 +87,19 @@ async function handleOrderCreated(
     process.env.CAFE24_CLIENT_ID || '',
     process.env.CAFE24_CLIENT_SECRET || ''
   );
+
+  // DB에 저장된 access_token을 client에 주입 (없으면 NOT_AUTHENTICATED 실패)
+  const accessToken = await getValidAccessToken();
+  if (!accessToken) {
+    await logSyncEvent('order_fetch_error', orderNo.toString(), event, 'failed', 'No valid Cafe24 access token');
+    return { success: false, message: 'No valid Cafe24 access token — 토큰 갱신/재인증 필요' };
+  }
+  client.setTokens({
+    access_token: accessToken,
+    refresh_token: '',
+    expires_at: Date.now() + 60 * 60 * 1000,
+    token_type: 'Bearer',
+  });
 
   const orderResponse = await client.getOrder(orderNo);
 
