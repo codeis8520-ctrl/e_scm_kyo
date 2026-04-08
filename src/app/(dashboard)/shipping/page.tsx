@@ -494,7 +494,7 @@ export default function ShippingPage() {
         (s.recipient_phone || '').replace(/-/g, '').includes(q) ||
         (s.tracking_number || '').includes(q) ||
         (s.recipient_address || '').toLowerCase().includes(q) ||
-        (s.items_description || '').toLowerCase().includes(q)
+        (s.items_summary || '').toLowerCase().includes(q)
       );
     }
     return true;
