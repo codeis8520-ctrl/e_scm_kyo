@@ -104,8 +104,11 @@ async function handleOrderCreated(
   const orderResponse = await client.getOrder(orderNo);
 
   if (!orderResponse.success || !orderResponse.data) {
-    await logSyncEvent('order_fetch_error', orderNo.toString(), event, 'failed', 'Failed to fetch order from Cafe24');
-    return { success: false, message: 'Failed to fetch order from Cafe24' };
+    const errMsg = orderResponse.error
+      ? `[${orderResponse.error.code}] ${orderResponse.error.message}`
+      : 'Failed to fetch order from Cafe24 (no data)';
+    await logSyncEvent('order_fetch_error', orderNo.toString(), { event, apiError: orderResponse.error }, 'failed', errMsg);
+    return { success: false, message: errMsg };
   }
 
   const cafe24Order = orderResponse.data;

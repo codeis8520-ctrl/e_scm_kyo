@@ -102,8 +102,32 @@ export class Cafe24Client {
     }
   }
 
-  async getOrder(orderNo: number): Promise<Cafe24APIResponse<Cafe24Order>> {
-    return this.request<Cafe24Order>(`/admin/orders/${orderNo}`);
+  async getOrder(orderNo: number | string): Promise<Cafe24APIResponse<Cafe24Order>> {
+    if (!this.accessToken) {
+      return { success: false, data: null as any, error: { code: 'NOT_AUTHENTICATED', message: 'No access token' } };
+    }
+    const shopNo = process.env.CAFE24_SHOP_NO ?? '1';
+    const url = `https://${this.mallId}.cafe24api.com/api/v2/admin/orders/${orderNo}?shop_no=${shopNo}&embed=items`;
+    try {
+      const res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${this.accessToken}`,
+          'X-Cafe24-Api-Version': CAFE24_API_VERSION,
+        },
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        return {
+          success: false,
+          data: null as any,
+          error: { code: String(res.status), message: json?.error?.message || JSON.stringify(json) },
+        };
+      }
+      // 카페24 단일 주문 응답은 { order: {...} } 구조
+      return { success: true, data: (json.order ?? json.resource) as Cafe24Order };
+    } catch (e: any) {
+      return { success: false, data: null as any, error: { code: 'NETWORK_ERROR', message: e?.message || 'fetch failed' } };
+    }
   }
 
   async getOrders(params?: {
