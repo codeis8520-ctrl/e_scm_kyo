@@ -459,7 +459,14 @@ async function logSyncEvent(
   });
 }
 
-function mapPaymentMethod(cafe24Method: string): string {
+function mapPaymentMethod(cafe24Method: unknown): string {
+  // 카페24는 payment_method를 string 또는 string[]로 반환할 수 있음
+  let raw = '';
+  if (Array.isArray(cafe24Method)) raw = String(cafe24Method[0] ?? '');
+  else if (typeof cafe24Method === 'string') raw = cafe24Method;
+  else if (cafe24Method && typeof cafe24Method === 'object') raw = String((cafe24Method as any).code ?? (cafe24Method as any).method ?? '');
+  else raw = String(cafe24Method ?? '');
+
   const methodMap: Record<string, string> = {
     'card': 'card',
     'kakao': 'kakao',
@@ -467,5 +474,5 @@ function mapPaymentMethod(cafe24Method: string): string {
     'toss': 'card',
     'cash': 'cash',
   };
-  return methodMap[cafe24Method.toLowerCase()] || 'card';
+  return methodMap[raw.toLowerCase()] || 'card';
 }
