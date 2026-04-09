@@ -561,7 +561,9 @@ function SendModal({ type, templates, templateMappings, customers, onClose, onSu
                   return m && !m.is_manual_sendable;
                 });
                 const unclassified = templates.filter((t: any) => !templateMappings[t.templateId]);
-                const visibleTemplates = showEventOnly
+                // 수동 발송 가능 템플릿이 하나도 없으면 전체를 노출 (분류 전 초기 상태)
+                const needFallback = manualSendable.length === 0 && templates.length > 0;
+                const visibleTemplates = showEventOnly || needFallback
                   ? templates
                   : manualSendable;
 
@@ -571,6 +573,12 @@ function SendModal({ type, templates, templateMappings, customers, onClose, onSu
 
                 return (
                   <>
+                    {needFallback && (
+                      <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+                        💡 수동 발송 가능으로 분류된 템플릿이 없어 전체 템플릿을 표시합니다.
+                        <Link href="/notifications/templates" className="underline font-medium ml-1">템플릿 관리</Link>에서 용도별로 분류해주세요.
+                      </div>
+                    )}
                     <div>
                       <div className="flex items-center justify-between mb-1">
                         <label className="block text-sm font-medium">알림톡 템플릿</label>
@@ -617,15 +625,17 @@ function SendModal({ type, templates, templateMappings, customers, onClose, onSu
                               );
                             })}
                           </select>
-                          <label className="flex items-center gap-1 mt-2 text-xs text-slate-500 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={showEventOnly}
-                              onChange={e => setShowEventOnly(e.target.checked)}
-                              className="w-3.5 h-3.5"
-                            />
-                            이벤트 전용 · 미분류 템플릿도 보기
-                          </label>
+                          {!needFallback && (
+                            <label className="flex items-center gap-1 mt-2 text-xs text-slate-500 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={showEventOnly}
+                                onChange={e => setShowEventOnly(e.target.checked)}
+                                className="w-3.5 h-3.5"
+                              />
+                              이벤트 전용 · 미분류 템플릿도 보기
+                            </label>
+                          )}
                         </>
                       )}
                     </div>
