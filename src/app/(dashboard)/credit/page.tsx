@@ -46,7 +46,7 @@ export default function CreditManagementPage() {
     const { data } = await supabase
       .from('sales_orders')
       .select(`
-        id, order_number, total_amount, ordered_at,
+        id, order_number, total_amount, ordered_at, status,
         credit_settled, credit_settled_at, credit_settled_method,
         customer:customers(id, name, phone, grade),
         branch:branches(id, name)
@@ -60,8 +60,11 @@ export default function CreditManagementPage() {
 
   useEffect(() => { fetchData(); }, []);
 
+  // CANCELLED 건은 양쪽 탭에서 모두 제외
+  const activeOrders = orders.filter(o => (o as any).status !== 'CANCELLED');
+
   // 필터링
-  const filtered = orders.filter(o => {
+  const filtered = activeOrders.filter(o => {
     if (tab === 'unsettled' && o.credit_settled) return false;
     if (tab === 'settled' && !o.credit_settled) return false;
     if (search) {
@@ -75,9 +78,9 @@ export default function CreditManagementPage() {
     return true;
   });
 
-  // 통계
-  const unsettledOrders = orders.filter(o => !o.credit_settled);
-  const settledOrders = orders.filter(o => o.credit_settled);
+  // 통계 (CANCELLED 제외)
+  const unsettledOrders = activeOrders.filter(o => !o.credit_settled);
+  const settledOrders = activeOrders.filter(o => o.credit_settled);
   const totalUnsettled = unsettledOrders.reduce((s, o) => s + Number(o.total_amount), 0);
   const totalSettled = settledOrders.reduce((s, o) => s + Number(o.total_amount), 0);
 
