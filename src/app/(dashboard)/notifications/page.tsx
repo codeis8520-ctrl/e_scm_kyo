@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import { validators, formatPhone } from '@/lib/validators';
-import { sendSmsAction, sendKakaoAction, getNotifications, resendFailedNotification } from '@/lib/notification-actions';
+import { sendSmsAction, sendKakaoAction, getNotifications, resendFailedNotification, runNotificationBatch } from '@/lib/notification-actions';
 import { getTemplateMappings } from '@/lib/notification-template-mapping-actions';
 import { EVENT_TYPES, type TemplateMapping } from '@/lib/notification-event-types';
 
@@ -37,6 +37,7 @@ export default function NotificationsPage() {
   const [endDate, setEndDate]             = useState('');
   const [sourceFilter, setSourceFilter]   = useState(''); // MANUAL | AUTO_EVENT | SCHEDULED
   const [resendingId, setResendingId]     = useState<string | null>(null);
+  const [batchRunning, setBatchRunning]   = useState<string | null>(null);
 
   // 탭별 타입 매핑
   const typeByTab: Record<'kakao' | 'sms', string> = { kakao: 'KAKAO', sms: 'SMS' };
@@ -89,6 +90,20 @@ export default function NotificationsPage() {
     }
   };
 
+  const handleRunBatch = async (batchType: 'BIRTHDAY' | 'DORMANT') => {
+    const label = batchType === 'BIRTHDAY' ? '오늘 생일 고객에게 축하 알림톡' : '최근 90일 미구매 휴면 고객 재유치 알림톡';
+    if (!confirm(`${label}을(를) 즉시 발송하시겠습니까?`)) return;
+    setBatchRunning(batchType);
+    const res = await runNotificationBatch(batchType, batchType === 'DORMANT' ? { days: 90, limit: 50 } : undefined);
+    setBatchRunning(null);
+    if (res.error) {
+      alert('배치 실패: ' + res.error);
+    } else {
+      alert(`배치 완료 — 대상 ${res.target}, 성공 ${res.sent}, 실패 ${res.failed}, 스킵 ${res.skipped}`);
+      fetchData();
+    }
+  };
+
   // 탭 필터 + 검색어 + 날짜 범위 + 발송 출처 필터링
   const filteredNotifications = notifications.filter(n => {
     if (sourceFilter && (n.trigger_source || 'MANUAL') !== sourceFilter) return false;
@@ -135,7 +150,23 @@ export default function NotificationsPage() {
             </button>
           ))}
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          <button
+            onClick={() => handleRunBatch('BIRTHDAY')}
+            disabled={batchRunning === 'BIRTHDAY'}
+            className="px-3 py-2 rounded text-sm font-medium bg-pink-50 text-pink-600 hover:bg-pink-100 disabled:opacity-50"
+            title="오늘 생일 고객에게 축하 알림톡 즉시 발송"
+          >
+            🎂 {batchRunning === 'BIRTHDAY' ? '실행 중...' : '생일 배치'}
+          </button>
+          <button
+            onClick={() => handleRunBatch('DORMANT')}
+            disabled={batchRunning === 'DORMANT'}
+            className="px-3 py-2 rounded text-sm font-medium bg-amber-50 text-amber-600 hover:bg-amber-100 disabled:opacity-50"
+            title="90일간 미구매 고객에게 재유치 알림톡 즉시 발송"
+          >
+            💤 {batchRunning === 'DORMANT' ? '실행 중...' : '휴면 배치'}
+          </button>
           <Link href="/notifications/templates" className="px-3 py-2 rounded text-sm font-medium bg-slate-100 text-slate-600 hover:bg-slate-200">
             템플릿 관리
           </Link>

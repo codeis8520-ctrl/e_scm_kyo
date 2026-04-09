@@ -1,0 +1,85 @@
+name: Notification Batches
+
+# 경옥채 알림톡 배치 작업을 GitHub Actions cron으로 주기 실행.
+# Vercel Hobby(무료)는 크론이 하루 1회·2개 제한이라 GitHub Actions를 사용.
+#
+# 필요한 Repository Secrets:
+#   - APP_URL        : 배포된 URL (예: https://e-scm-kyo.vercel.app)
+#   - CRON_SECRET    : 배치 엔드포인트 보호용 Bearer 토큰 (Vercel 환경변수와 동일)
+#   - CAFE24_CRON    : (선택) 카페24 refresh 호출용. 없으면 CRON_SECRET와 공용
+
+on:
+  schedule:
+    # 생일 축하 알림톡 — 매일 09:00 KST (UTC 00:00)
+    - cron: '0 0 * * *'
+    # 휴면 고객 재유치 — 매주 월요일 10:00 KST (UTC 01:00)
+    - cron: '0 1 * * 1'
+    # 카페24 토큰 갱신 — 매일 02:00 KST (UTC 17:00)
+    - cron: '0 17 * * *'
+  workflow_dispatch:
+    inputs:
+      job:
+        description: '수동 실행할 배치'
+        required: true
+        default: 'birthday'
+        type: choice
+        options:
+          - birthday
+          - dormant
+          - cafe24-refresh
+
+jobs:
+  birthday:
+    # schedule 'birthday' cron OR workflow_dispatch with job=birthday
+    if: >-
+      github.event_name == 'schedule' && github.event.schedule == '0 0 * * *' ||
+      github.event_name == 'workflow_dispatch' && inputs.job == 'birthday'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call birthday batch
+        run: |
+          echo "▶ 생일 축하 배치 호출"
+          RESPONSE=$(curl -sS -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_URL }}/api/notifications/batch/birthday")
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          CODE=$(echo "$RESPONSE" | tail -n 1)
+          echo "HTTP: $CODE"
+          echo "Body: $BODY"
+          if [ "$CODE" != "200" ]; then exit 1; fi
+
+  dormant:
+    if: >-
+      github.event_name == 'schedule' && github.event.schedule == '0 1 * * 1' ||
+      github.event_name == 'workflow_dispatch' && inputs.job == 'dormant'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call dormant batch
+        run: |
+          echo "▶ 휴면 재유치 배치 호출"
+          RESPONSE=$(curl -sS -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_URL }}/api/notifications/batch/dormant?days=90&limit=50")
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          CODE=$(echo "$RESPONSE" | tail -n 1)
+          echo "HTTP: $CODE"
+          echo "Body: $BODY"
+          if [ "$CODE" != "200" ]; then exit 1; fi
+
+  cafe24-refresh:
+    if: >-
+      github.event_name == 'schedule' && github.event.schedule == '0 17 * * *' ||
+      github.event_name == 'workflow_dispatch' && inputs.job == 'cafe24-refresh'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call cafe24 token refresh
+        run: |
+          echo "▶ 카페24 토큰 갱신 호출"
+          RESPONSE=$(curl -sS -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_URL }}/api/cafe24/refresh")
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          CODE=$(echo "$RESPONSE" | tail -n 1)
+          echo "HTTP: $CODE"
+          echo "Body: $BODY"
+          if [ "$CODE" != "200" ]; then exit 1; fi

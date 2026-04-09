@@ -162,6 +162,166 @@ export async function sendKakaoAction(params: SendKakaoParams) {
   };
 }
 
+// ─── 수동 배치 실행 (생일/휴면) ────────────────────────────────────────────────
+
+export async function runNotificationBatch(batchType: 'BIRTHDAY' | 'DORMANT', options?: { days?: number; limit?: number }) {
+  let session;
+  try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
+
+  // HQ 권한 체크 (일반 직원이 배치 돌리면 안 됨)
+  const HQ = new Set(['SUPER_ADMIN', 'HQ_OPERATOR', 'EXECUTIVE']);
+  if (session.role && !HQ.has(session.role)) {
+    return { error: '본사 권한이 필요합니다.' };
+  }
+
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  // 배치 로그 시작
+  const { data: logRow } = await db
+    .from('notification_batch_logs')
+    .insert({
+      batch_type: batchType,
+      detail: options ? { ...options, manual: true, userId: session.id } : { manual: true, userId: session.id },
+    })
+    .select('id')
+    .single();
+  const logId = logRow?.id;
+
+  // 동적 import로 순환 의존 방지
+  const { triggerEventNotification } = await import('@/lib/notification-triggers');
+
+  let target = 0, sent = 0, failed = 0, skipped = 0;
+
+  try {
+    if (batchType === 'BIRTHDAY') {
+      const today = new Date();
+      const mm = String(today.getMonth() + 1).padStart(2, '0');
+      const dd = String(today.getDate()).padStart(2, '0');
+      const mmdd = `${mm}-${dd}`;
+
+      const { data: customers } = await db
+        .from('customers')
+        .select('id, name, phone, grade, birthday')
+        .eq('is_active', true)
+        .not('birthday', 'is', null);
+
+      const todayBirthdays = ((customers || []) as any[]).filter((c: any) => {
+        if (!c.birthday) return false;
+        try {
+          const d = new Date(c.birthday);
+          const cmm = String(d.getMonth() + 1).padStart(2, '0');
+          const cdd = String(d.getDate()).padStart(2, '0');
+          return `${cmm}-${cdd}` === mmdd;
+        } catch { return false; }
+      });
+
+      target = todayBirthdays.length;
+      for (const cust of todayBirthdays) {
+        if (!cust.phone || !cust.name) { skipped++; continue; }
+        try {
+          await triggerEventNotification({
+            eventType: 'BIRTHDAY',
+            customer: { id: cust.id, name: cust.name, phone: cust.phone },
+            context: { customerGrade: cust.grade || 'NORMAL' },
+            triggerSource: 'SCHEDULED',
+          });
+          sent++;
+        } catch { failed++; }
+      }
+    } else if (batchType === 'DORMANT') {
+      const days = options?.days ?? 90;
+      const limit = options?.limit ?? 100;
+
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - days);
+
+      const { data: recentOrders } = await db
+        .from('sales_orders')
+        .select('customer_id')
+        .gte('ordered_at', cutoff.toISOString())
+        .eq('status', 'COMPLETED')
+        .not('customer_id', 'is', null);
+      const activeIds = new Set(((recentOrders || []) as any[]).map(r => r.customer_id));
+
+      const { data: allCust } = await db
+        .from('customers')
+        .select('id, name, phone, grade')
+        .eq('is_active', true);
+
+      const candidates = ((allCust || []) as any[])
+        .filter(c => !activeIds.has(c.id) && c.name && c.phone)
+        .slice(0, limit);
+
+      // 최근 30일 내 DORMANT 알림 받은 고객 제외
+      const recentBlock = new Date();
+      recentBlock.setDate(recentBlock.getDate() - 30);
+      const candidateIds = candidates.map(c => c.id);
+      if (candidateIds.length > 0) {
+        const { data: recentNotif } = await db
+          .from('notifications')
+          .select('customer_id')
+          .in('customer_id', candidateIds)
+          .eq('notification_type', 'KAKAO')
+          .eq('status', 'sent')
+          .gte('sent_at', recentBlock.toISOString());
+        const already = new Set(((recentNotif || []) as any[]).map(n => n.customer_id));
+        for (let i = candidates.length - 1; i >= 0; i--) {
+          if (already.has(candidates[i].id)) { candidates.splice(i, 1); skipped++; }
+        }
+      }
+
+      target = candidates.length;
+      for (const cust of candidates) {
+        try {
+          await triggerEventNotification({
+            eventType: 'DORMANT',
+            customer: { id: cust.id, name: cust.name, phone: cust.phone },
+            context: { customerGrade: cust.grade || 'NORMAL' },
+            triggerSource: 'SCHEDULED',
+          });
+          sent++;
+        } catch { failed++; }
+      }
+    }
+  } catch (e: any) {
+    if (logId) {
+      await db.from('notification_batch_logs').update({
+        target_count: target, sent_count: sent, failed_count: failed, skipped_count: skipped,
+        detail: { error: e?.message || String(e), manual: true },
+        finished_at: new Date().toISOString(),
+      }).eq('id', logId);
+    }
+    return { error: e?.message || String(e) };
+  }
+
+  if (logId) {
+    await db.from('notification_batch_logs').update({
+      target_count: target,
+      sent_count: sent,
+      failed_count: failed,
+      skipped_count: skipped,
+      finished_at: new Date().toISOString(),
+    }).eq('id', logId);
+  }
+
+  return { success: true, target, sent, failed, skipped };
+}
+
+// 배치 로그 조회
+export async function getBatchLogs(batchType?: string, limit = 20) {
+  const supabase = await createClient();
+  let q = (supabase as any)
+    .from('notification_batch_logs')
+    .select('*')
+    .order('started_at', { ascending: false })
+    .limit(limit);
+  if (batchType) q = q.eq('batch_type', batchType);
+  const { data, error } = await q;
+  if (error) return { data: [], error: error.message };
+  return { data: data || [] };
+}
+
 // ─── 실패 건 재발송 ────────────────────────────────────────────────────────────
 
 export async function resendFailedNotification(notificationId: string) {
