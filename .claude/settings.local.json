@@ -100,7 +100,8 @@
       "WebFetch(domain:www.metacity.co.kr)",
       "WebFetch(domain:wisefour.github.io)",
       "WebFetch(domain:slidesplayer.org)",
-      "WebFetch(domain:solapi.github.io)"
+      "WebFetch(domain:solapi.github.io)",
+      "Bash(gh api:*)"
     ]
   }
 }
