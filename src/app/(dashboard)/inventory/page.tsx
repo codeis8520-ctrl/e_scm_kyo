@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import InventoryModal from './InventoryModal';
 import TransferModal from './TransferModal';
+import { updateSafetyStock } from '@/lib/inventory-actions';
 
 interface Inventory {
   id: string;
@@ -327,7 +328,14 @@ export default function InventoryPage() {
                   <td className={isLow ? 'text-red-600 font-semibold' : ''}>
                     {item.quantity}
                   </td>
-                  <td>{item.safety_stock}</td>
+                  <td>
+                    <SafetyStockCell
+                      inventoryId={item.id}
+                      productId={item.product_id}
+                      value={item.safety_stock}
+                      onSaved={fetchData}
+                    />
+                  </td>
                   <td>
                     {isLow ? (
                       <span className="badge badge-error">부족</span>
@@ -372,6 +380,96 @@ export default function InventoryPage() {
           onClose={() => { setShowTransferModal(false); setTransferInventory(null); }}
           onSuccess={() => { setShowTransferModal(false); setTransferInventory(null); fetchInventory(); }}
         />
+      )}
+    </div>
+  );
+}
+
+// ── 안전재고 인라인 편집 셀 ────────────────────────────────────────────────
+
+function SafetyStockCell({ inventoryId, productId, value, onSaved }: {
+  inventoryId: string;
+  productId: string;
+  value: number;
+  onSaved: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [input, setInput] = useState(String(value));
+  const [saving, setSaving] = useState(false);
+  const [showBulk, setShowBulk] = useState(false);
+
+  const handleSave = async (bulk: boolean) => {
+    const num = parseInt(input);
+    if (isNaN(num) || num < 0) return;
+    if (num === value && !bulk) { setEditing(false); return; }
+    setSaving(true);
+    let res;
+    if (bulk) {
+      const { bulkUpdateSafetyStock } = await import('@/lib/inventory-actions');
+      res = await bulkUpdateSafetyStock(productId, num);
+    } else {
+      res = await updateSafetyStock(inventoryId, num);
+    }
+    setSaving(false);
+    if (res.error) { alert(res.error); return; }
+    setEditing(false);
+    setShowBulk(false);
+    onSaved();
+  };
+
+  if (!editing) {
+    return (
+      <button
+        onClick={() => { setInput(String(value)); setEditing(true); }}
+        className="text-slate-600 hover:text-blue-600 hover:underline cursor-pointer"
+        title="클릭하여 안전재고 수정"
+      >
+        {value}
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-1">
+        <input
+          type="number"
+          min={0}
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') handleSave(false); if (e.key === 'Escape') setEditing(false); }}
+          className="input text-sm py-0.5 w-16 text-center"
+          autoFocus
+        />
+        <button
+          onClick={() => handleSave(false)}
+          disabled={saving}
+          className="px-1.5 py-0.5 rounded text-xs bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+        >
+          {saving ? '..' : '저장'}
+        </button>
+        <button
+          onClick={() => setEditing(false)}
+          className="px-1.5 py-0.5 rounded text-xs text-slate-500 hover:bg-slate-100"
+        >
+          취소
+        </button>
+      </div>
+      {!showBulk ? (
+        <button
+          onClick={() => setShowBulk(true)}
+          className="text-xs text-purple-600 hover:underline text-left"
+        >
+          전 지점 일괄 적용
+        </button>
+      ) : (
+        <button
+          onClick={() => handleSave(true)}
+          disabled={saving}
+          className="px-1.5 py-0.5 rounded text-xs bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50"
+        >
+          {saving ? '적용 중..' : `전 지점 ${input}개로 일괄 적용`}
+        </button>
       )}
     </div>
   );
