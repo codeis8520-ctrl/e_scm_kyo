@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, Fragment } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import {
   getProfitLoss,
@@ -8,9 +8,14 @@ import {
   getLedger,
   getGLAccounts,
   createJournalEntry,
+  getVatReport,
+  getGlBalances,
+  closePeriod,
+  reopenPeriod,
+  getClosedPeriods,
 } from '@/lib/accounting-actions';
 
-type Tab = 'pl' | 'journal' | 'ledger' | 'manual';
+type Tab = 'pl' | 'journal' | 'ledger' | 'manual' | 'vat' | 'gl_balance';
 
 function getMonth(offset = 0): { start: string; end: string } {
   const d = new Date();
@@ -158,6 +163,8 @@ export default function AccountingPage() {
     { key: 'pl', label: '손익계산서' },
     { key: 'journal', label: '분개장' },
     { key: 'ledger', label: '총계정원장' },
+    { key: 'vat', label: '부가세' },
+    { key: 'gl_balance', label: 'GL 잔액' },
     { key: 'manual', label: '수동 분개' },
   ];
 
@@ -421,6 +428,12 @@ export default function AccountingPage() {
         </div>
       )}
 
+      {/* ── 부가세 신고 ── */}
+      {tab === 'vat' && <VatReportTab />}
+
+      {/* ── GL 잔액 ── */}
+      {tab === 'gl_balance' && <GlBalanceTab />}
+
       {/* ── 수동 분개 ── */}
       {tab === 'manual' && (
         <div className="max-w-3xl">
@@ -575,6 +588,222 @@ function StatBox({ label, value, color }: { label: string; value: string; color?
     <div className="bg-slate-50 rounded-lg p-3 text-center">
       <p className="text-xs text-slate-500 mb-1">{label}</p>
       <p className={`font-bold ${color || 'text-slate-800'}`}>{value}</p>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 부가세 신고 탭
+// ═══════════════════════════════════════════════════════════════════════
+
+function VatReportTab() {
+  const [range, setRange] = useState(getMonth(0));
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [closedPeriods, setClosedPeriods] = useState<any[]>([]);
+  const [closingPeriod, setClosingPeriod] = useState('');
+
+  const fetchVat = async () => {
+    setLoading(true);
+    const [res, cpRes] = await Promise.all([
+      getVatReport({ startDate: range.start, endDate: range.end }),
+      getClosedPeriods(),
+    ]);
+    setData(res);
+    setClosedPeriods(cpRes.data || []);
+    setLoading(false);
+  };
+
+  useEffect(() => { fetchVat(); }, [range.start, range.end]);
+
+  const currentPeriod = range.start.slice(0, 7); // YYYY-MM
+  const isClosed = closedPeriods.some(p => p.period === currentPeriod);
+
+  const handleClose = async () => {
+    if (!confirm(`${currentPeriod} 기간을 마감하시겠습니까?\n마감 후에는 해당 월의 분개를 수정할 수 없습니다.`)) return;
+    const res = await closePeriod(currentPeriod);
+    if (res.error) alert(res.error);
+    else fetchVat();
+  };
+
+  const handleReopen = async () => {
+    if (!confirm(`${currentPeriod} 기간을 재개하시겠습니까? (최고관리자만)`)) return;
+    const res = await reopenPeriod(currentPeriod);
+    if (res.error) alert(res.error);
+    else fetchVat();
+  };
+
+  return (
+    <div className="card space-y-4">
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <label className="block text-xs text-slate-500 mb-1">시작일</label>
+          <input type="date" value={range.start} onChange={e => setRange(r => ({ ...r, start: e.target.value }))} className="input text-sm py-1.5" />
+        </div>
+        <div>
+          <label className="block text-xs text-slate-500 mb-1">종료일</label>
+          <input type="date" value={range.end} onChange={e => setRange(r => ({ ...r, end: e.target.value }))} className="input text-sm py-1.5" />
+        </div>
+        <button onClick={fetchVat} disabled={loading} className="btn-primary text-sm py-1.5">
+          {loading ? '조회 중...' : '조회'}
+        </button>
+        <div className="ml-auto flex gap-2">
+          {isClosed ? (
+            <button onClick={handleReopen} className="px-3 py-1.5 rounded text-xs bg-amber-100 text-amber-700 hover:bg-amber-200">
+              🔓 {currentPeriod} 재개
+            </button>
+          ) : (
+            <button onClick={handleClose} className="px-3 py-1.5 rounded text-xs bg-red-100 text-red-700 hover:bg-red-200">
+              🔒 {currentPeriod} 마감
+            </button>
+          )}
+        </div>
+      </div>
+
+      {data && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <StatBox label="매출 부가세 (예수금)" value={`${(data.outputVat.net || 0).toLocaleString()}원`} color="text-red-600" />
+            <StatBox label="매입 부가세 (대급금)" value={`${(data.inputVat.net || 0).toLocaleString()}원`} color="text-blue-600" />
+            <Stat
+              label={data.vatPayable >= 0 ? '납부 세액' : '환급 세액'}
+              value={`${Math.abs(data.vatPayable || 0).toLocaleString()}원`}
+              color={data.vatPayable >= 0 ? 'text-red-700 text-xl' : 'text-blue-700 text-xl'}
+            />
+            <StatBox label="기간" value={data.period} />
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>구분</th>
+                  <th className="text-right">대변 (발생)</th>
+                  <th className="text-right">차변 (취소/환급)</th>
+                  <th className="text-right">순액</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td className="font-medium">매출 부가세 (2151 예수금)</td>
+                  <td className="text-right">{(data.outputVat.credit || 0).toLocaleString()}원</td>
+                  <td className="text-right">{(data.outputVat.debit || 0).toLocaleString()}원</td>
+                  <td className="text-right font-semibold text-red-600">{(data.outputVat.net || 0).toLocaleString()}원</td>
+                </tr>
+                <tr>
+                  <td className="font-medium">매입 부가세 (1150 대급금)</td>
+                  <td className="text-right">{(data.inputVat.debit || 0).toLocaleString()}원</td>
+                  <td className="text-right">{(data.inputVat.credit || 0).toLocaleString()}원</td>
+                  <td className="text-right font-semibold text-blue-600">{(data.inputVat.net || 0).toLocaleString()}원</td>
+                </tr>
+                <tr className="bg-slate-50 font-bold">
+                  <td>{data.vatPayable >= 0 ? '납부 세액' : '환급 세액'}</td>
+                  <td></td>
+                  <td></td>
+                  <td className={`text-right text-lg ${data.vatPayable >= 0 ? 'text-red-700' : 'text-blue-700'}`}>
+                    {data.vatPayable >= 0 ? '' : '△ '}{Math.abs(data.vatPayable || 0).toLocaleString()}원
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p className="text-xs text-slate-400">
+            납부 세액 = 매출 부가세(예수금) − 매입 부가세(대급금).
+            양수면 납부, 음수면 환급 대상입니다. 부가세 신고 시 참고자료로 활용하세요.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// GL 계정 잔액 탭
+// ═══════════════════════════════════════════════════════════════════════
+
+const TYPE_ORDER = ['ASSET', 'LIABILITY', 'EQUITY', 'REVENUE', 'COGS', 'EXPENSE'];
+const ACCOUNT_TYPE_LABELS_SHORT: Record<string, string> = {
+  ASSET: '자산', LIABILITY: '부채', EQUITY: '자본',
+  REVENUE: '매출', COGS: '매출원가', EXPENSE: '비용',
+};
+
+function GlBalanceTab() {
+  const [range, setRange] = useState(getMonth(0));
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  const fetch_ = async () => {
+    setLoading(true);
+    const res = await getGlBalances({ startDate: range.start, endDate: range.end });
+    setData(res);
+    setLoading(false);
+  };
+
+  useEffect(() => { fetch_(); }, [range.start, range.end]);
+
+  // 유형별 그룹
+  const grouped = TYPE_ORDER.map(type => ({
+    type,
+    label: ACCOUNT_TYPE_LABELS_SHORT[type] || type,
+    accounts: (data?.accounts || []).filter((a: any) => a.type === type),
+    subtotal: (data?.accounts || []).filter((a: any) => a.type === type).reduce((s: number, a: any) => s + a.balance, 0),
+  })).filter(g => g.accounts.length > 0);
+
+  return (
+    <div className="card space-y-4">
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <label className="block text-xs text-slate-500 mb-1">시작일</label>
+          <input type="date" value={range.start} onChange={e => setRange(r => ({ ...r, start: e.target.value }))} className="input text-sm py-1.5" />
+        </div>
+        <div>
+          <label className="block text-xs text-slate-500 mb-1">종료일</label>
+          <input type="date" value={range.end} onChange={e => setRange(r => ({ ...r, end: e.target.value }))} className="input text-sm py-1.5" />
+        </div>
+        <button onClick={fetch_} disabled={loading} className="btn-primary text-sm py-1.5">{loading ? '조회 중...' : '조회'}</button>
+      </div>
+
+      {data && (
+        <div className="overflow-x-auto">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>코드</th>
+                <th>계정명</th>
+                <th>유형</th>
+                <th className="text-right">차변 합계</th>
+                <th className="text-right">대변 합계</th>
+                <th className="text-right">잔액</th>
+              </tr>
+            </thead>
+            <tbody>
+              {grouped.map(g => (
+                <Fragment key={g.type}>
+                  {g.accounts.map((a: any) => (
+                    <tr key={a.code}>
+                      <td className="font-mono text-sm">{a.code}</td>
+                      <td className="font-medium">{a.name}</td>
+                      <td className="text-xs text-slate-500">{g.label}</td>
+                      <td className="text-right text-sm">{a.debit.toLocaleString()}</td>
+                      <td className="text-right text-sm">{a.credit.toLocaleString()}</td>
+                      <td className={`text-right font-semibold ${a.balance >= 0 ? '' : 'text-red-600'}`}>
+                        {a.balance.toLocaleString()}원
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="bg-slate-50">
+                    <td colSpan={5} className="text-right font-semibold text-sm">{g.label} 소계</td>
+                    <td className={`text-right font-bold ${g.subtotal >= 0 ? '' : 'text-red-600'}`}>
+                      {g.subtotal.toLocaleString()}원
+                    </td>
+                  </tr>
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

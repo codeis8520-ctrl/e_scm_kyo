@@ -475,24 +475,39 @@ export async function createSaleJournal(params: {
   await sb.from('journal_entry_lines').insert(lines);
 }
 
+/**
+ * 매입 분개 — VAT 분리 (매출과 동일 구조)
+ *
+ * 과세 매입:
+ *   차변: 재고자산(1130) 공급가 + 부가세대급금(1150) 세액
+ *   대변: 미지급금(2110) 총액
+ */
 export async function createPurchaseReceiptJournal(params: {
   receiptId: string;
   receiptNumber: string;
   receiptDate: string;
   totalAmount: number;
+  taxableAmount?: number; // 미제공 시 전액 과세
 }) {
   const sb = await createClient() as any;
 
   const { data: accounts } = await sb
     .from('gl_accounts')
     .select('id, code')
-    .in('code', ['1130', '2110']);
+    .in('code', ['1130', '1150', '2110']);
 
   const accMap = Object.fromEntries((accounts || []).map((a: any) => [a.code, a.id]));
-  const inventoryId  = accMap['1130'];
-  const payableId    = accMap['2110'];
+  const inventoryId    = accMap['1130'];
+  const inputVatId     = accMap['1150']; // 부가세대급금
+  const payableId      = accMap['2110'];
 
   if (!inventoryId || !payableId) return;
+
+  const absTotal = Math.abs(params.totalAmount);
+  const taxableBase = params.taxableAmount !== undefined ? Math.abs(params.taxableAmount) : absTotal;
+  const supplyAmount = Math.round(taxableBase / 1.1);
+  const vatAmount = taxableBase - supplyAmount;
+  const exemptAmount = absTotal - taxableBase;
 
   const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
@@ -506,18 +521,188 @@ export async function createPurchaseReceiptJournal(params: {
       description: `매입 인식 (${params.receiptNumber})`,
       source_type: 'PURCHASE_RECEIPT',
       source_id: params.receiptId,
-      total_debit: params.totalAmount,
-      total_credit: params.totalAmount,
+      total_debit: absTotal,
+      total_credit: absTotal,
     })
     .select('id')
     .single();
 
   if (error) return;
 
-  await sb.from('journal_entry_lines').insert([
-    { journal_entry_id: entry.id, account_id: inventoryId, debit: params.totalAmount, credit: 0, memo: params.receiptNumber },
-    { journal_entry_id: entry.id, account_id: payableId, debit: 0, credit: params.totalAmount, memo: params.receiptNumber },
-  ]);
+  const lines: any[] = [
+    // 차변: 재고자산 (공급가 + 면세분)
+    { journal_entry_id: entry.id, account_id: inventoryId, debit: supplyAmount + exemptAmount, credit: 0, memo: `매입 (공급가)` },
+  ];
+  // 차변: 부가세대급금 (세액) — 환급 권리
+  if (inputVatId && vatAmount > 0) {
+    lines.push({ journal_entry_id: entry.id, account_id: inputVatId, debit: vatAmount, credit: 0, memo: `매입 VAT (${params.receiptNumber})` });
+  }
+  // 대변: 미지급금 (총액)
+  lines.push({ journal_entry_id: entry.id, account_id: payableId, debit: 0, credit: absTotal, memo: params.receiptNumber });
+
+  await sb.from('journal_entry_lines').insert(lines);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 부가세 신고 데이터 조회
+// ═══════════════════════════════════════════════════════════════════════
+
+export async function getVatReport(params: { startDate: string; endDate: string }) {
+  const sb = await createClient() as any;
+
+  // GL 계정 ID 조회
+  const { data: accounts } = await sb
+    .from('gl_accounts')
+    .select('id, code, name')
+    .in('code', ['2151', '1150']);
+  const accMap = Object.fromEntries((accounts || []).map((a: any) => [a.code, a]));
+
+  const outputVatAccId = accMap['2151']?.id; // 부가세예수금
+  const inputVatAccId  = accMap['1150']?.id; // 부가세대급금
+
+  // 기간 내 분개 라인 집계
+  const { data: lines } = await sb
+    .from('journal_entry_lines')
+    .select('account_id, debit, credit, journal_entry:journal_entries!inner(entry_date)')
+    .gte('journal_entry.entry_date', params.startDate)
+    .lte('journal_entry.entry_date', params.endDate);
+
+  let outputVatCredit = 0; // 매출 VAT (대변 합계)
+  let outputVatDebit = 0;  // 매출 VAT 취소 (차변 합계, 환불 등)
+  let inputVatDebit = 0;   // 매입 VAT (차변 합계)
+  let inputVatCredit = 0;  // 매입 VAT 취소
+
+  for (const line of (lines || []) as any[]) {
+    if (line.account_id === outputVatAccId) {
+      outputVatCredit += Number(line.credit || 0);
+      outputVatDebit += Number(line.debit || 0);
+    }
+    if (line.account_id === inputVatAccId) {
+      inputVatDebit += Number(line.debit || 0);
+      inputVatCredit += Number(line.credit || 0);
+    }
+  }
+
+  const netOutputVat = outputVatCredit - outputVatDebit; // 매출 부가세 (납부)
+  const netInputVat = inputVatDebit - inputVatCredit;    // 매입 부가세 (환급)
+  const vatPayable = netOutputVat - netInputVat;         // 납부 세액 (양수=납부, 음수=환급)
+
+  return {
+    period: `${params.startDate} ~ ${params.endDate}`,
+    outputVat: { credit: outputVatCredit, debit: outputVatDebit, net: netOutputVat },
+    inputVat: { debit: inputVatDebit, credit: inputVatCredit, net: netInputVat },
+    vatPayable,
+    summary: vatPayable >= 0
+      ? `납부 세액: ${vatPayable.toLocaleString()}원`
+      : `환급 세액: ${Math.abs(vatPayable).toLocaleString()}원`,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// GL 기반 계정 잔액 집계 (재무제표용)
+// ═══════════════════════════════════════════════════════════════════════
+
+export async function getGlBalances(params: { startDate: string; endDate: string }) {
+  const sb = await createClient() as any;
+
+  const { data: accounts } = await sb
+    .from('gl_accounts')
+    .select('id, code, name, account_type')
+    .eq('is_active', true)
+    .order('sort_order');
+
+  const { data: lines } = await sb
+    .from('journal_entry_lines')
+    .select('account_id, debit, credit, journal_entry:journal_entries!inner(entry_date)')
+    .gte('journal_entry.entry_date', params.startDate)
+    .lte('journal_entry.entry_date', params.endDate);
+
+  // 계정별 집계
+  const balances = new Map<string, { debit: number; credit: number }>();
+  for (const line of (lines || []) as any[]) {
+    const cur = balances.get(line.account_id) || { debit: 0, credit: 0 };
+    cur.debit += Number(line.debit || 0);
+    cur.credit += Number(line.credit || 0);
+    balances.set(line.account_id, cur);
+  }
+
+  const result = ((accounts || []) as any[]).map(acc => {
+    const bal = balances.get(acc.id) || { debit: 0, credit: 0 };
+    // 자산·비용·원가: 차변 - 대변 = 잔액. 부채·자본·수익: 대변 - 차변 = 잔액.
+    const isDebitNormal = ['ASSET', 'EXPENSE', 'COGS'].includes(acc.account_type);
+    const balance = isDebitNormal ? bal.debit - bal.credit : bal.credit - bal.debit;
+    return {
+      code: acc.code,
+      name: acc.name,
+      type: acc.account_type,
+      debit: bal.debit,
+      credit: bal.credit,
+      balance,
+    };
+  }).filter(a => a.debit > 0 || a.credit > 0); // 거래 없는 계정 제외
+
+  return { accounts: result };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 기간 마감
+// ═══════════════════════════════════════════════════════════════════════
+
+export async function closePeriod(period: string) {
+  let session;
+  try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
+  const HQ = new Set(['SUPER_ADMIN', 'HQ_OPERATOR']);
+  if (session.role && !HQ.has(session.role)) {
+    return { error: '기간 마감은 본사 권한이 필요합니다.' };
+  }
+
+  const sb = await createClient() as any;
+
+  // 이미 마감됐는지 확인
+  const { data: existing } = await sb
+    .from('accounting_period_closes')
+    .select('id')
+    .eq('period', period)
+    .maybeSingle();
+  if (existing) return { error: `${period}은(는) 이미 마감되었습니다.` };
+
+  const { error } = await sb
+    .from('accounting_period_closes')
+    .insert({ period, closed_by: session.id });
+  if (error) return { error: error.message };
+
+  return { success: true, period };
+}
+
+export async function reopenPeriod(period: string) {
+  let session;
+  try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
+  if (session.role !== 'SUPER_ADMIN') {
+    return { error: '기간 재개는 최고관리자만 가능합니다.' };
+  }
+
+  const sb = await createClient() as any;
+  await sb.from('accounting_period_closes').delete().eq('period', period);
+  return { success: true };
+}
+
+export async function getClosedPeriods() {
+  const sb = await createClient() as any;
+  const { data } = await sb
+    .from('accounting_period_closes')
+    .select('period, closed_at, closed_by')
+    .order('period', { ascending: false });
+  return { data: data || [] };
+}
+
+export async function isPeriodClosed(period: string): Promise<boolean> {
+  const sb = await createClient() as any;
+  const { data } = await sb
+    .from('accounting_period_closes')
+    .select('id')
+    .eq('period', period)
+    .maybeSingle();
+  return !!data;
 }
 
 // ─── 외상 수금 처리 ────────────────────────────────────────────────────────
