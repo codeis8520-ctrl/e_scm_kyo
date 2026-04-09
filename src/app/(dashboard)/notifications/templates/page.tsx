@@ -2,12 +2,19 @@
 
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { EVENT_TYPES, type EventTypeKey, type TemplateMapping } from '@/lib/notification-event-types';
+import { upsertTemplateMapping, getTemplateMappings } from '@/lib/notification-template-mapping-actions';
 
 export default function NotificationTemplatesPage() {
   const [templates, setTemplates] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editTemplate, setEditTemplate] = useState<any>(null);
+
+  // Solapi 템플릿 + 매핑 상태
+  const [solapiTemplates, setSolapiTemplates] = useState<any[]>([]);
+  const [mappings, setMappings] = useState<Record<string, TemplateMapping>>({});
+  const [solapiLoading, setSolapiLoading] = useState(true);
 
   const fetchTemplates = async () => {
     setLoading(true);
@@ -20,8 +27,20 @@ export default function NotificationTemplatesPage() {
     setLoading(false);
   };
 
+  const fetchSolapiTemplatesAndMappings = async () => {
+    setSolapiLoading(true);
+    const [solapiRes, mapRes] = await Promise.all([
+      fetch('/api/solapi/templates').then(r => r.json()).then(d => d.templates ?? []),
+      getTemplateMappings(),
+    ]);
+    setSolapiTemplates(solapiRes);
+    setMappings(mapRes.data || {});
+    setSolapiLoading(false);
+  };
+
   useEffect(() => {
     fetchTemplates();
+    fetchSolapiTemplatesAndMappings();
   }, []);
 
   const handleEdit = (template: any) => {
@@ -36,6 +55,15 @@ export default function NotificationTemplatesPage() {
   };
 
   return (
+    <div className="space-y-6">
+      {/* ── Solapi 템플릿 분류 섹션 ─────────────────────────────────────── */}
+      <SolapiTemplateClassification
+        templates={solapiTemplates}
+        mappings={mappings}
+        loading={solapiLoading}
+        onRefresh={fetchSolapiTemplatesAndMappings}
+      />
+
     <div className="card">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 sm:mb-6">
         <h3 className="font-semibold text-lg">알림톡 템플릿</h3>
@@ -102,6 +130,187 @@ export default function NotificationTemplatesPage() {
           onClose={() => { setShowModal(false); setEditTemplate(null); }}
           onSuccess={handleSuccess}
         />
+      )}
+    </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Solapi 템플릿 분류 섹션
+// ═══════════════════════════════════════════════════════════════════════
+
+interface ClassificationProps {
+  templates: any[];
+  mappings: Record<string, TemplateMapping>;
+  loading: boolean;
+  onRefresh: () => void;
+}
+
+function SolapiTemplateClassification({ templates, mappings, loading, onRefresh }: ClassificationProps) {
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [error, setError] = useState('');
+
+  // 로컬 변경사항 임시 저장 (각 행 개별 저장)
+  const [localEdits, setLocalEdits] = useState<Record<string, { event_type: string; is_manual_sendable: boolean }>>({});
+
+  const getCurrent = (tplId: string) => {
+    if (localEdits[tplId]) return localEdits[tplId];
+    const m = mappings[tplId];
+    return {
+      event_type: (m?.event_type as string) || 'OTHER',
+      is_manual_sendable: m?.is_manual_sendable ?? false,
+    };
+  };
+
+  const setField = (tplId: string, field: 'event_type' | 'is_manual_sendable', value: any) => {
+    const cur = getCurrent(tplId);
+    setLocalEdits(prev => ({
+      ...prev,
+      [tplId]: { ...cur, [field]: value },
+    }));
+  };
+
+  const isDirty = (tplId: string) => {
+    const local = localEdits[tplId];
+    if (!local) return false;
+    const m = mappings[tplId];
+    return (
+      local.event_type !== ((m?.event_type as string) || 'OTHER') ||
+      local.is_manual_sendable !== (m?.is_manual_sendable ?? false)
+    );
+  };
+
+  const handleSave = async (tplId: string, tplName: string) => {
+    setSavingId(tplId);
+    setError('');
+    const cur = getCurrent(tplId);
+    const result = await upsertTemplateMapping({
+      solapi_template_id: tplId,
+      event_type: cur.event_type as EventTypeKey,
+      is_manual_sendable: cur.is_manual_sendable,
+      description: tplName,
+    });
+    setSavingId(null);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    // 저장 성공 → 로컬 편집 초기화하고 전체 매핑 재조회
+    setLocalEdits(prev => {
+      const next = { ...prev };
+      delete next[tplId];
+      return next;
+    });
+    onRefresh();
+  };
+
+  const classified = templates.filter(t => !!mappings[t.templateId]).length;
+  const unclassified = templates.length - classified;
+
+  return (
+    <div className="card">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 sm:mb-6">
+        <div>
+          <h3 className="font-semibold text-lg">Solapi 알림톡 템플릿 분류</h3>
+          <p className="text-xs text-slate-500 mt-1">
+            각 템플릿의 용도(이벤트 유형)와 수동 발송 가능 여부를 설정합니다.
+            수동 발송 가능으로 지정된 템플릿만 <code className="text-blue-600">/notifications</code> 발송 화면에 기본 노출됩니다.
+          </p>
+        </div>
+        <div className="flex gap-2 items-center text-sm">
+          <span className="px-2 py-1 rounded bg-emerald-50 text-emerald-700">
+            분류 완료 {classified}
+          </span>
+          {unclassified > 0 && (
+            <span className="px-2 py-1 rounded bg-amber-50 text-amber-700">
+              미분류 {unclassified}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {error && (
+        <div className="mb-3 p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>
+      )}
+
+      {loading ? (
+        <div className="text-center py-8 text-slate-400">Solapi 템플릿 로딩 중...</div>
+      ) : templates.length === 0 ? (
+        <div className="text-center py-8 text-slate-400">
+          Solapi에 승인된 알림톡 템플릿이 없거나 API 키가 설정되지 않았습니다.
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="table min-w-[800px]">
+            <thead>
+              <tr>
+                <th className="w-64">템플릿명</th>
+                <th>내용 미리보기</th>
+                <th className="w-40">이벤트 유형</th>
+                <th className="w-32 text-center">수동 발송</th>
+                <th className="w-20 text-center">저장</th>
+              </tr>
+            </thead>
+            <tbody>
+              {templates.map((tpl: any) => {
+                const cur = getCurrent(tpl.templateId);
+                const dirty = isDirty(tpl.templateId);
+                const isUnclassified = !mappings[tpl.templateId] && !localEdits[tpl.templateId];
+                return (
+                  <tr key={tpl.templateId} className={isUnclassified ? 'bg-amber-50/40' : ''}>
+                    <td>
+                      <div className="text-sm font-medium">{tpl.name || '(이름 없음)'}</div>
+                      <div className="text-xs font-mono text-slate-400 truncate max-w-[240px]" title={tpl.templateId}>
+                        {tpl.templateId}
+                      </div>
+                    </td>
+                    <td>
+                      <div className="text-xs text-slate-600 line-clamp-2 max-w-md">
+                        {tpl.content || '-'}
+                      </div>
+                    </td>
+                    <td>
+                      <select
+                        value={cur.event_type}
+                        onChange={e => setField(tpl.templateId, 'event_type', e.target.value)}
+                        className="input text-xs py-1"
+                      >
+                        {Object.entries(EVENT_TYPES).map(([k, v]) => (
+                          <option key={k} value={k}>{v}</option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="text-center">
+                      <label className="inline-flex items-center gap-1 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={cur.is_manual_sendable}
+                          onChange={e => setField(tpl.templateId, 'is_manual_sendable', e.target.checked)}
+                          className="w-4 h-4"
+                        />
+                        <span className="text-xs text-slate-500">허용</span>
+                      </label>
+                    </td>
+                    <td className="text-center">
+                      <button
+                        onClick={() => handleSave(tpl.templateId, tpl.name)}
+                        disabled={!dirty || savingId === tpl.templateId}
+                        className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                          dirty
+                            ? 'bg-blue-600 text-white hover:bg-blue-700'
+                            : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                        }`}
+                      >
+                        {savingId === tpl.templateId ? '...' : '저장'}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

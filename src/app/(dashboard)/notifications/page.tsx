@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import { validators, formatPhone } from '@/lib/validators';
 import { sendSmsAction, sendKakaoAction, getNotifications } from '@/lib/notification-actions';
+import { getTemplateMappings } from '@/lib/notification-template-mapping-actions';
+import { EVENT_TYPES, type TemplateMapping } from '@/lib/notification-event-types';
 
 const TYPE_LABEL: Record<string, string> = { KAKAO: '알림톡', SMS: 'SMS' };
 const STATUS_LABEL: Record<string, string> = { sent: '발송완료', pending: '대기중', failed: '실패' };
@@ -23,6 +25,7 @@ const GRADE_BADGE: Record<string, string> = {
 export default function NotificationsPage() {
   const [notifications, setNotifications] = useState<any[]>([]);
   const [templates, setTemplates]         = useState<any[]>([]);
+  const [templateMappings, setTemplateMappings] = useState<Record<string, TemplateMapping>>({});
   const [customers, setCustomers]         = useState<any[]>([]);
   const [loading, setLoading]             = useState(true);
   const [activeTab, setActiveTab]         = useState<'kakao' | 'sms'>('kakao'); // 기본값: 알림톡
@@ -38,12 +41,13 @@ export default function NotificationsPage() {
 
   const fetchData = async () => {
     setLoading(true);
-    const [notifRes, templateRes, customerRes] = await Promise.all([
+    const [notifRes, templateRes, mappingRes, customerRes] = await Promise.all([
       getNotifications({
         status: statusFilter || undefined,
         type: typeByTab[activeTab], // 탭 기준으로 유형 강제
       }),
       fetch('/api/solapi/templates').then(r => r.json()).then(d => d.templates ?? []),
+      getTemplateMappings(),
       (async () => {
         const supabase = createClient() as any;
         const { data } = await supabase.from('customers').select('id, name, phone, grade').eq('is_active', true).order('name');
@@ -53,6 +57,7 @@ export default function NotificationsPage() {
 
     setNotifications(notifRes.data || []);
     setTemplates(templateRes);
+    setTemplateMappings(mappingRes.data || {});
     setCustomers(customerRes);
     setLoading(false);
   };
@@ -228,6 +233,7 @@ export default function NotificationsPage() {
         <SendModal
           type={activeTab}
           templates={templates}
+          templateMappings={templateMappings}
           customers={customers}
           onClose={() => setShowSendModal(false)}
           onSuccess={() => { setShowSendModal(false); fetchData(); }}
@@ -242,6 +248,7 @@ export default function NotificationsPage() {
 interface SendModalProps {
   type: 'kakao' | 'sms';
   templates: any[];
+  templateMappings: Record<string, TemplateMapping>;
   customers: any[];
   onClose: () => void;
   onSuccess: () => void;
@@ -271,8 +278,9 @@ function detectManualFields(keys: string[]): ManualField[] {
   });
 }
 
-function SendModal({ type, templates, customers, onClose, onSuccess }: SendModalProps) {
+function SendModal({ type, templates, templateMappings, customers, onClose, onSuccess }: SendModalProps) {
   const [sendMode, setSendMode]                   = useState<'bulk' | 'single'>('bulk');
+  const [showEventOnly, setShowEventOnly]         = useState(false); // 이벤트 전용 템플릿까지 보기
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<string[]>([]);
   const [customerSearch, setCustomerSearch]       = useState('');
   const [gradeFilter, setGradeFilter]             = useState('');
@@ -462,34 +470,111 @@ function SendModal({ type, templates, customers, onClose, onSuccess }: SendModal
           {/* 알림톡 템플릿 */}
           {type === 'kakao' && (
             <div className="space-y-3">
-              <div>
-                <label className="block text-sm font-medium mb-1">알림톡 템플릿</label>
-                {templates.length === 0 ? (
-                  <p className="text-sm text-amber-600">⚠️ 솔라피에 승인된 템플릿이 없거나 환경변수 미설정</p>
-                ) : (
-                  <select
-                    value={templateId}
-                    onChange={e => {
-                      setTemplateId(e.target.value);
-                      const t = templates.find((t: any) => t.templateId === e.target.value);
-                      if (t) {
-                        setTemplateContent(t.content);
-                        const keys = t.variables.map((v: any) => v.name ?? v);
-                        setVariableKeys(keys);
-                        setMessage(t.content);
-                        setManualFields(detectManualFields(keys));
-                        setManualVars({});
-                      }
-                    }}
-                    className="input"
-                  >
-                    <option value="">템플릿 선택</option>
-                    {templates.map((t: any) => (
-                      <option key={t.templateId} value={t.templateId}>{t.name}</option>
-                    ))}
-                  </select>
-                )}
-              </div>
+              {(() => {
+                // 템플릿을 분류 상태별로 구분
+                const manualSendable = templates.filter((t: any) => templateMappings[t.templateId]?.is_manual_sendable);
+                const eventOnly = templates.filter((t: any) => {
+                  const m = templateMappings[t.templateId];
+                  return m && !m.is_manual_sendable;
+                });
+                const unclassified = templates.filter((t: any) => !templateMappings[t.templateId]);
+                const visibleTemplates = showEventOnly
+                  ? templates
+                  : manualSendable;
+
+                const currentMapping = templateId ? templateMappings[templateId] : null;
+                const isEventOnlySelected = currentMapping && !currentMapping.is_manual_sendable;
+                const isUnclassifiedSelected = templateId && !currentMapping;
+
+                return (
+                  <>
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-sm font-medium">알림톡 템플릿</label>
+                        <div className="text-xs text-slate-500 flex items-center gap-2">
+                          <span>수동 {manualSendable.length}</span>
+                          <span className="text-slate-300">·</span>
+                          <span>이벤트 {eventOnly.length}</span>
+                          {unclassified.length > 0 && (
+                            <>
+                              <span className="text-slate-300">·</span>
+                              <span className="text-amber-600">미분류 {unclassified.length}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      {templates.length === 0 ? (
+                        <p className="text-sm text-amber-600">⚠️ 솔라피에 승인된 템플릿이 없거나 환경변수 미설정</p>
+                      ) : (
+                        <>
+                          <select
+                            value={templateId}
+                            onChange={e => {
+                              setTemplateId(e.target.value);
+                              const t = templates.find((t: any) => t.templateId === e.target.value);
+                              if (t) {
+                                setTemplateContent(t.content);
+                                const keys = t.variables.map((v: any) => v.name ?? v);
+                                setVariableKeys(keys);
+                                setMessage(t.content);
+                                setManualFields(detectManualFields(keys));
+                                setManualVars({});
+                              }
+                            }}
+                            className="input"
+                          >
+                            <option value="">템플릿 선택</option>
+                            {visibleTemplates.map((t: any) => {
+                              const m = templateMappings[t.templateId];
+                              const prefix = !m ? '[미분류] ' : m.is_manual_sendable ? '' : '[이벤트 전용] ';
+                              return (
+                                <option key={t.templateId} value={t.templateId}>
+                                  {prefix}{t.name}
+                                </option>
+                              );
+                            })}
+                          </select>
+                          <label className="flex items-center gap-1 mt-2 text-xs text-slate-500 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={showEventOnly}
+                              onChange={e => setShowEventOnly(e.target.checked)}
+                              className="w-3.5 h-3.5"
+                            />
+                            이벤트 전용 · 미분류 템플릿도 보기
+                          </label>
+                        </>
+                      )}
+                    </div>
+
+                    {/* 경고 배너 — 이벤트 전용 템플릿 선택 */}
+                    {isEventOnlySelected && (
+                      <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm">
+                        <div className="font-medium text-amber-800">
+                          ⚠️ 이 템플릿은 &ldquo;{EVENT_TYPES[(currentMapping.event_type as keyof typeof EVENT_TYPES)] || currentMapping.event_type}&rdquo; 이벤트 자동 발송 전용입니다
+                        </div>
+                        <div className="text-xs text-amber-700 mt-1">
+                          수동 발송 시 변수 값(상품명/주문번호/인증번호 등)이 의도한 값과 달라질 수 있습니다.
+                          일반 공지·축하 메시지는 별도의 수동 발송 템플릿을 사용하세요.
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 경고 배너 — 미분류 템플릿 */}
+                    {isUnclassifiedSelected && (
+                      <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm">
+                        <div className="font-medium text-amber-800">
+                          ⚠️ 분류되지 않은 템플릿입니다
+                        </div>
+                        <div className="text-xs text-amber-700 mt-1">
+                          <Link href="/notifications/templates" className="underline font-medium">템플릿 관리</Link> 페이지에서
+                          이 템플릿의 용도와 수동 발송 가능 여부를 먼저 지정해주세요.
+                        </div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
               {variableKeys.length > 0 && (
                 <div className="space-y-2">
                   <div className="flex flex-wrap gap-1.5">
