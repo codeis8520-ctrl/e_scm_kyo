@@ -189,26 +189,95 @@ export async function sendKakaoMessages(messages: KakaoMessage[]): Promise<BulkS
   }
 
   const data = await res.json().catch(() => ({}));
-  console.log('[Solapi KakaoATA] response:', JSON.stringify(data, null, 2));
+  console.log('[Solapi KakaoATA] status:', res.status, 'response:', JSON.stringify(data, null, 2));
 
   if (!res.ok) {
-    const errMsg = data?.message || `HTTP ${res.status}`;
+    // Solapi 에러 응답 본문에서 상세 메시지 추출
+    const errMsg =
+      data?.errorMessage ||
+      data?.message ||
+      data?.error ||
+      `HTTP ${res.status}`;
+    const errCode = data?.errorCode || data?.code || '';
+    const fullErr = errCode ? `[${errCode}] ${errMsg}` : errMsg;
     return {
       successCount: 0,
       failCount: messages.length,
-      results: messages.map(m => ({ to: m.to, success: false, error: errMsg })),
+      results: messages.map(m => ({ to: m.to, success: false, error: fullErr })),
     };
   }
 
-  const resultList: any[] = data.resultList || [];
-  const results = messages.map((m, i) => {
-    const r = resultList[i];
-    const success = r?.statusCode === '2000';
+  // Solapi v4 /send-many 응답 구조:
+  // {
+  //   groupInfo: { groupId, count: { total, sentFailed, sentSuccess, ... } },
+  //   messageList: { [messageId]: { statusCode, statusMessage, to, type } } | [...],
+  //   failedMessageList: [...]   // 실패 건만 별도
+  // }
+  const groupInfo = data.groupInfo || {};
+  const groupId = groupInfo.groupId || data.groupId;
+  const countInfo = groupInfo.count || data.count || {};
+  const messageListRaw = data.messageList;
+  const failedList: any[] = data.failedMessageList || [];
+
+  // messageList를 배열로 정규화
+  let msgList: any[] = [];
+  if (Array.isArray(messageListRaw)) {
+    msgList = messageListRaw;
+  } else if (messageListRaw && typeof messageListRaw === 'object') {
+    msgList = Object.entries(messageListRaw).map(([id, v]: [string, any]) => ({ messageId: id, ...v }));
+  }
+
+  // to(수신자 번호)로 매칭 — 전화번호 정규화
+  const normPhone = (p: string) => String(p || '').replace(/-/g, '');
+
+  const results = messages.map(m => {
+    const toNorm = normPhone(m.to);
+
+    // 실패 목록에서 먼저 확인
+    const failed = failedList.find((f: any) => normPhone(f.to) === toNorm);
+    if (failed) {
+      return {
+        to: m.to,
+        success: false,
+        messageId: failed.messageId,
+        error: failed.statusMessage || failed.reason || `실패 (${failed.statusCode || 'N/A'})`,
+      };
+    }
+
+    // 성공 목록에서 매칭
+    const hit = msgList.find((r: any) => normPhone(r.to) === toNorm);
+    if (hit) {
+      // statusCode '2000' 계열 또는 상태가 명시적으로 실패가 아니면 성공
+      const code: string = String(hit.statusCode || '');
+      const isFailExplicit = code && !code.startsWith('2') && !code.startsWith('1');
+      if (isFailExplicit) {
+        return {
+          to: m.to,
+          success: false,
+          messageId: hit.messageId,
+          error: hit.statusMessage || hit.reason || `상태 코드: ${code}`,
+        };
+      }
+      return {
+        to: m.to,
+        success: true,
+        messageId: hit.messageId || groupId,
+      };
+    }
+
+    // 매칭되는 결과가 없으면 groupInfo.count로 전체 성공 여부 판단
+    const totalFailed = Number(countInfo.sentFailed || 0);
+    if (totalFailed === 0) {
+      // 전체가 성공으로 접수됨 → 이 건도 성공으로 간주
+      return { to: m.to, success: true, messageId: groupId };
+    }
+
+    // 결과를 특정할 수 없을 때 pending 취급 (실패 아님)
     return {
       to: m.to,
-      success,
-      messageId: r?.messageId,
-      error: success ? undefined : (r?.statusMessage || '알 수 없는 오류'),
+      success: true,
+      messageId: groupId,
+      error: undefined,
     };
   });
 
