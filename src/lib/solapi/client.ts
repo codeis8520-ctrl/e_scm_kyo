@@ -24,6 +24,31 @@ function makeAuthHeader(): string {
   return `HMAC-SHA256 apiKey=${apiKey}, date=${date}, salt=${salt}, signature=${signature}`;
 }
 
+// ─── 잔액 조회 ──────────────────────────────────────────────────────────────
+
+export async function getSolapiBalance(): Promise<{ balance?: number; point?: number; error?: string }> {
+  if (!process.env.SOLAPI_API_KEY || !process.env.SOLAPI_API_SECRET) {
+    return { error: 'SOLAPI 환경변수 미설정' };
+  }
+  try {
+    const res = await fetch(`${BASE_URL}/cash/v1/balance`, {
+      headers: { Authorization: makeAuthHeader() },
+      cache: 'no-store',
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { error: data?.errorMessage || data?.message || `HTTP ${res.status}` };
+    }
+    // 응답: { balance: number, point: number, ... } 또는 유사 구조
+    return {
+      balance: Number(data.balance ?? data.cash ?? data.amount ?? 0),
+      point: Number(data.point ?? data.freeBalance ?? 0),
+    };
+  } catch (e: any) {
+    return { error: e?.message || '잔액 조회 실패' };
+  }
+}
+
 export interface SmsMessage {
   to: string;          // 수신번호 (하이픈 제거, 예: 01012345678)
   text: string;        // 메시지 내용

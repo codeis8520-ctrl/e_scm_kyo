@@ -99,7 +99,8 @@
       "WebFetch(domain:ksnet.co.kr)",
       "WebFetch(domain:www.metacity.co.kr)",
       "WebFetch(domain:wisefour.github.io)",
-      "WebFetch(domain:slidesplayer.org)"
+      "WebFetch(domain:slidesplayer.org)",
+      "WebFetch(domain:solapi.github.io)"
     ]
   }
 }

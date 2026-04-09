@@ -41,6 +41,7 @@ export default function NotificationsPage() {
   const [sourceFilter, setSourceFilter]   = useState(''); // MANUAL | AUTO_EVENT | SCHEDULED
   const [resendingId, setResendingId]     = useState<string | null>(null);
   const [batchRunning, setBatchRunning]   = useState<string | null>(null);
+  const [solapiBalance, setSolapiBalance] = useState<{ balance?: number; point?: number; error?: string } | null>(null);
 
   // 탭별 타입 매핑
   const typeByTab: Record<'kakao' | 'sms', string> = { kakao: 'KAKAO', sms: 'SMS' };
@@ -66,6 +67,9 @@ export default function NotificationsPage() {
     setTemplateMappings(mappingRes.data || {});
     setCustomers(customerRes);
     setLoading(false);
+
+    // 잔액 조회 (비동기, 로딩 블로킹 X)
+    fetch('/api/solapi/balance').then(r => r.json()).then(setSolapiBalance).catch(() => {});
   };
 
   useEffect(() => { fetchData(); }, [statusFilter, activeTab]);
@@ -180,8 +184,8 @@ export default function NotificationsPage() {
         </div>
       </div>
 
-      {/* 통계 (현재 탭 기준) */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+      {/* 통계 (현재 탭 기준) + 솔라피 잔액 */}
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 sm:gap-4">
         <div className="stat-card">
           <p className="text-sm text-slate-500">총 {activeTab === 'kakao' ? '알림톡' : 'SMS'}</p>
           <p className={`text-2xl font-bold ${activeTab === 'kakao' ? 'text-purple-600' : 'text-blue-600'}`}>{stats.total}</p>
@@ -197,6 +201,23 @@ export default function NotificationsPage() {
         <div className="stat-card">
           <p className="text-sm text-slate-500">대기중</p>
           <p className="text-2xl font-bold text-amber-600">{stats.pending}</p>
+        </div>
+        <div className="stat-card border-emerald-200 bg-emerald-50/50">
+          <p className="text-sm text-slate-500">솔라피 잔액</p>
+          {solapiBalance?.error ? (
+            <p className="text-sm text-red-500">{solapiBalance.error}</p>
+          ) : solapiBalance ? (
+            <>
+              <p className="text-2xl font-bold text-emerald-700">
+                {(solapiBalance.balance ?? 0).toLocaleString()}원
+              </p>
+              {(solapiBalance.point ?? 0) > 0 && (
+                <p className="text-xs text-slate-400">포인트 {(solapiBalance.point ?? 0).toLocaleString()}</p>
+              )}
+            </>
+          ) : (
+            <p className="text-sm text-slate-400">조회 중...</p>
+          )}
         </div>
       </div>
 
