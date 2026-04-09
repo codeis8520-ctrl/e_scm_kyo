@@ -333,7 +333,7 @@ export default function InventoryPage() {
                       inventoryId={item.id}
                       productId={item.product_id}
                       value={item.safety_stock}
-                      onSaved={fetchData}
+                      onSaved={fetchInventory}
                     />
                   </td>
                   <td>
