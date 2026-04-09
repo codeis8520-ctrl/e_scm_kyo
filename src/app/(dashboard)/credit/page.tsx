@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { settleCreditOrder } from '@/lib/accounting-actions';
+import { cancelCreditOrder } from '@/lib/credit-actions';
 import Link from 'next/link';
 
 interface CreditOrder {
@@ -36,6 +37,7 @@ export default function CreditManagementPage() {
   const [tab, setTab] = useState<'unsettled' | 'settled'>('unsettled');
   const [search, setSearch] = useState('');
   const [settlingId, setSettlingId] = useState<string | null>(null);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [settleMethod, setSettleMethod] = useState<Record<string, string>>({});
 
   const fetchData = async () => {
@@ -101,6 +103,23 @@ export default function CreditManagementPage() {
     if (!res.success) {
       alert('수금 처리 실패: ' + (res.error || '알 수 없는 오류'));
     } else {
+      fetchData();
+    }
+  };
+
+  const handleCancel = async (orderId: string, orderNumber: string) => {
+    const reason = prompt(`"${orderNumber}" 외상 거래를 취소합니다.\n\n취소 사유를 입력하세요:`);
+    if (reason === null) return; // 취소 클릭
+    if (!reason.trim()) { alert('취소 사유를 입력해주세요.'); return; }
+    if (!confirm(`정말 이 외상 거래를 취소하시겠습니까?\n\n전표: ${orderNumber}\n사유: ${reason}\n\n⚠️ 취소 시 재고가 복원되고, 적립 포인트가 차감되며, 역분개가 생성됩니다.`)) return;
+
+    setCancellingId(orderId);
+    const res = await cancelCreditOrder({ orderId, reason: reason.trim() });
+    setCancellingId(null);
+    if (res.error) {
+      alert('거래 취소 실패: ' + res.error);
+    } else {
+      alert(`거래 취소 완료\n전표: ${res.orderNumber}\n금액: ${(res.amount || 0).toLocaleString()}원`);
       fetchData();
     }
   };
@@ -263,6 +282,14 @@ export default function CreditManagementPage() {
                           className="px-2 py-1 rounded text-xs font-medium bg-green-600 text-white hover:bg-green-700 disabled:opacity-40 whitespace-nowrap"
                         >
                           {settlingId === o.id ? '...' : '수금'}
+                        </button>
+                        <button
+                          onClick={() => handleCancel(o.id, o.order_number)}
+                          disabled={cancellingId === o.id}
+                          className="px-2 py-1 rounded text-xs font-medium bg-red-100 text-red-600 hover:bg-red-200 disabled:opacity-40 whitespace-nowrap"
+                          title="외상 거래 취소 (재고 복원 + 포인트 차감 + 역분개)"
+                        >
+                          {cancellingId === o.id ? '...' : '취소'}
                         </button>
                       </div>
                     </td>
