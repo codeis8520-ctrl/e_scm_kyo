@@ -33,8 +33,11 @@ export default function NotificationsPage() {
   const [statusFilter, setStatusFilter]   = useState('');
   // 검색 조건 (탭별 독립)
   const [searchKeyword, setSearchKeyword] = useState('');
-  const [startDate, setStartDate]         = useState('');
-  const [endDate, setEndDate]             = useState('');
+  const [startDate, setStartDate]         = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() - 1);
+    return d.toISOString().slice(0, 10);
+  });
+  const [endDate, setEndDate]             = useState(() => new Date().toISOString().slice(0, 10));
   const [sourceFilter, setSourceFilter]   = useState(''); // MANUAL | AUTO_EVENT | SCHEDULED
   const [resendingId, setResendingId]     = useState<string | null>(null);
   const [batchRunning, setBatchRunning]   = useState<string | null>(null);
@@ -72,8 +75,9 @@ export default function NotificationsPage() {
     setActiveTab(tab);
     setSearchKeyword('');
     setStatusFilter('');
-    setStartDate('');
-    setEndDate('');
+    const d = new Date(); d.setMonth(d.getMonth() - 1);
+    setStartDate(d.toISOString().slice(0, 10));
+    setEndDate(new Date().toISOString().slice(0, 10));
     setSourceFilter('');
   };
 
