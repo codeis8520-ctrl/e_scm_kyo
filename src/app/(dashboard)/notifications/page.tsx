@@ -25,17 +25,23 @@ export default function NotificationsPage() {
   const [templates, setTemplates]         = useState<any[]>([]);
   const [customers, setCustomers]         = useState<any[]>([]);
   const [loading, setLoading]             = useState(true);
-  const [activeTab, setActiveTab]         = useState<'kakao' | 'sms'>('sms');
+  const [activeTab, setActiveTab]         = useState<'kakao' | 'sms'>('kakao'); // 기본값: 알림톡
   const [showSendModal, setShowSendModal] = useState(false);
   const [statusFilter, setStatusFilter]   = useState('');
-  const [typeFilter, setTypeFilter]       = useState('');
+  // 검색 조건 (탭별 독립)
+  const [searchKeyword, setSearchKeyword] = useState('');
+  const [startDate, setStartDate]         = useState('');
+  const [endDate, setEndDate]             = useState('');
+
+  // 탭별 타입 매핑
+  const typeByTab: Record<'kakao' | 'sms', string> = { kakao: 'KAKAO', sms: 'SMS' };
 
   const fetchData = async () => {
     setLoading(true);
     const [notifRes, templateRes, customerRes] = await Promise.all([
       getNotifications({
         status: statusFilter || undefined,
-        type:   typeFilter   || undefined,
+        type: typeByTab[activeTab], // 탭 기준으로 유형 강제
       }),
       fetch('/api/solapi/templates').then(r => r.json()).then(d => d.templates ?? []),
       (async () => {
@@ -51,13 +57,44 @@ export default function NotificationsPage() {
     setLoading(false);
   };
 
-  useEffect(() => { fetchData(); }, [statusFilter, typeFilter]);
+  useEffect(() => { fetchData(); }, [statusFilter, activeTab]);
+
+  // 탭 전환 시 검색 조건 초기화 (각 탭별 독립)
+  const handleTabChange = (tab: 'kakao' | 'sms') => {
+    setActiveTab(tab);
+    setSearchKeyword('');
+    setStatusFilter('');
+    setStartDate('');
+    setEndDate('');
+  };
+
+  // 탭 필터 + 검색어 + 날짜 범위 필터링
+  const filteredNotifications = notifications.filter(n => {
+    // 유형은 이미 서버에서 필터됨 (activeTab 기준)
+    if (searchKeyword) {
+      const kw = searchKeyword.toLowerCase();
+      const inName = (n.customer?.name || '').toLowerCase().includes(kw);
+      const inPhone = String(n.phone || '').replace(/-/g, '').includes(kw.replace(/-/g, ''));
+      const inMsg = (n.message || '').toLowerCase().includes(kw);
+      const inErr = (n.error_message || '').toLowerCase().includes(kw);
+      if (!inName && !inPhone && !inMsg && !inErr) return false;
+    }
+    if (startDate) {
+      const d = new Date(n.created_at).getTime();
+      if (d < new Date(`${startDate}T00:00:00`).getTime()) return false;
+    }
+    if (endDate) {
+      const d = new Date(n.created_at).getTime();
+      if (d > new Date(`${endDate}T23:59:59`).getTime()) return false;
+    }
+    return true;
+  });
 
   const stats = {
-    sent:    notifications.filter(n => n.status === 'sent').length,
-    failed:  notifications.filter(n => n.status === 'failed').length,
-    kakao:   notifications.filter(n => n.notification_type === 'KAKAO').length,
-    sms:     notifications.filter(n => n.notification_type === 'SMS').length,
+    total:   filteredNotifications.length,
+    sent:    filteredNotifications.filter(n => n.status === 'sent').length,
+    failed:  filteredNotifications.filter(n => n.status === 'failed').length,
+    pending: filteredNotifications.filter(n => n.status === 'pending').length,
   };
 
   return (
@@ -65,15 +102,15 @@ export default function NotificationsPage() {
       {/* 헤더 */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex gap-1 border-b border-slate-200">
-          {(['sms', 'kakao'] as const).map(t => (
+          {(['kakao', 'sms'] as const).map(t => (
             <button
               key={t}
-              onClick={() => setActiveTab(t)}
+              onClick={() => handleTabChange(t)}
               className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
                 activeTab === t ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}
             >
-              {t === 'sms' ? 'SMS 발송' : '알림톡 발송'}
+              {t === 'kakao' ? '알림톡' : 'SMS'}
             </button>
           ))}
         </div>
@@ -87,8 +124,12 @@ export default function NotificationsPage() {
         </div>
       </div>
 
-      {/* 통계 */}
+      {/* 통계 (현재 탭 기준) */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+        <div className="stat-card">
+          <p className="text-sm text-slate-500">총 {activeTab === 'kakao' ? '알림톡' : 'SMS'}</p>
+          <p className={`text-2xl font-bold ${activeTab === 'kakao' ? 'text-purple-600' : 'text-blue-600'}`}>{stats.total}</p>
+        </div>
         <div className="stat-card">
           <p className="text-sm text-slate-500">발송 완료</p>
           <p className="text-2xl font-bold text-green-600">{stats.sent}</p>
@@ -98,29 +139,49 @@ export default function NotificationsPage() {
           <p className="text-2xl font-bold text-red-600">{stats.failed}</p>
         </div>
         <div className="stat-card">
-          <p className="text-sm text-slate-500">알림톡</p>
-          <p className="text-2xl font-bold text-purple-600">{stats.kakao}</p>
-        </div>
-        <div className="stat-card">
-          <p className="text-sm text-slate-500">SMS</p>
-          <p className="text-2xl font-bold text-blue-600">{stats.sms}</p>
+          <p className="text-sm text-slate-500">대기중</p>
+          <p className="text-2xl font-bold text-amber-600">{stats.pending}</p>
         </div>
       </div>
 
       {/* 필터 + 테이블 */}
       <div className="card">
-        <div className="flex flex-col sm:flex-row gap-3 mb-4 flex-wrap">
-          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="input w-36 text-sm py-1.5">
-            <option value="">전체 상태</option>
-            <option value="sent">발송완료</option>
-            <option value="failed">실패</option>
-            <option value="pending">대기중</option>
-          </select>
-          <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} className="input w-36 text-sm py-1.5">
-            <option value="">전체 유형</option>
-            <option value="SMS">SMS</option>
-            <option value="KAKAO">알림톡</option>
-          </select>
+        <div className="flex flex-col sm:flex-row gap-3 mb-4 flex-wrap items-start sm:items-end">
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">검색어</label>
+            <input
+              type="text"
+              value={searchKeyword}
+              onChange={e => setSearchKeyword(e.target.value)}
+              placeholder="이름 / 전화 / 메시지 / 오류"
+              className="input text-sm py-1.5 w-52"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">시작일</label>
+            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="input text-sm py-1.5" />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">종료일</label>
+            <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="input text-sm py-1.5" />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">상태</label>
+            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="input w-32 text-sm py-1.5">
+              <option value="">전체</option>
+              <option value="sent">발송완료</option>
+              <option value="failed">실패</option>
+              <option value="pending">대기중</option>
+            </select>
+          </div>
+          {(searchKeyword || startDate || endDate || statusFilter) && (
+            <button
+              onClick={() => { setSearchKeyword(''); setStartDate(''); setEndDate(''); setStatusFilter(''); }}
+              className="text-xs text-slate-500 hover:text-slate-700 underline py-1.5"
+            >
+              초기화
+            </button>
+          )}
         </div>
 
         <div className="overflow-x-auto">
@@ -128,7 +189,6 @@ export default function NotificationsPage() {
           <thead>
             <tr>
               <th>발송일시</th>
-              <th>유형</th>
               <th>수신자</th>
               <th>연락처</th>
               <th>메시지</th>
@@ -138,19 +198,16 @@ export default function NotificationsPage() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={7} className="text-center py-8">로딩 중...</td></tr>
-            ) : notifications.length === 0 ? (
-              <tr><td colSpan={7} className="text-center py-8 text-slate-400">발송 기록이 없습니다</td></tr>
-            ) : notifications.map(n => (
+              <tr><td colSpan={6} className="text-center py-8">로딩 중...</td></tr>
+            ) : filteredNotifications.length === 0 ? (
+              <tr><td colSpan={6} className="text-center py-8 text-slate-400">
+                {notifications.length === 0
+                  ? `${activeTab === 'kakao' ? '알림톡' : 'SMS'} 발송 기록이 없습니다`
+                  : '검색 조건에 맞는 기록이 없습니다'}
+              </td></tr>
+            ) : filteredNotifications.map(n => (
               <tr key={n.id}>
                 <td className="text-sm text-slate-500 whitespace-nowrap">{new Date(n.created_at).toLocaleString('ko-KR')}</td>
-                <td>
-                  <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
-                    n.notification_type === 'KAKAO' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
-                  }`}>
-                    {TYPE_LABEL[n.notification_type] || n.notification_type}
-                  </span>
-                </td>
                 <td className="text-sm">{n.customer?.name || '-'}</td>
                 <td className="font-mono text-sm">{n.phone}</td>
                 <td className="max-w-xs text-sm truncate text-slate-600">{n.message}</td>
