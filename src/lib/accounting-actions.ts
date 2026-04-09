@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { cookies } from 'next/headers';
+import { requireSession } from '@/lib/session';
 
 function getUserId(): string | null {
   try {
