@@ -133,7 +133,7 @@ interface ScreenPermission {
 }
 
 export default function SystemCodesPage() {
-  const [activeTab, setActiveTab] = useState<'channels' | 'branches' | 'grades' | 'tags' | 'categories' | 'staff' | 'templates' | 'permissions'>('channels');
+  const [activeTab, setActiveTab] = useState<'channels' | 'branches' | 'grades' | 'tags' | 'categories' | 'staff' | 'templates' | 'permissions' | 'campaign_types'>('channels');
   const [channels, setChannels] = useState<Channel[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [grades, setGrades] = useState<CustomerGrade[]>([]);
@@ -142,6 +142,7 @@ export default function SystemCodesPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [templates, setTemplates] = useState<NotificationTemplate[]>([]);
   const [permissions, setPermissions] = useState<ScreenPermission[]>([]);
+  const [campaignTypes, setCampaignTypes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [showChannelModal, setShowChannelModal] = useState(false);
@@ -195,6 +196,9 @@ export default function SystemCodesPage() {
     } else if (activeTab === 'templates') {
       const { data } = await supabase.from('notification_templates').select('*').order('created_at', { ascending: false });
       setTemplates((data || []) as NotificationTemplate[]);
+    } else if (activeTab === 'campaign_types') {
+      const { data } = await supabase.from('campaign_event_types').select('*').order('sort_order');
+      setCampaignTypes(data || []);
     } else if (activeTab === 'permissions') {
       const { data } = await supabase.from('screen_permissions').select('*').order('role', { ascending: true });
       setPermissions((data || []) as ScreenPermission[]);
@@ -341,6 +345,16 @@ export default function SystemCodesPage() {
           }`}
         >
           알림톡 템플릿
+        </button>
+        <button
+          onClick={() => setActiveTab('campaign_types')}
+          className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
+            activeTab === 'campaign_types'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          캠페인 유형
         </button>
         <button
           onClick={() => setActiveTab('permissions')}
@@ -921,6 +935,14 @@ export default function SystemCodesPage() {
           </table>
           </div>
         </div>
+      )}
+
+      {activeTab === 'campaign_types' && (
+        <CampaignEventTypeManager
+          data={campaignTypes}
+          loading={loading}
+          onRefresh={fetchData}
+        />
       )}
 
       {activeTab === 'permissions' && (
@@ -2115,6 +2137,196 @@ function TemplateModal({ template, onClose, onSuccess }: { template: Notificatio
           </div>
         </form>
       </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 캠페인 이벤트 유형 관리
+// ═══════════════════════════════════════════════════════════════════════
+
+function CampaignEventTypeManager({ data, loading, onRefresh }: { data: any[]; loading: boolean; onRefresh: () => void }) {
+  const supabase = createClient() as any;
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<any>(null);
+  const [form, setForm] = useState({ code: '', name: '', emoji: '📢', is_recurring_default: false, default_month: '', default_day: '', default_duration_days: '7', sort_order: '0' });
+  const [saving, setSaving] = useState(false);
+
+  const resetForm = (item?: any) => {
+    if (item) {
+      setForm({
+        code: item.code, name: item.name, emoji: item.emoji || '📢',
+        is_recurring_default: item.is_recurring_default ?? false,
+        default_month: item.default_month ? String(item.default_month) : '',
+        default_day: item.default_day ? String(item.default_day) : '',
+        default_duration_days: String(item.default_duration_days || 7),
+        sort_order: String(item.sort_order || 0),
+      });
+      setEditing(item);
+    } else {
+      setForm({ code: '', name: '', emoji: '📢', is_recurring_default: false, default_month: '', default_day: '', default_duration_days: '7', sort_order: '0' });
+      setEditing(null);
+    }
+    setShowForm(true);
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!form.code || !form.name) return;
+    setSaving(true);
+    const row = {
+      code: form.code.toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+      name: form.name,
+      emoji: form.emoji || '📢',
+      is_recurring_default: form.is_recurring_default,
+      default_month: form.default_month ? parseInt(form.default_month) : null,
+      default_day: form.default_day ? parseInt(form.default_day) : null,
+      default_duration_days: parseInt(form.default_duration_days) || 7,
+      sort_order: parseInt(form.sort_order) || 0,
+      is_active: true,
+    };
+    if (editing) {
+      await supabase.from('campaign_event_types').update(row).eq('code', editing.code);
+    } else {
+      const { error } = await supabase.from('campaign_event_types').insert(row);
+      if (error) { alert(error.message); setSaving(false); return; }
+    }
+    setSaving(false);
+    setShowForm(false);
+    onRefresh();
+  };
+
+  const handleToggle = async (code: string, active: boolean) => {
+    await supabase.from('campaign_event_types').update({ is_active: !active }).eq('code', code);
+    onRefresh();
+  };
+
+  const handleDelete = async (code: string) => {
+    if (!confirm(`"${code}" 이벤트 유형을 삭제하시겠습니까?`)) return;
+    await supabase.from('campaign_event_types').delete().eq('code', code);
+    onRefresh();
+  };
+
+  return (
+    <div className="card">
+      <div className="flex justify-between items-center mb-4">
+        <div>
+          <h3 className="font-semibold">캠페인 이벤트 유형</h3>
+          <p className="text-xs text-slate-500 mt-1">캠페인 생성 시 선택할 이벤트 유형을 관리합니다.</p>
+        </div>
+        <button onClick={() => resetForm()} className="btn-primary text-sm">+ 유형 추가</button>
+      </div>
+
+      {loading ? (
+        <div className="py-8 text-center text-slate-400">로딩 중...</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>아이콘</th>
+                <th>코드</th>
+                <th>유형명</th>
+                <th>매년 반복</th>
+                <th>기본 월/일</th>
+                <th>기간(일)</th>
+                <th>순서</th>
+                <th>상태</th>
+                <th>관리</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map(t => (
+                <tr key={t.code} className={!t.is_active ? 'opacity-50' : ''}>
+                  <td className="text-lg">{t.emoji}</td>
+                  <td className="font-mono text-sm">{t.code}</td>
+                  <td className="font-medium">{t.name}</td>
+                  <td>{t.is_recurring_default ? '✅' : '-'}</td>
+                  <td className="text-sm">{t.default_month ? `${t.default_month}월 ${t.default_day || ''}일` : '-'}</td>
+                  <td className="text-sm">{t.default_duration_days || '-'}일</td>
+                  <td className="text-sm">{t.sort_order}</td>
+                  <td>
+                    <span className={`badge text-xs ${t.is_active ? 'badge-success' : 'badge-error'}`}>
+                      {t.is_active ? '활성' : '비활성'}
+                    </span>
+                  </td>
+                  <td>
+                    <button onClick={() => resetForm(t)} className="text-blue-600 hover:underline mr-2 text-sm">수정</button>
+                    <button onClick={() => handleToggle(t.code, t.is_active)} className="text-amber-600 hover:underline mr-2 text-sm">
+                      {t.is_active ? '비활성' : '활성'}
+                    </button>
+                    <button onClick={() => handleDelete(t.code)} className="text-red-600 hover:underline text-sm">삭제</button>
+                  </td>
+                </tr>
+              ))}
+              {data.length === 0 && (
+                <tr><td colSpan={9} className="text-center text-slate-400 py-8">등록된 이벤트 유형이 없습니다</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {showForm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white w-full max-w-md mx-auto rounded-xl p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-bold">{editing ? '유형 수정' : '유형 추가'}</h2>
+              <button onClick={() => setShowForm(false)} className="text-gray-400 hover:text-gray-600">✕</button>
+            </div>
+            <form onSubmit={handleSave} className="space-y-3">
+              <div className="grid grid-cols-4 gap-3">
+                <div className="col-span-1">
+                  <label className="block text-xs font-medium mb-1">아이콘</label>
+                  <input value={form.emoji} onChange={e => setForm({ ...form, emoji: e.target.value })} className="input text-center text-lg" maxLength={4} />
+                </div>
+                <div className="col-span-3">
+                  <label className="block text-xs font-medium mb-1">유형명 *</label>
+                  <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required className="input" placeholder="추석" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1">코드 * <span className="text-slate-400">(영문 대문자+숫자+_)</span></label>
+                <input
+                  value={form.code}
+                  onChange={e => setForm({ ...form, code: e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '') })}
+                  required disabled={!!editing} className="input font-mono" placeholder="CHUSEOK"
+                />
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-medium mb-1">기본 월</label>
+                  <input type="number" min={1} max={12} value={form.default_month} onChange={e => setForm({ ...form, default_month: e.target.value })} className="input" placeholder="9" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium mb-1">기본 일</label>
+                  <input type="number" min={1} max={31} value={form.default_day} onChange={e => setForm({ ...form, default_day: e.target.value })} className="input" placeholder="10" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium mb-1">기간(일)</label>
+                  <input type="number" min={1} value={form.default_duration_days} onChange={e => setForm({ ...form, default_duration_days: e.target.value })} className="input" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium mb-1">정렬 순서</label>
+                  <input type="number" value={form.sort_order} onChange={e => setForm({ ...form, sort_order: e.target.value })} className="input" />
+                </div>
+                <div className="flex items-end pb-1">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={form.is_recurring_default} onChange={e => setForm({ ...form, is_recurring_default: e.target.checked })} className="w-4 h-4" />
+                    <span className="text-sm">매년 반복 기본값</span>
+                  </label>
+                </div>
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button type="submit" disabled={saving} className="flex-1 btn-primary">{saving ? '저장 중...' : editing ? '수정' : '추가'}</button>
+                <button type="button" onClick={() => setShowForm(false)} className="flex-1 btn-secondary">취소</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

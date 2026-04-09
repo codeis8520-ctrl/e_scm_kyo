@@ -3,9 +3,9 @@
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import {
-  CAMPAIGN_EVENT_TYPES, CAMPAIGN_STATUS, CAMPAIGN_STATUS_BADGE,
-  CAMPAIGN_EVENT_EMOJI, TARGET_GRADE_OPTIONS,
-  type Campaign, type CampaignEventType,
+  CAMPAIGN_STATUS, CAMPAIGN_STATUS_BADGE,
+  TARGET_GRADE_OPTIONS,
+  type Campaign,
 } from '@/lib/campaign-types';
 import {
   getCampaigns, createCampaign, updateCampaign, deleteCampaign,
@@ -23,17 +23,24 @@ export default function CampaignTab() {
   const [suggestions, setSuggestions] = useState<Campaign[]>([]);
   const [sendingId, setSendingId] = useState<string | null>(null);
   const [solapiTemplates, setSolapiTemplates] = useState<any[]>([]);
+  // DB에서 이벤트 유형 로드
+  const [eventTypes, setEventTypes] = useState<Record<string, { name: string; emoji: string }>>({});
 
   const fetchData = async () => {
     setLoading(true);
-    const [res, sugRes, tplRes] = await Promise.all([
+    const supabase = createClient() as any;
+    const [res, sugRes, tplRes, etRes] = await Promise.all([
       getCampaigns({ status: statusFilter || undefined, event_type: eventFilter || undefined }),
       getRecurringSuggestions(),
       fetch('/api/solapi/templates').then(r => r.json()).then(d => d.templates ?? []),
+      supabase.from('campaign_event_types').select('code, name, emoji').eq('is_active', true).order('sort_order'),
     ]);
     setCampaigns(res.data || []);
     setSuggestions(sugRes.data || []);
     setSolapiTemplates(tplRes);
+    const etMap: Record<string, { name: string; emoji: string }> = {};
+    for (const et of (etRes.data || []) as any[]) { etMap[et.code] = { name: et.name, emoji: et.emoji || '📢' }; }
+    setEventTypes(etMap);
     setLoading(false);
   };
 
@@ -128,7 +135,7 @@ export default function CampaignTab() {
                 onClick={() => handleCopy(s.id)}
                 className="px-3 py-1.5 rounded bg-amber-100 text-amber-800 text-xs font-medium hover:bg-amber-200"
               >
-                {CAMPAIGN_EVENT_EMOJI[s.event_type] || '📢'} {s.name} → 올해 복사
+                {eventTypes[s.event_type]?.emoji || '📢'} {s.name} → 올해 복사
               </button>
             ))}
           </div>
@@ -147,8 +154,8 @@ export default function CampaignTab() {
             </select>
             <select value={eventFilter} onChange={e => setEventFilter(e.target.value)} className="input text-sm py-1.5 w-36">
               <option value="">전체 유형</option>
-              {Object.entries(CAMPAIGN_EVENT_TYPES).map(([k, v]) => (
-                <option key={k} value={k}>{v}</option>
+              {Object.entries(eventTypes).map(([k, v]) => (
+                <option key={k} value={k}>{v.emoji} {v.name}</option>
               ))}
             </select>
           </div>
@@ -182,7 +189,7 @@ export default function CampaignTab() {
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-lg">{CAMPAIGN_EVENT_EMOJI[c.event_type] || '📢'}</span>
+                        <span className="text-lg">{eventTypes[c.event_type]?.emoji || '📢'}</span>
                         <h4 className="font-semibold text-slate-800 truncate">{c.name}</h4>
                         <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${CAMPAIGN_STATUS_BADGE[c.status] || ''}`}>
                           {CAMPAIGN_STATUS[c.status as keyof typeof CAMPAIGN_STATUS] || c.status}
@@ -251,6 +258,7 @@ export default function CampaignTab() {
         <CampaignFormModal
           campaign={editingCampaign}
           solapiTemplates={solapiTemplates}
+          eventTypes={eventTypes}
           onClose={() => { setShowForm(false); setEditingCampaign(null); }}
           onSuccess={() => { setShowForm(false); setEditingCampaign(null); fetchData(); }}
         />
@@ -263,9 +271,10 @@ export default function CampaignTab() {
 // 캠페인 생성/수정 모달
 // ═══════════════════════════════════════════════════════════════════════
 
-function CampaignFormModal({ campaign, solapiTemplates, onClose, onSuccess }: {
+function CampaignFormModal({ campaign, solapiTemplates, eventTypes, onClose, onSuccess }: {
   campaign: Campaign | null;
   solapiTemplates: any[];
+  eventTypes: Record<string, { name: string; emoji: string }>;
   onClose: () => void;
   onSuccess: () => void;
 }) {
@@ -368,8 +377,8 @@ function CampaignFormModal({ campaign, solapiTemplates, onClose, onSuccess }: {
             <div>
               <label className="block text-sm font-medium mb-1">이벤트 유형 *</label>
               <select value={form.event_type} onChange={e => setForm({ ...form, event_type: e.target.value })} className="input">
-                {Object.entries(CAMPAIGN_EVENT_TYPES).map(([k, v]) => (
-                  <option key={k} value={k}>{CAMPAIGN_EVENT_EMOJI[k]} {v}</option>
+                {Object.entries(eventTypes).map(([k, v]) => (
+                  <option key={k} value={k}>{v.emoji} {v.name}</option>
                 ))}
               </select>
             </div>
