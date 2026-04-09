@@ -115,45 +115,28 @@ async function handleOrderCreated(
   const cafe24Order = orderResponse.data;
   const orderCode = generateCafe24OrderCode(process.env.CAFE24_MALL_ID || '', orderNo);
 
+  // ──────────────────────────────────────────────────────────────────────
+  // 고객 매칭: 이미 등록된 회원만 연결, 자동 생성은 하지 않음.
+  //
+  // [개인정보 보호 원칙]
+  //   카페24 매출 동기화는 배송·매출 집계 목적이므로, 카페24 주문자를
+  //   우리 시스템에 자동으로 고객 등록하지 않습니다.
+  //   - 매출 동기화: sales_orders만 생성 (customer_id = null 허용)
+  //   - 회원 동기화: 관리자가 /customers → "카페24 회원 동기화" 명시적 실행
+  //   이전 버전에서 자동 생성된 dummy 고객(고객_xxx@k)은 cleanup SQL로 정리.
+  // ──────────────────────────────────────────────────────────────────────
   let customerId: string | null = null;
   if (memberId) {
     const { data: customer } = await getSupabase()
       .from('customers')
       .select('id')
       .eq('cafe24_member_id', memberId)
-      .single();
-    
+      .maybeSingle();
+
     if (customer) {
       customerId = customer.id;
-    } else {
-      // 자동 고객 생성
-      const customerName = cafe24Order.orderer_name || `고객_${memberId}`;
-      const customerPhone = cafe24Order.orderer_cellphone || cafe24Order.orderer_phone || '';
-      
-      const { data: newCustomer } = await getSupabase()
-        .from('customers')
-        .insert({
-          name: customerName,
-          phone: customerPhone || `cafe24_${memberId}`,
-          cafe24_member_id: memberId,
-          grade: 'NORMAL',
-          email: cafe24Order.orderer_email || null,
-          address: cafe24Order.recipient_address || null,
-        })
-        .select('id')
-        .single();
-      
-      customerId = newCustomer?.id || null;
-      await logSyncEvent('customer_auto_created', memberId.toString(), { member_id: memberId, name: customerName }, 'success');
-
-      // 신규 회원가입 알림톡 자동 발송
-      if (customerName && customerPhone && !customerPhone.startsWith('cafe24_')) {
-        fireNotificationTrigger({
-          eventType: 'WELCOME',
-          customer: { id: customerId || undefined, name: customerName, phone: customerPhone },
-        }).catch(() => {});
-      }
     }
+    // else: 미등록 회원 → customer_id=null로 주문만 생성 (고객 자동 생성 안 함)
   }
 
   const { data: existingOrder } = await getSupabase()
