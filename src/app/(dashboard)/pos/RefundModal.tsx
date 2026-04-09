@@ -67,6 +67,11 @@ export default function RefundModal({ branchId, onClose, onSuccess }: Props) {
       setSearching(false);
       return;
     }
+    if (o.payment_method === 'credit' && !o.credit_settled) {
+      setSearchError('외상 미수금 상태의 주문은 환불할 수 없습니다. 수금 처리 후 환불해주세요.');
+      setSearching(false);
+      return;
+    }
     setOrder(o);
     const defaults: Record<string, number> = {};
     for (const item of (o.items || [])) defaults[item.id] = item.quantity;

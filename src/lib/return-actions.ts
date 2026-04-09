@@ -66,6 +66,9 @@ export async function processRefund(params: {
   if (originalOrder.status === 'CANCELLED') {
     return { error: '취소된 주문은 환불할 수 없습니다.' };
   }
+  if (originalOrder.payment_method === 'credit' && !originalOrder.credit_settled) {
+    return { error: '외상 미수금 상태의 주문은 환불할 수 없습니다. 수금 처리 후 환불해주세요.' };
+  }
 
   // 2. 환불 항목 검증
   for (const item of items) {
