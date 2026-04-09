@@ -343,6 +343,10 @@ export default function POSPage() {
   const handlePayment = async () => {
     if (cart.length === 0) return;
     if (!selectedBranch) { alert('지점을 선택해주세요.'); return; }
+    if (paymentMethod === 'credit' && !selectedCustomer) {
+      alert('외상 결제는 고객을 먼저 선택해야 합니다.\n누가 외상했는지 기록되어야 합니다.');
+      return;
+    }
     if (paymentMethod === 'cash' && cashReceivedNum > 0 && cashReceivedNum < finalAmount) {
       alert(`받은 금액(${cashReceivedNum.toLocaleString()}원)이 결제 금액(${finalAmount.toLocaleString()}원)보다 적습니다.`);
       return;
