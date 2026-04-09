@@ -2,12 +2,19 @@
 
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { cookies } from 'next/headers';
 import { writeAuditLog } from '@/lib/session';
+import bcrypt from 'bcryptjs';
 
-function hashPassword(password: string): string {
+// 레거시 SHA-256 해시 (기존 사용자 호환용 — 로그인 시 bcrypt로 자동 전환)
+function hashPasswordLegacy(password: string): string {
   return createHash('sha256').update(password).digest('hex');
+}
+
+// bcrypt 해시 생성 (신규 사용자 + 전환 후)
+async function hashPasswordBcrypt(password: string): Promise<string> {
+  return bcrypt.hash(password, 12);
 }
 
 export async function login(formData: FormData): Promise<{ error?: string; success?: boolean }> {
@@ -29,14 +36,28 @@ export async function login(formData: FormData): Promise<{ error?: string; succe
   
   const user = userData as { id: string; login_id: string; password_hash: string; name: string; role: string; branch_id: string | null };
 
-  // 비밀번호 검증 (SHA256 해시 비교)
-  const inputHash = hashPassword(password);
-  if (user.password_hash && user.password_hash !== inputHash) {
-    return { error: '비밀번호가 일치하지 않습니다' };
+  // 비밀번호 검증 — bcrypt 또는 레거시 SHA-256 호환
+  if (user.password_hash) {
+    const isBcrypt = user.password_hash.startsWith('$2');
+    let valid = false;
+    if (isBcrypt) {
+      valid = await bcrypt.compare(password, user.password_hash);
+    } else {
+      // 레거시 SHA-256 비교
+      valid = user.password_hash === hashPasswordLegacy(password);
+      // 성공 시 자동으로 bcrypt로 전환 (마이그레이션)
+      if (valid) {
+        const newHash = await hashPasswordBcrypt(password);
+        await (supabase as any).from('users').update({ password_hash: newHash }).eq('id', user.id);
+      }
+    }
+    if (!valid) {
+      return { error: '비밀번호가 일치하지 않습니다' };
+    }
   }
 
-  // 자체 세션 토큰 생성
-  const sessionToken = createHash('sha256').update(`${user.id}-${Date.now()}-${Math.random()}`).digest('hex');
+  // 자체 세션 토큰 생성 — 암호학적으로 안전한 랜덤 (Math.random 대체)
+  const sessionToken = randomBytes(32).toString('hex');
 
   // session_tokens 테이블에 저장 (서버 측 무효화 가능)
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();

@@ -26,7 +26,7 @@ function sbAdmin() {
 
 function verifyCronAuth(req: NextRequest): boolean {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return true; // 미설정 시 검증 패스 (개발 편의)
+  if (!secret) return false; // 미설정 시 거부 — 반드시 환경변수 등록 필요
   const auth = req.headers.get('authorization');
   return auth === `Bearer ${secret}`;
 }

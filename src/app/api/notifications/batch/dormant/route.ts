@@ -24,7 +24,7 @@ function sbAdmin() {
 
 function verifyCronAuth(req: NextRequest): boolean {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return true;
+  if (!secret) return false; // 미설정 시 거부
   const auth = req.headers.get('authorization');
   return auth === `Bearer ${secret}`;
 }

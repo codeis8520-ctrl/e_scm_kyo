@@ -30,15 +30,17 @@ export async function POST(request: NextRequest) {
     const rawBody = await request.text();
     const signature = request.headers.get('x-cafe24-signature') || '';
 
-    if (CAFE24_CLIENT_SECRET && signature) {
-      const isValid = verifyWebhookSignature(rawBody, signature, CAFE24_CLIENT_SECRET);
-      if (!isValid) {
-        console.error('Invalid webhook signature');
-        return NextResponse.json(
-          { success: false, error: 'Invalid signature' },
-          { status: 401 }
-        );
-      }
+    if (!CAFE24_CLIENT_SECRET) {
+      console.error('CAFE24_CLIENT_SECRET 미설정 — webhook 거부');
+      return NextResponse.json({ success: false, error: 'Webhook secret not configured' }, { status: 500 });
+    }
+    if (!signature) {
+      return NextResponse.json({ success: false, error: 'Missing signature' }, { status: 401 });
+    }
+    const isValid = verifyWebhookSignature(rawBody, signature, CAFE24_CLIENT_SECRET);
+    if (!isValid) {
+      console.error('Invalid webhook signature');
+      return NextResponse.json({ success: false, error: 'Invalid signature' }, { status: 401 });
     }
 
     const event: Cafe24WebhookEvent = JSON.parse(rawBody);
