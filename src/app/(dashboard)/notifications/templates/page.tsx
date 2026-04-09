@@ -147,23 +147,34 @@ interface ClassificationProps {
   onRefresh: () => void;
 }
 
+interface RowEdit {
+  event_type: string;
+  is_manual_sendable: boolean;
+  auto_trigger_enabled: boolean;
+}
+
 function SolapiTemplateClassification({ templates, mappings, loading, onRefresh }: ClassificationProps) {
   const [savingId, setSavingId] = useState<string | null>(null);
   const [error, setError] = useState('');
 
   // 로컬 변경사항 임시 저장 (각 행 개별 저장)
-  const [localEdits, setLocalEdits] = useState<Record<string, { event_type: string; is_manual_sendable: boolean }>>({});
+  const [localEdits, setLocalEdits] = useState<Record<string, RowEdit>>({});
 
-  const getCurrent = (tplId: string) => {
+  const getCurrent = (tplId: string): RowEdit => {
     if (localEdits[tplId]) return localEdits[tplId];
     const m = mappings[tplId];
     return {
       event_type: (m?.event_type as string) || 'OTHER',
       is_manual_sendable: m?.is_manual_sendable ?? false,
+      auto_trigger_enabled: (m?.auto_trigger_enabled as boolean) ?? false,
     };
   };
 
-  const setField = (tplId: string, field: 'event_type' | 'is_manual_sendable', value: any) => {
+  const setField = (
+    tplId: string,
+    field: keyof RowEdit,
+    value: any
+  ) => {
     const cur = getCurrent(tplId);
     setLocalEdits(prev => ({
       ...prev,
@@ -177,26 +188,34 @@ function SolapiTemplateClassification({ templates, mappings, loading, onRefresh 
     const m = mappings[tplId];
     return (
       local.event_type !== ((m?.event_type as string) || 'OTHER') ||
-      local.is_manual_sendable !== (m?.is_manual_sendable ?? false)
+      local.is_manual_sendable !== (m?.is_manual_sendable ?? false) ||
+      local.auto_trigger_enabled !== ((m?.auto_trigger_enabled as boolean) ?? false)
     );
   };
 
-  const handleSave = async (tplId: string, tplName: string) => {
+  const handleSave = async (tpl: any) => {
+    const tplId = tpl.templateId;
     setSavingId(tplId);
     setError('');
     const cur = getCurrent(tplId);
+    // 변수 키 배열 정규화
+    const varKeys: string[] = Array.isArray(tpl.variables)
+      ? tpl.variables.map((v: any) => (typeof v === 'string' ? v : v?.name)).filter(Boolean)
+      : [];
     const result = await upsertTemplateMapping({
       solapi_template_id: tplId,
       event_type: cur.event_type as EventTypeKey,
       is_manual_sendable: cur.is_manual_sendable,
-      description: tplName,
+      auto_trigger_enabled: cur.auto_trigger_enabled,
+      description: tpl.name,
+      template_content: tpl.content || null,
+      template_variables: varKeys,
     });
     setSavingId(null);
     if (result.error) {
       setError(result.error);
       return;
     }
-    // 저장 성공 → 로컬 편집 초기화하고 전체 매핑 재조회
     setLocalEdits(prev => {
       const next = { ...prev };
       delete next[tplId];
@@ -242,13 +261,14 @@ function SolapiTemplateClassification({ templates, mappings, loading, onRefresh 
         </div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="table min-w-[800px]">
+          <table className="table min-w-[900px]">
             <thead>
               <tr>
-                <th className="w-64">템플릿명</th>
+                <th className="w-56">템플릿명</th>
                 <th>내용 미리보기</th>
-                <th className="w-40">이벤트 유형</th>
-                <th className="w-32 text-center">수동 발송</th>
+                <th className="w-36">이벤트 유형</th>
+                <th className="w-24 text-center">수동 발송</th>
+                <th className="w-24 text-center">자동 발송</th>
                 <th className="w-20 text-center">저장</th>
               </tr>
             </thead>
@@ -257,11 +277,13 @@ function SolapiTemplateClassification({ templates, mappings, loading, onRefresh 
                 const cur = getCurrent(tpl.templateId);
                 const dirty = isDirty(tpl.templateId);
                 const isUnclassified = !mappings[tpl.templateId] && !localEdits[tpl.templateId];
+                // 자동 발송 가능 조건: 이벤트 유형이 자동 트리거 가능한 종류
+                const autoTriggerable = ['ORDER_COMPLETE', 'SHIPMENT', 'DELIVERY', 'REFUND', 'WELCOME', 'AUTH', 'POINT', 'BIRTHDAY'].includes(cur.event_type);
                 return (
                   <tr key={tpl.templateId} className={isUnclassified ? 'bg-amber-50/40' : ''}>
                     <td>
                       <div className="text-sm font-medium">{tpl.name || '(이름 없음)'}</div>
-                      <div className="text-xs font-mono text-slate-400 truncate max-w-[240px]" title={tpl.templateId}>
+                      <div className="text-xs font-mono text-slate-400 truncate max-w-[220px]" title={tpl.templateId}>
                         {tpl.templateId}
                       </div>
                     </td>
@@ -289,12 +311,23 @@ function SolapiTemplateClassification({ templates, mappings, loading, onRefresh 
                           onChange={e => setField(tpl.templateId, 'is_manual_sendable', e.target.checked)}
                           className="w-4 h-4"
                         />
-                        <span className="text-xs text-slate-500">허용</span>
+                      </label>
+                    </td>
+                    <td className="text-center">
+                      <label className={`inline-flex items-center gap-1 ${autoTriggerable ? 'cursor-pointer' : 'cursor-not-allowed opacity-40'}`}>
+                        <input
+                          type="checkbox"
+                          checked={cur.auto_trigger_enabled && autoTriggerable}
+                          disabled={!autoTriggerable}
+                          onChange={e => setField(tpl.templateId, 'auto_trigger_enabled', e.target.checked)}
+                          className="w-4 h-4"
+                          title={autoTriggerable ? '이벤트 발생 시 자동 발송' : '이 이벤트 유형은 자동 발송을 지원하지 않습니다'}
+                        />
                       </label>
                     </td>
                     <td className="text-center">
                       <button
-                        onClick={() => handleSave(tpl.templateId, tpl.name)}
+                        onClick={() => handleSave(tpl)}
                         disabled={!dirty || savingId === tpl.templateId}
                         className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
                           dirty

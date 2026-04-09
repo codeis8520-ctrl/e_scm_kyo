@@ -4,6 +4,7 @@ import { Cafe24WebhookEvent, CAFE24_STATUS_TO_LOCAL } from './types';
 import { Cafe24Client, generateCafe24OrderCode } from './client';
 import { getValidAccessToken } from './token-store';
 import { createSaleJournal } from '@/lib/accounting-actions';
+import { fireNotificationTrigger } from '@/lib/notification-triggers';
 
 let supabase: SupabaseClient | null = null;
 
@@ -144,6 +145,14 @@ async function handleOrderCreated(
       
       customerId = newCustomer?.id || null;
       await logSyncEvent('customer_auto_created', memberId.toString(), { member_id: memberId, name: customerName }, 'success');
+
+      // 신규 회원가입 알림톡 자동 발송
+      if (customerName && customerPhone && !customerPhone.startsWith('cafe24_')) {
+        fireNotificationTrigger({
+          eventType: 'WELCOME',
+          customer: { id: customerId || undefined, name: customerName, phone: customerPhone },
+        }).catch(() => {});
+      }
     }
   }
 
@@ -259,6 +268,29 @@ async function handleOrderPaid(
     });
   } catch (journalErr) {
     await logSyncEvent('order_paid_journal_warn', orderCode, { journalErr }, 'success', '분개 생성 실패(무시됨)');
+  }
+
+  // 주문 완료 알림톡 자동 발송 (매핑 등록된 경우만)
+  try {
+    const { data: custRow } = await getSupabase()
+      .from('sales_orders')
+      .select('customer:customers(id, name, phone, grade)')
+      .eq('id', order.id)
+      .maybeSingle();
+    const cust = (custRow as any)?.customer;
+    if (cust?.name && cust?.phone) {
+      fireNotificationTrigger({
+        eventType: 'ORDER_COMPLETE',
+        customer: { id: cust.id, name: cust.name, phone: cust.phone },
+        context: {
+          orderNo: order.order_number,
+          amount: Number(order.total_amount),
+          customerGrade: cust.grade || 'NORMAL',
+        },
+      }).catch(() => {});
+    }
+  } catch {
+    /* 알림톡 실패가 업무 흐름을 막지 않음 */
   }
 
   await logSyncEvent('order_paid', orderCode, { status: 'COMPLETED', purchase_confirmed_at: now }, 'success');

@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { cookies } from 'next/headers';
 import { requireSession, writeAuditLog } from '@/lib/session';
+import { fireNotificationTrigger } from '@/lib/notification-triggers';
 
 function getUserId(): string | null {
   try {
@@ -203,6 +204,25 @@ export async function processRefund(params: {
       .update({ status: newStatus })
       .eq('id', originalOrderId);
 
+    // 환불 완료 알림톡 자동 발송 (매핑 등록된 경우만)
+    if (originalOrder.customer_id) {
+      const { data: cust } = await db
+        .from('customers')
+        .select('id, name, phone, grade')
+        .eq('id', originalOrder.customer_id)
+        .maybeSingle();
+      if (cust?.name && cust?.phone) {
+        fireNotificationTrigger({
+          eventType: 'REFUND',
+          customer: { id: cust.id, name: cust.name, phone: cust.phone },
+          context: {
+            orderNo: originalOrder.order_number,
+            amount: refundAmount,
+            customerGrade: cust.grade || 'NORMAL',
+          },
+        }).catch(() => {});
+      }
+    }
   } catch (err: any) {
     // 롤백: 환불 전표 삭제 (cascade)
     if (returnOrderId) {

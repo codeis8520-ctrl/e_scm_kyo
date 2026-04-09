@@ -2,6 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
+import { fireNotificationTrigger } from '@/lib/notification-triggers';
 
 export interface ShipmentInput {
   source: 'CAFE24' | 'STORE';
@@ -63,6 +64,13 @@ export async function updateShipment(
 ) {
   const supabase = await createClient() as any;
 
+  // 이전 상태 조회 (송장번호 신규 등록 + SHIPPED 전환 감지용)
+  const { data: prev } = await supabase
+    .from('shipments')
+    .select('tracking_number, status, recipient_name, recipient_phone, items_summary, cafe24_order_id')
+    .eq('id', id)
+    .maybeSingle();
+
   const { error } = await supabase
     .from('shipments')
     .update({ ...data, updated_at: new Date().toISOString() })
@@ -71,6 +79,34 @@ export async function updateShipment(
   if (error) {
     console.error('updateShipment error:', error);
     return { success: false, error: error.message };
+  }
+
+  // 송장번호가 신규 부여되었고, 상태가 SHIPPED로 전환된 경우 알림톡 발송
+  try {
+    const prevTracking = (prev as any)?.tracking_number || null;
+    const prevStatus = (prev as any)?.status || null;
+    const newTracking = (data.tracking_number as string | null | undefined) ?? prevTracking;
+    const newStatus = (data.status as string | undefined) ?? prevStatus;
+
+    const becameShipped = prevStatus !== 'SHIPPED' && newStatus === 'SHIPPED';
+    const gotTracking = !prevTracking && !!newTracking;
+
+    if ((becameShipped || gotTracking) && prev?.recipient_name && prev?.recipient_phone && newTracking) {
+      fireNotificationTrigger({
+        eventType: 'SHIPMENT',
+        customer: {
+          name: (prev as any).recipient_name,
+          phone: (prev as any).recipient_phone,
+        },
+        context: {
+          trackingNo: String(newTracking),
+          productName: (prev as any).items_summary || '',
+          orderNo: (prev as any).cafe24_order_id || '',
+        },
+      }).catch(() => {});
+    }
+  } catch {
+    /* 알림톡 실패가 업무 흐름을 막지 않음 */
   }
 
   revalidatePath('/shipping');

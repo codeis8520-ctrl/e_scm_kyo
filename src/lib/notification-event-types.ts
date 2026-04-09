@@ -39,5 +39,8 @@ export interface TemplateMapping {
   solapi_template_id: string;
   event_type: EventTypeKey | string;
   is_manual_sendable: boolean;
+  auto_trigger_enabled?: boolean;
   description?: string | null;
+  template_content?: string | null;
+  template_variables?: string[] | null;
 }

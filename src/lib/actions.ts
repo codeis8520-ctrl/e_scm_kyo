@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
+import { fireNotificationTrigger } from '@/lib/notification-triggers';
 
 // ============ Products ============
 
@@ -160,11 +161,20 @@ export async function createCustomer(formData: FormData) {
 
   // @ts-ignore
   const { error } = await supabase.from('customers').insert(customerData);
-  
+
   if (error) {
     return { error: error.message };
   }
-  
+
+  // 신규 회원가입 알림톡 자동 발송 (매핑 등록된 경우만)
+  if (customerData.name && customerData.phone) {
+    fireNotificationTrigger({
+      eventType: 'WELCOME',
+      customer: { name: customerData.name, phone: customerData.phone },
+      context: { customerGrade: customerData.grade },
+    }).catch(() => {});
+  }
+
   revalidatePath('/customers');
   return { success: true };
 }
@@ -1050,6 +1060,30 @@ export async function processPosCheckout(payload: CheckoutPayload) {
         type: 'earn', points: pointsEarned, balance: currentPoints + pointsEarned,
         description: `구매 적립 (${orderNumber})`,
       });
+    }
+  }
+
+  // ⑥ 주문 완료 알림톡 자동 발송 (등록 고객 + 매핑 존재 시)
+  if (customerId) {
+    const { data: cust } = await (db as any)
+      .from('customers')
+      .select('name, phone, grade')
+      .eq('id', customerId)
+      .maybeSingle();
+    const { data: br } = await (db as any)
+      .from('branches').select('name').eq('id', branchId).maybeSingle();
+
+    if (cust?.name && cust?.phone) {
+      fireNotificationTrigger({
+        eventType: 'ORDER_COMPLETE',
+        customer: { id: customerId, name: cust.name, phone: cust.phone },
+        context: {
+          orderNo: orderNumber,
+          amount: totalAmount - discountAmount,
+          branchName: br?.name || '',
+          customerGrade: cust.grade || 'NORMAL',
+        },
+      }).catch(() => {});
     }
   }
 

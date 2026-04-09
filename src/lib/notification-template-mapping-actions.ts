@@ -29,7 +29,10 @@ export async function upsertTemplateMapping(params: {
   solapi_template_id: string;
   event_type: EventTypeKey | string;
   is_manual_sendable: boolean;
+  auto_trigger_enabled?: boolean;
   description?: string | null;
+  template_content?: string | null;
+  template_variables?: string[] | null;
 }) {
   try {
     await requireSession();
@@ -38,23 +41,33 @@ export async function upsertTemplateMapping(params: {
   }
 
   const supabase = (await createClient()) as any;
-  const { solapi_template_id, event_type, is_manual_sendable, description } = params;
+  const {
+    solapi_template_id,
+    event_type,
+    is_manual_sendable,
+    auto_trigger_enabled,
+    description,
+    template_content,
+    template_variables,
+  } = params;
 
   if (!solapi_template_id) {
     return { error: 'solapi_template_id가 필요합니다.' };
   }
 
+  const upsertRow: any = {
+    solapi_template_id,
+    event_type,
+    is_manual_sendable,
+    description: description ?? null,
+  };
+  if (typeof auto_trigger_enabled === 'boolean') upsertRow.auto_trigger_enabled = auto_trigger_enabled;
+  if (template_content !== undefined) upsertRow.template_content = template_content;
+  if (template_variables !== undefined) upsertRow.template_variables = template_variables;
+
   const { error } = await supabase
     .from('notification_template_mappings')
-    .upsert(
-      {
-        solapi_template_id,
-        event_type,
-        is_manual_sendable,
-        description: description ?? null,
-      },
-      { onConflict: 'solapi_template_id' }
-    );
+    .upsert(upsertRow, { onConflict: 'solapi_template_id' });
 
   if (error) return { error: error.message };
 
