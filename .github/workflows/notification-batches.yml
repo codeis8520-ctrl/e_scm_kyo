@@ -1,15 +1,15 @@
-name: Notification Batches
+name: Scheduled Batches
 
-# 경옥채 알림톡 배치 작업을 GitHub Actions cron으로 주기 실행.
-# Vercel Hobby(무료)는 크론이 하루 1회·2개 제한이라 GitHub Actions를 사용.
+# 경옥채 정기 배치 작업 (GitHub Actions 무료 크론)
 #
 # 필요한 Repository Secrets:
 #   - APP_URL        : 배포된 URL (예: https://e-scm-kyo.vercel.app)
 #   - CRON_SECRET    : 배치 엔드포인트 보호용 Bearer 토큰 (Vercel 환경변수와 동일)
-#   - CAFE24_CRON    : (선택) 카페24 refresh 호출용. 없으면 CRON_SECRET와 공용
 
 on:
   schedule:
+    # 카페24 매출 자동 동기화 — 매일 08:00 KST (UTC 23:00 전일)
+    - cron: '0 23 * * *'
     # 생일 축하 알림톡 — 매일 09:00 KST (UTC 00:00)
     - cron: '0 0 * * *'
     # 휴면 고객 재유치 — 매주 월요일 10:00 KST (UTC 01:00)
@@ -21,22 +21,40 @@ on:
       job:
         description: '수동 실행할 배치'
         required: true
-        default: 'birthday'
+        default: 'cafe24-sync'
         type: choice
         options:
+          - cafe24-sync
           - birthday
           - dormant
           - cafe24-refresh
 
 jobs:
+  cafe24-sync:
+    if: >-
+      github.event_name == 'schedule' && github.event.schedule == '0 23 * * *' ||
+      github.event_name == 'workflow_dispatch' && inputs.job == 'cafe24-sync'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cafe24 매출 자동 동기화 (최근 3일)
+        run: |
+          echo "▶ 카페24 매출 동기화 호출"
+          RESPONSE=$(curl -sS -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_URL }}/api/cafe24/sync-orders?days=3")
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          CODE=$(echo "$RESPONSE" | tail -n 1)
+          echo "HTTP: $CODE"
+          echo "Body: $BODY"
+          if [ "$CODE" != "200" ]; then exit 1; fi
+
   birthday:
-    # schedule 'birthday' cron OR workflow_dispatch with job=birthday
     if: >-
       github.event_name == 'schedule' && github.event.schedule == '0 0 * * *' ||
       github.event_name == 'workflow_dispatch' && inputs.job == 'birthday'
     runs-on: ubuntu-latest
     steps:
-      - name: Call birthday batch
+      - name: 생일 축하 배치
         run: |
           echo "▶ 생일 축하 배치 호출"
           RESPONSE=$(curl -sS -w "\n%{http_code}" \
@@ -54,7 +72,7 @@ jobs:
       github.event_name == 'workflow_dispatch' && inputs.job == 'dormant'
     runs-on: ubuntu-latest
     steps:
-      - name: Call dormant batch
+      - name: 휴면 재유치 배치
         run: |
           echo "▶ 휴면 재유치 배치 호출"
           RESPONSE=$(curl -sS -w "\n%{http_code}" \
@@ -72,7 +90,7 @@ jobs:
       github.event_name == 'workflow_dispatch' && inputs.job == 'cafe24-refresh'
     runs-on: ubuntu-latest
     steps:
-      - name: Call cafe24 token refresh
+      - name: 카페24 토큰 갱신
         run: |
           echo "▶ 카페24 토큰 갱신 호출"
           RESPONSE=$(curl -sS -w "\n%{http_code}" \
