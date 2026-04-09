@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import { validators, formatPhone } from '@/lib/validators';
-import { sendSmsAction, sendKakaoAction, getNotifications } from '@/lib/notification-actions';
+import { sendSmsAction, sendKakaoAction, getNotifications, resendFailedNotification } from '@/lib/notification-actions';
 import { getTemplateMappings } from '@/lib/notification-template-mapping-actions';
 import { EVENT_TYPES, type TemplateMapping } from '@/lib/notification-event-types';
 
@@ -35,6 +35,8 @@ export default function NotificationsPage() {
   const [searchKeyword, setSearchKeyword] = useState('');
   const [startDate, setStartDate]         = useState('');
   const [endDate, setEndDate]             = useState('');
+  const [sourceFilter, setSourceFilter]   = useState(''); // MANUAL | AUTO_EVENT | SCHEDULED
+  const [resendingId, setResendingId]     = useState<string | null>(null);
 
   // 탭별 타입 매핑
   const typeByTab: Record<'kakao' | 'sms', string> = { kakao: 'KAKAO', sms: 'SMS' };
@@ -71,11 +73,25 @@ export default function NotificationsPage() {
     setStatusFilter('');
     setStartDate('');
     setEndDate('');
+    setSourceFilter('');
   };
 
-  // 탭 필터 + 검색어 + 날짜 범위 필터링
+  const handleResend = async (id: string) => {
+    if (!confirm('이 건을 재발송하시겠습니까?')) return;
+    setResendingId(id);
+    const res = await resendFailedNotification(id);
+    setResendingId(null);
+    if (res.error) {
+      alert('재발송 실패: ' + res.error);
+    } else {
+      alert(res.resent ? '재발송 완료' : '재발송 시도 했으나 실패로 기록됨');
+      fetchData();
+    }
+  };
+
+  // 탭 필터 + 검색어 + 날짜 범위 + 발송 출처 필터링
   const filteredNotifications = notifications.filter(n => {
-    // 유형은 이미 서버에서 필터됨 (activeTab 기준)
+    if (sourceFilter && (n.trigger_source || 'MANUAL') !== sourceFilter) return false;
     if (searchKeyword) {
       const kw = searchKeyword.toLowerCase();
       const inName = (n.customer?.name || '').toLowerCase().includes(kw);
@@ -179,9 +195,18 @@ export default function NotificationsPage() {
               <option value="pending">대기중</option>
             </select>
           </div>
-          {(searchKeyword || startDate || endDate || statusFilter) && (
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">출처</label>
+            <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)} className="input w-32 text-sm py-1.5">
+              <option value="">전체</option>
+              <option value="MANUAL">수동</option>
+              <option value="AUTO_EVENT">자동 (이벤트)</option>
+              <option value="SCHEDULED">배치 (스케줄)</option>
+            </select>
+          </div>
+          {(searchKeyword || startDate || endDate || statusFilter || sourceFilter) && (
             <button
-              onClick={() => { setSearchKeyword(''); setStartDate(''); setEndDate(''); setStatusFilter(''); }}
+              onClick={() => { setSearchKeyword(''); setStartDate(''); setEndDate(''); setStatusFilter(''); setSourceFilter(''); }}
               className="text-xs text-slate-500 hover:text-slate-700 underline py-1.5"
             >
               초기화
@@ -190,40 +215,67 @@ export default function NotificationsPage() {
         </div>
 
         <div className="overflow-x-auto">
-        <table className="table min-w-[600px]">
+        <table className="table min-w-[700px]">
           <thead>
             <tr>
               <th>발송일시</th>
+              <th>출처</th>
               <th>수신자</th>
               <th>연락처</th>
               <th>메시지</th>
               <th>상태</th>
               <th>오류</th>
+              <th>동작</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={6} className="text-center py-8">로딩 중...</td></tr>
+              <tr><td colSpan={8} className="text-center py-8">로딩 중...</td></tr>
             ) : filteredNotifications.length === 0 ? (
-              <tr><td colSpan={6} className="text-center py-8 text-slate-400">
+              <tr><td colSpan={8} className="text-center py-8 text-slate-400">
                 {notifications.length === 0
                   ? `${activeTab === 'kakao' ? '알림톡' : 'SMS'} 발송 기록이 없습니다`
                   : '검색 조건에 맞는 기록이 없습니다'}
               </td></tr>
-            ) : filteredNotifications.map(n => (
-              <tr key={n.id}>
-                <td className="text-sm text-slate-500 whitespace-nowrap">{new Date(n.created_at).toLocaleString('ko-KR')}</td>
-                <td className="text-sm">{n.customer?.name || '-'}</td>
-                <td className="font-mono text-sm">{n.phone}</td>
-                <td className="max-w-xs text-sm truncate text-slate-600">{n.message}</td>
-                <td>
-                  <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${STATUS_BADGE[n.status] || ''}`}>
-                    {STATUS_LABEL[n.status] || n.status}
-                  </span>
-                </td>
-                <td className="text-xs text-red-500 max-w-[120px] truncate">{n.error_message || ''}</td>
-              </tr>
-            ))}
+            ) : filteredNotifications.map(n => {
+              const src = n.trigger_source || 'MANUAL';
+              const srcLabel: Record<string, string> = { MANUAL: '수동', AUTO_EVENT: '자동', SCHEDULED: '배치' };
+              const srcColor: Record<string, string> = {
+                MANUAL: 'bg-slate-100 text-slate-600',
+                AUTO_EVENT: 'bg-blue-100 text-blue-700',
+                SCHEDULED: 'bg-purple-100 text-purple-700',
+              };
+              return (
+                <tr key={n.id}>
+                  <td className="text-sm text-slate-500 whitespace-nowrap">{new Date(n.created_at).toLocaleString('ko-KR')}</td>
+                  <td>
+                    <span className={`inline-block px-2 py-0.5 rounded text-xs ${srcColor[src] || ''}`}>
+                      {srcLabel[src] || src}
+                    </span>
+                  </td>
+                  <td className="text-sm">{n.customer?.name || '-'}</td>
+                  <td className="font-mono text-sm">{n.phone}</td>
+                  <td className="max-w-xs text-sm truncate text-slate-600">{n.message}</td>
+                  <td>
+                    <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${STATUS_BADGE[n.status] || ''}`}>
+                      {STATUS_LABEL[n.status] || n.status}
+                    </span>
+                  </td>
+                  <td className="text-xs text-red-500 max-w-[120px] truncate" title={n.error_message || ''}>{n.error_message || ''}</td>
+                  <td>
+                    {n.status === 'failed' && (
+                      <button
+                        onClick={() => handleResend(n.id)}
+                        disabled={resendingId === n.id}
+                        className="text-xs text-blue-600 hover:underline disabled:text-slate-300"
+                      >
+                        {resendingId === n.id ? '...' : '재발송'}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
         </div>

@@ -53,6 +53,7 @@ export async function sendSmsAction(params: SendSmsParams) {
       external_message_id: r.messageId || null,
       error_message: r.error || null,
       sent_by: session.id,
+      trigger_source: 'MANUAL',
     };
   });
 
@@ -139,6 +140,7 @@ export async function sendKakaoAction(params: SendKakaoParams) {
       external_message_id: r.messageId || null,
       error_message: r.error || null,
       sent_by: session.id,
+      trigger_source: 'MANUAL',
     };
   });
 
@@ -158,6 +160,84 @@ export async function sendKakaoAction(params: SendKakaoParams) {
     successCount: result.successCount,
     failCount: result.failCount,
   };
+}
+
+// ─── 실패 건 재발송 ────────────────────────────────────────────────────────────
+
+export async function resendFailedNotification(notificationId: string) {
+  let session;
+  try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
+
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  const { data: notif } = await db
+    .from('notifications')
+    .select('*')
+    .eq('id', notificationId)
+    .maybeSingle();
+
+  if (!notif) return { error: '발송 이력을 찾을 수 없습니다.' };
+  if (notif.status !== 'failed') return { error: '실패 상태의 건만 재발송 가능합니다.' };
+
+  // SMS 재발송
+  if (notif.notification_type === 'SMS') {
+    const r = await sendMessages([{ to: notif.phone, text: notif.message, customerId: notif.customer_id || undefined }]);
+    const res = r.results[0];
+    await db.from('notifications').insert({
+      customer_id: notif.customer_id,
+      notification_type: 'SMS',
+      phone: notif.phone,
+      message: notif.message,
+      status: res?.success ? 'sent' : 'failed',
+      sent_at: new Date().toISOString(),
+      external_message_id: res?.messageId || null,
+      error_message: res?.error || null,
+      sent_by: session.id,
+      trigger_source: 'MANUAL',
+    });
+    return { success: true, resent: res?.success };
+  }
+
+  // 알림톡 재발송 — template_code 기준으로 매핑 조회 후 동일 내용으로 재전송
+  if (notif.notification_type === 'KAKAO') {
+    const { data: mapping } = await db
+      .from('notification_template_mappings')
+      .select('*')
+      .eq('solapi_template_id', notif.template_code)
+      .maybeSingle();
+
+    if (!mapping?.template_content) {
+      return { error: '해당 템플릿의 매핑 정보가 없어 재발송 불가.' };
+    }
+
+    // 이미 치환된 메시지를 그대로 재전송 (원본 변수 값은 복원 불가하므로 저장된 message 사용)
+    const r = await sendKakaoMessages([{
+      to: notif.phone,
+      templateId: notif.template_code,
+      variables: {},  // 이미 치환된 text를 그대로 보냄
+      text: notif.message,
+      customerId: notif.customer_id || undefined,
+    }]);
+    const res = r.results[0];
+    await db.from('notifications').insert({
+      customer_id: notif.customer_id,
+      notification_type: 'KAKAO',
+      template_id: null,
+      template_code: notif.template_code,
+      phone: notif.phone,
+      message: notif.message,
+      status: res?.success ? 'sent' : 'failed',
+      sent_at: new Date().toISOString(),
+      external_message_id: res?.messageId || null,
+      error_message: res?.error || null,
+      sent_by: session.id,
+      trigger_source: 'MANUAL',
+    });
+    return { success: true, resent: res?.success };
+  }
+
+  return { error: '알 수 없는 알림 유형입니다.' };
 }
 
 // ─── 발송 이력 조회 ────────────────────────────────────────────────────────────

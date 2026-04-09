@@ -30,6 +30,8 @@ export interface TriggerNotificationParams {
     branchName?: string;
     customerGrade?: string;
   };
+  /** 발송 출처 — MANUAL | AUTO_EVENT | SCHEDULED. 기본 AUTO_EVENT */
+  triggerSource?: 'MANUAL' | 'AUTO_EVENT' | 'SCHEDULED';
 }
 
 export async function triggerEventNotification(
@@ -73,11 +75,17 @@ export async function triggerEventNotification(
       authCode: params.context?.authCode,
     };
 
+    const triggerSource = params.triggerSource || 'AUTO_EVENT';
+
     for (const mapping of mappings as any[]) {
       const content: string | null = mapping.template_content;
       const varKeys: string[] = Array.isArray(mapping.template_variables)
         ? mapping.template_variables
         : [];
+      const variableDefaults: Record<string, string> =
+        (mapping.variable_defaults && typeof mapping.variable_defaults === 'object')
+          ? mapping.variable_defaults
+          : {};
 
       if (!content) {
         console.warn(
@@ -87,8 +95,14 @@ export async function triggerEventNotification(
         continue;
       }
 
-      // 변수 해석
+      // 변수 해석 + 기본값 폴백
       const vars = resolveAllVariables(varKeys, ctx);
+      for (const key of varKeys) {
+        // resolve 결과가 플레이스홀더 그대로면 (미해석) → 기본값으로 덮기
+        if (vars[key] === key && variableDefaults[key]) {
+          vars[key] = variableDefaults[key];
+        }
+      }
 
       // 변수 치환된 최종 텍스트
       let text = content;
@@ -116,6 +130,7 @@ export async function triggerEventNotification(
           sent_at: new Date().toISOString(),
           error_message: `변수 미치환: ${unresolved.join(', ')}`,
           sent_by: null,
+          trigger_source: triggerSource,
         });
         continue;
       }
@@ -145,6 +160,7 @@ export async function triggerEventNotification(
         external_message_id: r?.messageId || null,
         error_message: r?.error || null,
         sent_by: null,
+        trigger_source: triggerSource,
       });
 
       if (!r?.success) {
