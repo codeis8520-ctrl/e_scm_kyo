@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { createBranch, updateBranch, deleteBranch } from '@/lib/actions';
 import { validators } from '@/lib/validators';
+import { generateQrDataUrl } from '@/lib/qr-actions';
 
 interface Branch {
   id: string;
@@ -34,6 +35,7 @@ export default function BranchesPage() {
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
+  const [qrBranch, setQrBranch] = useState<Branch | null>(null);
 
   useEffect(() => {
     fetchBranches();
@@ -100,6 +102,13 @@ export default function BranchesPage() {
                 </td>
                 <td>
                   <button
+                    onClick={() => setQrBranch(branch)}
+                    className="text-emerald-600 hover:underline mr-2"
+                    title="고객 셀프 가입 QR"
+                  >
+                    QR
+                  </button>
+                  <button
                     onClick={() => { setEditingBranch(branch); setShowModal(true); }}
                     className="text-blue-600 hover:underline mr-2"
                   >
@@ -131,6 +140,13 @@ export default function BranchesPage() {
           branch={editingBranch}
           onClose={() => setShowModal(false)}
           onSuccess={() => { setShowModal(false); fetchBranches(); }}
+        />
+      )}
+
+      {qrBranch && (
+        <BranchQrModal
+          branch={qrBranch}
+          onClose={() => setQrBranch(null)}
         />
       )}
     </div>
@@ -271,6 +287,159 @@ function BranchModal({ branch, onClose, onSuccess }: { branch: Branch | null; on
             <button type="button" onClick={onClose} className="flex-1 btn-secondary">취소</button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// QR 코드 모달 — 고객 셀프 가입 URL
+// ═══════════════════════════════════════════════════════════════════════
+
+function BranchQrModal({ branch, onClose }: { branch: Branch; onClose: () => void }) {
+  const [qrDataUrl, setQrDataUrl] = useState<string>('');
+  const [loading, setLoading] = useState(true);
+  const [copied, setCopied] = useState(false);
+
+  // URL 생성
+  const joinUrl = typeof window !== 'undefined'
+    ? `${window.location.origin}/join/${branch.id}`
+    : `/join/${branch.id}`;
+
+  useEffect(() => {
+    (async () => {
+      const res = await generateQrDataUrl(joinUrl, 512);
+      if (res.dataUrl) setQrDataUrl(res.dataUrl);
+      setLoading(false);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branch.id]);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(joinUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      alert('클립보드 복사 실패 — 수동으로 복사해주세요.');
+    }
+  };
+
+  const handleDownload = () => {
+    if (!qrDataUrl) return;
+    const link = document.createElement('a');
+    link.href = qrDataUrl;
+    link.download = `경옥채_${branch.name}_가입QR.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handlePrint = () => {
+    const w = window.open('', '_blank', 'width=600,height=800');
+    if (!w) return;
+    w.document.write(`
+      <html>
+        <head>
+          <title>${branch.name} 가입 QR</title>
+          <style>
+            body { font-family: -apple-system, sans-serif; padding: 40px; text-align: center; }
+            h1 { color: #065f46; font-size: 32px; margin-bottom: 8px; }
+            h2 { color: #059669; font-size: 20px; font-weight: normal; margin-top: 0; }
+            .qr { margin: 32px auto; }
+            .qr img { border: 2px solid #065f46; border-radius: 12px; padding: 16px; background: white; }
+            .guide { margin-top: 24px; padding: 20px; background: #ecfdf5; border-radius: 12px; max-width: 400px; margin-left: auto; margin-right: auto; }
+            .guide h3 { margin: 0 0 12px; color: #065f46; }
+            .guide ol { text-align: left; color: #475569; line-height: 1.8; }
+            .footer { margin-top: 32px; font-size: 12px; color: #94a3b8; }
+          </style>
+        </head>
+        <body>
+          <h1>🌿 경옥채</h1>
+          <h2>${branch.name} 회원 가입</h2>
+          <div class="qr"><img src="${qrDataUrl}" width="360" /></div>
+          <div class="guide">
+            <h3>가입 방법</h3>
+            <ol>
+              <li>휴대폰 카메라로 QR 코드를 비춰주세요</li>
+              <li>링크를 눌러 가입 폼을 엽니다</li>
+              <li>이름과 휴대폰 번호를 입력합니다</li>
+              <li>가입 완료 후 직원에게 알려주세요</li>
+            </ol>
+          </div>
+          <div class="footer">구매 시 포인트 적립 · 생일 축하 혜택 · VIP 등급 제공</div>
+          <script>window.onload = () => { setTimeout(() => window.print(), 300); };</script>
+        </body>
+      </html>
+    `);
+    w.document.close();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white w-full max-w-md mx-auto max-h-[92vh] overflow-y-auto rounded-xl p-6">
+        <div className="flex justify-between items-center mb-4">
+          <div>
+            <h2 className="text-lg font-bold text-emerald-800">고객 셀프 가입 QR</h2>
+            <p className="text-sm text-slate-500 mt-0.5">{branch.name}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+        </div>
+
+        {loading ? (
+          <div className="py-20 text-center text-slate-400">QR 생성 중...</div>
+        ) : qrDataUrl ? (
+          <>
+            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-6 text-center">
+              <img src={qrDataUrl} alt="가입 QR" className="mx-auto w-56 h-56" />
+              <p className="mt-4 text-xs text-slate-500">
+                고객이 휴대폰 카메라로 스캔하여 가입할 수 있습니다
+              </p>
+            </div>
+
+            <div className="mt-4">
+              <label className="text-xs text-slate-500 font-medium">가입 페이지 URL</label>
+              <div className="flex gap-2 mt-1">
+                <input
+                  type="text"
+                  value={joinUrl}
+                  readOnly
+                  className="input text-xs font-mono flex-1"
+                />
+                <button
+                  onClick={handleCopy}
+                  className={`px-3 py-1.5 rounded text-xs font-medium whitespace-nowrap ${
+                    copied ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  {copied ? '복사됨' : '복사'}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex gap-2 mt-6">
+              <button
+                onClick={handleDownload}
+                className="flex-1 py-2 rounded bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700"
+              >
+                📥 다운로드
+              </button>
+              <button
+                onClick={handlePrint}
+                className="flex-1 py-2 rounded bg-blue-600 text-white text-sm font-medium hover:bg-blue-700"
+              >
+                🖨️ 인쇄
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-400 mt-4 text-center leading-relaxed">
+              인쇄 후 매장 계산대나 입구에 부착해주세요<br />
+              고객이 스캔하면 {branch.name} 회원으로 등록됩니다
+            </p>
+          </>
+        ) : (
+          <div className="py-10 text-center text-red-500">QR 생성에 실패했습니다.</div>
+        )}
       </div>
     </div>
   );
