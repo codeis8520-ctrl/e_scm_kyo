@@ -665,7 +665,7 @@ function VatReportTab() {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <StatBox label="매출 부가세 (예수금)" value={`${(data.outputVat.net || 0).toLocaleString()}원`} color="text-red-600" />
             <StatBox label="매입 부가세 (대급금)" value={`${(data.inputVat.net || 0).toLocaleString()}원`} color="text-blue-600" />
-            <Stat
+            <StatBox
               label={data.vatPayable >= 0 ? '납부 세액' : '환급 세액'}
               value={`${Math.abs(data.vatPayable || 0).toLocaleString()}원`}
               color={data.vatPayable >= 0 ? 'text-red-700 text-xl' : 'text-blue-700 text-xl'}
