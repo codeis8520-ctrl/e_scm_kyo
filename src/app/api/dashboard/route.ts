@@ -52,20 +52,26 @@ export async function GET(request: NextRequest) {
   const today = new Date().toISOString().split('T')[0];
   const monthStart = today.substring(0, 7) + '-01';
 
+  // 매출 집계 대상: COMPLETED + PARTIALLY_REFUNDED만 (PENDING/CANCELLED/REFUNDED 제외)
+  const SALES_STATUSES = ['COMPLETED', 'PARTIALLY_REFUNDED'];
+
   let salesQuery = supabase
     .from('sales_orders')
     .select('total_amount, channel, cafe24_order_id, created_at')
+    .in('status', SALES_STATUSES)
     .gte('ordered_at', `${today}T00:00:00`)
     .lt('ordered_at', `${today}T23:59:59`);
 
   let monthSalesQuery = supabase
     .from('sales_orders')
     .select('total_amount')
+    .in('status', SALES_STATUSES)
     .gte('ordered_at', `${monthStart}T00:00:00`);
 
   let recentOrdersQuery = supabase
     .from('sales_orders')
     .select('id, order_number, channel, total_amount, status, created_at, cafe24_order_id, branch:branches(name), items:sales_order_items(product:products(name), quantity)')
+    .not('status', 'eq', 'CANCELLED')
     .order('created_at', { ascending: false })
     .limit(20);
 
@@ -99,32 +105,36 @@ export async function GET(request: NextRequest) {
       let q = supabase
         .from('sales_orders')
         .select('channel, total_amount')
+        .in('status', SALES_STATUSES)
         .gte('ordered_at', `${monthStart}T00:00:00`);
       if (branchId && branchId !== 'ALL') q = q.eq('branch_id', branchId);
       return q;
     })(),
     recentOrdersQuery,
-    (() => {
+    // 재고 부족: quantity < safety_stock (안전재고 미달 기준)
+    (async () => {
       let q = supabase
         .from('inventories')
         .select('id, quantity, safety_stock, product:products(name), branch:branches(id, name)')
-        .lt('quantity', 10)
-        .limit(20);
+        .gt('safety_stock', 0);
       if (branchId && branchId !== 'ALL') q = q.eq('branch_id', branchId);
-      return q;
+      const { data } = await q;
+      // Supabase에서 column 간 비교 필터가 안 되므로 앱 레이어에서 필터
+      return { data: (data || []).filter((inv: any) => inv.quantity < inv.safety_stock).slice(0, 30) };
     })(),
     (() => {
       let q = supabase.from('branches').select('id, name');
       if (branchId && branchId !== 'ALL') q = q.eq('id', branchId);
       return q;
     })(),
+    // 이번달 자사몰 매출 (COMPLETED/PARTIALLY_REFUNDED만)
     (() => {
       let q = supabase
         .from('sales_orders')
         .select('total_amount')
         .eq('channel', 'ONLINE')
-        .gte('ordered_at', `${today}T00:00:00`)
-        .lt('ordered_at', `${today}T23:59:59`);
+        .in('status', SALES_STATUSES)
+        .gte('ordered_at', `${monthStart}T00:00:00`);
       if (branchId && branchId !== 'ALL') q = q.eq('branch_id', branchId);
       return q;
     })(),

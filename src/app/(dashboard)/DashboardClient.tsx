@@ -215,7 +215,7 @@ export default function DashboardClient() {
         </div>
 
         <div className="stat-card">
-          <p className="text-sm text-slate-500">자사몰 매출</p>
+          <p className="text-sm text-slate-500">이번 달 자사몰</p>
           <p className="text-2xl font-bold text-blue-600">
             {data.onlineAmount.toLocaleString()}원
           </p>
@@ -223,11 +223,11 @@ export default function DashboardClient() {
         </div>
 
         <div className="stat-card">
-          <p className="text-sm text-slate-500">재고 부족</p>
+          <p className="text-sm text-slate-500">안전재고 미달</p>
           <p className="text-2xl font-bold text-orange-600">
             {data.lowInventory.length}
           </p>
-          <p className="text-xs text-slate-400">품목</p>
+          <p className="text-xs text-slate-400">품목 (safety stock 기준)</p>
         </div>
 
         <div className="stat-card">

@@ -94,7 +94,12 @@
       "Bash(python -c \"import reportlab; print\\(reportlab.__version__\\)\")",
       "Bash(python -c \"import weasyprint; print\\('weasy ok'\\)\")",
       "Bash(pip install:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "WebFetch(domain:www.ecount.com)",
+      "WebFetch(domain:ksnet.co.kr)",
+      "WebFetch(domain:www.metacity.co.kr)",
+      "WebFetch(domain:wisefour.github.io)",
+      "WebFetch(domain:slidesplayer.org)"
     ]
   }
 }
