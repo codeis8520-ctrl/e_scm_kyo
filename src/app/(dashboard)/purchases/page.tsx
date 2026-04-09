@@ -36,6 +36,10 @@ export default function PurchasesPage() {
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [statusFilter, setStatusFilter] = useState('');
   const [supplierFilter, setSupplierFilter] = useState('');
+  const [startDate, setStartDate] = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 10);
+  });
+  const [endDate, setEndDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
 
@@ -61,6 +65,8 @@ export default function PurchasesPage() {
     if (isBranchUser && userBranchId) q = q.eq('branch_id', userBranchId);
     if (statusFilter) q = q.eq('status', statusFilter);
     if (supplierFilter) q = q.eq('supplier_id', supplierFilter);
+    if (startDate) q = q.gte('ordered_at', `${startDate}T00:00:00`);
+    if (endDate) q = q.lte('ordered_at', `${endDate}T23:59:59`);
 
     const [{ data: ordersData }, { data: suppliersData }] = await Promise.all([
       q,
@@ -72,7 +78,7 @@ export default function PurchasesPage() {
     setLoading(false);
   };
 
-  useEffect(() => { fetchData(); }, [statusFilter, supplierFilter]);
+  useEffect(() => { fetchData(); }, [statusFilter, supplierFilter, startDate, endDate]);
 
   const handleConfirm = async (id: string, poNumber: string) => {
     if (!confirm(`발주서 ${poNumber}를 확정하시겠습니까?`)) return;
@@ -132,6 +138,8 @@ export default function PurchasesPage() {
             <option value="">전체 공급업체</option>
             {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
+          <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="input w-36" />
+          <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="input w-36" />
         </div>
 
         <div className="overflow-x-auto">

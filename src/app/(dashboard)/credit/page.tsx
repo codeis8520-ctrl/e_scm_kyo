@@ -31,19 +31,29 @@ const GRADE_BADGE: Record<string, string> = {
   NORMAL: 'bg-slate-100 text-slate-500',
 };
 
+function defaultDateRange() {
+  const end = new Date().toISOString().slice(0, 10);
+  const start = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  return { start, end };
+}
+
 export default function CreditManagementPage() {
   const [orders, setOrders] = useState<CreditOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'unsettled' | 'settled'>('unsettled');
   const [search, setSearch] = useState('');
+  const [startDate, setStartDate] = useState(defaultDateRange().start);
+  const [endDate, setEndDate] = useState(defaultDateRange().end);
   const [settlingId, setSettlingId] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [settleMethod, setSettleMethod] = useState<Record<string, string>>({});
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 50;
 
   const fetchData = async () => {
     setLoading(true);
     const supabase = createClient() as any;
-    const { data } = await supabase
+    let q = supabase
       .from('sales_orders')
       .select(`
         id, order_number, total_amount, ordered_at, status,
@@ -52,13 +62,18 @@ export default function CreditManagementPage() {
         branch:branches(id, name)
       `)
       .eq('payment_method', 'credit')
-      .order('ordered_at', { ascending: false })
-      .limit(500);
+      .order('ordered_at', { ascending: false });
+
+    if (startDate) q = q.gte('ordered_at', `${startDate}T00:00:00`);
+    if (endDate) q = q.lte('ordered_at', `${endDate}T23:59:59`);
+
+    const { data } = await q.limit(500);
     setOrders(data || []);
+    setPage(0);
     setLoading(false);
   };
 
-  useEffect(() => { fetchData(); }, []);
+  useEffect(() => { fetchData(); }, [startDate, endDate]);
 
   // CANCELLED 건은 양쪽 탭에서 모두 제외
   const activeOrders = orders.filter(o => (o as any).status !== 'CANCELLED');
@@ -133,6 +148,16 @@ export default function CreditManagementPage() {
         <div>
           <h2 className="text-xl font-bold text-slate-800">외상 관리</h2>
           <p className="text-sm text-slate-500 mt-1">외상 결제 건의 미수금 현황과 수금 처리를 관리합니다.</p>
+        </div>
+        <div className="flex gap-2 items-end">
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">시작일</label>
+            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="input text-sm py-1.5" />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">종료일</label>
+            <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="input text-sm py-1.5" />
+          </div>
         </div>
       </div>
 
@@ -249,7 +274,7 @@ export default function CreditManagementPage() {
                 <tr><td colSpan={tab === 'unsettled' ? 6 : 7} className="text-center py-8 text-slate-400">
                   {search ? '검색 결과가 없습니다' : tab === 'unsettled' ? '미수금 건이 없습니다' : '수금 완료 건이 없습니다'}
                 </td></tr>
-              ) : filtered.map(o => (
+              ) : filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map(o => (
                 <tr key={o.id}>
                   <td className="text-sm text-slate-500 whitespace-nowrap">{o.ordered_at?.slice(0, 10)}</td>
                   <td className="text-sm font-mono text-blue-700">{o.order_number}</td>
@@ -311,6 +336,34 @@ export default function CreditManagementPage() {
             </tbody>
           </table>
         </div>
+
+        {/* 페이징 */}
+        {filtered.length > PAGE_SIZE && (
+          <div className="flex items-center justify-between pt-3 border-t border-slate-100">
+            <span className="text-xs text-slate-500">
+              총 {filtered.length}건 중 {page * PAGE_SIZE + 1}~{Math.min((page + 1) * PAGE_SIZE, filtered.length)}건
+            </span>
+            <div className="flex gap-1">
+              <button
+                onClick={() => setPage(p => Math.max(0, p - 1))}
+                disabled={page === 0}
+                className="px-2 py-1 rounded text-xs bg-slate-100 hover:bg-slate-200 disabled:opacity-40"
+              >
+                ← 이전
+              </button>
+              <span className="px-2 py-1 text-xs text-slate-600">
+                {page + 1} / {Math.ceil(filtered.length / PAGE_SIZE)}
+              </span>
+              <button
+                onClick={() => setPage(p => Math.min(Math.ceil(filtered.length / PAGE_SIZE) - 1, p + 1))}
+                disabled={(page + 1) * PAGE_SIZE >= filtered.length}
+                className="px-2 py-1 rounded text-xs bg-slate-100 hover:bg-slate-200 disabled:opacity-40"
+              >
+                다음 →
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
