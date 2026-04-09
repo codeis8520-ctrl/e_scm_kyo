@@ -358,62 +358,114 @@ export async function createJournalEntry(formData: FormData) {
 
 // ─── 판매/매입 자동 분개 (내부 헬퍼) ─────────────────────────
 
+/**
+ * 매출 분개 생성 — 한국 기업회계기준 부가세 분리
+ *
+ * 과세(is_taxable=true) 제품:
+ *   총액 = 공급가 + 부가세
+ *   공급가 = 총액 ÷ 1.1 (반올림)
+ *   부가세 = 총액 - 공급가
+ *
+ * 분개:
+ *   차변: 현금/카드/외상매출금  totalAmount
+ *   대변: 매출(4110)           supplyAmount (공급가)
+ *   대변: 부가세예수금(2151)    vatAmount (세액)
+ *   (면세 품목은 VAT 라인 생략, 전액 매출)
+ *
+ * 환불(음수 금액) 시 역분개:
+ *   차변/대변 반전 (음수 → 차변이 대변, 대변이 차변)
+ */
 export async function createSaleJournal(params: {
   orderId: string;
   orderNumber: string;
   orderDate: string;
-  totalAmount: number;
-  paymentMethod: string; // cash | card | kakao | card_keyin | credit
+  totalAmount: number;       // 세금 포함 총액 (음수면 환불/역분개)
+  paymentMethod: string;     // cash | card | kakao | card_keyin | credit
   cogs: number;
+  taxableAmount?: number;    // 과세 대상 금액 (미제공 시 전액 과세 가정)
 }) {
   const sb = await createClient() as any;
 
-  // 계정 조회
+  // 계정 조회 (부가세예수금 2151 포함)
   const { data: accounts } = await sb
     .from('gl_accounts')
     .select('id, code')
-    .in('code', ['1110', '1115', '1120', '4110', '5110', '1130']);
+    .in('code', ['1110', '1115', '1120', '2151', '4110', '5110', '1130']);
 
   const accMap = Object.fromEntries((accounts || []).map((a: any) => [a.code, a.id]));
 
-  // 현금 vs 외상 vs 카드 결정
+  // 수금 계정 결정
   const receivableCode =
     params.paymentMethod === 'cash'   ? '1110' :
-    params.paymentMethod === 'credit' ? '1115' : // 외상매출금
+    params.paymentMethod === 'credit' ? '1115' :
     '1120'; // card, kakao, card_keyin
-  const receivableId   = accMap[receivableCode];
-  const revenueId      = accMap['4110'];
-  const cogsId         = accMap['5110'];
-  const inventoryId    = accMap['1130'];
+  const receivableId = accMap[receivableCode];
+  const revenueId    = accMap['4110'];
+  const vatId        = accMap['2151'];
+  const cogsId       = accMap['5110'];
+  const inventoryId  = accMap['1130'];
 
-  if (!receivableId || !revenueId) return; // 계정 미설정 시 스킵
+  if (!receivableId || !revenueId) return;
+
+  const isRefund = params.totalAmount < 0;
+  const absTotal = Math.abs(params.totalAmount);
+
+  // VAT 계산: 과세 대상 금액에서 분리
+  const taxableBase = params.taxableAmount !== undefined
+    ? Math.abs(params.taxableAmount)
+    : absTotal; // 미제공 시 전액 과세
+  const supplyAmount = Math.round(taxableBase / 1.1);       // 공급가
+  const vatAmount    = taxableBase - supplyAmount;           // 세액
+  const exemptAmount = absTotal - taxableBase;               // 면세 금액
 
   const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
-  const entryNumber = `JE-SA-${date}-${rand}`;
+  const prefix = isRefund ? 'JE-RF' : 'JE-SA';
+  const entryNumber = `${prefix}-${date}-${rand}`;
 
   const { data: entry, error } = await sb
     .from('journal_entries')
     .insert({
       entry_number: entryNumber,
       entry_date: params.orderDate,
-      description: `매출 인식 (${params.orderNumber})`,
-      source_type: 'SALE',
+      description: isRefund
+        ? `매출 환불 역분개 (${params.orderNumber})`
+        : `매출 인식 (${params.orderNumber})`,
+      source_type: isRefund ? 'RETURN' : 'SALE',
       source_id: params.orderId,
-      total_debit: params.totalAmount,
-      total_credit: params.totalAmount,
+      total_debit: absTotal,
+      total_credit: absTotal,
     })
     .select('id')
     .single();
 
   if (error) return;
 
-  const lines = [
-    { journal_entry_id: entry.id, account_id: receivableId, debit: params.totalAmount, credit: 0, memo: params.orderNumber },
-    { journal_entry_id: entry.id, account_id: revenueId, debit: 0, credit: params.totalAmount, memo: params.orderNumber },
-  ];
+  const lines: any[] = [];
 
-  if (cogsId && inventoryId && params.cogs > 0) {
+  if (isRefund) {
+    // ── 역분개 (환불): 차변/대변 반전 ──
+    // 차변: 매출(공급가) + 부가세예수금(세액)
+    lines.push({ journal_entry_id: entry.id, account_id: revenueId, debit: supplyAmount + exemptAmount, credit: 0, memo: `환불 매출 취소 (${params.orderNumber})` });
+    if (vatId && vatAmount > 0) {
+      lines.push({ journal_entry_id: entry.id, account_id: vatId, debit: vatAmount, credit: 0, memo: `환불 VAT 취소` });
+    }
+    // 대변: 현금/카드/외상 반환
+    lines.push({ journal_entry_id: entry.id, account_id: receivableId, debit: 0, credit: absTotal, memo: `환불 (${params.orderNumber})` });
+  } else {
+    // ── 정상 매출 분개 ──
+    // 차변: 현금/카드/외상 수취
+    lines.push({ journal_entry_id: entry.id, account_id: receivableId, debit: absTotal, credit: 0, memo: params.orderNumber });
+    // 대변: 매출(공급가 + 면세분)
+    lines.push({ journal_entry_id: entry.id, account_id: revenueId, debit: 0, credit: supplyAmount + exemptAmount, memo: `매출 (공급가${exemptAmount > 0 ? '+면세' : ''})` });
+    // 대변: 부가세예수금(세액) — 계정 있고 금액 > 0인 경우만
+    if (vatId && vatAmount > 0) {
+      lines.push({ journal_entry_id: entry.id, account_id: vatId, debit: 0, credit: vatAmount, memo: `부가세 (${params.orderNumber})` });
+    }
+  }
+
+  // COGS (매출원가) — 정상 매출 시만
+  if (!isRefund && cogsId && inventoryId && params.cogs > 0) {
     lines.push(
       { journal_entry_id: entry.id, account_id: cogsId, debit: params.cogs, credit: 0, memo: '매출원가' },
       { journal_entry_id: entry.id, account_id: inventoryId, debit: 0, credit: params.cogs, memo: '재고 감소' }
