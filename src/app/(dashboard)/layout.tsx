@@ -17,7 +17,7 @@ const ALL_NAV_ITEMS = [
   { href: '/shipping', label: '배송', icon: '📫' },
   { href: '/accounting', label: '회계', icon: '📒' },
   { href: '/credit', label: '외상', icon: '🧾' },
-  { href: '/customers', label: '고객', icon: '👥' },
+  { href: '/customers', label: '고객 관리', icon: '👥' },
   { href: '/notifications', label: '알림', icon: '📱' },
   { href: '/system-codes', label: '코드', icon: '⚙️' },
   { href: '/reports', label: '보고서', icon: '📈' },

@@ -27,7 +27,14 @@ interface Customer {
   primary_branch?: { id: string; name: string };
 }
 
+// 탭별 동적 로드
+import dynamic from 'next/dynamic';
+const CampaignTab = dynamic(() => import('./CampaignTab'), { ssr: false, loading: () => <div className="py-8 text-center text-slate-400">로딩 중...</div> });
+
+type TabType = 'list' | 'campaign';
+
 export default function CustomersPage() {
+  const [activeTab, setActiveTab] = useState<TabType>('list');
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [search, setSearch] = useState('');
   const [gradeFilter, setGradeFilter] = useState('');
@@ -103,6 +110,28 @@ export default function CustomersPage() {
   };
 
   return (
+    <div className="space-y-4">
+      {/* 탭 네비게이션 */}
+      <div className="flex gap-1 border-b border-slate-200">
+        {([
+          { key: 'list' as TabType, label: '고객 목록' },
+          { key: 'campaign' as TabType, label: '캠페인 관리' },
+        ]).map(t => (
+          <button
+            key={t.key}
+            onClick={() => setActiveTab(t.key)}
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              activeTab === t.key ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'campaign' && <CampaignTab />}
+
+      {activeTab === 'list' && (
     <div className="card">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 sm:mb-6">
         <h3 className="font-semibold text-lg">고객 목록</h3>
@@ -239,6 +268,8 @@ export default function CustomersPage() {
           onClose={handleClose}
           onSuccess={handleSuccess}
         />
+      )}
+    </div>
       )}
     </div>
   );
