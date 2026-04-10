@@ -87,34 +87,54 @@ SWEETTRACKER_API_KEY
 
 ---
 
-## Three Man Team — Multi-Agent Workflow
+## Token Rules — Always Active
 
-복잡한 작업을 3개 에이전트가 병렬로 처리하는 구성.
+```
+Is this in a skill or memory?   → Trust it. Skip the file read.
+Is this speculative?            → Kill the tool call.
+Can calls run in parallel?      → Parallelize them.
+Output > 20 lines you won't use → Route to subagent.
+About to restate what user said → Delete it.
+```
 
-### 역할
-| 역할 | 담당 |
+Grep before Read. Never read a whole file to find one thing.
+Do not re-read files already in context this session.
+
+---
+
+## Three Man Team
+
+Based on [russelleNVy/three-man-team](https://github.com/russelleNVy/three-man-team).
+
+### Roles
+| Role | File | Job |
+|------|------|-----|
+| **Arch** (Architect) | `agents/ARCHITECT.md` | Plans, writes briefs, owns deploy |
+| **Bob** (Builder) | `agents/BUILDER.md` | Builds exactly what brief says |
+| **Richard** (Reviewer) | `agents/REVIEWER.md` | Validates quality, catches oversights |
+
+### Handoff Files (`handoff/`)
+| File | Flow |
 |------|------|
-| **Orchestrator** (메인) | 요청 분해 → 서브에이전트 위임 → 결과 통합 · 충돌 조정 |
-| **Worker A** | 독립 worktree에서 기능 구현 (주로 UI/페이지) |
-| **Worker B** | 독립 worktree에서 기능 구현 (주로 액션/DB) |
+| `ARCHITECT-BRIEF.md` | Arch writes → Bob reads |
+| `REVIEW-REQUEST.md` | Bob writes → Richard reads |
+| `REVIEW-FEEDBACK.md` | Richard writes → Bob reads |
+| `BUILD-LOG.md` | Shared record, Arch owns |
+| `SESSION-CHECKPOINT.md` | Arch writes at session end |
 
-### 사용 기준
-- 파일 겹침이 없는 독립 작업 2개 이상일 때만 병렬화
-- 단일 파일 수정 작업은 병렬화 불필요
-
-### Orchestrator 실행 예시
+### Workflow
 ```
-Agent(subagent_type="general-purpose", isolation="worktree",
-  prompt="[Worker A] src/app/(dashboard)/X/page.tsx 에 ... 구현. 
-          건드릴 파일: page.tsx, CustomerModal.tsx만")
-
-Agent(subagent_type="general-purpose", isolation="worktree",
-  prompt="[Worker B] src/lib/actions.ts 에 ... 액션 추가.
-          건드릴 파일: actions.ts만")
+Arch: Brief 작성 → Bob 실행 (foreground)
+Bob: 빌드 → npm run build → self-review → REVIEW-REQUEST.md
+Arch: Richard 실행 (foreground)
+Richard: diff 리뷰 → REVIEW-FEEDBACK.md
+Bob: Conditions 수정 (있으면)
+Arch: Deploy Gate → Project Owner 확인 → commit → push
 ```
 
-### 규칙
-1. 각 Worker에게 **건드릴 파일 목록을 명시** — 겹치면 병렬 불가
-2. Worker는 commit하지 않음 — Orchestrator가 결과 검토 후 통합
-3. DB 스키마 변경(migration)은 항상 Orchestrator가 직접 처리
-4. 빌드 검증(`npm run build`)은 통합 후 Orchestrator가 실행
+### Rules
+1. One step at a time — N+1 is blocked until N is deployed
+2. Bob runs **foreground only** (background stalls on tool approval)
+3. DB migration은 Arch가 직접 처리
+4. 보안 민감 작업은 Richard 리뷰 필수
+5. Out-of-scope → BUILD-LOG Known Gaps
