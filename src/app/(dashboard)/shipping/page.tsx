@@ -426,6 +426,7 @@ export default function ShippingPage() {
       setCafe24Orders(data.orders ?? []);
       setIsDemo(!!data.is_demo);
       setDemoReason(data.demo_reason ?? '');
+      if (data.error) setCafe24Error(data.demo_reason || '카페24 연동 오류');
     } catch (e: any) {
       setCafe24Error(e.message || '오류');
     } finally { setCafe24Loading(false); }

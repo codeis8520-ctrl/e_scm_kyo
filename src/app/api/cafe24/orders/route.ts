@@ -88,8 +88,13 @@ export async function GET(request: NextRequest) {
   const accessToken = await getValidAccessToken();
 
   if (!accessToken) {
-    const orders = DEMO_ORDERS.map(o => ({ ...o, already_added: existingIds.has(o.cafe24_order_id) }));
-    return NextResponse.json({ orders, is_demo: true, demo_reason: '카페24 토큰 만료 또는 미인증' });
+    // 토큰 만료 시 더미 대신 명확한 에러 반환
+    return NextResponse.json({
+      orders: [],
+      is_demo: false,
+      error: true,
+      demo_reason: '카페24 토큰 만료 — 토큰 갱신 버튼을 누르거나 /api/cafe24/auth에서 재인증하세요.',
+    });
   }
 
   const shopNo = process.env.CAFE24_SHOP_NO ?? '1';
@@ -164,7 +169,11 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ orders, is_demo: false });
   } catch (err: unknown) {
     console.error('Cafe24 Orders API 오류:', err);
-    const orders = DEMO_ORDERS.map(o => ({ ...o, already_added: existingIds.has(o.cafe24_order_id) }));
-    return NextResponse.json({ orders, is_demo: true, demo_reason: 'API 호출 오류' });
+    return NextResponse.json({
+      orders: [],
+      is_demo: false,
+      error: true,
+      demo_reason: `카페24 API 오류: ${err instanceof Error ? err.message : '알 수 없는 오류'}`,
+    });
   }
 }
