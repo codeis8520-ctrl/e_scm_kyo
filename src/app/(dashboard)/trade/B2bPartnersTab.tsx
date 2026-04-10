@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { getB2bPartners, createB2bPartner, updateB2bPartner } from '@/lib/b2b-actions';
+import { createClient } from '@/lib/supabase/client';
+import { getB2bPartners, createB2bPartner, updateB2bPartner, getPartnerPrices, upsertPartnerPrice, deletePartnerPrice } from '@/lib/b2b-actions';
 
 const CYCLE_LABELS: Record<string, string> = { WEEKLY: '주간', BIWEEKLY: '격주', MONTHLY: '월간' };
 
@@ -10,6 +11,7 @@ export default function B2bPartnersTab() {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<any>(null);
+  const [pricePartner, setPricePartner] = useState<any>(null);
 
   const fetchData = async () => {
     setLoading(true);
@@ -58,6 +60,7 @@ export default function B2bPartnersTab() {
                     <td className="text-sm">{p.commission_rate}%</td>
                     <td><span className={`badge text-xs ${p.is_active ? 'badge-success' : 'badge-error'}`}>{p.is_active ? '활성' : '비활성'}</span></td>
                     <td>
+                      <button onClick={() => setPricePartner(p)} className="text-emerald-600 hover:underline text-sm mr-2">단가표</button>
                       <button onClick={() => { setEditing(p); setShowForm(true); }} className="text-blue-600 hover:underline text-sm">수정</button>
                     </td>
                   </tr>
@@ -76,6 +79,13 @@ export default function B2bPartnersTab() {
           partner={editing}
           onClose={() => { setShowForm(false); setEditing(null); }}
           onSuccess={() => { setShowForm(false); setEditing(null); fetchData(); }}
+        />
+      )}
+
+      {pricePartner && (
+        <PartnerPriceModal
+          partner={pricePartner}
+          onClose={() => setPricePartner(null)}
         />
       )}
     </div>
@@ -184,5 +194,232 @@ function PartnerForm({ partner, onClose, onSuccess }: { partner: any; onClose: (
         </form>
       </div>
     </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 거래처별 단가표 모달
+// ═══════════════════════════════════════════════════════════════════════
+
+function PartnerPriceModal({ partner, onClose }: { partner: any; onClose: () => void }) {
+  const [prices, setPrices] = useState<any[]>([]);
+  const [allProducts, setAllProducts] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<string | null>(null);
+
+  // 추가용
+  const [addProductId, setAddProductId] = useState('');
+  const [addUnitPrice, setAddUnitPrice] = useState('');
+
+  // 일괄 할인율
+  const [bulkRate, setBulkRate] = useState('');
+
+  const fetchData = async () => {
+    setLoading(true);
+    const [priceRes, prodRes] = await Promise.all([
+      getPartnerPrices(partner.id),
+      (async () => {
+        const sb = createClient() as any;
+        const { data } = await sb.from('products').select('id, name, code, price').eq('is_active', true).order('name');
+        return data || [];
+      })(),
+    ]);
+    setPrices(priceRes.data || []);
+    setAllProducts(prodRes);
+    setLoading(false);
+  };
+
+  useEffect(() => { fetchData(); }, [partner.id]);
+
+  const registeredIds = new Set(prices.map((p: any) => p.product_id));
+  const unregistered = allProducts.filter(p => !registeredIds.has(p.id));
+
+  const handleSave = async (productId: string, unitPrice: number) => {
+    setSaving(productId);
+    await upsertPartnerPrice({ partnerId: partner.id, productId, unitPrice });
+    setSaving(null);
+    fetchData();
+  };
+
+  const handleAdd = async () => {
+    if (!addProductId || !addUnitPrice) return;
+    setSaving('add');
+    await upsertPartnerPrice({ partnerId: partner.id, productId: addProductId, unitPrice: parseInt(addUnitPrice) });
+    setSaving(null);
+    setAddProductId('');
+    setAddUnitPrice('');
+    fetchData();
+  };
+
+  const handleDelete = async (productId: string) => {
+    if (!confirm('이 제품의 단가를 삭제하시겠습니까? (정가로 돌아감)')) return;
+    await deletePartnerPrice(partner.id, productId);
+    fetchData();
+  };
+
+  const handleBulkDiscount = async () => {
+    const rate = parseFloat(bulkRate);
+    if (isNaN(rate) || rate < 0 || rate > 100) { alert('0~100 사이 할인율을 입력하세요.'); return; }
+    if (!confirm(`전 제품에 정가 대비 ${rate}% 할인을 일괄 적용합니다. 기존 단가가 모두 덮어써집니다.`)) return;
+
+    setSaving('bulk');
+    const rows = allProducts.map(p => ({
+      productId: p.id,
+      unitPrice: Math.round(Number(p.price) * (1 - rate / 100)),
+    }));
+
+    const { bulkUpsertPartnerPrices } = await import('@/lib/b2b-actions');
+    await bulkUpsertPartnerPrices(partner.id, rows);
+    setSaving(null);
+    setBulkRate('');
+    fetchData();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white w-full max-w-3xl mx-auto max-h-[92vh] overflow-y-auto rounded-xl p-6">
+        <div className="flex justify-between items-center mb-4">
+          <div>
+            <h2 className="text-lg font-bold">납품 단가표</h2>
+            <p className="text-sm text-slate-500">{partner.name} ({partner.code})</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+        </div>
+
+        {/* 일괄 할인 */}
+        <div className="flex items-end gap-2 mb-4 p-3 bg-slate-50 rounded-lg">
+          <div className="flex-1">
+            <label className="block text-xs text-slate-500 mb-1">일괄 할인율 적용</label>
+            <div className="flex gap-2">
+              <input
+                type="number" step="0.1" min={0} max={100}
+                value={bulkRate} onChange={e => setBulkRate(e.target.value)}
+                placeholder="예: 30"
+                className="input text-sm py-1.5 w-24"
+              />
+              <span className="text-sm text-slate-500 self-center">%</span>
+              <button
+                onClick={handleBulkDiscount}
+                disabled={saving === 'bulk' || !bulkRate}
+                className="px-3 py-1.5 rounded text-xs font-medium bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-40"
+              >
+                {saving === 'bulk' ? '적용 중...' : '전 제품 일괄 적용'}
+              </button>
+            </div>
+          </div>
+          <p className="text-xs text-slate-400">정가 기준으로 할인율을 적용합니다</p>
+        </div>
+
+        {loading ? (
+          <div className="py-8 text-center text-slate-400">로딩 중...</div>
+        ) : (
+          <>
+            {/* 등록된 단가 */}
+            <div className="overflow-x-auto mb-4">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>제품</th>
+                    <th className="text-right">정가</th>
+                    <th className="text-right w-32">납품 단가</th>
+                    <th className="text-right">할인율</th>
+                    <th className="w-24">동작</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {prices.length === 0 ? (
+                    <tr><td colSpan={5} className="text-center py-6 text-slate-400">등록된 단가가 없습니다. 아래에서 추가하세요.</td></tr>
+                  ) : prices.map((p: any) => (
+                    <PriceRow
+                      key={p.product_id}
+                      price={p}
+                      saving={saving === p.product_id}
+                      onSave={(unitPrice) => handleSave(p.product_id, unitPrice)}
+                      onDelete={() => handleDelete(p.product_id)}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* 제품 추가 */}
+            {unregistered.length > 0 && (
+              <div className="border-t pt-4">
+                <p className="text-sm font-medium mb-2">제품 추가</p>
+                <div className="flex gap-2 items-end">
+                  <select value={addProductId} onChange={e => {
+                    setAddProductId(e.target.value);
+                    const prod = allProducts.find(p => p.id === e.target.value);
+                    if (prod) setAddUnitPrice(String(prod.price));
+                  }} className="input flex-1 text-sm">
+                    <option value="">제품 선택</option>
+                    {unregistered.map(p => (
+                      <option key={p.id} value={p.id}>{p.name} ({p.code}) — 정가 {Number(p.price).toLocaleString()}원</option>
+                    ))}
+                  </select>
+                  <input
+                    type="number" min={0}
+                    value={addUnitPrice} onChange={e => setAddUnitPrice(e.target.value)}
+                    placeholder="납품 단가"
+                    className="input w-28 text-sm text-right"
+                  />
+                  <button
+                    onClick={handleAdd}
+                    disabled={saving === 'add' || !addProductId || !addUnitPrice}
+                    className="px-3 py-1.5 rounded text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40"
+                  >
+                    {saving === 'add' ? '...' : '추가'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PriceRow({ price, saving, onSave, onDelete }: { price: any; saving: boolean; onSave: (v: number) => void; onDelete: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(String(price.unit_price));
+  const retailPrice = Number(price.product?.price || 0);
+
+  return (
+    <tr>
+      <td>
+        <div className="text-sm font-medium">{price.product?.name}</div>
+        <div className="text-xs text-slate-400">{price.product?.code}</div>
+      </td>
+      <td className="text-right text-sm text-slate-500">{retailPrice.toLocaleString()}원</td>
+      <td className="text-right">
+        {editing ? (
+          <div className="flex items-center gap-1 justify-end">
+            <input
+              type="number" min={0} value={val}
+              onChange={e => setVal(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { onSave(parseInt(val)); setEditing(false); } if (e.key === 'Escape') setEditing(false); }}
+              className="input w-24 text-sm text-right py-0.5"
+              autoFocus
+            />
+            <button onClick={() => { onSave(parseInt(val)); setEditing(false); }} disabled={saving} className="text-xs text-blue-600">✓</button>
+          </div>
+        ) : (
+          <button onClick={() => { setVal(String(price.unit_price)); setEditing(true); }} className="text-sm font-semibold hover:text-blue-600">
+            {Number(price.unit_price).toLocaleString()}원
+          </button>
+        )}
+      </td>
+      <td className="text-right text-sm">
+        {retailPrice > 0 ? (
+          <span className={Number(price.discount_rate) > 0 ? 'text-red-600' : ''}>
+            {Number(price.discount_rate).toFixed(1)}%
+          </span>
+        ) : '-'}
+      </td>
+      <td>
+        <button onClick={onDelete} className="text-xs text-red-400 hover:text-red-600">삭제</button>
+      </td>
+    </tr>
   );
 }

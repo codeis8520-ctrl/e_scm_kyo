@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { getB2bSalesOrders, getB2bPartners, createB2bSalesOrder, settleB2bOrder, cancelB2bOrder, getB2bPartnerSummary } from '@/lib/b2b-actions';
+import { getB2bSalesOrders, getB2bPartners, createB2bSalesOrder, settleB2bOrder, cancelB2bOrder, getB2bPartnerSummary, getPartnerPrices } from '@/lib/b2b-actions';
 
 const STATUS_LABEL: Record<string, string> = { DELIVERED: '납품완료', PARTIALLY_SETTLED: '부분수금', SETTLED: '정산완료', CANCELLED: '취소' };
 const STATUS_BADGE: Record<string, string> = {
@@ -205,16 +205,40 @@ function B2bSalesForm({ partners, products, branches, onClose, onSuccess }: any)
   const [memo, setMemo] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  // 거래처별 단가표 (partnerId 변경 시 로드)
+  const [partnerPriceMap, setPartnerPriceMap] = useState<Map<string, number>>(new Map());
+
+  // 거래처 선택 시 단가표 로드
+  const handlePartnerChange = async (pid: string) => {
+    setPartnerId(pid);
+    if (!pid) { setPartnerPriceMap(new Map()); return; }
+    const res = await getPartnerPrices(pid);
+    const map = new Map<string, number>();
+    for (const p of (res.data || [])) map.set(p.product_id, Number(p.unit_price));
+    setPartnerPriceMap(map);
+    // 이미 선택된 품목의 단가도 업데이트
+    setItems(prev => prev.map(item => {
+      if (item.productId && map.has(item.productId)) {
+        return { ...item, unitPrice: map.get(item.productId)! };
+      }
+      return item;
+    }));
+  };
 
   const addItem = () => setItems([...items, { productId: '', quantity: 1, unitPrice: 0 }]);
   const removeItem = (i: number) => setItems(items.filter((_, idx) => idx !== i));
   const updateItem = (i: number, field: string, val: any) => {
     const next = [...items];
     (next[i] as any)[field] = val;
-    // 제품 선택 시 단가 자동 세팅
+    // 제품 선택 시 단가 자동 세팅 — 거래처 단가 → 없으면 정가
     if (field === 'productId') {
-      const p = products.find((p: any) => p.id === val);
-      if (p) next[i].unitPrice = p.price;
+      const partnerPrice = partnerPriceMap.get(val);
+      if (partnerPrice !== undefined) {
+        next[i].unitPrice = partnerPrice;
+      } else {
+        const p = products.find((p: any) => p.id === val);
+        if (p) next[i].unitPrice = p.price;
+      }
     }
     setItems(next);
   };
@@ -245,7 +269,7 @@ function B2bSalesForm({ partners, products, branches, onClose, onSuccess }: any)
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-sm font-medium mb-1">거래처 *</label>
-              <select value={partnerId} onChange={e => setPartnerId(e.target.value)} required className="input">
+              <select value={partnerId} onChange={e => handlePartnerChange(e.target.value)} required className="input">
                 <option value="">선택</option>
                 {partners.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>

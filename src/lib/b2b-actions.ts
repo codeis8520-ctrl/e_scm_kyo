@@ -4,6 +4,93 @@ import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { requireSession } from '@/lib/session';
 
+// ─── 거래처별 단가표 ──────────────────────────────────────────────────
+
+export async function getPartnerPrices(partnerId: string) {
+  const sb = (await createClient()) as any;
+  const { data, error } = await sb
+    .from('b2b_partner_prices')
+    .select('*, product:products(id, name, code, price)')
+    .eq('partner_id', partnerId)
+    .order('created_at');
+  if (error) return { data: [], error: error.message };
+  return { data: data || [] };
+}
+
+export async function upsertPartnerPrice(params: {
+  partnerId: string;
+  productId: string;
+  unitPrice: number;
+  memo?: string;
+}) {
+  try { await requireSession(); } catch (e: any) { return { error: e.message }; }
+  const sb = (await createClient()) as any;
+
+  // 정가 조회해서 할인율 자동 계산
+  const { data: product } = await sb.from('products').select('price').eq('id', params.productId).single();
+  const retailPrice = Number(product?.price || 0);
+  const discountRate = retailPrice > 0 ? Math.round((1 - params.unitPrice / retailPrice) * 10000) / 100 : 0;
+
+  const { error } = await sb.from('b2b_partner_prices').upsert({
+    partner_id: params.partnerId,
+    product_id: params.productId,
+    unit_price: params.unitPrice,
+    discount_rate: discountRate,
+    memo: params.memo || null,
+    effective_from: new Date().toISOString().slice(0, 10),
+  }, { onConflict: 'partner_id,product_id' });
+
+  if (error) return { error: error.message };
+  revalidatePath('/trade');
+  return { success: true };
+}
+
+export async function bulkUpsertPartnerPrices(partnerId: string, prices: Array<{ productId: string; unitPrice: number }>) {
+  try { await requireSession(); } catch (e: any) { return { error: e.message }; }
+  const sb = (await createClient()) as any;
+
+  // 정가 조회
+  const productIds = prices.map(p => p.productId);
+  const { data: products } = await sb.from('products').select('id, price').in('id', productIds);
+  const priceMap = Object.fromEntries((products || []).map((p: any) => [p.id, Number(p.price)]));
+
+  const rows = prices.map(p => {
+    const retail = priceMap[p.productId] || 0;
+    return {
+      partner_id: partnerId,
+      product_id: p.productId,
+      unit_price: p.unitPrice,
+      discount_rate: retail > 0 ? Math.round((1 - p.unitPrice / retail) * 10000) / 100 : 0,
+      effective_from: new Date().toISOString().slice(0, 10),
+    };
+  });
+
+  const { error } = await sb.from('b2b_partner_prices').upsert(rows, { onConflict: 'partner_id,product_id' });
+  if (error) return { error: error.message };
+  revalidatePath('/trade');
+  return { success: true, count: rows.length };
+}
+
+export async function deletePartnerPrice(partnerId: string, productId: string) {
+  try { await requireSession(); } catch (e: any) { return { error: e.message }; }
+  const sb = (await createClient()) as any;
+  await sb.from('b2b_partner_prices').delete().eq('partner_id', partnerId).eq('product_id', productId);
+  revalidatePath('/trade');
+  return { success: true };
+}
+
+// 거래처+제품으로 납품 단가 조회 (납품 등록 시 자동 적용)
+export async function getPartnerProductPrice(partnerId: string, productId: string): Promise<number | null> {
+  const sb = (await createClient()) as any;
+  const { data } = await sb
+    .from('b2b_partner_prices')
+    .select('unit_price')
+    .eq('partner_id', partnerId)
+    .eq('product_id', productId)
+    .maybeSingle();
+  return data?.unit_price ?? null;
+}
+
 // ─── 거래처 CRUD ─────────────────────────────────────────────────────
 
 export async function getB2bPartners() {
