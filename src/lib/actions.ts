@@ -952,6 +952,7 @@ export interface CheckoutPayload {
   userId: string | null;
   approvalNo?: string;
   cardInfo?: string;
+  memo?: string;
 }
 
 export async function processPosCheckout(payload: CheckoutPayload) {
@@ -999,6 +1000,7 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     ordered_at: new Date().toISOString(),
     approval_no: approvalNo || null,
     card_info: cardInfo || null,
+    memo: payload.memo || null,
   }).select().single();
 
   if (saleError) return { error: saleError.message };

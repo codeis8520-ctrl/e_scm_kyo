@@ -93,6 +93,16 @@ export default function POSPage() {
 
   const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
 
+  // 백화점 모드: 선택된 지점이 DEPT_STORE인 경우 결제 UI 최적화
+  const selectedBranchData = branches.find(b => b.id === selectedBranch);
+  const isDeptStore = selectedBranchData?.channel === 'DEPT_STORE';
+
+  // 백화점 수기입력용 상태
+  const [deptApprovalNo, setDeptApprovalNo] = useState('');
+  const [deptCardCompany, setDeptCardCompany] = useState('');
+  const [deptInstallment, setDeptInstallment] = useState('0');
+  const [deptMemo, setDeptMemo] = useState('');
+
   // ── 초기 데이터 로드 ───────────────────────────────────────────────────────
   useEffect(() => {
     const fetchData = async () => {
@@ -372,8 +382,11 @@ export default function POSPage() {
         pointsToUse,
         cashReceived: cashReceivedNum > 0 ? cashReceivedNum : undefined,
         userId: getCookie('user_id'),
-        approvalNo: cardApprovalResult?.approvalNo,
-        cardInfo: cardApprovalResult?.cardInfo,
+        approvalNo: isDeptStore && deptApprovalNo ? deptApprovalNo : cardApprovalResult?.approvalNo,
+        cardInfo: isDeptStore
+          ? [deptCardCompany, deptInstallment !== '0' ? `${deptInstallment}개월` : '일시불'].filter(Boolean).join(' · ')
+          : cardApprovalResult?.cardInfo,
+        memo: isDeptStore && deptMemo ? deptMemo : undefined,
       });
 
       if (result.error) {
@@ -416,6 +429,11 @@ export default function POSPage() {
       setCardApprovalState('idle');
       setCardApprovalResult(null);
       setCardApprovalError('');
+      // 백화점 수기입력 초기화
+      setDeptApprovalNo('');
+      setDeptCardCompany('');
+      setDeptInstallment('0');
+      setDeptMemo('');
 
     } catch (err: any) {
       console.error('결제 오류:', err);
@@ -846,15 +864,28 @@ export default function POSPage() {
             </div>
           </div>
 
-          {/* 결제 수단 */}
-          <div className="grid grid-cols-3 gap-1.5">
-            {([
-              { id: 'cash', label: '현금' },
-              { id: 'card', label: '카드' },
-              { id: 'card_keyin', label: '카드(키인)' },
-              { id: 'kakao', label: '카카오' },
-              { id: 'credit', label: '외상' },
-            ] as const).map(({ id, label }) => (
+          {/* 결제 수단 — 백화점이면 간소화 */}
+          {isDeptStore && (
+            <div className="flex items-center gap-2 px-2 py-1.5 bg-purple-50 rounded-lg border border-purple-200">
+              <span className="text-xs text-purple-700 font-medium">🏬 백화점 모드</span>
+              <span className="text-xs text-purple-500">카드 결제는 백화점 단말기에서 처리</span>
+            </div>
+          )}
+          <div className={`grid gap-1.5 ${isDeptStore ? 'grid-cols-3' : 'grid-cols-3'}`}>
+            {(isDeptStore
+              ? [
+                  { id: 'card' as const, label: '카드 (백화점)' },
+                  { id: 'cash' as const, label: '현금' },
+                  { id: 'credit' as const, label: '외상' },
+                ]
+              : [
+                  { id: 'cash' as const, label: '현금' },
+                  { id: 'card' as const, label: '카드' },
+                  { id: 'card_keyin' as const, label: '카드(키인)' },
+                  { id: 'kakao' as const, label: '카카오' },
+                  { id: 'credit' as const, label: '외상' },
+                ]
+            ).map(({ id, label }) => (
               <button
                 key={id}
                 onClick={() => { setPaymentMethod(id); setCashReceived(''); setCardApprovalState('idle'); setCardApprovalResult(null); setCardApprovalError(''); }}
@@ -911,8 +942,66 @@ export default function POSPage() {
             </div>
           )}
 
-          {/* 결제 버튼 — 카드(단말기): 승인 → 결제완료 2단계 / 나머지: 즉시 결제 */}
-          {paymentMethod === 'card' ? (
+          {/* 백화점 카드 결제 — 수기 입력 */}
+          {isDeptStore && paymentMethod === 'card' && (
+            <div className="space-y-2 p-3 bg-purple-50 rounded-lg border border-purple-200">
+              <p className="text-xs font-medium text-purple-700">백화점 단말기 결제 정보 입력</p>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-slate-500">승인번호</label>
+                  <input
+                    type="text"
+                    value={deptApprovalNo}
+                    onChange={e => setDeptApprovalNo(e.target.value)}
+                    placeholder="12345678"
+                    className="input text-sm py-1.5 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500">카드사</label>
+                  <select value={deptCardCompany} onChange={e => setDeptCardCompany(e.target.value)} className="input text-sm py-1.5">
+                    <option value="">선택</option>
+                    <option value="삼성">삼성</option>
+                    <option value="현대">현대</option>
+                    <option value="KB국민">KB국민</option>
+                    <option value="신한">신한</option>
+                    <option value="롯데">롯데</option>
+                    <option value="하나">하나</option>
+                    <option value="우리">우리</option>
+                    <option value="NH농협">NH농협</option>
+                    <option value="BC">BC</option>
+                    <option value="기타">기타</option>
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-slate-500">할부</label>
+                  <select value={deptInstallment} onChange={e => setDeptInstallment(e.target.value)} className="input text-sm py-1.5">
+                    <option value="0">일시불</option>
+                    <option value="2">2개월</option>
+                    <option value="3">3개월</option>
+                    <option value="6">6개월</option>
+                    <option value="10">10개월</option>
+                    <option value="12">12개월</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500">메모 (선택)</label>
+                  <input
+                    type="text"
+                    value={deptMemo}
+                    onChange={e => setDeptMemo(e.target.value)}
+                    placeholder="백화점 이벤트 등"
+                    className="input text-sm py-1.5"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 결제 버튼 — 카드(단말기): 승인 → 결제완료 2단계 / 백화점·나머지: 즉시 결제 */}
+          {paymentMethod === 'card' && !isDeptStore ? (
             <div className="space-y-2">
               {/* 카드 승인 상태 표시 */}
               {cardApprovalState === 'waiting' && (
