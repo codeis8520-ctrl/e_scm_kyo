@@ -37,6 +37,14 @@ const SYSTEM_PROMPT = `당신은 경옥채(한약·건강기능식품 전문 기
 "생산 지시" → create_production_order → start → complete 순서
 "문자 보내줘" → send_sms(개별) 또는 bulk_send_sms(일괄)
 
+== 복합 분석 질문 ==
+기존 도구로 답할 수 없는 복합 분석(교차 집계, 조건부 필터링, 추세 분석 등)은
+analyze_data 도구로 SELECT SQL을 직접 작성하여 실행한다.
+- 반드시 기존 도구를 먼저 검토 후, 없을 때만 사용
+- PostgreSQL 문법, 테이블·컬럼명은 스키마 참조
+- SELECT만 허용 (INSERT/UPDATE/DELETE 불가)
+- users, session_tokens 등 보안 테이블 접근 불가
+
 ${DB_SCHEMA}
 ${BUSINESS_RULES}`;
 

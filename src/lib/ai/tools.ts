@@ -822,6 +822,42 @@ sales_orders·inventories 등 핵심 거래 테이블은 삭제 불가.`,
       },
     },
   },
+  // ── 범용 분석 쿼리 ────────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'analyze_data',
+      description: `기존 도구로 답할 수 없는 복잡한 분석 질문에 SELECT SQL을 직접 작성하여 실행.
+조회(SELECT)만 가능하며, 데이터 변경(INSERT/UPDATE/DELETE)은 불가.
+
+사용 규칙:
+- 반드시 기존 도구를 먼저 검토한 후, 적합한 도구가 없을 때만 사용
+- PostgreSQL 문법 사용
+- 테이블명과 컬럼은 스키마 정보 참조
+- 결과는 최대 100행
+
+활용 예시:
+- "VIP 고객 중 경옥고 3회 이상 구매자" → JOIN + GROUP BY + HAVING
+- "월별 매출 추이" → DATE_TRUNC + GROUP BY
+- "고객별 평균 구매 주기" → LAG 윈도우 함수
+- "제품별 지난달 대비 매출 변화율" → 서브쿼리 비교
+- "외상 미수금 고객별 합계" → payment_method='credit' + credit_settled=false`,
+      parameters: {
+        type: 'object',
+        properties: {
+          sql: {
+            type: 'string',
+            description: 'SELECT 쿼리. PostgreSQL 문법. 테이블명은 스키마 참조. LIMIT 100 자동 적용.',
+          },
+          description: {
+            type: 'string',
+            description: '이 쿼리가 무엇을 분석하는지 한줄 설명',
+          },
+        },
+        required: ['sql', 'description'],
+      },
+    },
+  },
 ];
 
 export const WRITE_TOOLS = new Set([
@@ -1010,6 +1046,7 @@ export async function executeTool(
       case 'refresh_cafe24_token':     return execRefreshCafe24Token(ctx);
       case 'sync_cafe24_paid_orders':  return execSyncCafe24PaidOrders(sb, args as any, ctx);
       case 'customer_segment_analysis':return execCustomerSegmentAnalysis(sb, args as any);
+      case 'analyze_data':            return execAnalyzeData(sb, args as any, ctx);
       default: return JSON.stringify({ error: `알 수 없는 도구: ${toolName}` });
     }
   } catch (e: any) {
@@ -2818,4 +2855,114 @@ async function execCustomerSegmentAnalysis(sb: any, args: {
       구매건수: `${r.count}건`,
     })),
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 범용 분석 쿼리 (safe_readonly_query RPC)
+// ═══════════════════════════════════════════════════════════════════════
+
+// 조회 허용 테이블 (화이트리스트)
+const ALLOWED_TABLES = new Set([
+  'branches', 'products', 'inventories', 'inventory_movements',
+  'customers', 'customer_grades', 'point_history',
+  'sales_orders', 'sales_order_items',
+  'suppliers', 'purchase_orders', 'purchase_order_items',
+  'purchase_receipts', 'purchase_receipt_items',
+  'bom', 'production_orders',
+  'return_orders', 'return_order_items',
+  'shipments', 'notifications',
+  'gl_accounts', 'journal_entries', 'journal_entry_lines',
+  'notification_campaigns', 'campaign_event_types',
+]);
+
+// 시스템/인증 테이블 (명시적 차단)
+const BLOCKED_TABLES = new Set([
+  'users', 'session_tokens', 'cafe24_tokens',
+  'screen_permissions', 'audit_logs',
+]);
+
+function validateSql(sql: string): string | null {
+  const normalized = sql.trim().replace(/;+$/, '');
+  const upper = normalized.toUpperCase();
+
+  // 1) SELECT만
+  if (!upper.startsWith('SELECT')) {
+    return 'SELECT 쿼리만 허용됩니다.';
+  }
+
+  // 2) DML/DDL 차단
+  if (/\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|GRANT|REVOKE|EXECUTE|COPY)\b/i.test(normalized)) {
+    return '데이터 변경 작업은 허용되지 않습니다.';
+  }
+
+  // 3) INTO 차단 (SELECT INTO)
+  if (/\bINTO\b/i.test(normalized)) {
+    return 'INTO 절은 허용되지 않습니다.';
+  }
+
+  // 4) 시스템 테이블 접근 차단
+  for (const blocked of BLOCKED_TABLES) {
+    if (new RegExp(`\\b${blocked}\\b`, 'i').test(normalized)) {
+      return `'${blocked}' 테이블은 접근할 수 없습니다 (보안 제한).`;
+    }
+  }
+
+  // 5) 세미콜론 2개 이상 (다중 문 실행 차단)
+  if ((normalized.match(/;/g) || []).length > 0) {
+    return '다중 문 실행은 허용되지 않습니다.';
+  }
+
+  return null; // 통과
+}
+
+async function execAnalyzeData(
+  sb: any,
+  args: { sql: string; description?: string },
+  ctx: ToolContext
+): Promise<string> {
+  // HQ 이상만 사용 가능 (Staff가 임의 쿼리 실행 방지)
+  const denied = requireHq(ctx, '데이터 분석 쿼리');
+  if (denied) return denied;
+
+  if (!args.sql || !args.sql.trim()) {
+    return JSON.stringify({ error: 'SQL 쿼리가 필요합니다.' });
+  }
+
+  // 앱 레이어 검증
+  const validationError = validateSql(args.sql);
+  if (validationError) {
+    return JSON.stringify({ error: validationError });
+  }
+
+  try {
+    // Supabase RPC 호출 (DB 측 2차 검증 + 실행)
+    const { data, error } = await sb.rpc('safe_readonly_query', {
+      query_text: args.sql.trim().replace(/;+$/, ''),
+      row_limit: 100,
+    });
+
+    if (error) {
+      // DB 에러 메시지에서 민감 정보 제거
+      const msg = String(error.message || '')
+        .replace(/relation ".*?"/g, '테이블')
+        .replace(/column ".*?"/g, '컬럼');
+      return JSON.stringify({
+        error: `쿼리 실행 오류: ${msg}`,
+        hint: '테이블명과 컬럼명을 스키마 정보에서 확인하세요.',
+      });
+    }
+
+    const rows: any[] = data || [];
+
+    return JSON.stringify({
+      분석: args.description || '쿼리 결과',
+      건수: rows.length,
+      결과: rows.length <= 20
+        ? rows
+        : [...rows.slice(0, 18), { '...': `외 ${rows.length - 18}건` }, rows[rows.length - 1]],
+      안내: rows.length >= 100 ? '결과가 100행으로 제한되었습니다.' : undefined,
+    });
+  } catch (e: any) {
+    return JSON.stringify({ error: `분석 실패: ${e?.message || '알 수 없는 오류'}` });
+  }
 }
