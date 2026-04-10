@@ -191,8 +191,12 @@ export default function SystemCodesPage() {
       const { data } = await supabase.from('categories').select('*, parent:categories(name)').order('sort_order');
       setCategories(data || []);
     } else if (activeTab === 'staff') {
-      const { data } = await supabase.from('users').select('*, branch:branches(name)').order('created_at', { ascending: false });
-      setUsers((data || []) as User[]);
+      const [{ data: usersData }, { data: branchesData }] = await Promise.all([
+        supabase.from('users').select('*, branch:branches(name)').order('created_at', { ascending: false }),
+        supabase.from('branches').select('*').eq('is_active', true).order('name'),
+      ]);
+      setUsers((usersData || []) as User[]);
+      setBranches(branchesData || []);
     } else if (activeTab === 'templates') {
       const { data } = await supabase.from('notification_templates').select('*').order('created_at', { ascending: false });
       setTemplates((data || []) as NotificationTemplate[]);
