@@ -102,6 +102,7 @@ export default function POSPage() {
   const [deptCardCompany, setDeptCardCompany] = useState('');
   const [deptInstallment, setDeptInstallment] = useState('0');
   const [deptMemo, setDeptMemo] = useState('');
+  const [deptShowDetail, setDeptShowDetail] = useState(false);
 
   // ── 초기 데이터 로드 ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -942,61 +943,69 @@ export default function POSPage() {
             </div>
           )}
 
-          {/* 백화점 카드 결제 — 수기 입력 */}
+          {/* 백화점 카드 결제 — 간편 입력 */}
           {isDeptStore && paymentMethod === 'card' && (
             <div className="space-y-2 p-3 bg-purple-50 rounded-lg border border-purple-200">
-              <p className="text-xs font-medium text-purple-700">백화점 단말기 결제 정보 입력</p>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-xs text-slate-500">승인번호</label>
-                  <input
-                    type="text"
-                    value={deptApprovalNo}
-                    onChange={e => setDeptApprovalNo(e.target.value)}
-                    placeholder="12345678"
-                    className="input text-sm py-1.5 font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-500">카드사</label>
-                  <select value={deptCardCompany} onChange={e => setDeptCardCompany(e.target.value)} className="input text-sm py-1.5">
-                    <option value="">선택</option>
-                    <option value="삼성">삼성</option>
-                    <option value="현대">현대</option>
-                    <option value="KB국민">KB국민</option>
-                    <option value="신한">신한</option>
-                    <option value="롯데">롯데</option>
-                    <option value="하나">하나</option>
-                    <option value="우리">우리</option>
-                    <option value="NH농협">NH농협</option>
-                    <option value="BC">BC</option>
-                    <option value="기타">기타</option>
-                  </select>
-                </div>
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium text-purple-700">결제 정보</p>
+                <button
+                  type="button"
+                  onClick={() => setDeptShowDetail(prev => !prev)}
+                  className="text-xs text-purple-500 hover:underline"
+                >
+                  {deptShowDetail ? '간편 입력' : '상세 입력'}
+                </button>
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-xs text-slate-500">할부</label>
-                  <select value={deptInstallment} onChange={e => setDeptInstallment(e.target.value)} className="input text-sm py-1.5">
-                    <option value="0">일시불</option>
-                    <option value="2">2개월</option>
-                    <option value="3">3개월</option>
-                    <option value="6">6개월</option>
-                    <option value="10">10개월</option>
-                    <option value="12">12개월</option>
-                  </select>
+              {/* 기본: 카드사 + 할부만 (가장 빈번한 입력) */}
+              <div className="flex gap-2">
+                <div className="flex gap-1 flex-wrap flex-1">
+                  {['삼성', '현대', 'KB', '신한', '롯데', '하나', '우리', 'NH', 'BC'].map(c => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => setDeptCardCompany(c)}
+                      className={`px-2 py-1 rounded text-xs transition-colors ${
+                        deptCardCompany === c ? 'bg-purple-600 text-white' : 'bg-white border border-purple-200 text-purple-700 hover:bg-purple-100'
+                      }`}
+                    >
+                      {c}
+                    </button>
+                  ))}
                 </div>
-                <div>
-                  <label className="text-xs text-slate-500">메모 (선택)</label>
-                  <input
-                    type="text"
-                    value={deptMemo}
-                    onChange={e => setDeptMemo(e.target.value)}
-                    placeholder="백화점 이벤트 등"
-                    className="input text-sm py-1.5"
-                  />
-                </div>
+                <select value={deptInstallment} onChange={e => setDeptInstallment(e.target.value)} className="input text-xs py-1 w-20">
+                  <option value="0">일시불</option>
+                  <option value="2">2개월</option>
+                  <option value="3">3개월</option>
+                  <option value="6">6개월</option>
+                  <option value="10">10개월</option>
+                  <option value="12">12개월</option>
+                </select>
               </div>
+              {/* 상세: 승인번호 + 메모 (토글) */}
+              {deptShowDetail && (
+                <div className="grid grid-cols-2 gap-2 pt-1 border-t border-purple-200">
+                  <div>
+                    <label className="text-xs text-slate-500">승인번호 (선택)</label>
+                    <input
+                      type="text"
+                      value={deptApprovalNo}
+                      onChange={e => setDeptApprovalNo(e.target.value)}
+                      placeholder="미입력 가능"
+                      className="input text-sm py-1.5 font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500">메모 (선택)</label>
+                    <input
+                      type="text"
+                      value={deptMemo}
+                      onChange={e => setDeptMemo(e.target.value)}
+                      placeholder="이벤트명 등"
+                      className="input text-sm py-1.5"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
