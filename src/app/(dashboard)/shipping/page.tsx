@@ -79,10 +79,10 @@ export default function ShippingPage() {
 
   // ── Cafe24 탭 ─────────────────────────────────────────────────────────────
   const today = new Date();
-  const oneMonthAgo = new Date(today);
-  oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+  const oneWeekAgo = new Date(today);
+  oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
   const fmt = (d: Date) => d.toISOString().slice(0, 10);
-  const [startDate, setStartDate] = useState(fmt(oneMonthAgo));
+  const [startDate, setStartDate] = useState(fmt(oneWeekAgo));
   const [endDate, setEndDate] = useState(fmt(today));
   const [cafe24Orders, setCafe24Orders] = useState<Cafe24OrderForShipping[]>([]);
   const [cafe24Loading, setCafe24Loading] = useState(false);
@@ -430,6 +430,14 @@ export default function ShippingPage() {
       setCafe24Error(e.message || '오류');
     } finally { setCafe24Loading(false); }
   };
+
+  // 페이지 진입 시 카페24 주문 자동 로드
+  useEffect(() => {
+    if (activeTab === 'cafe24' && cafe24Orders.length === 0 && !cafe24Loading) {
+      handleLoadCafe24Orders();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   const toggleOrderSelect = (id: string) =>
     setSelectedOrders(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
