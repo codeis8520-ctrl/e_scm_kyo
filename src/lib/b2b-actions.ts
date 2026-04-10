@@ -234,12 +234,12 @@ export async function createB2bSalesOrder(params: {
   try {
     const { data: accounts } = await sb
       .from('gl_accounts').select('id, code')
-      .in('code', ['1115', '4110', '2151']);
+      .in('code', ['1115', '4130', '2151']);
     const accMap: Record<string, string> = {};
     (accounts || []).forEach((a: any) => { accMap[a.code] = a.id; });
 
     const arId = accMap['1115'];       // 외상매출금
-    const revenueId = accMap['4110'];  // 매출
+    const revenueId = accMap['4130'];  // B2B매출
     const vatId = accMap['2151'];      // 부가세예수금
 
     if (arId && revenueId) {
