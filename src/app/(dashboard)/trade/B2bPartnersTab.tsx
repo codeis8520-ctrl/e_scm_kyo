@@ -43,7 +43,6 @@ export default function B2bPartnersTab() {
                   <th>담당자</th>
                   <th>연락처</th>
                   <th>정산주기</th>
-                  <th>수수료</th>
                   <th>상태</th>
                   <th>관리</th>
                 </tr>
@@ -57,7 +56,6 @@ export default function B2bPartnersTab() {
                     <td className="text-sm">{p.contact_name || '-'}</td>
                     <td className="text-sm">{p.phone || '-'}</td>
                     <td className="text-sm">{CYCLE_LABELS[p.settlement_cycle] || p.settlement_cycle} · {p.settlement_day}일</td>
-                    <td className="text-sm">{p.commission_rate}%</td>
                     <td><span className={`badge text-xs ${p.is_active ? 'badge-success' : 'badge-error'}`}>{p.is_active ? '활성' : '비활성'}</span></td>
                     <td>
                       <button onClick={() => setPricePartner(p)} className="text-emerald-600 hover:underline text-sm mr-2">단가표</button>
@@ -66,7 +64,7 @@ export default function B2bPartnersTab() {
                   </tr>
                 ))}
                 {partners.length === 0 && (
-                  <tr><td colSpan={9} className="text-center py-8 text-slate-400">등록된 거래처가 없습니다</td></tr>
+                  <tr><td colSpan={8} className="text-center py-8 text-slate-400">등록된 거래처가 없습니다</td></tr>
                 )}
               </tbody>
             </table>
@@ -104,7 +102,6 @@ function PartnerForm({ partner, onClose, onSuccess }: { partner: any; onClose: (
     address: partner?.address || '',
     settlement_cycle: partner?.settlement_cycle || 'MONTHLY',
     settlement_day: partner?.settlement_day ?? 25,
-    commission_rate: partner?.commission_rate ?? 0,
     memo: partner?.memo || '',
     is_active: partner?.is_active ?? true,
   });
@@ -159,7 +156,7 @@ function PartnerForm({ partner, onClose, onSuccess }: { partner: any; onClose: (
               <input value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} className="input" />
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-3 pt-2 border-t">
+          <div className="grid grid-cols-2 gap-3 pt-2 border-t">
             <div>
               <label className="block text-sm font-medium mb-1">정산 주기</label>
               <select value={form.settlement_cycle} onChange={e => setForm({ ...form, settlement_cycle: e.target.value })} className="input">
@@ -171,10 +168,6 @@ function PartnerForm({ partner, onClose, onSuccess }: { partner: any; onClose: (
             <div>
               <label className="block text-sm font-medium mb-1">정산일</label>
               <input type="number" min={1} max={31} value={form.settlement_day} onChange={e => setForm({ ...form, settlement_day: parseInt(e.target.value) || 25 })} className="input" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">수수료율 (%)</label>
-              <input type="number" step="0.1" min={0} max={100} value={form.commission_rate} onChange={e => setForm({ ...form, commission_rate: parseFloat(e.target.value) || 0 })} className="input" />
             </div>
           </div>
           <div>
@@ -210,6 +203,7 @@ function PartnerPriceModal({ partner, onClose }: { partner: any; onClose: () => 
   // 추가용
   const [addProductId, setAddProductId] = useState('');
   const [addUnitPrice, setAddUnitPrice] = useState('');
+  const [addDiscount, setAddDiscount] = useState('');
 
   // 일괄 할인율
   const [bulkRate, setBulkRate] = useState('');
@@ -248,6 +242,7 @@ function PartnerPriceModal({ partner, onClose }: { partner: any; onClose: () => 
     setSaving(null);
     setAddProductId('');
     setAddUnitPrice('');
+    setAddDiscount('');
     fetchData();
   };
 
@@ -346,23 +341,47 @@ function PartnerPriceModal({ partner, onClose }: { partner: any; onClose: () => 
             {unregistered.length > 0 && (
               <div className="border-t pt-4">
                 <p className="text-sm font-medium mb-2">제품 추가</p>
-                <div className="flex gap-2 items-end">
+                <div className="flex gap-2 items-end flex-wrap">
                   <select value={addProductId} onChange={e => {
                     setAddProductId(e.target.value);
                     const prod = allProducts.find(p => p.id === e.target.value);
-                    if (prod) setAddUnitPrice(String(prod.price));
-                  }} className="input flex-1 text-sm">
+                    if (prod) { setAddUnitPrice(String(prod.price)); setAddDiscount('0'); }
+                  }} className="input flex-1 text-sm min-w-[180px]">
                     <option value="">제품 선택</option>
                     {unregistered.map(p => (
                       <option key={p.id} value={p.id}>{p.name} ({p.code}) — 정가 {Number(p.price).toLocaleString()}원</option>
                     ))}
                   </select>
-                  <input
-                    type="number" min={0}
-                    value={addUnitPrice} onChange={e => setAddUnitPrice(e.target.value)}
-                    placeholder="납품 단가"
-                    className="input w-28 text-sm text-right"
-                  />
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number" step="0.1" min={0} max={100}
+                      value={addDiscount}
+                      onChange={e => {
+                        setAddDiscount(e.target.value);
+                        const r = parseFloat(e.target.value);
+                        const prod = allProducts.find(p => p.id === addProductId);
+                        if (!isNaN(r) && prod) setAddUnitPrice(String(Math.round(Number(prod.price) * (1 - r / 100))));
+                      }}
+                      placeholder="할인"
+                      className="input w-16 text-sm text-right"
+                    />
+                    <span className="text-xs text-slate-400">%</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number" min={0}
+                      value={addUnitPrice}
+                      onChange={e => {
+                        setAddUnitPrice(e.target.value);
+                        const v = parseInt(e.target.value);
+                        const prod = allProducts.find(p => p.id === addProductId);
+                        if (!isNaN(v) && prod && Number(prod.price) > 0) setAddDiscount(((1 - v / Number(prod.price)) * 100).toFixed(1));
+                      }}
+                      placeholder="납품 단가"
+                      className="input w-28 text-sm text-right"
+                    />
+                    <span className="text-xs text-slate-400">원</span>
+                  </div>
                   <button
                     onClick={handleAdd}
                     disabled={saving === 'add' || !addProductId || !addUnitPrice}
@@ -383,7 +402,35 @@ function PartnerPriceModal({ partner, onClose }: { partner: any; onClose: () => 
 function PriceRow({ price, saving, onSave, onDelete }: { price: any; saving: boolean; onSave: (v: number) => void; onDelete: () => void }) {
   const [editing, setEditing] = useState(false);
   const [val, setVal] = useState(String(price.unit_price));
+  const [discountVal, setDiscountVal] = useState('');
   const retailPrice = Number(price.product?.price || 0);
+
+  const startEdit = () => {
+    setVal(String(price.unit_price));
+    setDiscountVal(retailPrice > 0 ? ((1 - Number(price.unit_price) / retailPrice) * 100).toFixed(1) : '');
+    setEditing(true);
+  };
+
+  const applyDiscount = (rate: string) => {
+    setDiscountVal(rate);
+    const r = parseFloat(rate);
+    if (!isNaN(r) && retailPrice > 0) {
+      setVal(String(Math.round(retailPrice * (1 - r / 100))));
+    }
+  };
+
+  const applyPrice = (p: string) => {
+    setVal(p);
+    const v = parseInt(p);
+    if (!isNaN(v) && retailPrice > 0) {
+      setDiscountVal(((1 - v / retailPrice) * 100).toFixed(1));
+    }
+  };
+
+  const confirmEdit = () => {
+    onSave(parseInt(val) || 0);
+    setEditing(false);
+  };
 
   return (
     <tr>
@@ -397,28 +444,45 @@ function PriceRow({ price, saving, onSave, onDelete }: { price: any; saving: boo
           <div className="flex items-center gap-1 justify-end">
             <input
               type="number" min={0} value={val}
-              onChange={e => setVal(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') { onSave(parseInt(val)); setEditing(false); } if (e.key === 'Escape') setEditing(false); }}
+              onChange={e => applyPrice(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') confirmEdit(); if (e.key === 'Escape') setEditing(false); }}
               className="input w-24 text-sm text-right py-0.5"
               autoFocus
             />
-            <button onClick={() => { onSave(parseInt(val)); setEditing(false); }} disabled={saving} className="text-xs text-blue-600">✓</button>
+            <span className="text-xs text-slate-400">원</span>
           </div>
         ) : (
-          <button onClick={() => { setVal(String(price.unit_price)); setEditing(true); }} className="text-sm font-semibold hover:text-blue-600">
+          <button onClick={startEdit} className="text-sm font-semibold hover:text-blue-600">
             {Number(price.unit_price).toLocaleString()}원
           </button>
         )}
       </td>
       <td className="text-right text-sm">
-        {retailPrice > 0 ? (
-          <span className={Number(price.discount_rate) > 0 ? 'text-red-600' : ''}>
+        {editing ? (
+          <div className="flex items-center gap-1 justify-end">
+            <input
+              type="number" step="0.1" min={0} max={100} value={discountVal}
+              onChange={e => applyDiscount(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') confirmEdit(); if (e.key === 'Escape') setEditing(false); }}
+              className="input w-16 text-sm text-right py-0.5"
+            />
+            <span className="text-xs text-slate-400">%</span>
+          </div>
+        ) : retailPrice > 0 ? (
+          <button onClick={startEdit} className={`hover:text-blue-600 ${Number(price.discount_rate) > 0 ? 'text-red-600' : ''}`}>
             {Number(price.discount_rate).toFixed(1)}%
-          </span>
+          </button>
         ) : '-'}
       </td>
       <td>
-        <button onClick={onDelete} className="text-xs text-red-400 hover:text-red-600">삭제</button>
+        {editing ? (
+          <div className="flex gap-1">
+            <button onClick={confirmEdit} disabled={saving} className="text-xs text-blue-600 hover:text-blue-800">{saving ? '...' : '저장'}</button>
+            <button onClick={() => setEditing(false)} className="text-xs text-slate-400 hover:text-slate-600">취소</button>
+          </div>
+        ) : (
+          <button onClick={onDelete} className="text-xs text-red-400 hover:text-red-600">삭제</button>
+        )}
       </td>
     </tr>
   );

@@ -106,7 +106,7 @@ export async function getB2bPartners() {
 export async function createB2bPartner(params: {
   name: string; code?: string; business_no?: string;
   contact_name?: string; phone?: string; email?: string; address?: string;
-  settlement_cycle?: string; settlement_day?: number; commission_rate?: number; memo?: string;
+  settlement_cycle?: string; settlement_day?: number; memo?: string;
 }) {
   try { await requireSession(); } catch (e: any) { return { error: e.message }; }
   const sb = (await createClient()) as any;
@@ -132,7 +132,7 @@ export async function getB2bSalesOrders(filters?: { partnerId?: string; status?:
   const sb = (await createClient()) as any;
   let q = sb
     .from('b2b_sales_orders')
-    .select('*, partner:b2b_partners(name, code, commission_rate), branch:branches(name), items:b2b_sales_order_items(*, product:products(name, code))')
+    .select('*, partner:b2b_partners(name, code), branch:branches(name), items:b2b_sales_order_items(*, product:products(name, code))')
     .order('delivered_at', { ascending: false })
     .limit(200);
 
@@ -230,6 +230,48 @@ export async function createB2bSalesOrder(params: {
     }
   }
 
+  // 납품 분개: 차변 외상매출금(1115) / 대변 매출(4110) + 부가세예수금(2151)
+  try {
+    const { data: accounts } = await sb
+      .from('gl_accounts').select('id, code')
+      .in('code', ['1115', '4110', '2151']);
+    const accMap: Record<string, string> = {};
+    (accounts || []).forEach((a: any) => { accMap[a.code] = a.id; });
+
+    const arId = accMap['1115'];       // 외상매출금
+    const revenueId = accMap['4110'];  // 매출
+    const vatId = accMap['2151'];      // 부가세예수금
+
+    if (arId && revenueId) {
+      const supplyAmount = Math.round(totalAmount / 1.1);
+      const vatAmount = totalAmount - supplyAmount;
+      const jeNumber = `JE-B2B-${date}-${rand}`;
+
+      const { data: entry } = await sb.from('journal_entries').insert({
+        entry_number: jeNumber,
+        entry_date: (params.deliveredAt || now.toISOString()).slice(0, 10),
+        description: `B2B 납품 매출 — ${orderNumber}`,
+        source_type: 'B2B_SALE',
+        source_id: order.id,
+        total_debit: totalAmount,
+        total_credit: totalAmount,
+      }).select('id').single();
+
+      if (entry) {
+        const lines: any[] = [
+          { journal_entry_id: entry.id, account_id: arId, debit: totalAmount, credit: 0, memo: `외상매출금 (${orderNumber})` },
+          { journal_entry_id: entry.id, account_id: revenueId, debit: 0, credit: supplyAmount, memo: `매출 공급가 (${orderNumber})` },
+        ];
+        if (vatId && vatAmount > 0) {
+          lines.push({ journal_entry_id: entry.id, account_id: vatId, debit: 0, credit: vatAmount, memo: `부가세 (${orderNumber})` });
+        }
+        await sb.from('journal_entry_lines').insert(lines);
+      }
+    }
+  } catch (journalErr: any) {
+    console.warn('B2B 납품 분개 생성 실패(무시):', journalErr?.message);
+  }
+
   revalidatePath('/trade');
   return { success: true, orderNumber };
 }
@@ -241,7 +283,7 @@ export async function settleB2bOrder(orderId: string, amount: number, method?: s
   const sb = (await createClient()) as any;
 
   const { data: order } = await sb.from('b2b_sales_orders')
-    .select('id, total_amount, settled_amount, status')
+    .select('id, order_number, total_amount, settled_amount, status')
     .eq('id', orderId).single();
   if (!order) return { error: '납품 전표를 찾을 수 없습니다.' };
   if (order.status === 'SETTLED') return { error: '이미 정산 완료된 건입니다.' };
@@ -255,6 +297,45 @@ export async function settleB2bOrder(orderId: string, amount: number, method?: s
     status: isFullySettled ? 'SETTLED' : 'PARTIALLY_SETTLED',
     settled_at: isFullySettled ? new Date().toISOString() : null,
   }).eq('id', orderId);
+
+  // 수금 분개: 차변 현금/보통예금(1110/1120) / 대변 외상매출금(1115)
+  try {
+    const { data: accounts } = await sb
+      .from('gl_accounts').select('id, code')
+      .in('code', ['1110', '1115', '1120']);
+    const accMap: Record<string, string> = {};
+    (accounts || []).forEach((a: any) => { accMap[a.code] = a.id; });
+
+    const debitCode = method === 'card' ? '1120' : '1110'; // 카드 or 현금(기본)
+    const debitId = accMap[debitCode];
+    const creditId = accMap['1115']; // 외상매출금
+
+    if (debitId && creditId) {
+      const now = new Date().toISOString();
+      const dateStr = now.slice(0, 10).replace(/-/g, '');
+      const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
+      const jeNumber = `JE-B2S-${dateStr}-${rand}`;
+
+      const { data: entry } = await sb.from('journal_entries').insert({
+        entry_number: jeNumber,
+        entry_date: now.slice(0, 10),
+        description: `B2B 수금 — ${order.order_number}`,
+        source_type: 'B2B_SETTLE',
+        source_id: orderId,
+        total_debit: amount,
+        total_credit: amount,
+      }).select('id').single();
+
+      if (entry) {
+        await sb.from('journal_entry_lines').insert([
+          { journal_entry_id: entry.id, account_id: debitId, debit: amount, credit: 0, memo: `수금 (${order.order_number})` },
+          { journal_entry_id: entry.id, account_id: creditId, debit: 0, credit: amount, memo: `외상매출금 회수 (${order.order_number})` },
+        ]);
+      }
+    }
+  } catch (journalErr: any) {
+    console.warn('B2B 수금 분개 생성 실패(무시):', journalErr?.message);
+  }
 
   revalidatePath('/trade');
   return { success: true, newStatus: isFullySettled ? 'SETTLED' : 'PARTIALLY_SETTLED' };
