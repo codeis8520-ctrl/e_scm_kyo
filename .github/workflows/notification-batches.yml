@@ -8,8 +8,9 @@ name: Scheduled Batches
 
 on:
   schedule:
-    # 카페24 매출 자동 동기화 — 매일 08:00 KST (UTC 23:00 전일)
+    # 카페24 매출 자동 동기화 — 매일 08:00 + 18:00 KST
     - cron: '0 23 * * *'
+    - cron: '0 9 * * *'
     # 생일 축하 알림톡 — 매일 09:00 KST (UTC 00:00)
     - cron: '0 0 * * *'
     # 휴면 고객 재유치 — 매주 월요일 10:00 KST (UTC 01:00)
@@ -32,7 +33,7 @@ on:
 jobs:
   cafe24-sync:
     if: >-
-      github.event_name == 'schedule' && github.event.schedule == '0 23 * * *' ||
+      github.event_name == 'schedule' && (github.event.schedule == '0 23 * * *' || github.event.schedule == '0 9 * * *') ||
       github.event_name == 'workflow_dispatch' && inputs.job == 'cafe24-sync'
     runs-on: ubuntu-latest
     steps:
