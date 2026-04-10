@@ -75,16 +75,44 @@ export async function GET(request: NextRequest) {
     .order('created_at', { ascending: false })
     .limit(20);
 
-  if (channel && channel !== 'ALL') {
+  const isB2BFilter = channel === 'B2B';
+  if (channel && channel !== 'ALL' && !isB2BFilter) {
     salesQuery = salesQuery.eq('channel', channel);
     monthSalesQuery = monthSalesQuery.eq('channel', channel);
     recentOrdersQuery = recentOrdersQuery.eq('channel', channel);
+  }
+  // B2B 필터 시 일반 sales_orders는 빈 결과 (존재하지 않는 channel)
+  if (isB2BFilter) {
+    salesQuery = salesQuery.eq('channel', '__B2B_NONE__');
+    monthSalesQuery = monthSalesQuery.eq('channel', '__B2B_NONE__');
+    recentOrdersQuery = recentOrdersQuery.eq('channel', '__B2B_NONE__');
   }
 
   if (branchId && branchId !== 'ALL') {
     salesQuery = salesQuery.eq('branch_id', branchId);
     monthSalesQuery = monthSalesQuery.eq('branch_id', branchId);
     recentOrdersQuery = recentOrdersQuery.eq('branch_id', branchId);
+  }
+
+  // B2B 납품 매출 쿼리 (DELIVERED/PARTIALLY_SETTLED/SETTLED)
+  const B2B_STATUSES = ['DELIVERED', 'PARTIALLY_SETTLED', 'SETTLED'];
+
+  let b2bTodayQuery = supabase
+    .from('b2b_sales_orders')
+    .select('total_amount, delivered_at')
+    .in('status', B2B_STATUSES)
+    .gte('delivered_at', `${today}T00:00:00`)
+    .lt('delivered_at', `${today}T23:59:59`);
+
+  let b2bMonthQuery = supabase
+    .from('b2b_sales_orders')
+    .select('total_amount')
+    .in('status', B2B_STATUSES)
+    .gte('delivered_at', `${monthStart}T00:00:00`);
+
+  if (branchId && branchId !== 'ALL') {
+    b2bTodayQuery = b2bTodayQuery.eq('branch_id', branchId);
+    b2bMonthQuery = b2bMonthQuery.eq('branch_id', branchId);
   }
 
   const [
@@ -98,6 +126,8 @@ export async function GET(request: NextRequest) {
     monthPurchaseResult,
     monthReturnResult,
     pendingPOResult,
+    b2bTodayResult,
+    b2bMonthResult,
   ] = await Promise.all([
     salesQuery,
     monthSalesQuery,
@@ -167,6 +197,8 @@ export async function GET(request: NextRequest) {
       if (branchId && branchId !== 'ALL') q = q.eq('branch_id', branchId);
       return q;
     })(),
+    b2bTodayQuery,
+    b2bMonthQuery,
   ]);
 
   const todaySales = (todaySalesResult.data || []) as { total_amount: number }[];
@@ -180,6 +212,14 @@ export async function GET(request: NextRequest) {
   const monthReturnTotal   = (monthReturnResult.data || []).reduce((s: number, r: any) => s + (r.refund_amount || 0), 0);
   const pendingPOCount     = pendingPOResult.count ?? 0;
 
+  // B2B 매출 합산
+  const b2bTodaySales = (b2bTodayResult.data || []) as { total_amount: number }[];
+  const b2bMonthSales = (b2bMonthResult.data || []) as { total_amount: number }[];
+  const b2bTodayTotal = b2bTodaySales.reduce((s, o) => s + (o.total_amount || 0), 0);
+  const b2bTodayCount = b2bTodaySales.length;
+  const b2bMonthTotal = b2bMonthSales.reduce((s, o) => s + (o.total_amount || 0), 0);
+  const b2bMonthCount = b2bMonthSales.length;
+
   const channelSales: ChannelSales[] = ['STORE', 'DEPT_STORE', 'ONLINE', 'EVENT']
     .map((ch) => {
       const chData = channelSalesRaw.filter((s: any) => s.channel === ch);
@@ -190,6 +230,11 @@ export async function GET(request: NextRequest) {
       };
     })
     .filter((ch) => ch.count > 0);
+
+  // B2B 채널 추가
+  if (b2bMonthCount > 0 && (!channel || channel === 'ALL' || channel === 'B2B')) {
+    channelSales.push({ channel: 'B2B', total: b2bMonthTotal, count: b2bMonthCount });
+  }
 
   const branchInventoryMap = new Map<string, BranchInventory>();
 
@@ -236,10 +281,11 @@ export async function GET(request: NextRequest) {
     branch_name: (inv.branch as any)?.name || '알 수 없음',
   }));
 
-  const todayTotal = todaySales.reduce((sum, o) => sum + (o.total_amount || 0), 0);
-  const todayCount = todaySales.length;
-  const monthTotal = monthSales.reduce((sum, o) => sum + (o.total_amount || 0), 0);
-  const monthCount = monthSales.length;
+  const includeB2B = !channel || channel === 'ALL' || channel === 'B2B';
+  const todayTotal = todaySales.reduce((sum, o) => sum + (o.total_amount || 0), 0) + (includeB2B ? b2bTodayTotal : 0);
+  const todayCount = todaySales.length + (includeB2B ? b2bTodayCount : 0);
+  const monthTotal = monthSales.reduce((sum, o) => sum + (o.total_amount || 0), 0) + (includeB2B ? b2bMonthTotal : 0);
+  const monthCount = monthSales.length + (includeB2B ? b2bMonthCount : 0);
   const onlineAmount = onlineOrders.reduce((sum: number, o: any) => sum + (o.total_amount || 0), 0);
 
   return NextResponse.json({

@@ -57,6 +57,7 @@ const CHANNEL_LABELS: Record<string, string> = {
   DEPT_STORE: '백화점',
   ONLINE: '자사몰',
   EVENT: '이벤트',
+  B2B: 'B2B',
 };
 
 const CHANNEL_COLORS: Record<string, string> = {
@@ -64,6 +65,7 @@ const CHANNEL_COLORS: Record<string, string> = {
   DEPT_STORE: 'bg-purple-500',
   ONLINE: 'bg-blue-500',
   EVENT: 'bg-amber-500',
+  B2B: 'bg-orange-500',
 };
 
 const ORDER_STATUS_LABELS: Record<string, string> = {
