@@ -146,6 +146,8 @@ export default function ShippingPage() {
   const [listLoading, setListLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
   const [listSearch, setListSearch] = useState('');
+  const [listStartDate, setListStartDate] = useState(fmt(oneWeekAgo));
+  const [listEndDate, setListEndDate] = useState(fmt(today));
   const [editShipment, setEditShipment] = useState<Shipment | null>(null);
   const [editForm, setEditForm] = useState<Partial<Shipment>>({});
   const [editSaving, setEditSaving] = useState(false);
@@ -520,6 +522,9 @@ export default function ShippingPage() {
   // ── 목록 탭 핸들러 ────────────────────────────────────────────────────────
   const filteredShipments = shipments.filter(s => {
     if (statusFilter !== 'ALL' && s.status !== statusFilter) return false;
+    const day = (s.created_at || '').slice(0, 10);
+    if (listStartDate && day && day < listStartDate) return false;
+    if (listEndDate && day && day > listEndDate) return false;
     if (listSearch) {
       const q = listSearch.toLowerCase().replace(/-/g, '');
       return (
@@ -858,6 +863,28 @@ export default function ShippingPage() {
                   {f === 'ALL' ? '전체' : STATUS_LABEL[f]}
                 </button>
               ))}
+              <input
+                type="date"
+                value={listStartDate}
+                onChange={e => setListStartDate(e.target.value)}
+                className="input text-sm py-1.5"
+              />
+              <span className="text-slate-400 text-sm">~</span>
+              <input
+                type="date"
+                value={listEndDate}
+                onChange={e => setListEndDate(e.target.value)}
+                className="input text-sm py-1.5"
+              />
+              <button
+                onClick={() => {
+                  setListStartDate(fmt(oneWeekAgo));
+                  setListEndDate(fmt(today));
+                }}
+                className="px-2 py-1.5 rounded text-xs font-medium bg-slate-100 text-slate-600 hover:bg-slate-200"
+              >
+                최근 1주
+              </button>
               <input
                 type="text"
                 value={listSearch}
