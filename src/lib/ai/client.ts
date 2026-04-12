@@ -49,8 +49,8 @@ export class MiniMaxClient {
 
   constructor() {
     this.apiKey = process.env.MINIMAX_API_KEY || '';
-    this.baseUrl = process.env.MINIMAX_BASE_URL || 'https://api.minimax.chat';
-    this.model = process.env.MINIMAX_MODEL || 'MiniMax-Text-01';
+    this.baseUrl = process.env.MINIMAX_BASE_URL || 'https://api.groq.com/openai';
+    this.model = process.env.MINIMAX_MODEL || 'llama-3.3-70b-versatile';
   }
 
   private getHeaders(): HeadersInit {
@@ -86,7 +86,7 @@ export class MiniMaxClient {
       body.tool_choice = 'auto';
     }
 
-    const response = await fetch(`${this.baseUrl}/v1/text/chatcompletion_v2`, {
+    const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify(body),
