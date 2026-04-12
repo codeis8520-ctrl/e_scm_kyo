@@ -181,6 +181,21 @@ export const AGENT_TOOLS: MiniMaxTool[] = [
     },
   },
 
+  // ── B2B 거래처 조회 ────────────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'get_b2b_partners',
+      description: 'B2B 거래처 목록 조회. "거래처 알려줘", "B2B 파트너", "납품처" 등에 사용. 거래처명, 사업자번호, 담당자, 정산 조건 포함.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '거래처명 키워드 (선택)' },
+        },
+      },
+    },
+  },
+
   // ── 재고 관련 쓰기 ──────────────────────────────────────────────────────────
   {
     type: 'function',
@@ -1046,6 +1061,7 @@ export async function executeTool(
       case 'refresh_cafe24_token':     return execRefreshCafe24Token(ctx);
       case 'sync_cafe24_paid_orders':  return execSyncCafe24PaidOrders(sb, args as any, ctx);
       case 'customer_segment_analysis':return execCustomerSegmentAnalysis(sb, args as any);
+      case 'get_b2b_partners':         return execGetB2bPartners(sb, args as any);
       case 'analyze_data':            return execAnalyzeData(sb, args as any, ctx);
       default: return JSON.stringify({ error: `알 수 없는 도구: ${toolName}` });
     }
@@ -2913,6 +2929,28 @@ function validateSql(sql: string): string | null {
   }
 
   return null; // 통과
+}
+
+// ── B2B 거래처 조회 ────────────────────────────────────────────────────────
+async function execGetB2bPartners(sb: any, args: { name?: string }): Promise<string> {
+  let query = sb.from('b2b_partners').select('id, name, code, business_no, contact_name, phone, settlement_cycle, commission_rate, is_active').order('name');
+  if (args.name) query = query.ilike('name', `%${args.name}%`);
+  const { data, error } = await query;
+  if (error) return JSON.stringify({ error: error.message });
+  if (!data?.length) return JSON.stringify({ 거래처: [], 메시지: '등록된 B2B 거래처가 없습니다.' });
+  return JSON.stringify({
+    거래처: data.map((p: any) => ({
+      거래처명: p.name,
+      코드: p.code,
+      사업자번호: p.business_no || '-',
+      담당자: p.contact_name || '-',
+      전화: p.phone || '-',
+      정산주기: p.settlement_cycle || '-',
+      수수료율: p.commission_rate ? `${p.commission_rate}%` : '-',
+      상태: p.is_active ? '활성' : '비활성',
+    })),
+    총건수: data.length,
+  });
 }
 
 async function execAnalyzeData(
