@@ -43,6 +43,50 @@ export interface MiniMaxChatResponse {
 }
 
 /** Groq API 호출 래퍼 — tool_use_failed 시 도구 없이 자동 재시도 */
+/**
+ * Llama가 XML 형식으로 도구를 호출할 때 Groq가 tool_use_failed를 반환함.
+ * failed_generation에서 함수명과 인자를 파싱하여 정상 tool_calls 응답으로 변환.
+ * 형식: <function=TOOL_NAME(JSON_ARGS)></function>
+ */
+function parseFailedGeneration(errJson: string): MiniMaxChatResponse | null {
+  try {
+    const parsed = JSON.parse(errJson);
+    const fg = parsed?.error?.failed_generation;
+    if (!fg) return null;
+
+    // <function=get_sales_summary({"key": "val"})></function> 파싱
+    const match = fg.match(/<function=(\w+)\((\{[\s\S]*\})\)/);
+    if (!match) return null;
+
+    const toolName = match[1];
+    const toolArgs = match[2];
+
+    // JSON 유효성 확인
+    JSON.parse(toolArgs);
+
+    console.log(`[Groq] Parsed failed_generation → ${toolName}(${toolArgs.substring(0, 100)})`);
+
+    return {
+      id: `fallback-${Date.now()}`,
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: '',
+          tool_calls: [{
+            id: `call-${Date.now()}`,
+            type: 'function',
+            function: { name: toolName, arguments: toolArgs },
+          }],
+        },
+        finish_reason: 'tool_calls',
+      }],
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function callGroq(
   baseUrl: string,
   headers: HeadersInit,
@@ -65,8 +109,14 @@ async function callGroq(
     const errText = await res.text();
     console.error(`[Groq] ${res.status} useTools=${useTools}:`, errText.substring(0, 500));
 
-    // tool_use_failed → 도구 없이 깨끗하게 재시도
+    // tool_use_failed → failed_generation에서 도구 호출 파싱 시도
     if (res.status === 400 && errText.includes('tool_use_failed') && useTools) {
+      const recovered = parseFailedGeneration(errText);
+      if (recovered) {
+        console.log('[Groq] tool_use_failed → recovered from failed_generation');
+        return recovered;
+      }
+      // 파싱 실패 시 도구 없이 재시도
       console.log('[Groq] tool_use_failed → retrying without tools');
       return callGroq(baseUrl, headers, body, false);
     }

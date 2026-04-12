@@ -226,7 +226,8 @@ export async function POST(req: NextRequest) {
 }
 
 /** Llama 모델 tool calling 인자 정제 — "null" 문자열 제거, 숫자 문자열 변환 */
-function sanitizeToolArgs(args: Record<string, any>): Record<string, any> {
+function sanitizeToolArgs(args: Record<string, any> | null | undefined): Record<string, any> {
+  if (!args || typeof args !== 'object') return {};
   const cleaned: Record<string, any> = {};
   for (const [key, value] of Object.entries(args)) {
     // "null", "None", "undefined" 문자열 → 제거
