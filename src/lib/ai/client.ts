@@ -165,7 +165,7 @@ export class MiniMaxClient {
 
   constructor() {
     this.apiKey = process.env.ANTHROPIC_API_KEY || process.env.MINIMAX_API_KEY || '';
-    this.model = process.env.AI_MODEL || 'claude-sonnet-4-20250514';
+    this.model = process.env.AI_MODEL || 'claude-haiku-4-5-20251001';
   }
 
   async chatWithTools(messages: MiniMaxMessage[], tools?: MiniMaxTool[]): Promise<{
@@ -203,6 +203,30 @@ export class MiniMaxClient {
     if (!res.ok) {
       const errText = await res.text();
       console.error(`[Claude] ${res.status}:`, errText.substring(0, 500));
+
+      // 429 Rate limit → 잠시 대기 후 1회 재시도
+      if (res.status === 429) {
+        const retryAfter = Number(res.headers.get('retry-after') || '5');
+        console.log(`[Claude] Rate limited, waiting ${retryAfter}s...`);
+        await new Promise(r => setTimeout(r, retryAfter * 1000));
+
+        const retryRes = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'x-api-key': this.apiKey,
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        });
+        if (retryRes.ok) {
+          const retryData: ClaudeResponse = await retryRes.json();
+          return fromClaudeResponse(retryData);
+        }
+        const retryErr = await retryRes.text();
+        throw new Error(`Claude API 오류 (재시도 실패): ${retryRes.status} - ${retryErr.substring(0, 200)}`);
+      }
+
       throw new Error(`Claude API 오류: ${res.status} - ${errText.substring(0, 300)}`);
     }
 
