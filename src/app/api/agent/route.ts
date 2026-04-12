@@ -220,8 +220,9 @@ export async function POST(req: NextRequest) {
     });
 
   } catch (error: any) {
-    console.error('[Agent] Unhandled error:', error.message);
-    return NextResponse.json({ type: 'error', message: '일시적인 오류가 발생했습니다. 다시 시도해주세요.' }, { status: 500 });
+    const errMsg = error.message || '알 수 없는 오류';
+    console.error('[Agent] Unhandled error:', errMsg, error.stack?.substring(0, 300));
+    return NextResponse.json({ type: 'error', message: `오류: ${errMsg.substring(0, 200)}` }, { status: 500 });
   }
 }
 
