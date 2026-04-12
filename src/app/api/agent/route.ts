@@ -20,6 +20,11 @@ const SYSTEM_PROMPT = `당신은 경옥채(한약·건강기능식품 전문 기
 3. 이름·지점·제품이 불분명하면 → 먼저 조회 도구로 확인 후 작업.
 4. 한 번에 하나의 도구만 호출한다. 여러 작업이 필요하면 순서대로 처리.
 5. BRANCH_STAFF/PHARMACY_STAFF 역할 → 담당 지점 업무만 처리.
+
+== 도구 호출 규칙 (중요) ==
+- 선택적 파라미터는 값이 없으면 아예 생략한다. null이나 "null"을 보내지 않는다.
+- number 타입 파라미터(limit, quantity 등)는 반드시 숫자로 보낸다. 문자열 "20"이 아니라 20.
+- 도구 호출 시 반드시 올바른 JSON 형식의 arguments를 사용한다.
 6. 금액은 천단위 쉼표 + "원", 수량은 숫자 + 단위(개/g/ml 등).
 7. 답변은 핵심만 간결하게. 불필요한 안내문·사과·목록 나열 금지.
 8. 지원 안 되는 기능: "해당 기능은 현재 지원하지 않습니다." 한 줄만.
@@ -128,6 +133,7 @@ export async function POST(req: NextRequest) {
         const toolName = toolCall.function.name;
         let args: Record<string, any> = {};
         try { args = JSON.parse(toolCall.function.arguments); } catch { args = {}; }
+        args = sanitizeToolArgs(args);
 
         // 쓰기 도구 → 확인 요청 반환
         if (WRITE_TOOLS.has(toolName)) {
@@ -157,6 +163,24 @@ export async function POST(req: NextRequest) {
     console.error('[Agent] Error:', error.message);
     return NextResponse.json({ type: 'error', message: error.message || '서버 오류' }, { status: 500 });
   }
+}
+
+/** Llama 모델 tool calling 인자 정제 — "null" 문자열 제거, 숫자 문자열 변환 */
+function sanitizeToolArgs(args: Record<string, any>): Record<string, any> {
+  const cleaned: Record<string, any> = {};
+  for (const [key, value] of Object.entries(args)) {
+    // "null", "None", "undefined" 문자열 → 제거
+    if (typeof value === 'string' && /^(null|none|undefined)$/i.test(value.trim())) continue;
+    // 빈 문자열 → 제거
+    if (value === '') continue;
+    // 숫자 문자열 → number 변환 (limit, quantity 등)
+    if (typeof value === 'string' && /^\d+(\.\d+)?$/.test(value.trim())) {
+      cleaned[key] = Number(value);
+    } else {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned;
 }
 
 function stripThinkTags(content: string | null | undefined): string {

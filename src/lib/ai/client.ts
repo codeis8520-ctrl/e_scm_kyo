@@ -65,7 +65,7 @@ export class MiniMaxClient {
     finish_reason: string;
   }> {
     if (!this.apiKey) {
-      throw new Error('MINIMAX_API_KEY is not set');
+      throw new Error('AI API 키가 설정되지 않았습니다.');
     }
 
     const body: any = {
@@ -93,14 +93,36 @@ export class MiniMaxClient {
     });
 
     if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`MiniMax API error: ${response.status} - ${error}`);
+      const errorText = await response.text();
+      // Groq tool_use_failed: Llama가 tool call 형식을 잘못 생성 → 도구 없이 재시도
+      if (response.status === 400 && errorText.includes('tool_use_failed')) {
+        const retryBody = { ...body };
+        delete retryBody.tools;
+        delete retryBody.tool_choice;
+        // 사용자에게 직접 텍스트로 답변하도록 유도
+        retryBody.messages = [
+          ...retryBody.messages,
+          { role: 'system', content: '도구 호출에 실패했습니다. 도구 없이 알고 있는 정보로 간결히 답변하세요.' },
+        ];
+        const retryRes = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+          method: 'POST',
+          headers: this.getHeaders(),
+          body: JSON.stringify(retryBody),
+        });
+        if (retryRes.ok) {
+          const retryData: MiniMaxChatResponse = await retryRes.json();
+          if (retryData.choices?.length) {
+            return { message: retryData.choices[0].message, finish_reason: retryData.choices[0].finish_reason };
+          }
+        }
+      }
+      throw new Error(`API error: ${response.status} - ${errorText}`);
     }
 
     const data: MiniMaxChatResponse = await response.json();
 
     if (!data.choices || data.choices.length === 0) {
-      throw new Error('No response from MiniMax');
+      throw new Error('AI 서비스 응답이 없습니다.');
     }
 
     return {
