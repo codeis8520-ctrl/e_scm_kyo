@@ -63,9 +63,11 @@ async function callGroq(
 
   if (!res.ok) {
     const errText = await res.text();
+    console.error(`[Groq] ${res.status} useTools=${useTools}:`, errText.substring(0, 500));
 
     // tool_use_failed → 도구 없이 깨끗하게 재시도
     if (res.status === 400 && errText.includes('tool_use_failed') && useTools) {
+      console.log('[Groq] tool_use_failed → retrying without tools');
       return callGroq(baseUrl, headers, body, false);
     }
 

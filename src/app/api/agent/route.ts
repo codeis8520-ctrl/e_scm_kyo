@@ -119,6 +119,8 @@ export async function POST(req: NextRequest) {
 
     // ── Agentic loop (최대 8회) ───────────────────────────────────────────────
     let finalResponse = '';
+    const toolsUsed: string[] = [];
+
     for (let rounds = 0; rounds < 8; rounds++) {
       let responseMsg: any;
       let finish_reason: string;
@@ -128,13 +130,15 @@ export async function POST(req: NextRequest) {
         responseMsg = res.message;
         finish_reason = res.finish_reason;
       } catch (err: any) {
+        console.error(`[Agent] Round ${rounds} Groq error:`, err.message?.substring(0, 500));
         // 첫 라운드에서만 1회 재시도
-        if (rounds <= 1) {
+        if (rounds === 0) {
           try {
             const res = await miniMaxClient.chatWithTools(messages, AGENT_TOOLS);
             responseMsg = res.message;
             finish_reason = res.finish_reason;
-          } catch {
+          } catch (retryErr: any) {
+            console.error('[Agent] Retry also failed:', retryErr.message?.substring(0, 500));
             finalResponse = '일시적인 오류가 발생했습니다. 다시 시도해주세요.';
             break;
           }
@@ -182,16 +186,32 @@ export async function POST(req: NextRequest) {
         args = sanitizeToolArgs(args);
 
         if (!WRITE_TOOLS.has(toolName)) {
-          const result = await executeTool(toolName, args, supabase, context || {});
-          extractMemory(db, toolName, args, result).catch(() => {});
-          messages.push({
-            role: 'tool',
-            tool_call_id: toolCall.id,
-            name: toolName,
-            content: result,
-          });
+          console.log(`[Agent] Round ${rounds}: ${toolName}(${JSON.stringify(args)})`);
+          toolsUsed.push(toolName);
+          try {
+            const result = await executeTool(toolName, args, supabase, context || {});
+            extractMemory(db, toolName, args, result).catch(() => {});
+            messages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              name: toolName,
+              content: result,
+            });
+          } catch (toolErr: any) {
+            console.error(`[Agent] Tool ${toolName} error:`, toolErr.message);
+            messages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              name: toolName,
+              content: JSON.stringify({ error: toolErr.message || '도구 실행 오류' }),
+            });
+          }
         }
       }
+    }
+
+    if (toolsUsed.length > 0) {
+      console.log(`[Agent] Completed. Tools: ${toolsUsed.join(', ')}`);
     }
 
     return NextResponse.json({
@@ -200,7 +220,7 @@ export async function POST(req: NextRequest) {
     });
 
   } catch (error: any) {
-    console.error('[Agent] Error:', error.message);
+    console.error('[Agent] Unhandled error:', error.message);
     return NextResponse.json({ type: 'error', message: '일시적인 오류가 발생했습니다. 다시 시도해주세요.' }, { status: 500 });
   }
 }
