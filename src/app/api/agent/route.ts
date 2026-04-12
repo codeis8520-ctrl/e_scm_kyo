@@ -113,29 +113,57 @@ export async function POST(req: NextRequest) {
 
     const messages: MiniMaxMessage[] = [
       { role: 'system', content: systemContent },
-      ...(history || []).slice(-12).map(h => ({ role: h.role, content: h.content })),
+      ...(history || []).slice(-6).map(h => ({ role: h.role, content: h.content })),
       { role: 'user', content: message },
     ];
 
-    // ── Agentic loop (최대 6회) ───────────────────────────────────────────────
-    for (let i = 0; i < 6; i++) {
-      const { message: responseMsg, finish_reason } = await miniMaxClient.chatWithTools(messages, AGENT_TOOLS);
-      messages.push(responseMsg);
+    // ── Agentic loop (최대 8회) ───────────────────────────────────────────────
+    let finalResponse = '';
+    for (let rounds = 0; rounds < 8; rounds++) {
+      let responseMsg: any;
+      let finish_reason: string;
 
-      if (finish_reason !== 'tool_calls' || !responseMsg.tool_calls?.length) {
-        return NextResponse.json({
-          type: 'success',
-          message: stripThinkTags(responseMsg.content) || '처리 완료',
-        });
+      try {
+        const res = await miniMaxClient.chatWithTools(messages, AGENT_TOOLS);
+        responseMsg = res.message;
+        finish_reason = res.finish_reason;
+      } catch (err: any) {
+        // 첫 라운드에서만 1회 재시도
+        if (rounds <= 1) {
+          try {
+            const res = await miniMaxClient.chatWithTools(messages, AGENT_TOOLS);
+            responseMsg = res.message;
+            finish_reason = res.finish_reason;
+          } catch {
+            finalResponse = '일시적인 오류가 발생했습니다. 다시 시도해주세요.';
+            break;
+          }
+        } else {
+          finalResponse = '일시적인 오류가 발생했습니다. 다시 시도해주세요.';
+          break;
+        }
       }
 
+      // assistant 메시지 추가
+      messages.push({
+        role: responseMsg.role || 'assistant',
+        content: responseMsg.content || '',
+        tool_calls: responseMsg.tool_calls,
+      });
+
+      // finish_reason이 tool_calls가 아니면 → 최종 응답
+      if (finish_reason !== 'tool_calls' || !responseMsg.tool_calls?.length) {
+        finalResponse = stripThinkTags(responseMsg.content) || '처리 완료';
+        break;
+      }
+
+      // 쓰기 도구 감지 → 즉시 확인 요청 반환
       for (const toolCall of responseMsg.tool_calls) {
         const toolName = toolCall.function.name;
         let args: Record<string, any> = {};
         try { args = JSON.parse(toolCall.function.arguments); } catch { args = {}; }
         args = sanitizeToolArgs(args);
 
-        // 쓰기 도구 → 확인 요청 반환
         if (WRITE_TOOLS.has(toolName)) {
           const description = buildConfirmDescription(toolName, args);
           return NextResponse.json({
@@ -144,24 +172,36 @@ export async function POST(req: NextRequest) {
             pending_action: { tool: toolName, args, description },
           });
         }
+      }
 
-        // 읽기 도구 → 즉시 실행 + 메모리 추출
-        const result = await executeTool(toolName, args, supabase, context || {});
-        extractMemory(db, toolName, args, result).catch(() => {});
-        messages.push({
-          role: 'tool',
-          tool_call_id: toolCall.id,
-          name: toolName,
-          content: result,
-        });
+      // 읽기 도구 → 실행 + 결과를 messages에 추가 (다음 라운드)
+      for (const toolCall of responseMsg.tool_calls) {
+        const toolName = toolCall.function.name;
+        let args: Record<string, any> = {};
+        try { args = JSON.parse(toolCall.function.arguments); } catch { args = {}; }
+        args = sanitizeToolArgs(args);
+
+        if (!WRITE_TOOLS.has(toolName)) {
+          const result = await executeTool(toolName, args, supabase, context || {});
+          extractMemory(db, toolName, args, result).catch(() => {});
+          messages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            name: toolName,
+            content: result,
+          });
+        }
       }
     }
 
-    return NextResponse.json({ type: 'error', message: '응답 처리 중 문제가 발생했습니다. 다시 시도해주세요.' });
+    return NextResponse.json({
+      type: finalResponse ? 'success' : 'error',
+      message: finalResponse || '응답 처리 중 문제가 발생했습니다. 다시 시도해주세요.',
+    });
 
   } catch (error: any) {
     console.error('[Agent] Error:', error.message);
-    return NextResponse.json({ type: 'error', message: error.message || '서버 오류' }, { status: 500 });
+    return NextResponse.json({ type: 'error', message: '일시적인 오류가 발생했습니다. 다시 시도해주세요.' }, { status: 500 });
   }
 }
 

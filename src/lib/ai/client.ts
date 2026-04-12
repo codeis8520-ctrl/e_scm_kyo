@@ -42,6 +42,39 @@ export interface MiniMaxChatResponse {
   };
 }
 
+/** Groq API 호출 래퍼 — tool_use_failed 시 도구 없이 자동 재시도 */
+async function callGroq(
+  baseUrl: string,
+  headers: HeadersInit,
+  body: any,
+  useTools: boolean,
+): Promise<MiniMaxChatResponse> {
+  const reqBody = { ...body };
+  if (!useTools) {
+    delete reqBody.tools;
+    delete reqBody.tool_choice;
+  }
+
+  const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(reqBody),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+
+    // tool_use_failed → 도구 없이 깨끗하게 재시도
+    if (res.status === 400 && errText.includes('tool_use_failed') && useTools) {
+      return callGroq(baseUrl, headers, body, false);
+    }
+
+    throw new Error(`Groq API 오류: ${res.status} - ${errText.substring(0, 300)}`);
+  }
+
+  return res.json();
+}
+
 export class MiniMaxClient {
   private apiKey: string;
   private baseUrl: string;
@@ -68,6 +101,18 @@ export class MiniMaxClient {
       throw new Error('AI API 키가 설정되지 않았습니다.');
     }
 
+    // 도구 정의에 required 누락 시 빈 배열 보장 (Llama 호환)
+    const normalizedTools = tools?.map(t => ({
+      ...t,
+      function: {
+        ...t.function,
+        parameters: {
+          ...t.function.parameters,
+          required: t.function.parameters.required || [],
+        },
+      },
+    }));
+
     const body: any = {
       model: this.model,
       messages: messages.map(m => {
@@ -77,49 +122,24 @@ export class MiniMaxClient {
         if (m.name) msg.name = m.name;
         return msg;
       }),
-      temperature: 0.1,
-      max_tokens: 4096,
+      temperature: 0.3,
+      max_tokens: 2048,
     };
 
-    if (tools && tools.length > 0) {
-      body.tools = tools;
+    const useTools = !!(normalizedTools && normalizedTools.length > 0);
+    if (useTools) {
+      body.tools = normalizedTools;
       body.tool_choice = 'auto';
     }
 
-    const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      // Groq tool_use_failed: Llama가 tool call 형식을 잘못 생성 → 도구 없이 재시도
-      if (response.status === 400 && errorText.includes('tool_use_failed')) {
-        const retryBody = { ...body };
-        delete retryBody.tools;
-        delete retryBody.tool_choice;
-        // 사용자에게 직접 텍스트로 답변하도록 유도
-        retryBody.messages = [
-          ...retryBody.messages,
-          { role: 'system', content: '도구 호출에 실패했습니다. 도구 없이 알고 있는 정보로 간결히 답변하세요.' },
-        ];
-        const retryRes = await fetch(`${this.baseUrl}/v1/chat/completions`, {
-          method: 'POST',
-          headers: this.getHeaders(),
-          body: JSON.stringify(retryBody),
-        });
-        if (retryRes.ok) {
-          const retryData: MiniMaxChatResponse = await retryRes.json();
-          if (retryData.choices?.length) {
-            return { message: retryData.choices[0].message, finish_reason: retryData.choices[0].finish_reason };
-          }
-        }
-      }
-      throw new Error(`API error: ${response.status} - ${errorText}`);
+    // 1차 시도
+    let data: MiniMaxChatResponse;
+    try {
+      data = await callGroq(this.baseUrl, this.getHeaders(), body, useTools);
+    } catch (err) {
+      // 1회 재시도 (네트워크 일시 오류 등)
+      data = await callGroq(this.baseUrl, this.getHeaders(), body, useTools);
     }
-
-    const data: MiniMaxChatResponse = await response.json();
 
     if (!data.choices || data.choices.length === 0) {
       throw new Error('AI 서비스 응답이 없습니다.');
