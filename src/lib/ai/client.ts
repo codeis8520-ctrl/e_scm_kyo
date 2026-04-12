@@ -165,7 +165,7 @@ export class MiniMaxClient {
 
   constructor() {
     this.apiKey = process.env.ANTHROPIC_API_KEY || process.env.MINIMAX_API_KEY || '';
-    this.model = process.env.AI_MODEL || 'claude-sonnet-4-5-20250514';
+    this.model = process.env.AI_MODEL || 'claude-sonnet-4-20250514';
   }
 
   async chatWithTools(messages: MiniMaxMessage[], tools?: MiniMaxTool[]): Promise<{
