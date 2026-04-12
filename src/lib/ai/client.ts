@@ -30,6 +30,13 @@ export interface MiniMaxTool {
   };
 }
 
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+}
+
 // ─── Claude API 내부 타입 ─────────────────────────────────────────────────────
 
 interface ClaudeContentBlock {
@@ -46,14 +53,19 @@ interface ClaudeResponse {
   id: string;
   content: ClaudeContentBlock[];
   stop_reason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence';
-  usage?: { input_tokens: number; output_tokens: number };
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  };
 }
 
 // ─── 형식 변환 ────────────────────────────────────────────────────────────────
 
-/** OpenAI 도구 형식 → Claude 도구 형식 */
+/** OpenAI 도구 형식 → Claude 도구 형식 (마지막 도구에 cache_control 적용) */
 function toClaudeTools(tools: MiniMaxTool[]) {
-  return tools.map(t => ({
+  const claudeTools = tools.map(t => ({
     name: t.function.name,
     description: t.function.description,
     input_schema: {
@@ -62,19 +74,27 @@ function toClaudeTools(tools: MiniMaxTool[]) {
       required: t.function.parameters.required || [],
     },
   }));
+  // 마지막 도구에 cache_control → 전체 도구 목록 캐싱
+  if (claudeTools.length > 0) {
+    (claudeTools[claudeTools.length - 1] as any).cache_control = { type: 'ephemeral' };
+  }
+  return claudeTools;
 }
 
-/** OpenAI 메시지 배열 → Claude 메시지 배열 + system 분리 */
+/**
+ * OpenAI 메시지 배열 → Claude 메시지 배열 + system 분리
+ * system 메시지를 static(캐싱 대상) / dynamic(매 요청 변경)으로 분리
+ */
 function toClaudeMessages(messages: MiniMaxMessage[]): {
-  system: string;
+  systemParts: string[];
   messages: any[];
 } {
-  let system = '';
+  const systemParts: string[] = [];
   const claudeMsgs: any[] = [];
 
   for (const m of messages) {
     if (m.role === 'system') {
-      system += (system ? '\n\n' : '') + m.content;
+      systemParts.push(m.content);
       continue;
     }
 
@@ -100,13 +120,11 @@ function toClaudeMessages(messages: MiniMaxMessage[]): {
     }
 
     if (m.role === 'tool') {
-      // tool 결과는 이전 user 메시지에 합치거나 새 user 메시지 생성
       const toolResult: ClaudeContentBlock = {
         type: 'tool_result',
         tool_use_id: m.tool_call_id || '',
         content: m.content || '',
       };
-      // 직전이 user(tool_result)면 합치기
       const last = claudeMsgs[claudeMsgs.length - 1];
       if (last && last.role === 'user' && Array.isArray(last.content)) {
         last.content.push(toolResult);
@@ -120,13 +138,14 @@ function toClaudeMessages(messages: MiniMaxMessage[]): {
     claudeMsgs.push({ role: 'user', content: m.content || '' });
   }
 
-  return { system, messages: claudeMsgs };
+  return { systemParts, messages: claudeMsgs };
 }
 
-/** Claude 응답 → OpenAI 호환 형식 */
+/** Claude 응답 → OpenAI 호환 형식 + usage */
 function fromClaudeResponse(res: ClaudeResponse): {
   message: MiniMaxMessage;
   finish_reason: string;
+  usage: TokenUsage;
 } {
   let textContent = '';
   const toolCalls: MiniMaxToolCall[] = [];
@@ -154,6 +173,12 @@ function fromClaudeResponse(res: ClaudeResponse): {
       tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
     },
     finish_reason: res.stop_reason === 'tool_use' ? 'tool_calls' : 'stop',
+    usage: {
+      input_tokens: res.usage?.input_tokens || 0,
+      output_tokens: res.usage?.output_tokens || 0,
+      cache_read_tokens: res.usage?.cache_read_input_tokens || 0,
+      cache_creation_tokens: res.usage?.cache_creation_input_tokens || 0,
+    },
   };
 }
 
@@ -168,20 +193,47 @@ export class MiniMaxClient {
     this.model = process.env.AI_MODEL || 'claude-haiku-4-5-20251001';
   }
 
+  private getHeaders(): HeadersInit {
+    return {
+      'x-api-key': this.apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'prompt-caching-2024-07-31',
+      'content-type': 'application/json',
+    };
+  }
+
   async chatWithTools(messages: MiniMaxMessage[], tools?: MiniMaxTool[]): Promise<{
     message: MiniMaxMessage;
     finish_reason: string;
+    usage: TokenUsage;
   }> {
     if (!this.apiKey) {
       throw new Error('AI API 키가 설정되지 않았습니다. (ANTHROPIC_API_KEY)');
     }
 
-    const { system, messages: claudeMsgs } = toClaudeMessages(messages);
+    const { systemParts, messages: claudeMsgs } = toClaudeMessages(messages);
+
+    // system 프롬프트: 첫 번째(정적) → cache_control, 나머지(동적) → 캐싱 안 함
+    const systemBlocks: any[] = [];
+    if (systemParts.length > 0) {
+      // 첫 번째 system 메시지 = 정적 (SYSTEM_PROMPT + DB_SCHEMA + BUSINESS_RULES)
+      systemBlocks.push({
+        type: 'text',
+        text: systemParts[0],
+        cache_control: { type: 'ephemeral' },
+      });
+      // 나머지 system 메시지 = 동적 (사용자 컨텍스트 + 메모리)
+      for (let i = 1; i < systemParts.length; i++) {
+        if (systemParts[i].trim()) {
+          systemBlocks.push({ type: 'text', text: systemParts[i] });
+        }
+      }
+    }
 
     const body: any = {
       model: this.model,
       max_tokens: 2048,
-      system,
+      system: systemBlocks.length > 0 ? systemBlocks : undefined,
       messages: claudeMsgs,
     };
 
@@ -192,11 +244,7 @@ export class MiniMaxClient {
 
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: {
-        'x-api-key': this.apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
+      headers: this.getHeaders(),
       body: JSON.stringify(body),
     });
 
@@ -204,7 +252,7 @@ export class MiniMaxClient {
       const errText = await res.text();
       console.error(`[Claude] ${res.status}:`, errText.substring(0, 500));
 
-      // 429 Rate limit → 잠시 대기 후 1회 재시도
+      // 429 Rate limit → 대기 후 1회 재시도
       if (res.status === 429) {
         const retryAfter = Number(res.headers.get('retry-after') || '5');
         console.log(`[Claude] Rate limited, waiting ${retryAfter}s...`);
@@ -212,11 +260,7 @@ export class MiniMaxClient {
 
         const retryRes = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
-          headers: {
-            'x-api-key': this.apiKey,
-            'anthropic-version': '2023-06-01',
-            'content-type': 'application/json',
-          },
+          headers: this.getHeaders(),
           body: JSON.stringify(body),
         });
         if (retryRes.ok) {

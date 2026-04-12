@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { miniMaxClient, MiniMaxMessage } from '@/lib/ai/client';
+import { miniMaxClient, MiniMaxMessage, type TokenUsage } from '@/lib/ai/client';
 import { AGENT_TOOLS, WRITE_TOOLS, executeTool } from '@/lib/ai/tools';
 import { DB_SCHEMA, BUSINESS_RULES } from '@/lib/ai/schema';
 import { loadMemories, extractMemory, extractMemoryFromWrite } from '@/lib/ai/memory';
@@ -59,6 +59,23 @@ interface AgentRequest {
   context?: { userId?: string; userRole?: string; branchId?: string };
   confirm?: boolean;
   pending_action?: { tool: string; args: Record<string, any>; description: string };
+  session_id?: string;
+}
+
+// ── 대화 이력 조회 API ────────────────────────────────────────────────────────
+export async function GET(req: NextRequest) {
+  const sessionId = req.nextUrl.searchParams.get('session_id');
+  if (!sessionId) return NextResponse.json({ conversations: [] });
+
+  const supabase = await createClient() as any;
+  const { data } = await supabase
+    .from('agent_conversations')
+    .select('user_message, assistant_response, tools_used, success, created_at')
+    .eq('session_id', sessionId)
+    .order('created_at', { ascending: true })
+    .limit(50);
+
+  return NextResponse.json({ conversations: data || [] });
 }
 
 export async function POST(req: NextRequest) {
@@ -105,14 +122,15 @@ export async function POST(req: NextRequest) {
       context?.branchId ? `담당지점ID: ${context.branchId}` : '',
     ].filter(Boolean).join(' | ');
 
-    const systemContent = [
-      SYSTEM_PROMPT,
+    // system 프롬프트를 static(캐싱) / dynamic(매 요청)으로 분리
+    const dynamicContext = [
       contextLines ? `\n== 현재 사용자 == ${contextLines}` : '',
       memories ? `\n${memories}` : '',
-    ].join('');
+    ].filter(Boolean).join('');
 
     const messages: MiniMaxMessage[] = [
-      { role: 'system', content: systemContent },
+      { role: 'system', content: SYSTEM_PROMPT },           // static → 캐싱 대상
+      ...(dynamicContext ? [{ role: 'system' as const, content: dynamicContext }] : []),  // dynamic
       ...(history || []).slice(-6).map(h => ({ role: h.role, content: h.content })),
       { role: 'user', content: message },
     ];
@@ -120,8 +138,11 @@ export async function POST(req: NextRequest) {
     // ── Agentic loop (최대 8회) ───────────────────────────────────────────────
     let finalResponse = '';
     const toolsUsed: string[] = [];
+    const totalUsage: TokenUsage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0 };
+    let lastRound = 0;
 
     for (let rounds = 0; rounds < 8; rounds++) {
+      lastRound = rounds;
       let responseMsg: any;
       let finish_reason: string;
 
@@ -129,16 +150,28 @@ export async function POST(req: NextRequest) {
         const res = await miniMaxClient.chatWithTools(messages, AGENT_TOOLS);
         responseMsg = res.message;
         finish_reason = res.finish_reason;
+        // usage 누적
+        if (res.usage) {
+          totalUsage.input_tokens += res.usage.input_tokens;
+          totalUsage.output_tokens += res.usage.output_tokens;
+          totalUsage.cache_read_tokens += res.usage.cache_read_tokens;
+          totalUsage.cache_creation_tokens += res.usage.cache_creation_tokens;
+        }
       } catch (err: any) {
-        console.error(`[Agent] Round ${rounds} Groq error:`, err.message?.substring(0, 500));
-        // 첫 라운드에서만 1회 재시도
+        console.error(`[Agent] Round ${rounds} error:`, err.message?.substring(0, 500));
         if (rounds === 0) {
           try {
             const res = await miniMaxClient.chatWithTools(messages, AGENT_TOOLS);
             responseMsg = res.message;
             finish_reason = res.finish_reason;
+            if (res.usage) {
+              totalUsage.input_tokens += res.usage.input_tokens;
+              totalUsage.output_tokens += res.usage.output_tokens;
+              totalUsage.cache_read_tokens += res.usage.cache_read_tokens;
+              totalUsage.cache_creation_tokens += res.usage.cache_creation_tokens;
+            }
           } catch (retryErr: any) {
-            console.error('[Agent] Retry also failed:', retryErr.message?.substring(0, 500));
+            console.error('[Agent] Retry failed:', retryErr.message?.substring(0, 500));
             finalResponse = '일시적인 오류가 발생했습니다. 다시 시도해주세요.';
             break;
           }
@@ -211,12 +244,33 @@ export async function POST(req: NextRequest) {
     }
 
     if (toolsUsed.length > 0) {
-      console.log(`[Agent] Completed. Tools: ${toolsUsed.join(', ')}`);
+      console.log(`[Agent] Completed. Tools: ${toolsUsed.join(', ')} | Tokens: in=${totalUsage.input_tokens} out=${totalUsage.output_tokens} cached=${totalUsage.cache_read_tokens}`);
     }
+
+    // ── 대화 로그 저장 (fire-and-forget) ──────────────────────────────────────
+    const isSuccess = !!finalResponse && !finalResponse.includes('오류');
+    db.from('agent_conversations').insert({
+      session_id: body.session_id || null,
+      user_id: context?.userId || null,
+      user_role: context?.userRole || null,
+      branch_id: context?.branchId || null,
+      user_message: message,
+      assistant_response: finalResponse || null,
+      tools_used: toolsUsed,
+      success: isSuccess,
+      error_note: isSuccess ? null : (finalResponse || '').substring(0, 500),
+      prompt_tokens: totalUsage.input_tokens,
+      completion_tokens: totalUsage.output_tokens,
+      total_tokens: totalUsage.input_tokens + totalUsage.output_tokens,
+      cached_tokens: totalUsage.cache_read_tokens,
+      model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
+      rounds: lastRound + 1,
+    }).then(() => {}).catch((e: any) => console.error('[Agent] Log error:', e.message));
 
     return NextResponse.json({
       type: finalResponse ? 'success' : 'error',
       message: finalResponse || '응답 처리 중 문제가 발생했습니다. 다시 시도해주세요.',
+      usage: totalUsage,
     });
 
   } catch (error: any) {
@@ -506,6 +560,3 @@ function buildConfirmDescription(toolName: string, args: Record<string, any>): s
   return lines.join('\n');
 }
 
-export async function GET() {
-  return NextResponse.json({ status: 'ok', tools: AGENT_TOOLS.length });
-}

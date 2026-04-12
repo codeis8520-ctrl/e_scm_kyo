@@ -49,19 +49,47 @@ function getCookie(name: string): string | null {
   }, {} as Record<string, string>)[name] || null;
 }
 
+const WELCOME_MSG: Message = {
+  role: 'assistant',
+  content: '안녕하세요! 경옥채 AI 어시스턴트입니다.\n\n재고 조회, 고객 관리, 발주/생산 처리, SMS 발송 등 시스템의 모든 업무를 자연어로 지시할 수 있습니다.',
+  type: 'info',
+};
+
 export default function AgentFloatingIcon() {
   const [isOpen, setIsOpen] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: 'assistant',
-      content: '안녕하세요! 경옥채 AI 어시스턴트입니다.\n\n재고 조회, 고객 관리, 발주/생산 처리, SMS 발송 등 시스템의 모든 업무를 자연어로 지시할 수 있습니다.',
-      type: 'info',
-    },
-  ]);
+  const [messages, setMessages] = useState<Message[]>([WELCOME_MSG]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // ── 세션 ID (브라우저 세션 유지, 새로고침해도 대화 복원) ─────────────────
+  const [sessionId] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    let id = sessionStorage.getItem('agent_session_id');
+    if (!id) {
+      id = crypto.randomUUID();
+      sessionStorage.setItem('agent_session_id', id);
+    }
+    return id;
+  });
+
+  // ── 대화 이력 복원 (마운트 시) ──────────────────────────────────────────
+  useEffect(() => {
+    if (!sessionId) return;
+    fetch(`/api/agent?session_id=${sessionId}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.conversations?.length) {
+          const restored: Message[] = data.conversations.flatMap((c: any) => [
+            { role: 'user' as const, content: c.user_message },
+            { role: 'assistant' as const, content: c.assistant_response || '', type: c.success ? 'success' as const : 'error' as const },
+          ]);
+          setMessages([WELCOME_MSG, ...restored]);
+        }
+      })
+      .catch(() => {});
+  }, [sessionId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -81,12 +109,13 @@ export default function AgentFloatingIcon() {
     try {
       const history = messages
         .filter(m => m.role === 'user' || (m.role === 'assistant' && m.type !== 'confirm'))
-        .slice(-14)
+        .slice(-6)
         .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
       const body: any = {
         message: userMessage,
         history,
+        session_id: sessionId,
         context: {
           userId: getCookie('user_id'),
           userRole: getCookie('user_role'),
