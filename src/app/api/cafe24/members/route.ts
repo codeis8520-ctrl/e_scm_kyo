@@ -136,11 +136,18 @@ export async function POST(request: Request) {
         }
       }
 
-      // customers도 실패(422 등)하면 최종 에러
+      // 최종 실패 시 토큰 스코프 진단 포함
       if (!res.ok) {
         const txt = await res.text();
+        const tokenRow = await loadTokens();
+        const scopes = (tokenRow as any)?.scopes ?? '(DB에 scopes 없음)';
         return NextResponse.json(
-          { success: false, error: `카페24 회원 조회 실패 (${apiMode}): ${res.status} ${txt}` },
+          {
+            success: false,
+            error: `카페24 회원 조회 실패 (${apiMode}): ${res.status} ${txt}`,
+            현재토큰스코프: scopes,
+            해결방법: '/api/cafe24/auth 로 재인증 필요 (토큰 refresh로는 스코프가 변경되지 않음)',
+          },
           { status: 500 }
         );
       }
