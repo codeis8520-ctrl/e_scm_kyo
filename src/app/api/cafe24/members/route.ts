@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { getValidAccessToken } from '@/lib/cafe24/token-store';
+import { getValidAccessToken, loadTokens, refreshAccessToken } from '@/lib/cafe24/token-store';
 
 // 카페24 회원 목록 → customers 일괄 동기화
 // /admin/customers는 created_start_date/created_end_date 필수
@@ -22,16 +22,30 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: false, error: 'CAFE24_MALL_ID 미설정' }, { status: 400 });
   }
 
-  const accessToken = await getValidAccessToken();
+  let accessToken = await getValidAccessToken();
   if (!accessToken) {
     return NextResponse.json({ success: false, error: '카페24 토큰 만료 — 재인증 필요' }, { status: 401 });
   }
 
   const shopNo = process.env.CAFE24_SHOP_NO ?? '1';
   const base = `https://${mallId}.cafe24api.com/api/v2`;
-  const headers = {
+  let headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
     'X-Cafe24-Api-Version': '2026-03-01',
+  };
+
+  // 토큰 갱신 헬퍼: API 401 시 refresh 후 헤더 교체
+  const tryRefreshToken = async (): Promise<boolean> => {
+    try {
+      const row = await loadTokens();
+      if (!row) return false;
+      const refreshed = await refreshAccessToken(row.refresh_token);
+      accessToken = refreshed.access_token;
+      headers = { ...headers, Authorization: `Bearer ${accessToken}` };
+      return true;
+    } catch {
+      return false;
+    }
   };
 
   let created = 0;
@@ -72,27 +86,34 @@ export async function POST(request: Request) {
       return true;
     };
 
-    // customersprivacy(개인정보 비마스킹) 시도 → 403 시 customers(마스킹)로 폴백
-    let usePrivacyApi = true;
+    // unmasking=T 시도 → 403 시 unmasking 없이 재시도 (마스킹된 데이터)
+    let useUnmasking = true;
+    let tokenRefreshed = false;
 
     for (let page = 0; page < MAX_PAGES; page++) {
-      let url: string;
-      if (usePrivacyApi) {
-        const fields = 'member_id,name,cellphone,email,created_date,last_login_date';
-        url = `${base}/admin/customersprivacy?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}` +
-          `&created_start_date=${startDate}&created_end_date=${endDate}` +
-          `&unmasking=T&fields=${fields}`;
-      } else {
-        url = `${base}/admin/customers?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}` +
-          `&created_start_date=${startDate}&created_end_date=${endDate}`;
-      }
+      const fields = 'member_id,name,cellphone,email,created_date,last_login_date';
+      let url = `${base}/admin/customersprivacy?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}` +
+        `&created_start_date=${startDate}&created_end_date=${endDate}` +
+        `&fields=${fields}`;
+      if (useUnmasking) url += '&unmasking=T';
+
       let res = await fetch(url, { headers, cache: 'no-store' });
 
-      // customersprivacy 403 → customers로 폴백
-      if (!res.ok && usePrivacyApi && res.status === 403) {
-        usePrivacyApi = false;
-        url = `${base}/admin/customers?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}` +
-          `&created_start_date=${startDate}&created_end_date=${endDate}`;
+      // 401 토큰 만료 → 갱신 후 재시도 (1회만)
+      if (res.status === 401 && !tokenRefreshed) {
+        const refreshed = await tryRefreshToken();
+        if (refreshed) {
+          tokenRefreshed = true;
+          res = await fetch(url, { headers, cache: 'no-store' });
+        }
+      }
+
+      // 403 insufficient_scope → unmasking 제거 후 재시도
+      if (res.status === 403 && useUnmasking) {
+        useUnmasking = false;
+        url = `${base}/admin/customersprivacy?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}` +
+          `&created_start_date=${startDate}&created_end_date=${endDate}` +
+          `&fields=${fields}`;
         res = await fetch(url, { headers, cache: 'no-store' });
       }
 
