@@ -86,24 +86,17 @@ export async function POST(request: Request) {
       return true;
     };
 
-    // 1차: customersprivacy(unmasking) → 2차: customersprivacy(마스킹) → 3차: customers(mall.read_customer)
-    let apiMode: 'privacy_unmask' | 'privacy' | 'customers' = 'privacy_unmask';
+    // 1차: customersprivacy(unmasking) → 2차: customersprivacy(마스킹)
+    // /admin/customers는 member_id/cellphone 필수라 bulk listing 불가 — 폴백 불가
+    let apiMode: 'privacy_unmask' | 'privacy' = 'privacy_unmask';
     let tokenRefreshed = false;
 
     for (let page = 0; page < MAX_PAGES; page++) {
-      let url: string;
-      if (apiMode === 'customers') {
-        // /admin/customers는 member_id 검색 전용이므로 member_id 목록이 필요
-        // 여기서는 created_start_date 기반 조회 시도
-        url = `${base}/admin/customers?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}` +
-          `&created_start_date=${startDate}&created_end_date=${endDate}`;
-      } else {
-        const fields = 'member_id,name,cellphone,email,created_date,last_login_date';
-        url = `${base}/admin/customersprivacy?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}` +
-          `&created_start_date=${startDate}&created_end_date=${endDate}` +
-          `&fields=${fields}`;
-        if (apiMode === 'privacy_unmask') url += '&unmasking=T';
-      }
+      const fields = 'member_id,name,cellphone,email,created_date,last_login_date';
+      let url = `${base}/admin/customersprivacy?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}` +
+        `&created_start_date=${startDate}&created_end_date=${endDate}` +
+        `&fields=${fields}`;
+      if (apiMode === 'privacy_unmask') url += '&unmasking=T';
 
       let res = await fetch(url, { headers, cache: 'no-store' });
 
@@ -116,24 +109,13 @@ export async function POST(request: Request) {
         }
       }
 
-      // 403 → 단계별 폴백
-      if (res.status === 403) {
-        if (apiMode === 'privacy_unmask') {
-          apiMode = 'privacy';
-          // unmasking 없이 재시도
-          const fields = 'member_id,name,cellphone,email,created_date,last_login_date';
-          url = `${base}/admin/customersprivacy?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}` +
-            `&created_start_date=${startDate}&created_end_date=${endDate}` +
-            `&fields=${fields}`;
-          res = await fetch(url, { headers, cache: 'no-store' });
-        }
-        // privacy도 403이면 customers로 폴백
-        if (res.status === 403) {
-          apiMode = 'customers';
-          url = `${base}/admin/customers?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}` +
-            `&created_start_date=${startDate}&created_end_date=${endDate}`;
-          res = await fetch(url, { headers, cache: 'no-store' });
-        }
+      // 403 → unmasking 제거 후 재시도 (1회)
+      if (res.status === 403 && apiMode === 'privacy_unmask') {
+        apiMode = 'privacy';
+        url = `${base}/admin/customersprivacy?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}` +
+          `&created_start_date=${startDate}&created_end_date=${endDate}` +
+          `&fields=${fields}`;
+        res = await fetch(url, { headers, cache: 'no-store' });
       }
 
       // 최종 실패 시 토큰 스코프 진단 포함
@@ -144,16 +126,16 @@ export async function POST(request: Request) {
         return NextResponse.json(
           {
             success: false,
-            error: `카페24 회원 조회 실패 (${apiMode}): ${res.status} ${txt}`,
+            error: `카페24 회원 조회 실패: ${res.status} ${txt}`,
             현재토큰스코프: scopes,
-            해결방법: '/api/cafe24/auth 로 재인증 필요 (토큰 refresh로는 스코프가 변경되지 않음)',
+            해결방법: '/api/cafe24/auth 로 재인증 필요 — mall.read_personal 스코프가 필요합니다 (토큰 refresh로는 스코프가 변경되지 않음)',
           },
           { status: 500 }
         );
       }
 
       const json = await res.json();
-      const members: any[] = json.customersprivacy ?? json.customers ?? [];
+      const members: any[] = json.customersprivacy ?? [];
       if (members.length === 0) break;
 
       for (const m of members) {
