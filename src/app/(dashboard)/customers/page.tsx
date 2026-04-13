@@ -1,8 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import Link from 'next/link';
-import { createClient } from '@/lib/supabase/client';
 import CustomerModal from './CustomerModal';
 import { autoUpgradeCustomerGrades } from '@/lib/actions';
 
@@ -12,6 +11,12 @@ const GRADE_BADGE: Record<string, string> = {
   VIP: 'badge badge-info',
   NORMAL: 'badge',
 };
+
+interface MatchReason {
+  field: string;
+  value: string;
+  label: string;
+}
 
 interface Customer {
   id: string;
@@ -25,6 +30,7 @@ interface Customer {
   total_points: number;
   is_active: boolean;
   primary_branch?: { id: string; name: string };
+  match_reasons: MatchReason[];
 }
 
 // 탭별 동적 로드
@@ -32,6 +38,13 @@ import dynamic from 'next/dynamic';
 const CampaignTab = dynamic(() => import('./CampaignTab'), { ssr: false, loading: () => <div className="py-8 text-center text-slate-400">로딩 중...</div> });
 
 type TabType = 'list' | 'campaign';
+
+const MATCH_FIELD_STYLES: Record<string, string> = {
+  address: 'text-emerald-600',
+  product: 'text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded',
+  email: 'text-purple-600',
+  phone: 'text-amber-600',
+};
 
 export default function CustomersPage() {
   const [activeTab, setActiveTab] = useState<TabType>('list');
@@ -43,56 +56,51 @@ export default function CustomersPage() {
   const [editCustomer, setEditCustomer] = useState<Customer | null>(null);
   const [upgrading, setUpgrading] = useState(false);
   const [syncingMembers, setSyncingMembers] = useState(false);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const limit = 30;
 
-  const fetchCustomers = async () => {
+  const fetchCustomers = useCallback(async (searchQuery: string, gradeVal: string, pageNum: number) => {
     setLoading(true);
-    const supabase = createClient();
-    let query = supabase
-      .from('customers')
-      .select('*, primary_branch:branches(*)')
-      .order('created_at', { ascending: false });
+    try {
+      const params = new URLSearchParams();
+      if (searchQuery) params.set('q', searchQuery);
+      if (gradeVal) params.set('grade', gradeVal);
+      params.set('page', String(pageNum));
+      params.set('limit', String(limit));
 
-    if (search) {
-      query = query.or(`name.ilike.%${search}%,phone.ilike.%${search}%`);
+      const res = await fetch(`/api/customers/search?${params.toString()}`);
+      const data = await res.json();
+      setCustomers(data.customers || []);
+      setTotal(data.total || 0);
+    } catch (error) {
+      console.error('Failed to fetch customers:', error);
+    } finally {
+      setLoading(false);
     }
+  }, []);
 
-    if (gradeFilter) {
-      query = query.eq('grade', gradeFilter);
-    }
-
-    const { data } = await query;
-    const customers = data || [];
-
-    // customers 테이블에 total_points 컬럼 없음 → point_history 최신 balance 조회
-    if (customers.length > 0) {
-      const ids = customers.map((c: any) => c.id);
-      const { data: pointRows } = await supabase
-        .from('point_history')
-        .select('customer_id, balance')
-        .in('customer_id', ids)
-        .order('created_at', { ascending: false });
-
-      // 고객별 가장 최근 balance (DESC 정렬이므로 첫 번째가 최신)
-      const balanceMap: Record<string, number> = {};
-      for (const row of (pointRows || []) as any[]) {
-        if (!(row.customer_id in balanceMap)) {
-          balanceMap[row.customer_id] = row.balance;
-        }
-      }
-      setCustomers(customers.map((c: any) => ({
-        ...c,
-        total_points: balanceMap[c.id] ?? 0,
-      })));
-    } else {
-      setCustomers([]);
-    }
-
-    setLoading(false);
-  };
-
+  // 디바운스 검색
   useEffect(() => {
-    fetchCustomers();
-  }, [search, gradeFilter]);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      setPage(1);
+      fetchCustomers(search, gradeFilter, 1);
+    }, 300);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [search, gradeFilter, fetchCustomers]);
+
+  // 페이지 변경
+  useEffect(() => {
+    if (page > 1) fetchCustomers(search, gradeFilter, page);
+  }, [page]);
+
+  // 자동 포커스
+  useEffect(() => {
+    if (activeTab === 'list') searchRef.current?.focus();
+  }, [activeTab]);
 
   const handleEdit = (customer: Customer) => {
     setEditCustomer(customer);
@@ -106,8 +114,10 @@ export default function CustomersPage() {
 
   const handleSuccess = () => {
     handleClose();
-    fetchCustomers();
+    fetchCustomers(search, gradeFilter, page);
   };
+
+  const totalPages = Math.ceil(total / limit);
 
   return (
     <div className="space-y-4">
@@ -146,7 +156,7 @@ export default function CustomersPage() {
               const result = await autoUpgradeCustomerGrades();
               setUpgrading(false);
               alert(`등급 업그레이드 완료: ${result.upgraded}명`);
-              fetchCustomers();
+              fetchCustomers(search, gradeFilter, page);
             }}
             disabled={upgrading}
             className="btn-secondary py-2 px-4 text-sm"
@@ -161,7 +171,7 @@ export default function CustomersPage() {
                 const res = await fetch('/api/cafe24/members', { method: 'POST' });
                 const json = await res.json();
                 alert(json.success ? json.message : `실패: ${json.error}`);
-                if (json.success) fetchCustomers();
+                if (json.success) fetchCustomers(search, gradeFilter, page);
               } catch (e: any) {
                 alert(`오류: ${e.message}`);
               } finally {
@@ -179,14 +189,31 @@ export default function CustomersPage() {
         </div>
       </div>
 
+      {/* 통합 검색 */}
       <div className="flex flex-col sm:flex-row gap-3 flex-wrap mb-4">
-        <input
-          type="text"
-          placeholder="이름 또는 연락처 검색..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="input max-w-md"
-        />
+        <div className="relative flex-1 max-w-lg">
+          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <input
+            ref={searchRef}
+            type="text"
+            placeholder="이름, 연락처, 주소, 구매제품으로 검색..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="input pl-10 w-full"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+        </div>
         <select
           value={gradeFilter}
           onChange={(e) => setGradeFilter(e.target.value)}
@@ -197,6 +224,11 @@ export default function CustomersPage() {
           <option value="VIP">VIP</option>
           <option value="VVIP">VVIP</option>
         </select>
+        {!loading && (
+          <span className="self-center text-sm text-slate-500">
+            {total}명 {search ? '검색됨' : ''}
+          </span>
+        )}
       </div>
 
       <div className="overflow-x-auto">
@@ -219,48 +251,89 @@ export default function CustomersPage() {
                 로딩 중...
               </td>
             </tr>
-          ) : customers.map((customer) => (
-            <tr key={customer.id}>
-              <td className="font-medium">{customer.name}</td>
-              <td>{customer.phone}</td>
-              <td>
-                <span className={GRADE_BADGE[customer.grade] || 'badge'}>
-                  {GRADE_LABELS[customer.grade] || customer.grade}
-                </span>
-              </td>
-              <td>{customer.primary_branch?.name || '-'}</td>
-              <td>{customer.total_points?.toLocaleString() || 0}P</td>
-              <td>
-                <span className={customer.is_active ? 'badge badge-success' : 'badge badge-error'}>
-                  {customer.is_active ? '활성' : '비활성'}
-                </span>
-              </td>
-              <td>
-                <Link
-                  href={`/customers/${customer.id}`}
-                  className="text-blue-600 hover:underline mr-2"
-                >
-                  상세
-                </Link>
-                <button
-                  onClick={() => handleEdit(customer)}
-                  className="text-blue-600 hover:underline"
-                >
-                  수정
-                </button>
-              </td>
-            </tr>
-          ))}
+          ) : customers.map((customer) => {
+            // 이름/전화번호 이외의 매칭 사유만 표시
+            const extraReasons = customer.match_reasons?.filter(
+              (r) => r.field !== 'name' && r.field !== 'phone'
+            ) || [];
+
+            return (
+              <tr key={customer.id}>
+                <td>
+                  <div className="font-medium">{customer.name}</div>
+                  {extraReasons.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-0.5">
+                      {extraReasons.map((r, i) => (
+                        <span key={i} className={`text-xs ${MATCH_FIELD_STYLES[r.field] || 'text-slate-500'}`}>
+                          {r.label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </td>
+                <td>{customer.phone}</td>
+                <td>
+                  <span className={GRADE_BADGE[customer.grade] || 'badge'}>
+                    {GRADE_LABELS[customer.grade] || customer.grade}
+                  </span>
+                </td>
+                <td>{customer.primary_branch?.name || '-'}</td>
+                <td>{customer.total_points?.toLocaleString() || 0}P</td>
+                <td>
+                  <span className={customer.is_active ? 'badge badge-success' : 'badge badge-error'}>
+                    {customer.is_active ? '활성' : '비활성'}
+                  </span>
+                </td>
+                <td>
+                  <Link
+                    href={`/customers/${customer.id}`}
+                    className="text-blue-600 hover:underline mr-2"
+                  >
+                    상세
+                  </Link>
+                  <button
+                    onClick={() => handleEdit(customer)}
+                    className="text-blue-600 hover:underline"
+                  >
+                    수정
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
           {!loading && customers.length === 0 && (
             <tr>
               <td colSpan={7} className="text-center text-slate-400 py-8">
-                등록된 고객이 없습니다
+                {search ? `"${search}" 검색 결과가 없습니다` : '등록된 고객이 없습니다'}
               </td>
             </tr>
           )}
         </tbody>
       </table>
       </div>
+
+      {/* 페이지네이션 */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-3 mt-4">
+          <button
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page <= 1}
+            className="px-3 py-1.5 rounded-lg text-sm border border-slate-200 disabled:opacity-40 hover:bg-slate-50"
+          >
+            이전
+          </button>
+          <span className="text-sm text-slate-600">
+            {page} / {totalPages} 페이지
+          </span>
+          <button
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page >= totalPages}
+            className="px-3 py-1.5 rounded-lg text-sm border border-slate-200 disabled:opacity-40 hover:bg-slate-50"
+          >
+            다음
+          </button>
+        </div>
+      )}
 
       {showModal && (
         <CustomerModal
