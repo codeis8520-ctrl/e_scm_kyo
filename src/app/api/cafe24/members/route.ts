@@ -72,15 +72,29 @@ export async function POST(request: Request) {
       return true;
     };
 
+    // customersprivacy(개인정보 비마스킹) 시도 → 403 시 customers(마스킹)로 폴백
+    let usePrivacyApi = true;
+
     for (let page = 0; page < MAX_PAGES; page++) {
-      // /admin/customers는 cellphone/member_id 단건 검색 전용.
-      // 전체 목록은 /admin/customersprivacy 사용 (offset/limit 페이지네이션)
-      // unmasking=T 파라미터로 마스킹 해제 (mall.read_privacy_mobile 스코프 필요)
-      const fields = 'member_id,name,cellphone,email,created_date,last_login_date';
-      const url = `${base}/admin/customersprivacy?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}` +
-        `&created_start_date=${startDate}&created_end_date=${endDate}` +
-        `&unmasking=T&fields=${fields}`;
-      const res = await fetch(url, { headers, cache: 'no-store' });
+      let url: string;
+      if (usePrivacyApi) {
+        const fields = 'member_id,name,cellphone,email,created_date,last_login_date';
+        url = `${base}/admin/customersprivacy?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}` +
+          `&created_start_date=${startDate}&created_end_date=${endDate}` +
+          `&unmasking=T&fields=${fields}`;
+      } else {
+        url = `${base}/admin/customers?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}` +
+          `&created_start_date=${startDate}&created_end_date=${endDate}`;
+      }
+      let res = await fetch(url, { headers, cache: 'no-store' });
+
+      // customersprivacy 403 → customers로 폴백
+      if (!res.ok && usePrivacyApi && res.status === 403) {
+        usePrivacyApi = false;
+        url = `${base}/admin/customers?limit=${LIMIT}&offset=${offset}&shop_no=${shopNo}` +
+          `&created_start_date=${startDate}&created_end_date=${endDate}`;
+        res = await fetch(url, { headers, cache: 'no-store' });
+      }
 
       if (!res.ok) {
         const txt = await res.text();

@@ -18,7 +18,7 @@ export async function GET() {
   const supabase = await createClient();
   const { data: tokenRow, error: tokenError } = await (supabase as any)
     .from('cafe24_tokens')
-    .select('mall_id, access_token_expires_at, refresh_token_expires_at, updated_at')
+    .select('mall_id, access_token_expires_at, refresh_token_expires_at, scopes, updated_at')
     .eq('mall_id', mallId)
     .single();
 
