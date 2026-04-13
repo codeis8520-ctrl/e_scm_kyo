@@ -715,7 +715,12 @@ export default function ShippingPage() {
                         <td className="text-sm text-slate-600">{order.order_date?.slice(0, 10)}</td>
                         <td className="text-sm"><div>{order.orderer_name}</div><div className="text-slate-400 text-xs">{order.orderer_phone}</div></td>
                         <td className="text-sm"><div>{order.recipient_name}</div><div className="text-slate-400 text-xs">{order.recipient_phone}</div></td>
-                        <td className="text-sm text-slate-600 max-w-[180px] truncate">{order.recipient_address}</td>
+                        <td className="text-sm text-slate-600 max-w-[220px]">
+                          <div className="truncate cursor-pointer hover:text-blue-600 transition-colors" title={order.recipient_address}
+                            onClick={() => { navigator.clipboard.writeText(order.recipient_address || ''); }}>
+                            {order.recipient_address}
+                          </div>
+                        </td>
                         <td className="text-sm text-slate-600 max-w-[140px] truncate">{order.items_summary}</td>
                         <td className="text-sm text-slate-700">{order.total_price.toLocaleString()}원</td>
                         <td><span className={`${CAFE24_STATUS_BADGE[order.cafe24_status] ?? 'badge'} text-xs`}>{CAFE24_STATUS_LABEL[order.cafe24_status] ?? order.cafe24_status}</span></td>
@@ -970,13 +975,17 @@ export default function ShippingPage() {
                           <div className="text-sm text-slate-700">{s.sender_name}</div>
                           <div className="text-xs text-slate-400 mt-0.5">{s.sender_phone}</div>
                         </td>
-                        <td className="px-3 py-3 max-w-[200px]">
-                          <div className="text-sm text-slate-700 truncate">{s.recipient_address}</div>
+                        <td className="px-3 py-3 max-w-[260px]">
+                          <div className="text-sm text-slate-700 truncate cursor-pointer hover:text-blue-600 transition-colors"
+                            title={[s.recipient_address, s.recipient_address_detail].filter(Boolean).join(' ')}
+                            onClick={() => { navigator.clipboard.writeText([s.recipient_address, s.recipient_address_detail].filter(Boolean).join(' ')); }}>
+                            {s.recipient_address}
+                          </div>
                           {s.recipient_address_detail && (
-                            <div className="text-xs text-slate-400 mt-0.5 truncate">{s.recipient_address_detail}</div>
+                            <div className="text-xs text-slate-400 mt-0.5 truncate" title={s.recipient_address_detail}>{s.recipient_address_detail}</div>
                           )}
                           {s.delivery_message && (
-                            <div className="text-xs text-amber-600 mt-0.5 truncate">💬 {s.delivery_message}</div>
+                            <div className="text-xs text-amber-600 mt-0.5 truncate" title={s.delivery_message}>💬 {s.delivery_message}</div>
                           )}
                         </td>
                         <td className="px-3 py-3 max-w-[160px]">

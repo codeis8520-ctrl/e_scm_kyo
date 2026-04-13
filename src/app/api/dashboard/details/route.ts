@@ -2,6 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createClient } from '@/lib/supabase/server';
 
+// 이전 버전에서 자동 생성된 더미 고객명(고객_xxx@n, 고객_xxx@k 등) 필터
+function cleanCustomerName(name: string | null | undefined): string {
+  if (!name) return '-';
+  if (/^고객_/.test(name) || /@[a-z]/i.test(name)) return '-';
+  return name;
+}
+
 export async function GET(request: NextRequest) {
   const supabase = await createClient();
   const searchParams = request.nextUrl.searchParams;
@@ -30,7 +37,7 @@ export async function GET(request: NextRequest) {
     if (isB2B) {
       let q = supabase
         .from('b2b_sales_orders')
-        .select('id, order_number, total_amount, status, delivered_at, client:b2b_clients(company_name), branch:branches(name), items:b2b_sales_order_items(product:products(name), quantity, unit_price)')
+        .select('id, order_number, total_amount, status, delivered_at, partner:b2b_partners(name), branch:branches(name), items:b2b_sales_order_items(product:products(name), quantity, unit_price)')
         .in('status', ['DELIVERED', 'PARTIALLY_SETTLED', 'SETTLED'])
         .order('delivered_at', { ascending: false })
         .limit(100);
@@ -46,7 +53,7 @@ export async function GET(request: NextRequest) {
         order_number: o.order_number,
         channel: 'B2B',
         branch_name: o.branch?.name || '알 수 없음',
-        customer_name: o.client?.company_name || '-',
+        customer_name: o.partner?.name || '-',
         total_amount: o.total_amount,
         status: o.status,
         ordered_at: o.delivered_at,
@@ -79,7 +86,7 @@ export async function GET(request: NextRequest) {
       order_number: o.order_number,
       channel: o.channel,
       branch_name: o.branch?.name || '알 수 없음',
-      customer_name: o.customer?.name || '-',
+      customer_name: cleanCustomerName(o.customer?.name),
       total_amount: o.total_amount,
       status: o.status,
       ordered_at: o.ordered_at,
@@ -144,7 +151,7 @@ export async function GET(request: NextRequest) {
       order_number: o.order_number,
       channel: o.channel,
       branch_name: o.branch?.name || '알 수 없음',
-      customer_name: o.customer?.name || '-',
+      customer_name: cleanCustomerName(o.customer?.name),
       customer_phone: o.customer?.phone || '-',
       total_amount: o.total_amount,
       status: o.status,
