@@ -1,10 +1,21 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { getValidAccessToken } from '@/lib/cafe24/token-store';
+import { getValidAccessToken, loadTokens } from '@/lib/cafe24/token-store';
 
 export async function GET() {
   const mallId = process.env.CAFE24_MALL_ID;
   const clientId = process.env.CAFE24_CLIENT_ID;
+
+  // 0. 토큰 스코프 진단 (회원 동기화 403 디버깅용)
+  const tokenRow = await loadTokens();
+  const scopeDiag = {
+    발급된스코프: (tokenRow as any)?.scopes || '(scopes 컬럼 비어있음)',
+    필요한스코프: ['mall.read_order', 'mall.read_customer', 'mall.read_personal'],
+    mall_read_personal_포함여부: Array.isArray((tokenRow as any)?.scopes)
+      ? (tokenRow as any).scopes.includes('mall.read_personal')
+      : '확인불가(scopes가 배열 아님)',
+    해결방법: 'mall.read_personal이 없으면: 카페24 개발자 센터 → 내 앱 → 권한 설정에서 추가 후 /api/cafe24/auth 재인증',
+  };
 
   // 1. 환경변수 확인
   const envCheck = {
@@ -16,7 +27,7 @@ export async function GET() {
 
   // 2. DB 토큰 확인
   const supabase = await createClient();
-  const { data: tokenRow, error: tokenError } = await (supabase as any)
+  const { data: tokenDbRow, error: tokenError } = await (supabase as any)
     .from('cafe24_tokens')
     .select('mall_id, access_token_expires_at, refresh_token_expires_at, scopes, updated_at')
     .eq('mall_id', mallId)
@@ -93,8 +104,9 @@ export async function GET() {
   }
 
   return NextResponse.json({
+    scopeDiag,
     envCheck,
-    tokenInDB: tokenRow ?? null,
+    tokenInDB: tokenDbRow ?? null,
     tokenDbError: tokenError?.message ?? null,
     hasValidToken: !!accessToken,
     apiTest,
