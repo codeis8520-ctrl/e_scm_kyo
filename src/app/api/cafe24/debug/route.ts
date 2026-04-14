@@ -80,10 +80,25 @@ export async function GET() {
         };
       }
 
+      // 주문 목록의 raw 필드명 확인 (회원 동기화 폴백 디버깅용)
+      const firstRaw = json?.orders?.[0];
+      const rawFields = firstRaw ? Object.keys(firstRaw) : [];
+      const memberFields = firstRaw ? {
+        member_id: firstRaw.member_id,
+        buyer_name: firstRaw.buyer_name,
+        buyer_cellphone: firstRaw.buyer_cellphone,
+        buyer_email: firstRaw.buyer_email,
+        billing_name: firstRaw.billing_name,
+        buyer_phone: firstRaw.buyer_phone,
+        order_id: firstRaw.order_id,
+      } : null;
+
       apiTest = {
         status: res.status,
         order_count: json?.orders?.length ?? 0,
         first_order_id: orderId,
+        raw_field_names: rawFields,
+        member_related_fields: memberFields,
         detailTest,
       };
     } catch (e: any) {
