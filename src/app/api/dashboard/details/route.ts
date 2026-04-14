@@ -101,11 +101,11 @@ export async function GET(request: NextRequest) {
   }
 
   if (type === 'branch_inventory') {
-    // 지점별 재고 상세
+    // 지점별 재고 상세 — safety_stock 유무와 관계없이 전체 재고 표시
     let q = supabase
       .from('inventories')
       .select('id, quantity, safety_stock, product:products(name, sku), branch:branches(id, name)')
-      .gt('safety_stock', 0);
+      .gt('quantity', -1); // 모든 재고 (삭제된 것 제외)
 
     if (effectiveBranchId && effectiveBranchId !== 'ALL') {
       q = q.eq('branch_id', effectiveBranchId);
@@ -123,9 +123,16 @@ export async function GET(request: NextRequest) {
       branch_name: inv.branch?.name || '알 수 없음',
       branch_id: inv.branch?.id,
       quantity: inv.quantity,
-      safety_stock: inv.safety_stock,
-      is_low: inv.quantity < inv.safety_stock,
+      safety_stock: inv.safety_stock || 0,
+      is_low: (inv.safety_stock || 0) > 0 && inv.quantity < inv.safety_stock,
     }));
+
+    // 부족 품목 우선 정렬
+    items.sort((a: any, b: any) => {
+      if (a.is_low && !b.is_low) return -1;
+      if (!a.is_low && b.is_low) return 1;
+      return a.product_name.localeCompare(b.product_name);
+    });
 
     return NextResponse.json({ items });
   }
