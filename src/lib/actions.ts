@@ -940,6 +940,7 @@ export interface CheckoutPayload {
   branchName: string;
   branchChannel: string;
   customerId: string | null;
+  customerGrade: string | null;
   gradePointRate: number;
   cart: CartItem[];
   totalAmount: number;
@@ -1001,6 +1002,8 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     approval_no: approvalNo || null,
     card_info: cardInfo || null,
     memo: payload.memo || null,
+    customer_grade_at_order: customerId ? (payload as any).customerGrade || null : null,
+    point_rate_applied: customerId ? (gradePointRate || 1.0) : null,
   }).select().single();
 
   if (saleError) return { error: saleError.message };

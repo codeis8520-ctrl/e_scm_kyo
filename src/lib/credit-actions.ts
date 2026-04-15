@@ -18,6 +18,7 @@ import { requireSession, writeAuditLog } from '@/lib/session';
 export async function cancelCreditOrder(params: {
   orderId: string;
   reason?: string;
+  userId?: string;
 }) {
   let session;
   try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
@@ -97,16 +98,30 @@ export async function cancelCreditOrder(params: {
       });
     }
 
-    // 4. 외상매출금 역분개 (있다면)
+    // 4. 외상매출금 역분개 — 원래 분개 추적 포함
     try {
       const { createSaleJournal } = await import('@/lib/accounting-actions');
+
+      // 원래 매출 분개 ID 조회
+      const { data: originalEntry } = await db
+        .from('journal_entries')
+        .select('id')
+        .eq('source_id', order.id)
+        .eq('source_type', 'SALE')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
       await createSaleJournal({
         orderId: order.id,
         orderNumber: `CANCEL-${order.order_number}`,
         orderDate: new Date().toISOString().slice(0, 10),
-        totalAmount: -Number(order.total_amount), // 음수로 역분개
+        totalAmount: -Number(order.total_amount),
         paymentMethod: 'credit',
         cogs: 0,
+        sourceType: 'CREDIT_CANCEL',
+        reversalOf: originalEntry?.id || undefined,
+        createdBy: params.userId || undefined,
       });
     } catch {
       // 역분개 실패는 경고만 (주문 취소 자체는 진행)

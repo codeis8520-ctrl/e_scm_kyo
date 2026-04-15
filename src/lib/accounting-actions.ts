@@ -384,6 +384,9 @@ export async function createSaleJournal(params: {
   paymentMethod: string;     // cash | card | kakao | card_keyin | credit
   cogs: number;
   taxableAmount?: number;    // 과세 대상 금액 (미제공 시 전액 과세 가정)
+  sourceType?: string;       // SALE | RETURN | CREDIT_CANCEL | CAFE24_REFUND
+  reversalOf?: string;       // 역분개 시 원래 journal_entry ID
+  createdBy?: string;        // 실행한 사용자 ID
 }) {
   const sb = await createClient() as any;
 
@@ -424,6 +427,8 @@ export async function createSaleJournal(params: {
   const prefix = isRefund ? 'JE-RF' : 'JE-SA';
   const entryNumber = `${prefix}-${date}-${rand}`;
 
+  const sourceType = params.sourceType || (isRefund ? 'RETURN' : 'SALE');
+
   const { data: entry, error } = await sb
     .from('journal_entries')
     .insert({
@@ -432,10 +437,12 @@ export async function createSaleJournal(params: {
       description: isRefund
         ? `매출 환불 역분개 (${params.orderNumber})`
         : `매출 인식 (${params.orderNumber})`,
-      source_type: isRefund ? 'RETURN' : 'SALE',
+      source_type: sourceType,
       source_id: params.orderId,
       total_debit: absTotal,
       total_credit: absTotal,
+      ...(params.reversalOf ? { reversal_of: params.reversalOf } : {}),
+      ...(params.createdBy ? { created_by: params.createdBy } : {}),
     })
     .select('id')
     .single();

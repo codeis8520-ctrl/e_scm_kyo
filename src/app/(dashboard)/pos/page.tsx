@@ -373,6 +373,7 @@ export default function POSPage() {
         branchName: selectedBranchData?.name || '',
         branchChannel: selectedBranchData?.channel || 'STORE',
         customerId: selectedCustomer?.id || null,
+        customerGrade: selectedCustomer?.grade || null,
         gradePointRate: selectedCustomer?.grade_point_rate || 1.0,
         cart,
         totalAmount: total,
