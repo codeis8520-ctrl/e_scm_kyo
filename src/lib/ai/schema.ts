@@ -35,8 +35,8 @@ supplier_product_prices: id, supplier_id, product_id, unit_price, effective_from
   ※ 공급사별 매입 단가 이력. 발주 확정/입고 시 자동 기록 + 수동 등록. UNIQUE(supplier_id,product_id,effective_from)
 
 --- 생산 ---
-product_bom: id, product_id(완제품), material_id(원/부자재), quantity, loss_rate(%), notes, sort_order
-  ※ 완제품 원가 산정용. OEM 위탁 모델에서는 재고 차감에 사용하지 않음.
+product_bom: id, product_id(완제품), material_id(부자재), quantity, loss_rate(%), notes, sort_order
+  ※ 본사가 OEM 공장에 지급하는 부자재 목록. 원가 산정 + 생산 완료 시 입고 지점(본사) 재고에서 차감(수량 = BOM qty × 생산 수량 × (1+loss%), 올림). 원재료는 BOM 미등록 원칙(OEM 자체 조달).
 oem_factories: id, code, name, business_number, representative, contact_name, phone, email, address, memo, is_active
   ※ OEM 위탁 공장 마스터. production_orders.oem_factory_id 참조.
 branches.is_headquarters (bool): 본사 지점 여부. 생산 지시 기본 입고처이자 권한 체크 기준.
@@ -93,8 +93,10 @@ DRAFT → CONFIRMED → RECEIVED
 [생산 워크플로우 — OEM 위탁 모델]
 PENDING → IN_PROGRESS → COMPLETED
 본사에서만 지시 가능. 각 지시는 OEM 공장에 위탁하고, 완성품은 지정한 입고 지점(기본 본사)으로 직접 입고.
-완료 시: 완제품 재고 증가. 원/부자재 차감 없음(OEM이 자체 조달).
-BOM은 원가 산정(cost_source='BOM') 참고용으로만 사용.
+완료 시:
+  ① BOM에 등록된 부자재(본사 조달품)를 입고 지점 재고에서 차감 — BOM qty × 생산 수량 × (1+loss%), 올림. 재고 부족 시 완료 불가(에러).
+  ② 완제품 재고를 입고 지점에 증가.
+원재료는 BOM에 등록하지 않음(OEM 자체 조달 원칙). BOM은 부자재 조달 관리 + 원가 산정(cost_source='BOM')에 사용.
 
 [채널]
 STORE=한약국 매장, DEPT_STORE=백화점, ONLINE=자사몰(카페24), EVENT=이벤트

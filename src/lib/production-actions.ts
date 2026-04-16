@@ -388,8 +388,8 @@ export async function startProductionOrder(id: string) {
 }
 
 // ─── 생산 완료 (IN_PROGRESS → COMPLETED) ──────────────────────────────────────
-//   OEM 위탁 모델: 완제품을 입고 지점(branch_id)에 증가만 처리.
-//   원/부자재 차감 없음(OEM 공장이 자체 조달).
+//   OEM 위탁 모델: 완제품을 입고 지점(branch_id)에 증가 + BOM에 등록된 부자재를
+//   입고 지점 재고에서 차감(본사 → OEM 조달). 원재료는 BOM 미등록 원칙(OEM 자체 조달).
 
 export async function completeProductionOrder(id: string) {
   const supabase = await createClient();
@@ -408,8 +408,55 @@ export async function completeProductionOrder(id: string) {
   const branchId = order.branch_id;
   if (!branchId) return { error: '입고 지점 정보가 없습니다.' };
 
+  // ─ BOM 부자재 소요량 계산 + 재고 사전 체크 ───────────────────────────────
+  const { data: bomItems } = await db
+    .from('product_bom')
+    .select('material_id, quantity, loss_rate, material:products!product_bom_material_id_fkey(name, unit)')
+    .eq('product_id', order.product_id);
+
+  type Deduction = { invId: string; materialId: string; currentQty: number; required: number; name: string; unit: string };
+  const deductions: Deduction[] = [];
+
+  for (const item of (bomItems as any[] || [])) {
+    const lossRate = Number(item.loss_rate || 0);
+    const required = Math.ceil(item.quantity * order.quantity * (1 + lossRate / 100));
+    if (required <= 0) continue;
+
+    const { data: matInv } = await db
+      .from('inventories').select('id, quantity')
+      .eq('branch_id', branchId).eq('product_id', item.material_id).maybeSingle();
+
+    const curQty = matInv?.quantity ?? 0;
+    const name = item.material?.name || '(이름없음)';
+    const unit = item.material?.unit || '개';
+
+    if (!matInv) {
+      return { error: `부자재 "${name}" 재고 레코드 없음 — 입고 지점에 해당 자재가 등록되지 않았습니다.` };
+    }
+    if (curQty < required) {
+      return { error: `부자재 "${name}" 재고 부족 (현재 ${curQty}${unit}, 필요 ${required}${unit})` };
+    }
+    deductions.push({ invId: matInv.id, materialId: item.material_id, currentQty: curQty, required, name, unit });
+  }
+
   try {
-    // 완제품 재고 증가 + 이동 기록 (입고 지점)
+    // ① 부자재 차감 + 이동 기록
+    for (const d of deductions) {
+      await db.from('inventories')
+        .update({ quantity: d.currentQty - d.required })
+        .eq('id', d.invId);
+      await db.from('inventory_movements').insert({
+        branch_id: branchId,
+        product_id: d.materialId,
+        movement_type: 'PRODUCTION',
+        quantity: d.required,
+        reference_id: id,
+        reference_type: 'PRODUCTION_ORDER',
+        memo: `부자재 소진: ${order.order_number} (${order.quantity}개 생산 기준)`,
+      });
+    }
+
+    // ② 완제품 재고 증가 + 이동 기록
     const { data: productInv } = await db
       .from('inventories')
       .select('id, quantity')
