@@ -30,11 +30,16 @@ interface ShippingForm {
   enabled: boolean;
   recipient_name: string;
   recipient_phone: string;
-  recipient_address: string;
+  recipient_zipcode: string;
+  recipient_address: string;        // 도로명/지번
+  recipient_address_detail: string; // 상세
   delivery_message: string;
   senderSameAsBuyer: boolean;
   sender_name: string;
   sender_phone: string;
+  sender_zipcode: string;
+  sender_address: string;
+  sender_address_detail: string;
 }
 
 function getCookie(name: string): string | null {
@@ -117,11 +122,38 @@ export default function POSPage() {
   // 택배
   const [shipping, setShipping] = useState<ShippingForm>({
     enabled: false,
-    recipient_name: '', recipient_phone: '', recipient_address: '',
+    recipient_name: '', recipient_phone: '',
+    recipient_zipcode: '', recipient_address: '', recipient_address_detail: '',
     delivery_message: '',
     senderSameAsBuyer: true,
     sender_name: '', sender_phone: '',
+    sender_zipcode: '', sender_address: '', sender_address_detail: '',
   });
+
+  // Daum postcode script (한 번 로드)
+  useEffect(() => {
+    if (typeof window !== 'undefined' && !window.daum) {
+      const script = document.createElement('script');
+      script.src = 'https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js';
+      document.head.appendChild(script);
+    }
+  }, []);
+
+  const openPostcode = (target: 'recipient' | 'sender') => {
+    if (typeof window === 'undefined' || !window.daum) {
+      alert('주소 검색 스크립트 로딩 중입니다. 잠시 후 다시 시도해 주세요.');
+      return;
+    }
+    new window.daum.Postcode({
+      oncomplete: (data: any) => {
+        const road = data.roadAddress || data.jibunAddress || '';
+        const zip = data.zonecode || '';
+        setShipping(prev => target === 'recipient'
+          ? { ...prev, recipient_zipcode: zip, recipient_address: road, recipient_address_detail: '' }
+          : { ...prev, sender_zipcode: zip, sender_address: road, sender_address_detail: '' });
+      },
+    }).open();
+  };
   // 분할 결제
   const [splitMode, setSplitMode] = useState(false);
   const [extraPayments, setExtraPayments] = useState<PaymentRow[]>([]);
@@ -462,8 +494,16 @@ export default function POSPage() {
     }
 
     // 택배 정보 유효성
-    const useShipping = shipping.enabled && shipping.recipient_name.trim() && shipping.recipient_phone.trim() && shipping.recipient_address.trim();
-    if (shipping.enabled && !useShipping) { alert('택배 수령인 이름·연락처·주소를 모두 입력하세요.'); setProcessing(false); return; }
+    const useShipping =
+      shipping.enabled &&
+      shipping.recipient_name.trim() &&
+      shipping.recipient_phone.trim() &&
+      shipping.recipient_address.trim();
+    if (shipping.enabled && !useShipping) {
+      alert('택배 수령인 이름·연락처·주소(검색)를 모두 입력하세요.');
+      setProcessing(false);
+      return;
+    }
 
     const memoCombined = [
       orderMemo.trim(),
@@ -497,10 +537,15 @@ export default function POSPage() {
         shipping: useShipping ? {
           recipient_name: shipping.recipient_name.trim(),
           recipient_phone: shipping.recipient_phone.trim(),
+          recipient_zipcode: shipping.recipient_zipcode.trim() || undefined,
           recipient_address: shipping.recipient_address.trim(),
+          recipient_address_detail: shipping.recipient_address_detail.trim() || undefined,
           delivery_message: shipping.delivery_message.trim() || undefined,
           sender_name: shipping.senderSameAsBuyer ? (selectedCustomer?.name || '') : shipping.sender_name.trim(),
           sender_phone: shipping.senderSameAsBuyer ? (selectedCustomer?.phone || '') : shipping.sender_phone.trim(),
+          sender_zipcode: shipping.senderSameAsBuyer ? undefined : (shipping.sender_zipcode.trim() || undefined),
+          sender_address: shipping.senderSameAsBuyer ? undefined : (shipping.sender_address.trim() || undefined),
+          sender_address_detail: shipping.senderSameAsBuyer ? undefined : (shipping.sender_address_detail.trim() || undefined),
         } : null,
       });
 
@@ -548,10 +593,12 @@ export default function POSPage() {
       setOrderMemo('');
       setShipping({
         enabled: false,
-        recipient_name: '', recipient_phone: '', recipient_address: '',
+        recipient_name: '', recipient_phone: '',
+        recipient_zipcode: '', recipient_address: '', recipient_address_detail: '',
         delivery_message: '',
         senderSameAsBuyer: true,
         sender_name: '', sender_phone: '',
+        sender_zipcode: '', sender_address: '', sender_address_detail: '',
       });
       setSplitMode(false);
       setExtraPayments([]);
@@ -1029,54 +1076,88 @@ export default function POSPage() {
               <span className="text-xs text-slate-400">수령인·발신인 정보 입력</span>
             </label>
             {shipping.enabled && (
-              <div className="p-3 space-y-2">
-                <p className="text-[11px] font-semibold text-slate-500 uppercase">수령인 (받는 분)</p>
-                <div className="grid grid-cols-2 gap-2">
-                  <input type="text" placeholder="이름 *" value={shipping.recipient_name}
-                    onChange={e => setShipping(p => ({ ...p, recipient_name: e.target.value }))}
+              <div className="p-3 space-y-3">
+                {/* 수령인 */}
+                <div className="space-y-2">
+                  <p className="text-[11px] font-semibold text-slate-500 uppercase">수령인 (받는 분)</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input type="text" placeholder="이름 *" value={shipping.recipient_name}
+                      onChange={e => setShipping(p => ({ ...p, recipient_name: e.target.value }))}
+                      className="input text-sm" />
+                    <input type="text" placeholder="연락처 *" value={shipping.recipient_phone}
+                      onChange={e => setShipping(p => ({ ...p, recipient_phone: e.target.value }))}
+                      className="input text-sm" />
+                  </div>
+                  <div className="flex gap-2">
+                    <input type="text" readOnly value={shipping.recipient_zipcode}
+                      onClick={() => openPostcode('recipient')}
+                      placeholder="우편번호"
+                      className="input text-sm w-24 bg-slate-50 cursor-pointer" />
+                    <input type="text" readOnly value={shipping.recipient_address}
+                      onClick={() => openPostcode('recipient')}
+                      placeholder="주소 검색 버튼을 눌러주세요 *"
+                      className="input text-sm flex-1 bg-slate-50 cursor-pointer" />
+                    <button type="button" onClick={() => openPostcode('recipient')}
+                      className="btn-secondary text-sm whitespace-nowrap">주소 검색</button>
+                  </div>
+                  <input type="text" placeholder="상세 주소 (동/호수 등)"
+                    value={shipping.recipient_address_detail}
+                    onChange={e => setShipping(p => ({ ...p, recipient_address_detail: e.target.value }))}
                     className="input text-sm" />
-                  <input type="text" placeholder="연락처 *" value={shipping.recipient_phone}
-                    onChange={e => setShipping(p => ({ ...p, recipient_phone: e.target.value }))}
+                  <input type="text" placeholder="배송 메시지 (선택)" value={shipping.delivery_message}
+                    onChange={e => setShipping(p => ({ ...p, delivery_message: e.target.value }))}
                     className="input text-sm" />
                 </div>
-                <input type="text" placeholder="주소 *" value={shipping.recipient_address}
-                  onChange={e => setShipping(p => ({ ...p, recipient_address: e.target.value }))}
-                  className="input text-sm" />
-                <input type="text" placeholder="배송 메시지 (선택)" value={shipping.delivery_message}
-                  onChange={e => setShipping(p => ({ ...p, delivery_message: e.target.value }))}
-                  className="input text-sm" />
 
-                <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
-                  <input type="checkbox"
-                    id="sender-same"
-                    checked={shipping.senderSameAsBuyer}
-                    onChange={e => {
-                      const same = e.target.checked;
-                      setShipping(prev => ({
-                        ...prev,
-                        senderSameAsBuyer: same,
-                        sender_name: same ? (selectedCustomer?.name || '') : prev.sender_name,
-                        sender_phone: same ? (selectedCustomer?.phone || '') : prev.sender_phone,
-                      }));
-                    }}
-                    className="w-4 h-4" />
-                  <label htmlFor="sender-same" className="text-sm text-slate-700 cursor-pointer">
-                    보내는 분 = 구매자와 동일
-                  </label>
-                </div>
-                {!shipping.senderSameAsBuyer && (
-                  <>
-                    <p className="text-[11px] font-semibold text-slate-500 uppercase">보내는 분</p>
-                    <div className="grid grid-cols-2 gap-2">
-                      <input type="text" placeholder="이름" value={shipping.sender_name}
-                        onChange={e => setShipping(p => ({ ...p, sender_name: e.target.value }))}
-                        className="input text-sm" />
-                      <input type="text" placeholder="연락처" value={shipping.sender_phone}
-                        onChange={e => setShipping(p => ({ ...p, sender_phone: e.target.value }))}
+                {/* 발신인 */}
+                <div className="pt-2 border-t border-slate-100">
+                  <div className="flex items-center gap-2 mb-2">
+                    <input type="checkbox" id="sender-same"
+                      checked={shipping.senderSameAsBuyer}
+                      onChange={e => {
+                        const same = e.target.checked;
+                        setShipping(prev => ({
+                          ...prev,
+                          senderSameAsBuyer: same,
+                          sender_name: same ? (selectedCustomer?.name || '') : prev.sender_name,
+                          sender_phone: same ? (selectedCustomer?.phone || '') : prev.sender_phone,
+                        }));
+                      }}
+                      className="w-4 h-4" />
+                    <label htmlFor="sender-same" className="text-sm text-slate-700 cursor-pointer">
+                      보내는 분 = 구매자와 동일
+                    </label>
+                  </div>
+                  {!shipping.senderSameAsBuyer && (
+                    <div className="space-y-2">
+                      <p className="text-[11px] font-semibold text-slate-500 uppercase">보내는 분</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <input type="text" placeholder="이름" value={shipping.sender_name}
+                          onChange={e => setShipping(p => ({ ...p, sender_name: e.target.value }))}
+                          className="input text-sm" />
+                        <input type="text" placeholder="연락처" value={shipping.sender_phone}
+                          onChange={e => setShipping(p => ({ ...p, sender_phone: e.target.value }))}
+                          className="input text-sm" />
+                      </div>
+                      <div className="flex gap-2">
+                        <input type="text" readOnly value={shipping.sender_zipcode}
+                          onClick={() => openPostcode('sender')}
+                          placeholder="우편번호"
+                          className="input text-sm w-24 bg-slate-50 cursor-pointer" />
+                        <input type="text" readOnly value={shipping.sender_address}
+                          onClick={() => openPostcode('sender')}
+                          placeholder="주소 검색 버튼을 눌러주세요"
+                          className="input text-sm flex-1 bg-slate-50 cursor-pointer" />
+                        <button type="button" onClick={() => openPostcode('sender')}
+                          className="btn-secondary text-sm whitespace-nowrap">주소 검색</button>
+                      </div>
+                      <input type="text" placeholder="상세 주소 (동/호수 등)"
+                        value={shipping.sender_address_detail}
+                        onChange={e => setShipping(p => ({ ...p, sender_address_detail: e.target.value }))}
                         className="input text-sm" />
                     </div>
-                  </>
-                )}
+                  )}
+                </div>
               </div>
             )}
           </div>

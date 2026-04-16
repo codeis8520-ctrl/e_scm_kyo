@@ -1012,10 +1012,15 @@ export interface PaymentSplit {
 export interface ShippingInfo {
   recipient_name: string;
   recipient_phone: string;
-  recipient_address: string;
+  recipient_zipcode?: string;
+  recipient_address: string;        // 도로명/지번
+  recipient_address_detail?: string;
   delivery_message?: string;
   sender_name?: string;
   sender_phone?: string;
+  sender_zipcode?: string;
+  sender_address?: string;
+  sender_address_detail?: string;
 }
 
 export interface CheckoutPayload {
@@ -1128,18 +1133,42 @@ export async function processPosCheckout(payload: CheckoutPayload) {
 
   // ②-b 택배 정보 있으면 shipments 레코드 생성
   if (shipping && shipping.recipient_name && shipping.recipient_phone && shipping.recipient_address) {
-    const { error: shipErr } = await db.from('shipments').insert({
+    // sender_* 는 NOT NULL 이므로 '' 로라도 채움 (없으면 구매자 정보 대체)
+    const senderName = shipping.sender_name || '';
+    const senderPhone = shipping.sender_phone || '';
+    const payloadBase: any = {
       source: 'STORE',
       sales_order_id: saleOrderId,
       branch_id: branchId,
+      sender_name: senderName,
+      sender_phone: senderPhone,
       recipient_name: shipping.recipient_name,
       recipient_phone: shipping.recipient_phone,
+      recipient_zipcode: shipping.recipient_zipcode || null,
       recipient_address: shipping.recipient_address,
+      recipient_address_detail: shipping.recipient_address_detail || null,
       delivery_message: shipping.delivery_message || null,
-      sender_name: shipping.sender_name || null,
-      sender_phone: shipping.sender_phone || null,
       status: 'PENDING',
-    });
+    };
+    const payloadFull = {
+      ...payloadBase,
+      sender_zipcode: shipping.sender_zipcode || null,
+      sender_address: shipping.sender_address || null,
+      sender_address_detail: shipping.sender_address_detail || null,
+    };
+
+    let { error: shipErr } = await db.from('shipments').insert(payloadFull);
+    // 마이그레이션 046 미적용(sender_* 컬럼 부재)이면 기본 payload로 재시도
+    if (shipErr) {
+      const msg = String(shipErr.message || '').toLowerCase();
+      const code = String((shipErr as any).code || '');
+      const isMissingCol = code === '42703' || (msg.includes('column') && msg.includes('does not exist'));
+      if (isMissingCol) {
+        console.warn('[processPosCheckout] shipments sender 컬럼 없음 — 046 미적용. base payload로 재시도.');
+        const retry = await db.from('shipments').insert(payloadBase);
+        shipErr = retry.error;
+      }
+    }
     if (shipErr) console.error('[processPosCheckout] shipments insert failed:', shipErr);
   }
 
