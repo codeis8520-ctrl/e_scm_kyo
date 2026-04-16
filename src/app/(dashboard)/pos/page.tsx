@@ -7,6 +7,12 @@ import { requestCardApproval, isUsingMock } from '@/lib/card-terminal';
 import RefundModal from './RefundModal';
 import ReceiptModal from './ReceiptModal';
 
+declare global {
+  interface Window {
+    daum: any;
+  }
+}
+
 type PaymentMethodId = 'cash' | 'card' | 'card_keyin' | 'kakao' | 'credit' | 'cod';
 const PAYMENT_METHOD_LABEL: Record<PaymentMethodId, string> = {
   cash: '현금', card: '카드', card_keyin: '카드(키인)', kakao: '카카오',
@@ -1412,11 +1418,35 @@ function CustomerAddModal({ defaultBranchId, onClose, onCreated }: {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
-  const [address, setAddress] = useState('');
+  const [address1, setAddress1] = useState('');
+  const [address2, setAddress2] = useState('');
   const [grade, setGrade] = useState('NORMAL');
   const [healthNote, setHealthNote] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    // Daum 우편번호 스크립트 로드 (1회)
+    if (typeof window !== 'undefined' && !window.daum) {
+      const script = document.createElement('script');
+      script.src = 'https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js';
+      document.head.appendChild(script);
+    }
+  }, []);
+
+  const openPostcode = () => {
+    if (typeof window === 'undefined' || !window.daum) {
+      alert('주소 검색 스크립트 로딩 중입니다. 잠시 후 다시 시도해 주세요.');
+      return;
+    }
+    new window.daum.Postcode({
+      oncomplete: (data: any) => {
+        const road = data.roadAddress || data.jibunAddress;
+        setAddress1(road);
+        setAddress2('');
+      },
+    }).open();
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1427,7 +1457,10 @@ function CustomerAddModal({ defaultBranchId, onClose, onCreated }: {
     fd.append('name', name.trim());
     fd.append('phone', phone.trim());
     if (email.trim()) fd.append('email', email.trim());
-    if (address.trim()) fd.append('address', address.trim());
+    const combined = address2.trim()
+      ? `${address1.trim()}\n${address2.trim()}`
+      : address1.trim();
+    if (combined) fd.append('address', combined);
     fd.append('grade', grade);
     if (defaultBranchId) fd.append('primary_branch_id', defaultBranchId);
     if (healthNote.trim()) fd.append('health_note', healthNote.trim());
@@ -1462,7 +1495,30 @@ function CustomerAddModal({ defaultBranchId, onClose, onCreated }: {
           </div>
           <div>
             <label className="block text-xs text-slate-500 mb-1">주소</label>
-            <input value={address} onChange={e => setAddress(e.target.value)} className="input text-sm" />
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={address1}
+                readOnly
+                onClick={openPostcode}
+                placeholder="주소 검색 버튼을 눌러주세요"
+                className="input text-sm flex-1 bg-slate-50 cursor-pointer"
+              />
+              <button
+                type="button"
+                onClick={openPostcode}
+                className="btn-secondary text-sm whitespace-nowrap"
+              >
+                주소 검색
+              </button>
+            </div>
+            <input
+              type="text"
+              value={address2}
+              onChange={e => setAddress2(e.target.value)}
+              placeholder="상세 주소 (동/호수 등)"
+              className="input text-sm mt-2"
+            />
           </div>
           <div>
             <label className="block text-xs text-slate-500 mb-1">등급</label>
