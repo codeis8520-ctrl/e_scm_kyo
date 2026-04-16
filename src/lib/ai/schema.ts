@@ -28,6 +28,8 @@ return_order_items: id, return_order_id, sales_order_item_id, product_id, quanti
 suppliers: id, name, code, contact_name, phone, email, is_active
 purchase_orders: id, order_number(PO-...), supplier_id, branch_id, status(DRAFT/CONFIRMED/PARTIALLY_RECEIVED/RECEIVED/CANCELLED), total_amount, ordered_at, memo
 purchase_order_items: id, purchase_order_id, product_id, ordered_quantity, received_quantity, unit_price
+supplier_product_prices: id, supplier_id, product_id, unit_price, effective_from, source(MANUAL/PO_CONFIRMED/PO_RECEIVED), source_po_id, memo, created_at
+  ※ 공급사별 매입 단가 이력. 발주 확정/입고 시 자동 기록 + 수동 등록. UNIQUE(supplier_id,product_id,effective_from)
 
 --- 생산 ---
 product_bom: id, product_id(완제품), material_id(원/부자재), quantity, loss_rate(%), notes, sort_order

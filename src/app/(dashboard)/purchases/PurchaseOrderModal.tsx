@@ -2,11 +2,19 @@
 
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { createPurchaseOrder } from '@/lib/purchase-actions';
+import { createPurchaseOrder, getLatestSupplierPrice, getSupplierPricesForProduct } from '@/lib/purchase-actions';
 
 interface Props {
   onClose: () => void;
   onSuccess: () => void;
+}
+
+interface PriceHint {
+  lastPrice: number | null;
+  lastDate: string | null;
+  bestPrice: number | null;
+  bestSupplierId: string | null;
+  bestSupplierName: string | null;
 }
 
 interface OrderItem {
@@ -16,6 +24,17 @@ interface OrderItem {
   unit: string;
   ordered_quantity: number;
   unit_price: number;
+  product_cost?: number | null;
+  hint?: PriceHint | null;
+}
+
+function daysAgo(dateStr: string | null | undefined): string {
+  if (!dateStr) return '';
+  const d = new Date(dateStr + 'T00:00:00');
+  const diff = Math.floor((Date.now() - d.getTime()) / 86400000);
+  if (diff <= 0) return '오늘';
+  if (diff === 1) return '어제';
+  return `${diff}일 전`;
 }
 
 function getCookie(name: string): string | null {
@@ -56,9 +75,29 @@ export default function PurchaseOrderModal({ onClose, onSuccess }: Props) {
     !productSearch || p.name.toLowerCase().includes(productSearch.toLowerCase()) || p.code.toLowerCase().includes(productSearch.toLowerCase())
   ).slice(0, 20);
 
-  const addItem = (product: any) => {
+  const addItem = async (product: any) => {
     if (items.find(i => i.product_id === product.id)) {
       setError('이미 추가된 제품입니다.'); return;
+    }
+    // 이 공급사의 최근 단가 + 타 공급사 최저가 조회
+    let unitPrice = product.cost || 0;
+    let hint: PriceHint | null = null;
+    if (form.supplier_id) {
+      const [latestRes, allRes] = await Promise.all([
+        getLatestSupplierPrice(form.supplier_id, product.id),
+        getSupplierPricesForProduct(product.id),
+      ]);
+      const last = latestRes.data;
+      if (last?.unit_price) unitPrice = Number(last.unit_price);
+      const others = (allRes.data || []).filter((r: any) => r.supplier_id !== form.supplier_id);
+      const best = others.length > 0 ? others.reduce((min: any, r: any) => !min || Number(r.unit_price) < Number(min.unit_price) ? r : min, null) : null;
+      hint = {
+        lastPrice: last?.unit_price ? Number(last.unit_price) : null,
+        lastDate: last?.effective_from || null,
+        bestPrice: best ? Number(best.unit_price) : null,
+        bestSupplierId: best?.supplier_id || null,
+        bestSupplierName: best?.supplier?.name || null,
+      };
     }
     setItems(prev => [...prev, {
       product_id: product.id,
@@ -66,11 +105,44 @@ export default function PurchaseOrderModal({ onClose, onSuccess }: Props) {
       product_code: product.code,
       unit: product.unit || '개',
       ordered_quantity: 1,
-      unit_price: product.cost || 0,
+      unit_price: unitPrice,
+      product_cost: product.cost || null,
+      hint,
     }]);
     setProductSearch('');
     setShowProductDrop(false);
   };
+
+  // 공급사 변경 시 이미 추가된 항목의 힌트·단가 재계산
+  useEffect(() => {
+    if (!form.supplier_id || items.length === 0) return;
+    (async () => {
+      const updated = await Promise.all(items.map(async (item) => {
+        const [latestRes, allRes] = await Promise.all([
+          getLatestSupplierPrice(form.supplier_id, item.product_id),
+          getSupplierPricesForProduct(item.product_id),
+        ]);
+        const last = latestRes.data;
+        const newPrice = last?.unit_price ? Number(last.unit_price) : (item.product_cost || 0);
+        const others = (allRes.data || []).filter((r: any) => r.supplier_id !== form.supplier_id);
+        const best = others.length > 0 ? others.reduce((min: any, r: any) => !min || Number(r.unit_price) < Number(min.unit_price) ? r : min, null) : null;
+        return {
+          ...item,
+          unit_price: newPrice,
+          hint: {
+            lastPrice: last?.unit_price ? Number(last.unit_price) : null,
+            lastDate: last?.effective_from || null,
+            bestPrice: best ? Number(best.unit_price) : null,
+            bestSupplierId: best?.supplier_id || null,
+            bestSupplierName: best?.supplier?.name || null,
+          },
+        };
+      }));
+      setItems(updated);
+    })();
+    // items.length 의존성만 (단가 변경 시 재호출 방지)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.supplier_id]);
 
   const updateItem = (idx: number, field: 'ordered_quantity' | 'unit_price', val: number) => {
     setItems(prev => prev.map((item, i) => i === idx ? { ...item, [field]: Math.max(field === 'ordered_quantity' ? 1 : 0, val) } : item));
@@ -194,33 +266,61 @@ export default function PurchaseOrderModal({ onClose, onSuccess }: Props) {
                   </tr>
                 </thead>
                 <tbody>
-                  {items.map((item, idx) => (
-                    <tr key={item.product_id}>
-                      <td>
-                        <p className="font-medium text-sm">{item.product_name}</p>
-                        <p className="text-xs text-slate-400">{item.product_code}</p>
-                      </td>
-                      <td className="text-sm text-slate-500">{item.unit}</td>
-                      <td>
-                        <input type="number" min={1} value={item.ordered_quantity}
-                          onChange={e => updateItem(idx, 'ordered_quantity', parseInt(e.target.value) || 1)}
-                          onFocus={e => e.target.select()}
-                          className="input text-center w-24" />
-                      </td>
-                      <td>
-                        <input type="number" min={0} value={item.unit_price}
-                          onChange={e => updateItem(idx, 'unit_price', parseInt(e.target.value) || 0)}
-                          onFocus={e => e.target.select()}
-                          className="input text-right w-32" />
-                      </td>
-                      <td className="text-right font-medium text-sm">
-                        {(item.ordered_quantity * item.unit_price).toLocaleString()}원
-                      </td>
-                      <td>
-                        <button type="button" onClick={() => removeItem(idx)} className="text-red-400 hover:text-red-600 text-lg">×</button>
-                      </td>
-                    </tr>
-                  ))}
+                  {items.map((item, idx) => {
+                    const h = item.hint;
+                    const hasLast = h?.lastPrice != null;
+                    const hasBetter = h?.bestPrice != null && h.bestPrice > 0 && h.bestPrice < item.unit_price;
+                    const changedFromLast = hasLast && h!.lastPrice !== item.unit_price;
+                    return (
+                      <tr key={item.product_id}>
+                        <td>
+                          <p className="font-medium text-sm">{item.product_name}</p>
+                          <p className="text-xs text-slate-400">{item.product_code}</p>
+                        </td>
+                        <td className="text-sm text-slate-500">{item.unit}</td>
+                        <td>
+                          <input type="number" min={1} value={item.ordered_quantity}
+                            onChange={e => updateItem(idx, 'ordered_quantity', parseInt(e.target.value) || 1)}
+                            onFocus={e => e.target.select()}
+                            className="input text-center w-24" />
+                        </td>
+                        <td>
+                          <input type="number" min={0} value={item.unit_price}
+                            onChange={e => updateItem(idx, 'unit_price', parseInt(e.target.value) || 0)}
+                            onFocus={e => e.target.select()}
+                            className="input text-right w-32" />
+                          {h && (hasLast || hasBetter) && (
+                            <div className="mt-1 text-[11px] space-y-0.5 leading-tight">
+                              {hasLast && (
+                                <div className={changedFromLast ? 'text-amber-600' : 'text-slate-400'}>
+                                  최근: {h.lastPrice!.toLocaleString()}원
+                                  <span className="text-slate-400 ml-1">({daysAgo(h.lastDate)})</span>
+                                  {changedFromLast && item.unit_price > h.lastPrice! && (
+                                    <span className="ml-1 text-red-500">↑{(((item.unit_price - h.lastPrice!) / h.lastPrice!) * 100).toFixed(1)}%</span>
+                                  )}
+                                  {changedFromLast && item.unit_price < h.lastPrice! && (
+                                    <span className="ml-1 text-green-600">↓{(((h.lastPrice! - item.unit_price) / h.lastPrice!) * 100).toFixed(1)}%</span>
+                                  )}
+                                </div>
+                              )}
+                              {hasBetter && (
+                                <div className="text-emerald-600">
+                                  타사 최저 {h.bestPrice!.toLocaleString()}원
+                                  <span className="text-slate-400 ml-1">({h.bestSupplierName})</span>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                        <td className="text-right font-medium text-sm align-top">
+                          {(item.ordered_quantity * item.unit_price).toLocaleString()}원
+                        </td>
+                        <td className="align-top">
+                          <button type="button" onClick={() => removeItem(idx)} className="text-red-400 hover:text-red-600 text-lg">×</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
                 <tfoot>
                   <tr className="bg-slate-50">

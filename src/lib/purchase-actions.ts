@@ -217,10 +217,12 @@ export async function createPurchaseOrder(formData: FormData) {
 
 export async function confirmPurchaseOrder(id: string) {
   const supabase = await createClient();
+  const db = supabase as any;
+  const userId = getUserId();
 
-  const { data: po } = await (supabase as any)
+  const { data: po } = await db
     .from('purchase_orders')
-    .select('status')
+    .select('id, status, supplier_id, items:purchase_order_items(product_id, unit_price)')
     .eq('id', id)
     .single();
 
@@ -228,15 +230,65 @@ export async function confirmPurchaseOrder(id: string) {
     return { error: '초안(DRAFT) 상태의 발주서만 확정할 수 있습니다.' };
   }
 
-  const { error } = await (supabase as any)
+  const { error } = await db
     .from('purchase_orders')
     .update({ status: 'CONFIRMED', confirmed_at: new Date().toISOString() })
     .eq('id', id);
 
   if (error) return { error: error.message };
+
+  // 매입 단가 히스토리 기록 (source=PO_CONFIRMED)
+  await recordPurchasePrices(db, {
+    supplierId: po.supplier_id,
+    items: (po.items || []).map((i: any) => ({ product_id: i.product_id, unit_price: Number(i.unit_price || 0) })),
+    source: 'PO_CONFIRMED',
+    poId: id,
+    userId,
+  });
+
   revalidatePath('/purchases');
   revalidatePath(`/purchases/${id}`);
   return { success: true };
+}
+
+// ─── 매입 단가 이력 업서트 공통 헬퍼 ────────────────────────────────────────────
+
+async function recordPurchasePrices(
+  db: any,
+  args: {
+    supplierId: string;
+    items: { product_id: string; unit_price: number }[];
+    source: 'PO_CONFIRMED' | 'PO_RECEIVED' | 'MANUAL';
+    poId?: string | null;
+    userId?: string | null;
+  },
+) {
+  if (!args.supplierId || !args.items?.length) return;
+  const today = new Date().toISOString().slice(0, 10);
+
+  const rows = args.items
+    .filter(i => i.product_id && i.unit_price >= 0)
+    .map(i => ({
+      supplier_id: args.supplierId,
+      product_id: i.product_id,
+      unit_price: Math.round(Number(i.unit_price)),
+      effective_from: today,
+      source: args.source,
+      source_po_id: args.poId || null,
+      created_by: args.userId || null,
+    }));
+
+  if (!rows.length) return;
+
+  // UPSERT (같은 공급사·제품·같은날 이미 있으면 단가 덮어쓰기)
+  try {
+    await db
+      .from('supplier_product_prices')
+      .upsert(rows, { onConflict: 'supplier_id,product_id,effective_from' });
+  } catch (err) {
+    console.error('supplier_product_prices upsert failed:', err);
+    // 단가 기록 실패는 발주 전체 실패로 간주하지 않음
+  }
 }
 
 // ─── 발주서 취소 ───────────────────────────────────────────────────────────────
@@ -431,8 +483,136 @@ export async function receivePurchaseOrder(formData: FormData) {
     totalAmount: totalReceiptAmount,
   }).catch(() => {}); // 분개 실패해도 입고는 성공으로 처리
 
+  // 입고 시에도 단가 히스토리 기록(PO 대비 변동 없어도 하루 기준 upsert → 노이즈 없음)
+  const supplierIdForHistory = (await db
+    .from('purchase_orders')
+    .select('supplier_id')
+    .eq('id', poId)
+    .single()).data?.supplier_id;
+  if (supplierIdForHistory) {
+    const items = validItems.map(i => {
+      const poItem = po.items.find((p: any) => p.id === i.purchase_order_item_id);
+      return { product_id: i.product_id, unit_price: Number(poItem?.unit_price || 0) };
+    });
+    await recordPurchasePrices(db, {
+      supplierId: supplierIdForHistory,
+      items,
+      source: 'PO_RECEIVED',
+      poId,
+      userId,
+    });
+  }
+
   revalidatePath('/purchases');
   revalidatePath(`/purchases/${poId}`);
   revalidatePath('/inventory');
+  return { success: true };
+}
+
+// ─── 공급사별 매입 단가 히스토리 조회 ────────────────────────────────────────
+
+export async function getLatestSupplierPrice(supplierId: string, productId: string) {
+  if (!supplierId || !productId) return { data: null };
+  const supabase = await createClient();
+  const { data } = await (supabase as any)
+    .from('supplier_product_prices')
+    .select('unit_price, effective_from, source, memo, created_at')
+    .eq('supplier_id', supplierId)
+    .eq('product_id', productId)
+    .order('effective_from', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return { data: data || null };
+}
+
+// 특정 제품의 공급사별 최근 단가 비교
+export async function getSupplierPricesForProduct(productId: string) {
+  if (!productId) return { data: [] };
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  // 각 공급사 × 해당 제품의 최신 row — LATERAL 대신 후처리로 간단히
+  const { data: rows } = await db
+    .from('supplier_product_prices')
+    .select('supplier_id, unit_price, effective_from, source, supplier:suppliers(id, name, code)')
+    .eq('product_id', productId)
+    .order('effective_from', { ascending: false })
+    .limit(500);
+
+  const seen = new Set<string>();
+  const latest: any[] = [];
+  for (const r of (rows || []) as any[]) {
+    if (seen.has(r.supplier_id)) continue;
+    seen.add(r.supplier_id);
+    latest.push(r);
+  }
+  // 낮은 단가 순 정렬
+  latest.sort((a, b) => Number(a.unit_price) - Number(b.unit_price));
+  return { data: latest };
+}
+
+// 특정 제품의 단가 이력 (최신순, 공급사명 포함)
+export async function getProductPriceHistory(productId: string, limit = 50) {
+  if (!productId) return { data: [] };
+  const supabase = await createClient();
+  const { data } = await (supabase as any)
+    .from('supplier_product_prices')
+    .select('id, unit_price, effective_from, source, memo, source_po_id, created_at, supplier:suppliers(id, name, code)')
+    .eq('product_id', productId)
+    .order('effective_from', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  return { data: data || [] };
+}
+
+// 특정 공급사가 공급한 제품별 최신 단가
+export async function getSupplierPriceSheet(supplierId: string) {
+  if (!supplierId) return { data: [] };
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  const { data: rows } = await db
+    .from('supplier_product_prices')
+    .select('product_id, unit_price, effective_from, source, product:products(id, name, code, unit, product_type)')
+    .eq('supplier_id', supplierId)
+    .order('effective_from', { ascending: false })
+    .limit(1000);
+
+  const seen = new Set<string>();
+  const latest: any[] = [];
+  for (const r of (rows || []) as any[]) {
+    if (seen.has(r.product_id)) continue;
+    seen.add(r.product_id);
+    latest.push(r);
+  }
+  return { data: latest };
+}
+
+// 수동 단가 등록
+export async function recordManualSupplierPrice(
+  supplierId: string,
+  productId: string,
+  unitPrice: number,
+  opts?: { effective_from?: string; memo?: string },
+) {
+  if (!supplierId || !productId || !(unitPrice >= 0)) {
+    return { error: '필수 입력값을 확인해 주세요.' };
+  }
+  const supabase = await createClient();
+  const userId = getUserId();
+  const { error } = await (supabase as any)
+    .from('supplier_product_prices')
+    .upsert({
+      supplier_id: supplierId,
+      product_id: productId,
+      unit_price: Math.round(unitPrice),
+      effective_from: opts?.effective_from || new Date().toISOString().slice(0, 10),
+      source: 'MANUAL',
+      memo: opts?.memo || null,
+      created_by: userId,
+    }, { onConflict: 'supplier_id,product_id,effective_from' });
+  if (error) return { error: error.message };
+  revalidatePath('/purchases');
+  revalidatePath('/purchases/prices');
   return { success: true };
 }

@@ -107,6 +107,7 @@ export default function PurchasesPage() {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 sm:mb-6">
         <div className="flex flex-wrap gap-2">
           <Link href="/purchases/suppliers" className="btn-secondary py-2 px-4 text-sm">공급업체 관리</Link>
+          <Link href="/purchases/prices" className="btn-secondary py-2 px-4 text-sm">매입 단가 관리</Link>
         </div>
         <button onClick={() => setShowModal(true)} className="btn-primary">+ 발주서 작성</button>
       </div>
