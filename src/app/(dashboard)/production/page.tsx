@@ -7,6 +7,11 @@ import {
   startProductionOrder, completeProductionOrder, cancelProductionOrder,
   getProductionPreview,
 } from '@/lib/production-actions';
+import {
+  listFactories, createFactory, updateFactory,
+  deactivateFactory, activateFactory, deleteFactory,
+  type OemFactoryInput,
+} from '@/lib/oem-actions';
 import { createClient } from '@/lib/supabase/client';
 
 type ProductType = 'FINISHED' | 'RAW' | 'SUB';
@@ -108,30 +113,45 @@ export default function ProductionPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [bomList, setBomList]     = useState<any[]>([]);
   const [orders, setOrders]       = useState<any[]>([]);
+  const [factories, setFactories] = useState<any[]>([]);
   const [loading, setLoading]     = useState(true);
 
   const [selectedBranch, setSelectedBranch] = useState<string>('');
   const [filterStatus, setFilterStatus]     = useState<string>('');
   const [userRole]  = useState<string | null>(() => getCookie('user_role'));
   const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
+  const canIssueOrder = userRole === 'SUPER_ADMIN' || userRole === 'HQ_OPERATOR';
 
-  const [tab, setTab] = useState<'orders' | 'bom'>('orders');
+  const [tab, setTab] = useState<'orders' | 'bom' | 'factories'>('orders');
   const [showNewOrderModal, setShowNewOrderModal] = useState(false);
   const [selectedFinishedId, setSelectedFinishedId] = useState<string>('');
+  const hqBranch = branches.find((b: any) => b.is_headquarters) || null;
 
   // ── 초기 데이터 ──────────────────────────────────────────────────────────────
   useEffect(() => {
     const supabase = createClient();
-    supabase.from('branches').select('id, name').eq('is_active', true).order('name').then(({ data }) => {
-      const rows = (data || []) as { id: string; name: string }[];
+    (async () => {
+      // is_headquarters 포함 조회, 없는 DB(마이그 047 미적용) 폴백
+      let res: any = await supabase
+        .from('branches')
+        .select('id, name, is_headquarters')
+        .eq('is_active', true)
+        .order('name');
+      if (res.error) {
+        res = await supabase.from('branches').select('id, name').eq('is_active', true).order('name');
+      }
+      const rows = (res.data || []) as any[];
       setBranches(rows);
       const cookieBranch = getCookie('user_branch_id');
+      const hq = rows.find((b: any) => b.is_headquarters);
       if (isBranchUser && cookieBranch) {
         setSelectedBranch(cookieBranch);
+      } else if (hq) {
+        setSelectedBranch(hq.id);
       } else if (rows.length > 0) {
         setSelectedBranch(rows[0].id);
       }
-    });
+    })();
     (async () => {
       // 마이그레이션 042가 미적용이면 product_type 컬럼이 없어 실패 → 폴백
       let res: any = await supabase
@@ -156,16 +176,18 @@ export default function ProductionPage() {
 
   const loadData = useCallback(async () => {
     setLoading(true);
-    const [bomRes, orderRes] = await Promise.all([
+    const [bomRes, orderRes, factRes] = await Promise.all([
       getBomList(),
       getProductionOrders({
         branchId: selectedBranch || undefined,
         status: filterStatus || undefined,
       }),
+      listFactories({ includeInactive: true }),
     ]);
     if ((bomRes as any).error) console.error('[ProductionPage] getBomList error:', (bomRes as any).error);
     setBomList(bomRes.data || []);
     setOrders(orderRes.data || []);
+    setFactories(factRes.data || []);
     setLoading(false);
   }, [selectedBranch, filterStatus]);
 
@@ -180,7 +202,7 @@ export default function ProductionPage() {
   };
 
   const handleComplete = async (id: string) => {
-    if (!confirm('생산 완료 처리하시겠습니까? 원재료 재고가 차감됩니다.')) return;
+    if (!confirm('생산 완료 처리하시겠습니까? 완제품이 입고 지점 재고로 반영됩니다.')) return;
     const r = await completeProductionOrder(id);
     if (r.error) alert(r.error); else loadData();
   };
@@ -190,8 +212,6 @@ export default function ProductionPage() {
     const r = await cancelProductionOrder(id);
     if (r.error) alert(r.error); else loadData();
   };
-
-  const bomByProduct = (productId: string) => bomList.filter((b: any) => b.product_id === productId);
 
   // ── 집계 ─────────────────────────────────────────────────────────────────────
   const stats = {
@@ -214,18 +234,25 @@ export default function ProductionPage() {
               value={selectedBranch}
               onChange={e => setSelectedBranch(e.target.value)}
               className="input text-sm py-1.5"
+              title="입고 지점 필터"
             >
-              {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+              {branches.map((b: any) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}{b.is_headquarters ? ' (본사)' : ''}
+                </option>
+              ))}
             </select>
           )}
           <button onClick={() => setTab('bom')} className="btn-secondary text-sm">BOM 조립</button>
-          <button onClick={() => setShowNewOrderModal(true)} className="btn-primary text-sm">+ 생산 지시</button>
+          {canIssueOrder && (
+            <button onClick={() => setShowNewOrderModal(true)} className="btn-primary text-sm">+ 생산 지시</button>
+          )}
         </div>
       </div>
 
       {/* 탭 */}
       <div className="flex gap-1 border-b border-slate-200">
-        {(['orders', 'bom'] as const).map(t => (
+        {(['orders', 'bom', 'factories'] as const).map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -233,7 +260,7 @@ export default function ProductionPage() {
               tab === t ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
             }`}
           >
-            {t === 'orders' ? '생산 지시 목록' : 'BOM 목록'}
+            {t === 'orders' ? '생산 지시 목록' : t === 'bom' ? 'BOM 목록' : 'OEM 공장'}
           </button>
         ))}
       </div>
@@ -279,12 +306,13 @@ export default function ProductionPage() {
           {/* 목록 */}
           <div className="card">
             <div className="overflow-x-auto">
-            <table className="table min-w-[650px]">
+            <table className="table min-w-[780px]">
               <thead>
                 <tr>
                   <th>지시번호</th>
                   <th>제품</th>
-                  <th>지점</th>
+                  <th>OEM 공장</th>
+                  <th>입고 지점</th>
                   <th>수량</th>
                   <th>상태</th>
                   <th>생성일</th>
@@ -294,13 +322,14 @@ export default function ProductionPage() {
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={8} className="text-center py-8">로딩 중...</td></tr>
+                  <tr><td colSpan={9} className="text-center py-8">로딩 중...</td></tr>
                 ) : orders.length === 0 ? (
-                  <tr><td colSpan={8} className="text-center py-8 text-slate-400">생산 지시 내역이 없습니다</td></tr>
+                  <tr><td colSpan={9} className="text-center py-8 text-slate-400">생산 지시 내역이 없습니다</td></tr>
                 ) : orders.map((order: any) => (
                   <tr key={order.id}>
                     <td className="font-mono text-sm">{order.order_number}</td>
                     <td>{order.product?.name}</td>
+                    <td className="text-sm text-slate-600">{order.factory?.name || <span className="text-slate-300">-</span>}</td>
                     <td className="text-sm text-slate-500">{order.branch?.name || '-'}</td>
                     <td>{order.quantity.toLocaleString()}</td>
                     <td>
@@ -310,7 +339,7 @@ export default function ProductionPage() {
                     </td>
                     <td className="text-sm text-slate-500">{new Date(order.created_at).toLocaleDateString('ko-KR')}</td>
                     <td className="text-sm text-slate-500">
-                      {order.completed_at ? new Date(order.completed_at).toLocaleDateString('ko-KR') : '-'}
+                      {order.produced_at ? new Date(order.produced_at).toLocaleDateString('ko-KR') : '-'}
                     </td>
                     <td>
                       <div className="flex gap-1">
@@ -348,11 +377,20 @@ export default function ProductionPage() {
         />
       )}
 
-      {showNewOrderModal && selectedBranch && (
+      {tab === 'factories' && (
+        <FactoriesPanel
+          factories={factories}
+          canEdit={canIssueOrder}
+          onChanged={loadData}
+        />
+      )}
+
+      {showNewOrderModal && canIssueOrder && (
         <NewOrderModal
-          products={products.filter(p => p.product_type === 'FINISHED' && bomByProduct(p.id).length > 0)}
-          branchId={selectedBranch}
-          branchName={branches.find(b => b.id === selectedBranch)?.name || ''}
+          products={products.filter(p => p.product_type === 'FINISHED' || p.product_type == null)}
+          branches={branches}
+          defaultBranchId={hqBranch?.id || selectedBranch || branches[0]?.id || ''}
+          factories={factories.filter((f: any) => f.is_active)}
           onClose={() => setShowNewOrderModal(false)}
           onSuccess={() => { setShowNewOrderModal(false); loadData(); }}
         />
@@ -361,16 +399,221 @@ export default function ProductionPage() {
   );
 }
 
+// ─── OEM 공장 관리 패널 ────────────────────────────────────────────────────────
+
+function FactoriesPanel({ factories, canEdit, onChanged }: {
+  factories: any[];
+  canEdit: boolean;
+  onChanged: () => void | Promise<void>;
+}) {
+  const [showEditor, setShowEditor] = useState(false);
+  const [editing, setEditing] = useState<any | null>(null);
+  const [showInactive, setShowInactive] = useState(false);
+
+  const visible = factories.filter((f: any) => showInactive ? true : f.is_active);
+
+  const handleToggle = async (f: any) => {
+    if (!canEdit) return;
+    const r = f.is_active ? await deactivateFactory(f.id) : await activateFactory(f.id);
+    if (r.error) alert(r.error); else onChanged();
+  };
+
+  const handleDelete = async (f: any) => {
+    if (!canEdit) return;
+    if (!confirm(`"${f.name}" 공장을 완전 삭제할까요? (연결된 생산 지시가 있으면 실패합니다)`)) return;
+    const r = await deleteFactory(f.id);
+    if (r.error) { alert(r.error); return; }
+    onChanged();
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="font-semibold text-slate-700">OEM 위탁 공장</h3>
+          <p className="text-xs text-slate-500">생산 지시 시 선택하는 위탁 공장 마스터입니다.</p>
+        </div>
+        <div className="flex gap-2">
+          <label className="flex items-center gap-1 text-xs text-slate-500">
+            <input type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)} />
+            비활성 포함
+          </label>
+          {canEdit && (
+            <button onClick={() => { setEditing(null); setShowEditor(true); }} className="btn-primary text-sm">+ 공장 등록</button>
+          )}
+        </div>
+      </div>
+
+      <div className="card overflow-x-auto">
+        <table className="table min-w-[720px]">
+          <thead>
+            <tr>
+              <th>코드</th>
+              <th>공장명</th>
+              <th>담당자</th>
+              <th>연락처</th>
+              <th>사업자번호</th>
+              <th>상태</th>
+              {canEdit && <th className="text-right">작업</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {visible.length === 0 ? (
+              <tr><td colSpan={canEdit ? 7 : 6} className="text-center text-slate-400 py-8">등록된 공장이 없습니다</td></tr>
+            ) : visible.map((f: any) => (
+              <tr key={f.id} className={f.is_active ? '' : 'opacity-60'}>
+                <td className="font-mono text-xs text-slate-500">{f.code || '-'}</td>
+                <td className="font-medium">{f.name}</td>
+                <td className="text-sm text-slate-600">{f.contact_name || f.representative || '-'}</td>
+                <td className="text-sm text-slate-600">{f.phone || '-'}</td>
+                <td className="text-sm text-slate-500">{f.business_number || '-'}</td>
+                <td>
+                  <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${f.is_active ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}>
+                    {f.is_active ? '활성' : '비활성'}
+                  </span>
+                </td>
+                {canEdit && (
+                  <td className="text-right">
+                    <div className="flex gap-1 justify-end">
+                      <button onClick={() => { setEditing(f); setShowEditor(true); }} className="text-xs px-2 py-1 rounded bg-slate-50 hover:bg-slate-100">수정</button>
+                      <button onClick={() => handleToggle(f)} className="text-xs px-2 py-1 rounded bg-slate-50 hover:bg-slate-100">
+                        {f.is_active ? '비활성' : '활성'}
+                      </button>
+                      <button onClick={() => handleDelete(f)} className="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">삭제</button>
+                    </div>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {showEditor && (
+        <FactoryEditor
+          initial={editing}
+          onClose={() => setShowEditor(false)}
+          onSaved={() => { setShowEditor(false); onChanged(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function FactoryEditor({ initial, onClose, onSaved }: {
+  initial: any | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [form, setForm] = useState<OemFactoryInput>({
+    code: initial?.code || '',
+    name: initial?.name || '',
+    business_number: initial?.business_number || '',
+    representative: initial?.representative || '',
+    contact_name: initial?.contact_name || '',
+    phone: initial?.phone || '',
+    email: initial?.email || '',
+    address: initial?.address || '',
+    memo: initial?.memo || '',
+    is_active: initial?.is_active ?? true,
+  });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const setField = (k: keyof OemFactoryInput, v: any) => setForm(prev => ({ ...prev, [k]: v }));
+
+  const handleSubmit = async () => {
+    setErr(null);
+    if (!form.name?.trim()) { setErr('공장명은 필수입니다.'); return; }
+    setSaving(true);
+    const r = initial?.id
+      ? await updateFactory(initial.id, form)
+      : await createFactory(form);
+    setSaving(false);
+    if (r.error) { setErr(r.error); return; }
+    onSaved();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50">
+      <div className="bg-white w-full max-w-lg mx-4 sm:mx-auto max-h-[90vh] overflow-y-auto rounded-t-xl sm:rounded-xl shadow-xl">
+        <div className="flex justify-between items-center px-6 py-4 border-b">
+          <h2 className="font-bold text-slate-800">{initial?.id ? 'OEM 공장 수정' : 'OEM 공장 등록'}</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl">✕</button>
+        </div>
+        <div className="p-4 sm:p-6 space-y-3">
+          {err && <div className="p-2 rounded bg-red-50 text-red-700 text-sm">{err}</div>}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium mb-1 text-slate-600">코드</label>
+              <input className="input" value={form.code || ''} onChange={e => setField('code', e.target.value)} placeholder="선택" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1 text-slate-600">공장명 *</label>
+              <input className="input" value={form.name} onChange={e => setField('name', e.target.value)} />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium mb-1 text-slate-600">대표자</label>
+              <input className="input" value={form.representative || ''} onChange={e => setField('representative', e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1 text-slate-600">사업자번호</label>
+              <input className="input" value={form.business_number || ''} onChange={e => setField('business_number', e.target.value)} />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium mb-1 text-slate-600">담당자</label>
+              <input className="input" value={form.contact_name || ''} onChange={e => setField('contact_name', e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1 text-slate-600">전화</label>
+              <input className="input" value={form.phone || ''} onChange={e => setField('phone', e.target.value)} />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1 text-slate-600">이메일</label>
+            <input className="input" type="email" value={form.email || ''} onChange={e => setField('email', e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1 text-slate-600">주소</label>
+            <input className="input" value={form.address || ''} onChange={e => setField('address', e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1 text-slate-600">메모</label>
+            <textarea className="input" rows={2} value={form.memo || ''} onChange={e => setField('memo', e.target.value)} />
+          </div>
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <input type="checkbox" checked={form.is_active ?? true} onChange={e => setField('is_active', e.target.checked)} />
+            활성
+          </label>
+        </div>
+        <div className="flex gap-2 px-4 sm:px-6 py-4 border-t">
+          <button onClick={handleSubmit} disabled={saving} className="flex-1 btn-primary disabled:opacity-50">
+            {saving ? '저장 중...' : '저장'}
+          </button>
+          <button onClick={onClose} className="flex-1 btn-secondary">취소</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── 생산 지시 모달 ────────────────────────────────────────────────────────────
 
-function NewOrderModal({ products, branchId, branchName, onClose, onSuccess }: {
+function NewOrderModal({ products, branches, defaultBranchId, factories, onClose, onSuccess }: {
   products: any[];
-  branchId: string;
-  branchName: string;
+  branches: any[];
+  defaultBranchId: string;
+  factories: any[];
   onClose: () => void;
   onSuccess: () => void;
 }) {
   const [productId, setProductId] = useState('');
+  const [branchId, setBranchId]   = useState(defaultBranchId);
+  const [factoryId, setFactoryId] = useState('');
   const [quantity, setQuantity]   = useState(1);
   const [memo, setMemo]           = useState('');
   const [preview, setPreview]     = useState<any[]>([]);
@@ -386,14 +629,15 @@ function NewOrderModal({ products, branchId, branchName, onClose, onSuccess }: {
     });
   }, [productId, quantity, branchId]);
 
-  const canSubmit = preview.length > 0 && preview.every(p => p.shortage === 0);
   const totalCost = preview.reduce((s, p) => s + p.cost * p.required, 0);
+  const canSubmit = !!productId && !!branchId && quantity >= 1;
 
   const handleSubmit = async () => {
     setSubmitting(true);
     const fd = new FormData();
     fd.set('product_id', productId);
     fd.set('branch_id', branchId);
+    if (factoryId) fd.set('oem_factory_id', factoryId);
     fd.set('quantity', String(quantity));
     fd.set('memo', memo);
     const r = await createProductionOrder(fd);
@@ -406,20 +650,38 @@ function NewOrderModal({ products, branchId, branchName, onClose, onSuccess }: {
     <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50">
       <div className="bg-white w-full max-w-lg mx-4 sm:mx-auto max-h-[90vh] overflow-y-auto rounded-t-xl sm:rounded-xl shadow-xl">
         <div className="flex justify-between items-center px-6 py-4 border-b">
-          <h2 className="font-bold text-slate-800">생산 지시 등록</h2>
+          <h2 className="font-bold text-slate-800">생산 지시 등록 (OEM 위탁)</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl">✕</button>
         </div>
         <div className="p-4 sm:p-6 space-y-4">
-          <div className="bg-slate-50 px-3 py-2 rounded text-sm text-slate-600">
-            지점: <strong>{branchName}</strong>
-          </div>
-
           <div>
             <label className="block text-sm font-medium mb-1">완제품 *</label>
             <select value={productId} onChange={e => setProductId(e.target.value)} className="input">
-              <option value="">BOM이 등록된 제품 선택</option>
+              <option value="">완제품 선택</option>
               {products.map(p => <option key={p.id} value={p.id}>{p.name} ({p.code})</option>)}
             </select>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium mb-1">OEM 공장</label>
+              <select value={factoryId} onChange={e => setFactoryId(e.target.value)} className="input">
+                <option value="">(지정 안 함)</option>
+                {factories.map((f: any) => (
+                  <option key={f.id} value={f.id}>{f.name}{f.code ? ` (${f.code})` : ''}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">입고 지점 *</label>
+              <select value={branchId} onChange={e => setBranchId(e.target.value)} className="input">
+                {branches.map((b: any) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}{b.is_headquarters ? ' (본사)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div>
@@ -434,33 +696,29 @@ function NewOrderModal({ products, branchId, branchName, onClose, onSuccess }: {
 
           <div>
             <label className="block text-sm font-medium mb-1">메모</label>
-            <input type="text" value={memo} onChange={e => setMemo(e.target.value)} placeholder="생산 메모..." className="input" />
+            <input type="text" value={memo} onChange={e => setMemo(e.target.value)} placeholder="발주서 번호·납기 등" className="input" />
           </div>
 
-          {/* 재료 소요량 미리보기 */}
-          {loadingPreview && <p className="text-sm text-slate-400">소요량 계산 중...</p>}
+          {/* BOM 기반 예상 원가 (OEM 모델 — 재고 차감 없음, 참고 표시만) */}
+          {loadingPreview && <p className="text-sm text-slate-400">원가 계산 중...</p>}
           {preview.length > 0 && (
             <div>
-              <p className="text-sm font-medium mb-2">원재료 소요량</p>
+              <p className="text-sm font-medium mb-2">예상 원가 <span className="text-xs font-normal text-slate-400">(BOM 참고 — 재고 차감 없음)</span></p>
               <div className="rounded border border-slate-200 overflow-hidden">
                 <table className="w-full text-sm">
                   <thead className="bg-slate-50">
                     <tr>
                       <th className="text-left px-3 py-2 text-xs text-slate-500 font-medium">재료</th>
-                      <th className="text-right px-3 py-2 text-xs text-slate-500 font-medium">필요</th>
-                      <th className="text-right px-3 py-2 text-xs text-slate-500 font-medium">현재고</th>
-                      <th className="text-right px-3 py-2 text-xs text-slate-500 font-medium">부족</th>
+                      <th className="text-right px-3 py-2 text-xs text-slate-500 font-medium">소요량</th>
+                      <th className="text-right px-3 py-2 text-xs text-slate-500 font-medium">금액</th>
                     </tr>
                   </thead>
                   <tbody>
                     {preview.map((p, i) => (
-                      <tr key={i} className={p.shortage > 0 ? 'bg-red-50' : ''}>
+                      <tr key={i}>
                         <td className="px-3 py-1.5">{p.material_name}</td>
                         <td className="px-3 py-1.5 text-right">{p.required} {p.unit}</td>
-                        <td className="px-3 py-1.5 text-right">{p.available} {p.unit}</td>
-                        <td className={`px-3 py-1.5 text-right font-medium ${p.shortage > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                          {p.shortage > 0 ? `-${p.shortage}` : '✓'}
-                        </td>
+                        <td className="px-3 py-1.5 text-right text-slate-600">{Math.round((p.cost || 0) * p.required).toLocaleString()}원</td>
                       </tr>
                     ))}
                   </tbody>
@@ -468,19 +726,20 @@ function NewOrderModal({ products, branchId, branchName, onClose, onSuccess }: {
               </div>
               {totalCost > 0 && (
                 <p className="text-xs text-slate-500 mt-1.5 text-right">
-                  예상 원가: {totalCost.toLocaleString()}원
+                  예상 원가 합계: <span className="font-medium text-slate-700">{Math.round(totalCost).toLocaleString()}원</span>
                 </p>
               )}
-              {!canSubmit && (
-                <p className="text-xs text-red-600 mt-1.5">재고가 부족한 원재료가 있습니다.</p>
-              )}
             </div>
+          )}
+
+          {preview.length === 0 && productId && !loadingPreview && (
+            <p className="text-xs text-slate-400">BOM 미구성 — 원가 참고치 없이 등록됩니다.</p>
           )}
         </div>
         <div className="flex gap-2 px-4 sm:px-6 py-4 border-t">
           <button
             onClick={handleSubmit}
-            disabled={!productId || quantity < 1 || !canSubmit || submitting}
+            disabled={!canSubmit || submitting}
             className="flex-1 btn-primary disabled:opacity-50"
           >
             {submitting ? '처리 중...' : '생산 지시 등록'}

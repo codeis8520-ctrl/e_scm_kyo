@@ -36,8 +36,11 @@ supplier_product_prices: id, supplier_id, product_id, unit_price, effective_from
 
 --- 생산 ---
 product_bom: id, product_id(완제품), material_id(원/부자재), quantity, loss_rate(%), notes, sort_order
-  ※ 실제 소요량 = quantity × (1 + loss_rate/100)
-production_orders: id, order_number(WO-...), product_id(완제품), branch_id, quantity, status(PENDING/IN_PROGRESS/COMPLETED/CANCELLED), started_at, completed_at, memo
+  ※ 완제품 원가 산정용. OEM 위탁 모델에서는 재고 차감에 사용하지 않음.
+oem_factories: id, code, name, business_number, representative, contact_name, phone, email, address, memo, is_active
+  ※ OEM 위탁 공장 마스터. production_orders.oem_factory_id 참조.
+branches.is_headquarters (bool): 본사 지점 여부. 생산 지시 기본 입고처이자 권한 체크 기준.
+production_orders: id, order_number(WO-...), product_id(완제품), oem_factory_id(위탁 공장), branch_id(완제품 입고 지점), quantity, status(PENDING/IN_PROGRESS/COMPLETED/CANCELLED), started_at, completed_at, memo
 
 --- B2B 거래 ---
 b2b_partners: id, name, code, business_no, contact_name, phone, settlement_cycle, commission_rate, memo, is_active
@@ -86,10 +89,11 @@ DRAFT → CONFIRMED → RECEIVED
 각 단계별 도구: create_purchase_order → confirm_purchase_order → receive_purchase_order
 입고(RECEIVED) 시 재고 자동 증가
 
-[생산 워크플로우]
+[생산 워크플로우 — OEM 위탁 모델]
 PENDING → IN_PROGRESS → COMPLETED
-각 단계별 도구: create_production_order → start_production_order → complete_production_order
-완료 시: BOM 원재료 재고 차감 + 완제품 재고 증가
+본사에서만 지시 가능. 각 지시는 OEM 공장에 위탁하고, 완성품은 지정한 입고 지점(기본 본사)으로 직접 입고.
+완료 시: 완제품 재고 증가. 원/부자재 차감 없음(OEM이 자체 조달).
+BOM은 원가 산정(cost_source='BOM') 참고용으로만 사용.
 
 [채널]
 STORE=한약국 매장, DEPT_STORE=백화점, ONLINE=자사몰(카페24), EVENT=이벤트

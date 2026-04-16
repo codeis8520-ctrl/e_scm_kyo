@@ -3,7 +3,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { cookies } from 'next/headers';
-import { requireSession, writeAuditLog } from '@/lib/session';
+import { requireSession, requireRole, writeAuditLog } from '@/lib/session';
 
 function getUserId(): string | null {
   try {
@@ -285,69 +285,57 @@ export async function getWhereUsed(materialId: string) {
 
 // ─── 생산 지시 조회 ────────────────────────────────────────────────────────────
 
-export async function getProductionOrders(filters?: { branchId?: string; status?: string }) {
+export async function getProductionOrders(filters?: { branchId?: string; status?: string; factoryId?: string }) {
   const supabase = await createClient();
-  let q = (supabase as any)
-    .from('production_orders')
-    .select('*, product:products(id, name, code), branch:branches(id, name), produced_by_user:users!production_orders_produced_by_fkey(name)')
-    .order('created_at', { ascending: false })
-    .limit(100);
+  const db = supabase as any;
 
-  if (filters?.branchId) q = q.eq('branch_id', filters.branchId);
-  if (filters?.status)   q = q.eq('status', filters.status);
+  // oem_factory join 시도 → 컬럼이 없으면(마이그 047 미적용) 폴백
+  const baseCols = '*, product:products(id, name, code), branch:branches(id, name), produced_by_user:users!production_orders_produced_by_fkey(name)';
+  let sel = `${baseCols}, factory:oem_factories(id, name, code)`;
 
-  const { data, error } = await q;
+  let q = db.from('production_orders').select(sel).order('created_at', { ascending: false }).limit(100);
+  if (filters?.branchId)  q = q.eq('branch_id', filters.branchId);
+  if (filters?.factoryId) q = q.eq('oem_factory_id', filters.factoryId);
+  if (filters?.status)    q = q.eq('status', filters.status);
+
+  let { data, error } = await q;
+  if (error && isMissingColumnError(error)) {
+    let q2 = db.from('production_orders').select(baseCols).order('created_at', { ascending: false }).limit(100);
+    if (filters?.branchId) q2 = q2.eq('branch_id', filters.branchId);
+    if (filters?.status)   q2 = q2.eq('status', filters.status);
+    const r = await q2;
+    data = r.data; error = r.error;
+  }
+
   if (error) return { data: [], error: error.message };
   return { data: data || [] };
 }
 
 // ─── 생산 지시 생성 (PENDING) ──────────────────────────────────────────────────
+//   OEM 위탁 모델: 본사에서만 지시. 공장이 재료를 자체 조달하므로 재고 사전 검증 없음.
+//   branch_id = 완제품 입고 지점 (기본: 본사)
 
 export async function createProductionOrder(formData: FormData) {
   let session;
-  try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
+  try { session = await requireRole(['SUPER_ADMIN', 'HQ_OPERATOR']); } catch (e: any) { return { error: e.message }; }
 
   const supabase = await createClient();
   const db = supabase as any;
   const userId = session.id;
 
   const productId = formData.get('product_id') as string;
-  const branchId  = formData.get('branch_id') as string;
+  const branchId  = formData.get('branch_id') as string; // 입고 지점
+  const factoryId = (formData.get('oem_factory_id') as string) || null;
   const quantity  = parseInt(formData.get('quantity') as string);
-  const memo      = formData.get('memo') as string || null;
+  const memo      = (formData.get('memo') as string) || null;
 
   if (!productId || !branchId || !quantity || quantity < 1) {
     return { error: '필수 항목을 입력해주세요.' };
   }
 
-  // BOM 검증
-  const { data: bomItems } = await db
-    .from('product_bom')
-    .select('material_id, quantity, loss_rate, material:products!product_bom_material_id_fkey(name)')
-    .eq('product_id', productId);
-
-  if (!bomItems || bomItems.length === 0) {
-    return { error: '이 제품에는 BOM 정보가 없습니다.' };
-  }
-
-  // 재고 충분 여부 사전 확인 (지시 시점) — 손실률 반영
-  for (const item of bomItems) {
-    const { data: inv } = await db
-      .from('inventories')
-      .select('quantity')
-      .eq('branch_id', branchId)
-      .eq('product_id', item.material_id)
-      .maybeSingle();
-
-    const required = item.quantity * quantity * (1 + Number(item.loss_rate || 0) / 100);
-    if (!inv || inv.quantity < required) {
-      return { error: `원재료 "${item.material?.name}" 재고 부족 (필요: ${required.toFixed(3)}, 현재: ${inv?.quantity ?? 0})` };
-    }
-  }
-
   const orderNumber = genProductionNumber();
 
-  const { error } = await db.from('production_orders').insert({
+  const row: any = {
     order_number: orderNumber,
     product_id: productId,
     branch_id: branchId,
@@ -355,7 +343,16 @@ export async function createProductionOrder(formData: FormData) {
     status: 'PENDING',
     produced_by: userId,
     memo,
-  });
+  };
+  if (factoryId) row.oem_factory_id = factoryId;
+
+  let { error } = await db.from('production_orders').insert(row);
+  // 마이그 047 미적용 시 폴백(공장 없이 등록)
+  if (error && isMissingColumnError(error) && factoryId) {
+    delete row.oem_factory_id;
+    const retry = await db.from('production_orders').insert(row);
+    error = retry.error;
+  }
 
   if (error) return { error: error.message };
 
@@ -390,7 +387,9 @@ export async function startProductionOrder(id: string) {
   return { success: true };
 }
 
-// ─── 생산 완료 (IN_PROGRESS → COMPLETED) + 재고 처리 ──────────────────────────
+// ─── 생산 완료 (IN_PROGRESS → COMPLETED) ──────────────────────────────────────
+//   OEM 위탁 모델: 완제품을 입고 지점(branch_id)에 증가만 처리.
+//   원/부자재 차감 없음(OEM 공장이 자체 조달).
 
 export async function completeProductionOrder(id: string) {
   const supabase = await createClient();
@@ -398,7 +397,7 @@ export async function completeProductionOrder(id: string) {
 
   const { data: order } = await db
     .from('production_orders')
-    .select('*, branch_id, product_id, quantity, order_number')
+    .select('*, branch_id, product_id, quantity, order_number, produced_by')
     .eq('id', id)
     .single();
 
@@ -407,61 +406,10 @@ export async function completeProductionOrder(id: string) {
   }
 
   const branchId = order.branch_id;
-  if (!branchId) return { error: '지점 정보가 없습니다.' };
-
-  // BOM 조회 (손실률 포함)
-  const { data: bomItems } = await db
-    .from('product_bom')
-    .select('material_id, quantity, loss_rate, material:products!product_bom_material_id_fkey(name)')
-    .eq('product_id', order.product_id);
-
-  if (!bomItems || bomItems.length === 0) {
-    return { error: 'BOM 정보가 없습니다.' };
-  }
-
-  // 재고 충분 여부 재확인 (착수 이후 변동 가능) — 손실률 반영
-  for (const item of bomItems) {
-    const { data: inv } = await db
-      .from('inventories')
-      .select('quantity')
-      .eq('branch_id', branchId)
-      .eq('product_id', item.material_id)
-      .maybeSingle();
-
-    const required = item.quantity * order.quantity * (1 + Number(item.loss_rate || 0) / 100);
-    if (!inv || inv.quantity < required) {
-      return { error: `원재료 "${item.material?.name}" 재고 부족 (필요: ${required.toFixed(3)}, 현재: ${inv?.quantity ?? 0})` };
-    }
-  }
+  if (!branchId) return { error: '입고 지점 정보가 없습니다.' };
 
   try {
-    // 원재료 재고 차감 + 이동 기록 (손실률 반영)
-    for (const item of bomItems) {
-      const required = item.quantity * order.quantity * (1 + Number(item.loss_rate || 0) / 100);
-
-      const { data: inv } = await db
-        .from('inventories')
-        .select('id, quantity')
-        .eq('branch_id', branchId)
-        .eq('product_id', item.material_id)
-        .single();
-
-      await db.from('inventories')
-        .update({ quantity: inv.quantity - required })
-        .eq('id', inv.id);
-
-      await db.from('inventory_movements').insert({
-        branch_id: branchId,
-        product_id: item.material_id,
-        movement_type: 'PRODUCTION',
-        quantity: -required,
-        reference_id: id,
-        reference_type: 'PRODUCTION_ORDER',
-        memo: `생산 차감: ${order.order_number}${Number(item.loss_rate) > 0 ? ` (손실률 ${item.loss_rate}%)` : ''}`,
-      });
-    }
-
-    // 완제품 재고 증가 + 이동 기록
+    // 완제품 재고 증가 + 이동 기록 (입고 지점)
     const { data: productInv } = await db
       .from('inventories')
       .select('id, quantity')
@@ -489,10 +437,9 @@ export async function completeProductionOrder(id: string) {
       quantity: order.quantity,
       reference_id: id,
       reference_type: 'PRODUCTION_ORDER',
-      memo: `생산 입고: ${order.order_number}`,
+      memo: `OEM 입고: ${order.order_number}`,
     });
 
-    // 상태 완료 처리
     await db.from('production_orders').update({
       status: 'COMPLETED',
       produced_at: new Date().toISOString(),
@@ -534,10 +481,11 @@ export async function cancelProductionOrder(id: string) {
   return { success: true };
 }
 
-// ─── 재료 소요량 미리보기 ──────────────────────────────────────────────────────
+// ─── 재료 소요량 미리보기 (OEM 원가 참고용) ─────────────────────────────────
+//   재고 차감은 없지만, BOM 기반 예상 원가를 보여주기 위해 유지.
 
-export async function getProductionPreview(productId: string, branchId: string, quantity: number) {
-  if (!productId || !branchId || quantity < 1) return { data: [] };
+export async function getProductionPreview(productId: string, _branchId: string, quantity: number) {
+  if (!productId || quantity < 1) return { data: [] };
 
   const supabase = await createClient();
   const db = supabase as any;
@@ -550,33 +498,21 @@ export async function getProductionPreview(productId: string, branchId: string, 
 
   if (!bomItems) return { data: [] };
 
-  const preview = await Promise.all(
-    bomItems.map(async (item: any) => {
-      const { data: inv } = await db
-        .from('inventories')
-        .select('quantity')
-        .eq('branch_id', branchId)
-        .eq('product_id', item.material_id)
-        .maybeSingle();
-
-      const lossRate = Number(item.loss_rate || 0);
-      const base = item.quantity * quantity;
-      const required = base * (1 + lossRate / 100);
-      const available = inv?.quantity ?? 0;
-      return {
-        material_id: item.material_id,
-        material_name: item.material?.name,
-        material_type: item.material?.product_type,
-        unit: item.material?.unit || '개',
-        cost: item.material?.cost || 0,
-        base_required: base,
-        loss_rate: lossRate,
-        required,
-        available,
-        shortage: Math.max(0, required - available),
-      };
-    })
-  );
+  const preview = bomItems.map((item: any) => {
+    const lossRate = Number(item.loss_rate || 0);
+    const base = item.quantity * quantity;
+    const required = base * (1 + lossRate / 100);
+    return {
+      material_id: item.material_id,
+      material_name: item.material?.name,
+      material_type: item.material?.product_type,
+      unit: item.material?.unit || '개',
+      cost: item.material?.cost || 0,
+      base_required: base,
+      loss_rate: lossRate,
+      required,
+    };
+  });
 
   return { data: preview };
 }
