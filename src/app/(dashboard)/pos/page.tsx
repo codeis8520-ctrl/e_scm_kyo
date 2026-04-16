@@ -1,11 +1,19 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import dynamic from 'next/dynamic';
 import { createClient } from '@/lib/supabase/client';
 import { processPosCheckout, createCustomer } from '@/lib/actions';
 import { requestCardApproval, isUsingMock } from '@/lib/card-terminal';
 import RefundModal from './RefundModal';
 import ReceiptModal from './ReceiptModal';
+
+const SalesListTab = dynamic(() => import('./SalesListTab'), {
+  ssr: false,
+  loading: () => <div className="py-10 text-center text-slate-400">로딩 중...</div>,
+});
+
+type MainTab = 'checkout' | 'list';
 
 declare global {
   interface Window {
@@ -159,6 +167,7 @@ export default function POSPage() {
   const [extraPayments, setExtraPayments] = useState<PaymentRow[]>([]);
 
   const [cartOpen, setCartOpen] = useState(false);
+  const [mainTab, setMainTab] = useState<MainTab>('checkout');
 
   const searchRef = useRef<HTMLInputElement>(null);
   const customerInputRef = useRef<HTMLInputElement>(null);
@@ -626,7 +635,29 @@ export default function POSPage() {
 
   // ── 렌더링 ─────────────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col sm:flex-row gap-4 sm:h-[calc(100vh-8rem)]">
+    <div className="space-y-4">
+      {/* 판매관리 상단 탭 */}
+      <div className="flex gap-1 border-b border-slate-200">
+        {([
+          { key: 'checkout' as MainTab, label: '판매 등록' },
+          { key: 'list' as MainTab, label: '판매 현황' },
+        ]).map(t => (
+          <button
+            key={t.key}
+            onClick={() => setMainTab(t.key)}
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              mainTab === t.key ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {mainTab === 'list' && <SalesListTab />}
+
+      {mainTab === 'checkout' && (
+    <div className="flex flex-col sm:flex-row gap-4 sm:h-[calc(100vh-12rem)]">
       {/* 왼쪽: 제품 검색 + 그리드 */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* 통합 검색 */}
@@ -1485,6 +1516,8 @@ export default function POSPage() {
           onClose={() => setShowAddCustomerModal(false)}
           onCreated={handleCustomerCreated}
         />
+      )}
+    </div>
       )}
     </div>
   );
