@@ -132,14 +132,23 @@ export default function ProductionPage() {
         setSelectedBranch(rows[0].id);
       }
     });
-    supabase
-      .from('products')
-      .select('id, name, code, unit, cost, product_type, category_id, category:categories(id, name)')
-      .eq('is_active', true)
-      .order('name')
-      .then(({ data }) => {
-        setProducts(data || []);
-      });
+    (async () => {
+      // 마이그레이션 042가 미적용이면 product_type 컬럼이 없어 실패 → 폴백
+      let res: any = await supabase
+        .from('products')
+        .select('id, name, code, unit, cost, product_type, category_id, category:categories(id, name)')
+        .eq('is_active', true)
+        .order('name');
+      if (res.error) {
+        console.warn('[production] products query fallback (migration 042?):', res.error.message);
+        res = await supabase
+          .from('products')
+          .select('id, name, code, unit, cost, category_id, category:categories(id, name)')
+          .eq('is_active', true)
+          .order('name');
+      }
+      setProducts((res.data as any) || []);
+    })();
     supabase.from('categories').select('id, name').order('name').then(({ data }) => {
       setCategories((data as any) || []);
     });
@@ -639,6 +648,7 @@ function BomComposer({
   const [showBrowser, setShowBrowser] = useState(true);
   const [saving, setSavingState] = useState(false);
   const [dirty, setDirtyState] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const setDirty = (d: boolean) => { setDirtyState(d); onDirtyChange?.(d); };
   const setSaving = (s: boolean) => { setSavingState(s); onSavingChange?.(s); };
@@ -738,7 +748,8 @@ function BomComposer({
   const hasInvalid = lines.some(l => !l.material_id || l.quantity <= 0);
 
   const handleSave = async () => {
-    if (hasInvalid) { alert('수량은 0보다 커야 합니다.'); return; }
+    setSaveError(null);
+    if (hasInvalid) { setSaveError('수량은 0보다 커야 합니다.'); return; }
     setSaving(true);
     try {
       const r = await saveBom(product.id, lines.map((l, i) => ({
@@ -749,10 +760,17 @@ function BomComposer({
         notes: l.notes || null,
         sort_order: i,
       })));
-      if (r.error) { alert(r.error); return; }
+      if (r.error) {
+        console.error('[BomComposer] saveBom error:', r.error);
+        setSaveError(r.error);
+        return;
+      }
       setDirty(false);
       // onSaved(=loadData)가 끝난 뒤 saving 해제 → bomList 갱신 전에 다른 품목 클릭 차단
       await Promise.resolve(onSaved());
+    } catch (err: any) {
+      console.error('[BomComposer] save threw:', err);
+      setSaveError(err?.message || '알 수 없는 오류');
     } finally {
       setSaving(false);
     }
@@ -789,6 +807,22 @@ function BomComposer({
           </button>
         </div>
       </div>
+
+      {/* 저장 에러 배너 */}
+      {saveError && (
+        <div className="mb-3 p-3 rounded-md border border-red-200 bg-red-50 text-sm text-red-700 flex items-start justify-between gap-2">
+          <div>
+            <p className="font-medium">저장 실패</p>
+            <p className="text-xs mt-0.5 whitespace-pre-wrap break-words">{saveError}</p>
+            {(saveError.includes('column') || saveError.includes('does not exist') || saveError.includes('loss_rate') || saveError.includes('notes') || saveError.includes('sort_order')) && (
+              <p className="text-xs mt-1.5 text-red-600">
+                ⚠ Supabase에 마이그레이션 <code className="bg-red-100 px-1 rounded">042_bom_product_type.sql</code> 적용이 필요합니다.
+              </p>
+            )}
+          </div>
+          <button onClick={() => setSaveError(null)} className="text-red-500 hover:text-red-700 text-lg leading-none">✕</button>
+        </div>
+      )}
 
       {/* 자재 브라우저 (검색 + 타입/카테고리 필터 + 상시 리스트) */}
       <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
