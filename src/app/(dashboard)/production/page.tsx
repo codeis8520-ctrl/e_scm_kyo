@@ -492,9 +492,24 @@ function BomComposerLayout({
   bomList: any[];
   selectedFinishedId: string;
   onSelectFinished: (id: string) => void;
-  onSaved: () => void;
+  onSaved: () => void | Promise<void>;
 }) {
   const [productSearch, setProductSearch] = useState('');
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Composer가 dirty/saving을 부모로 올려야 product 전환 가드를 걸 수 있음
+  const handleDirtyChange = useCallback((d: boolean) => setDirty(d), []);
+  const handleSavingChange = useCallback((s: boolean) => setSaving(s), []);
+
+  const tryChangeProduct = (id: string) => {
+    if (saving) return; // 저장 중에는 전환 차단
+    if (id === selectedFinishedId) return;
+    if (dirty) {
+      if (!confirm('저장되지 않은 변경사항이 있습니다. 버리고 이동할까요?')) return;
+    }
+    onSelectFinished(id);
+  };
 
   const finishedProducts: Material[] = useMemo(
     () => products.filter(p => p.product_type === 'FINISHED' || p.product_type == null),
@@ -554,21 +569,26 @@ function BomComposerLayout({
           ) : filteredFinished.map(p => {
             const count = bomCountByProduct[p.id] || 0;
             const selected = p.id === selectedFinishedId;
+            const dirtyMark = selected && dirty;
             return (
               <button
                 key={p.id}
-                onClick={() => onSelectFinished(p.id)}
+                onClick={() => tryChangeProduct(p.id)}
+                disabled={saving}
                 className={`w-full text-left px-3 py-2.5 transition-colors ${
                   selected ? 'bg-blue-50' : 'hover:bg-slate-50'
-                }`}
+                } ${saving ? 'cursor-not-allowed opacity-60' : ''}`}
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className={`font-medium text-sm truncate ${selected ? 'text-blue-700' : 'text-slate-700'}`}>{p.name}</span>
-                  {count > 0 ? (
-                    <span className="text-xs text-blue-600 bg-blue-100 rounded-full px-2">{count}</span>
-                  ) : (
-                    <span className="text-xs text-slate-300">미구성</span>
-                  )}
+                  <div className="flex items-center gap-1">
+                    {dirtyMark && <span className="text-amber-500 text-xs" title="저장되지 않음">●</span>}
+                    {count > 0 ? (
+                      <span className="text-xs text-blue-600 bg-blue-100 rounded-full px-2">{count}</span>
+                    ) : (
+                      <span className="text-xs text-slate-300">미구성</span>
+                    )}
+                  </div>
                 </div>
                 <p className="text-[11px] text-slate-400 font-mono mt-0.5">{p.code}</p>
               </button>
@@ -592,6 +612,8 @@ function BomComposerLayout({
             candidates={materialCandidates}
             categories={categories}
             onSaved={onSaved}
+            onDirtyChange={handleDirtyChange}
+            onSavingChange={handleSavingChange}
           />
         )}
       </div>
@@ -600,25 +622,44 @@ function BomComposerLayout({
 }
 
 function BomComposer({
-  product, initialLines, candidates, categories, onSaved,
+  product, initialLines, candidates, categories, onSaved, onDirtyChange, onSavingChange,
 }: {
   product: Material;
   initialLines: BomLine[];
   candidates: Material[];
   categories: Category[];
-  onSaved: () => void;
+  onSaved: () => void | Promise<void>;
+  onDirtyChange?: (dirty: boolean) => void;
+  onSavingChange?: (saving: boolean) => void;
 }) {
   const [lines, setLines] = useState<BomLine[]>(initialLines);
   const [matSearch, setMatSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<'' | 'RAW' | 'SUB'>('');
   const [categoryFilter, setCategoryFilter] = useState<string>('');
   const [showBrowser, setShowBrowser] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [dirty, setDirty] = useState(false);
+  const [saving, setSavingState] = useState(false);
+  const [dirty, setDirtyState] = useState(false);
 
+  const setDirty = (d: boolean) => { setDirtyState(d); onDirtyChange?.(d); };
+  const setSaving = (s: boolean) => { setSavingState(s); onSavingChange?.(s); };
+
+  // product.id 변경 시(리마운트되지만 한 번 더 안전장치) 상태 완전 리셋
   useEffect(() => {
     setLines(initialLines);
-    setDirty(false);
+    setDirtyState(false);
+    onDirtyChange?.(false);
+    setMatSearch('');
+    setTypeFilter('');
+    setCategoryFilter('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [product.id]);
+
+  // 부모에서 bomList 갱신 → initialLines reference 바뀜 → 실제 값 동기화
+  useEffect(() => {
+    setLines(initialLines);
+    setDirtyState(false);
+    onDirtyChange?.(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialLines]);
 
   // 사용 가능한 카테고리 (현재 후보 자재에 실제로 존재하는 것만 노출)
@@ -699,18 +740,22 @@ function BomComposer({
   const handleSave = async () => {
     if (hasInvalid) { alert('수량은 0보다 커야 합니다.'); return; }
     setSaving(true);
-    const r = await saveBom(product.id, lines.map((l, i) => ({
-      id: l.id,
-      material_id: l.material_id,
-      quantity: l.quantity,
-      loss_rate: l.loss_rate,
-      notes: l.notes || null,
-      sort_order: i,
-    })));
-    setSaving(false);
-    if (r.error) { alert(r.error); return; }
-    setDirty(false);
-    onSaved();
+    try {
+      const r = await saveBom(product.id, lines.map((l, i) => ({
+        id: l.id,
+        material_id: l.material_id,
+        quantity: l.quantity,
+        loss_rate: l.loss_rate,
+        notes: l.notes || null,
+        sort_order: i,
+      })));
+      if (r.error) { alert(r.error); return; }
+      setDirty(false);
+      // onSaved(=loadData)가 끝난 뒤 saving 해제 → bomList 갱신 전에 다른 품목 클릭 차단
+      await Promise.resolve(onSaved());
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleReset = () => {
