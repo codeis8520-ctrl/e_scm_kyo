@@ -82,8 +82,29 @@ SWEETTRACKER_API_KEY
 ## AI Agent
 - 50 tools (`src/lib/ai/tools.ts`) including `analyze_data` (safe SQL)
 - RBAC: `ToolContext` enforces branch/HQ restrictions
-- Memory: `src/lib/ai/memory.ts` — alias/pattern/error/insight
+- Memory: `src/lib/ai/memory.ts` — alias/pattern/error/insight/summary
 - Route: `src/app/api/agent/route.ts` — agentic loop (max 6 iterations)
+
+### 🚨 AI Agent Sync — 절대 규칙 (매 수정 시 필수)
+
+**에이전트는 실시간 스키마·비즈니스로직을 "내장 지식"으로만 동작한다.** 코드/DB가 바뀌었는데 에이전트 지식이 안 바뀌면 즉시 잘못된 SQL·응답을 뱉기 시작한다. 따라서 **어떤 변경이든 아래 매트릭스를 확인하고 같은 PR에 동기화해야 한다.**
+
+| 이런 변경이 있으면… | 반드시 함께 갱신 |
+|---|---|
+| 새 테이블 / `ALTER TABLE` / 컬럼 추가·이름변경·타입변경 | `src/lib/ai/schema.ts` → `DB_SCHEMA` |
+| 상태값(enum) 추가·변경 (status, type, channel 등) | `src/lib/ai/schema.ts` → `DB_SCHEMA` + `BUSINESS_RULES` 관련 섹션 |
+| 워크플로우·정책 변경 (결제 흐름, OEM 전환, 등급 규칙 등) | `src/lib/ai/schema.ts` → `BUSINESS_RULES` |
+| 기존 컬럼 **의미가 바뀜** (예: `shipments.branch_id`=판매→출고) | `DB_SCHEMA` 해당 라인에 주석 + `BUSINESS_RULES` 섹션 |
+| 새 기능/액션을 에이전트가 호출할 수 있어야 함 | `src/lib/ai/tools.ts` 도구 추가 + RBAC + 필요 시 `WRITE_TOOLS`·`DANGEROUS_TOOLS` |
+| 새 권한 역할·범위 변경 | `src/lib/ai/tools.ts` `ToolContext` 필터 |
+| 자주 나오는 자연어 요청 패턴 발견 | `BUSINESS_RULES [자주 쓰는 패턴]` 한 줄 추가 |
+
+**체크 프로세스 (모든 커밋 직전)**
+1. 이 커밋이 DB/비즈니스 규칙/액션에 영향을 주는가? → YES면 위 매트릭스 대입
+2. `src/lib/ai/schema.ts`·`tools.ts` 중 하나도 손대지 않았는데 영향이 있다면 **커밋 보류**하고 먼저 동기화
+3. 마이그레이션 `.sql` 파일이 있으면 `DB_SCHEMA` 동기화는 **무조건** 필수 (Supabase 적용 시점과 무관하게 코드 먼저 반영)
+
+**위반 예시 (과거 실수)**: 마이그 047(OEM)은 반영했지만, POS `shipFromBranchId` 추가 시 `shipments.branch_id` 의미 변경을 `DB_SCHEMA`에 주석으로 못 박지 않아 에이전트가 "출고 지점"을 "판매 지점"으로 해석할 위험이 남았다.
 
 ---
 

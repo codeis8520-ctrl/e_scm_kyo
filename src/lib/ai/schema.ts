@@ -57,6 +57,7 @@ accounting_period_closes: id, period(YYYY-MM), closed_at, closed_by, memo
 
 --- 배송 ---
 shipments: id, source(CAFE24/STORE), cafe24_order_id, sales_order_id, sender_name, sender_phone, recipient_name, recipient_phone, recipient_address, tracking_number, status(PENDING/PRINTED/SHIPPED/DELIVERED), branch_id, created_at
+  ※ branch_id = 출고 지점 (재고가 차감된 지점). POS에서 택배 활성 시 판매 지점과 다를 수 있음. 판매 지점은 sales_orders.branch_id 참조.
 
 --- 알림·캠페인 ---
 notifications: id, customer_id, type(SMS/ALIMTALK), message, status(sent/failed/pending), sent_at, sent_by
@@ -127,6 +128,7 @@ cash=현금, card=카드, card_keyin=카드수기, kakao=카카오페이, credit
 - shipments: source=CAFE24(자사몰)/STORE(직접입력)
 - status: PENDING→PRINTED→SHIPPED→DELIVERED
 - tracking_number 등록 + SHIPPED 전환 시 알림톡 자동 발송
+- shipments.branch_id = 출고 지점(재고 차감 지점). POS 택배 주문에서 판매 지점(sales_orders.branch_id)과 다를 수 있음. "어느 지점에서 팔렸나"는 sales_orders.branch_id로, "어느 지점에서 나갔나"는 shipments.branch_id로 집계.
 
 [반품]
 - return_orders: 기존 sales_order 참조, 환불금액/포인트복원 포함
