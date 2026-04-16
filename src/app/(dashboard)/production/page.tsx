@@ -629,7 +629,7 @@ function NewOrderModal({ products, branches, defaultBranchId, factories, onClose
     });
   }, [productId, quantity, branchId]);
 
-  const totalCost = preview.reduce((s, p) => s + p.cost * p.required, 0);
+  const totalCost = preview.reduce((s, p) => s + p.cost * Math.ceil(p.required), 0);
   const canSubmit = !!productId && !!branchId && quantity >= 1;
 
   const handleSubmit = async () => {
@@ -699,11 +699,11 @@ function NewOrderModal({ products, branches, defaultBranchId, factories, onClose
             <input type="text" value={memo} onChange={e => setMemo(e.target.value)} placeholder="발주서 번호·납기 등" className="input" />
           </div>
 
-          {/* BOM 기반 예상 원가 (OEM 모델 — 재고 차감 없음, 참고 표시만) */}
-          {loadingPreview && <p className="text-sm text-slate-400">원가 계산 중...</p>}
+          {/* BOM 기반 부자재 소요량·예상 원가 */}
+          {loadingPreview && <p className="text-sm text-slate-400">계산 중...</p>}
           {preview.length > 0 && (
             <div>
-              <p className="text-sm font-medium mb-2">예상 원가 <span className="text-xs font-normal text-slate-400">(BOM 참고 — 재고 차감 없음)</span></p>
+              <p className="text-sm font-medium mb-2">부자재 소요 <span className="text-xs font-normal text-slate-400">(생산 완료 시 입고 지점에서 차감)</span></p>
               <div className="rounded border border-slate-200 overflow-hidden">
                 <table className="w-full text-sm">
                   <thead className="bg-slate-50">
@@ -714,13 +714,24 @@ function NewOrderModal({ products, branches, defaultBranchId, factories, onClose
                     </tr>
                   </thead>
                   <tbody>
-                    {preview.map((p, i) => (
-                      <tr key={i}>
-                        <td className="px-3 py-1.5">{p.material_name}</td>
-                        <td className="px-3 py-1.5 text-right">{p.required} {p.unit}</td>
-                        <td className="px-3 py-1.5 text-right text-slate-600">{Math.round((p.cost || 0) * p.required).toLocaleString()}원</td>
-                      </tr>
-                    ))}
+                    {preview.map((p, i) => {
+                      const actual = Math.ceil(p.required);
+                      const hasLoss = p.loss_rate > 0;
+                      return (
+                        <tr key={i}>
+                          <td className="px-3 py-1.5">{p.material_name}</td>
+                          <td className="px-3 py-1.5 text-right">
+                            <span className="font-medium">{actual.toLocaleString()}</span> {p.unit || '개'}
+                            {hasLoss && (
+                              <span className="block text-[10px] text-slate-400">
+                                {p.base_required}{p.unit || '개'} × loss {p.loss_rate}% → 올림
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-3 py-1.5 text-right text-slate-600">{Math.round((p.cost || 0) * actual).toLocaleString()}원</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
