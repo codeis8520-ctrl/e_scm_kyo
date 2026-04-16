@@ -25,22 +25,26 @@ function genProductionNumber(): string {
 export async function getBomList() {
   const supabase = await createClient();
   const db = supabase as any;
-  // product_type 컬럼도 마이그레이션 042 대상이라 products 조인에서 실패할 수 있음 → 폴백
+  // product_bom은 products를 두 번 참조(product_id, material_id) → FK 명시 필수
   let res = await db
     .from('product_bom')
-    .select('*, product:products(id, name, code, product_type), material:products!product_bom_material_id_fkey(id, name, code, unit, cost, product_type)')
+    .select('*, product:products!product_bom_product_id_fkey(id, name, code, product_type), material:products!product_bom_material_id_fkey(id, name, code, unit, cost, product_type)')
     .order('sort_order', { ascending: true })
     .order('created_at', { ascending: false });
 
+  // 마이그레이션 042 미적용(product_type/sort_order 부재) 시 폴백
   if (res.error && isMissingColumnError(res.error)) {
     console.warn('[getBomList] 마이그레이션 042 미적용 — minimal 폴백');
     res = await db
       .from('product_bom')
-      .select('*, product:products(id, name, code), material:products!product_bom_material_id_fkey(id, name, code, unit, cost)')
+      .select('*, product:products!product_bom_product_id_fkey(id, name, code), material:products!product_bom_material_id_fkey(id, name, code, unit, cost)')
       .order('created_at', { ascending: false });
   }
 
-  if (res.error) return { data: [], error: res.error.message };
+  if (res.error) {
+    console.error('[getBomList] query failed:', res.error);
+    return { data: [], error: res.error.message };
+  }
   return { data: res.data || [] };
 }
 
