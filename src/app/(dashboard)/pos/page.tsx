@@ -354,7 +354,7 @@ export default function POSPage() {
           .limit(3),
         supabase
           .from('sales_orders')
-          .select('id, order_number, total_amount, ordered_at, status, branch:branches(name)')
+          .select('id, order_number, total_amount, ordered_at, status, branch:branches(name), items:sales_order_items(quantity, product:products(name))')
           .eq('customer_id', customer.id)
           .order('ordered_at', { ascending: false })
           .limit(3),
@@ -962,17 +962,26 @@ export default function POSPage() {
                       <div className="pt-1 border-t border-slate-100">
                         <p className="text-[10px] font-semibold text-slate-500 uppercase mb-0.5">최근 주문 {customerSummary.orders.length}건</p>
                         <ul className="space-y-0.5">
-                          {customerSummary.orders.map((o: any) => (
-                            <li key={o.id} className="flex justify-between text-slate-600">
-                              <span>
-                                <span className="text-slate-400 mr-1.5">{String(o.ordered_at).slice(0,10)}</span>
-                                <span className="font-mono text-[10px] text-slate-500">{o.order_number}</span>
-                              </span>
-                              <span className={['CANCELLED','REFUNDED'].includes(o.status) ? 'line-through text-slate-400' : 'font-medium'}>
-                                {Number(o.total_amount || 0).toLocaleString()}원
-                              </span>
-                            </li>
-                          ))}
+                          {customerSummary.orders.map((o: any) => {
+                            const items = (o.items || []) as any[];
+                            const names = items.map((i: any) => i.product?.name).filter(Boolean) as string[];
+                            const head = names.slice(0, 2).join(', ');
+                            const extra = names.length > 2 ? ` 외 ${names.length - 2}종` : '';
+                            const label = head || '-';
+                            return (
+                              <li key={o.id} className="flex justify-between gap-2 text-slate-600">
+                                <span className="min-w-0 flex-1">
+                                  <span className="text-slate-400 mr-1.5">{String(o.ordered_at).slice(0,10)}</span>
+                                  <span className="truncate" title={names.join(', ')}>
+                                    {label}{extra}
+                                  </span>
+                                </span>
+                                <span className={['CANCELLED','REFUNDED'].includes(o.status) ? 'line-through text-slate-400 whitespace-nowrap' : 'font-medium whitespace-nowrap'}>
+                                  {Number(o.total_amount || 0).toLocaleString()}원
+                                </span>
+                              </li>
+                            );
+                          })}
                         </ul>
                       </div>
                     )}
