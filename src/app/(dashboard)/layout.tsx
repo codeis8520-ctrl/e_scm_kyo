@@ -9,7 +9,7 @@ import AgentFloatingIcon from '@/components/AgentFloatingIcon';
 
 const ALL_NAV_ITEMS = [
   { href: '/', label: '대시보드', icon: '📊' },
-  { href: '/pos', label: 'POS', icon: '💰' },
+  { href: '/pos', label: '판매관리', icon: '💰' },
   { href: '/products', label: '제품', icon: '📦' },
   { href: '/production', label: '생산', icon: '🏭' },
   { href: '/inventory', label: '재고', icon: '🏪' },

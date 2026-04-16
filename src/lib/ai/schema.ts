@@ -18,8 +18,10 @@ point_history: id, customer_id, sales_order_id, type(earn/use/adjust/expire), po
   ※ 고객 현재 포인트 = point_history에서 해당 고객의 최신 balance 값
 
 --- 판매(POS) ---
-sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, total_amount, discount_amount, points_used, points_earned, payment_method(cash/card/card_keyin/kakao/credit), credit_settled(bool), credit_settled_at, credit_settled_method, status(COMPLETED/CANCELLED/REFUNDED/PARTIALLY_REFUNDED), ordered_at
+sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, total_amount, discount_amount, points_used, points_earned, payment_method(cash/card/card_keyin/kakao/credit/cod/mixed), credit_settled(bool), credit_settled_at, credit_settled_method, memo, status(COMPLETED/CANCELLED/REFUNDED/PARTIALLY_REFUNDED), ordered_at
 sales_order_items: id, sales_order_id, product_id, quantity, unit_price, discount_amount, total_price
+sales_order_payments: id, sales_order_id, payment_method, amount, approval_no, card_info, memo, paid_at, created_by
+  ※ 한 주문의 다중 결제(분할). 합계<총액이면 잔액=외상. payment_method='mixed'면 세부는 이 테이블에.
 
 --- 반품 ---
 return_orders: id, return_number, original_order_id, branch_id, customer_id, processed_by, reason, reason_detail, refund_amount, refund_method, points_restored, status, processed_at

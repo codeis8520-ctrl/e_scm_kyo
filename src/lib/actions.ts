@@ -1001,6 +1001,23 @@ export interface CartItem {
   discount?: number;
 }
 
+export interface PaymentSplit {
+  method: 'cash' | 'card' | 'card_keyin' | 'kakao' | 'credit' | 'cod';
+  amount: number;
+  approvalNo?: string;
+  cardInfo?: string;
+  memo?: string;
+}
+
+export interface ShippingInfo {
+  recipient_name: string;
+  recipient_phone: string;
+  recipient_address: string;
+  delivery_message?: string;
+  sender_name?: string;
+  sender_phone?: string;
+}
+
 export interface CheckoutPayload {
   branchId: string;
   branchCode: string;
@@ -1013,7 +1030,7 @@ export interface CheckoutPayload {
   totalAmount: number;
   discountAmount: number;
   finalAmount: number;
-  paymentMethod: string;
+  paymentMethod: string;            // 단일 결제 하위호환. splits 있으면 자동 계산.
   usePoints: boolean;
   pointsToUse: number;
   cashReceived?: number;
@@ -1021,6 +1038,8 @@ export interface CheckoutPayload {
   approvalNo?: string;
   cardInfo?: string;
   memo?: string;
+  paymentSplits?: PaymentSplit[];   // 분할 결제. 비어있으면 단일 결제로 처리.
+  shipping?: ShippingInfo | null;   // 택배 정보 (있으면 shipments 레코드 생성)
 }
 
 export async function processPosCheckout(payload: CheckoutPayload) {
@@ -1031,7 +1050,22 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     branchId, branchCode, branchChannel, customerId, gradePointRate,
     cart, totalAmount, discountAmount, finalAmount, paymentMethod,
     usePoints, pointsToUse, userId, approvalNo, cardInfo,
+    paymentSplits, shipping,
   } = payload;
+
+  // 분할 결제 정규화: 비어있으면 단일 결제 하나로 간주
+  const splits: PaymentSplit[] = (paymentSplits && paymentSplits.length > 0)
+    ? paymentSplits.filter(s => s.amount > 0)
+    : [{ method: paymentMethod as any, amount: finalAmount, approvalNo, cardInfo }];
+
+  const paidTotal = splits.reduce((s, p) => s + (p.amount || 0), 0);
+  const remaining = Math.max(0, finalAmount - paidTotal);
+  // 잔액이 있으면 외상 처리로 간주 (splits 합이 finalAmount 미만)
+  const hasCredit = remaining > 0 || splits.some(s => s.method === 'credit');
+  const topMethod: string = splits.length === 1
+    ? splits[0].method
+    : 'mixed';
+  const firstCard = splits.find(s => s.method === 'card' || s.method === 'card_keyin');
 
   // ① 재고 사전 확인
   for (const item of cart) {
@@ -1062,19 +1096,52 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     total_amount: totalAmount,
     discount_amount: discountAmount,
     status: 'COMPLETED',
-    payment_method: paymentMethod,
+    payment_method: topMethod,
     points_earned: pointsEarned,
     points_used: usePoints ? pointsToUse : 0,
     ordered_at: new Date().toISOString(),
-    approval_no: approvalNo || null,
-    card_info: cardInfo || null,
+    approval_no: approvalNo || firstCard?.approvalNo || null,
+    card_info: cardInfo || firstCard?.cardInfo || null,
     memo: payload.memo || null,
     customer_grade_at_order: customerId ? (payload as any).customerGrade || null : null,
     point_rate_applied: customerId ? (gradePointRate || 1.0) : null,
+    credit_settled: hasCredit ? false : null,
   }).select().single();
 
   if (saleError) return { error: saleError.message };
   const saleOrderId = (saleOrder as any).id;
+
+  // ②-a 분할 결제 기록
+  if (splits.length > 0) {
+    const paymentRows = splits.map(s => ({
+      sales_order_id: saleOrderId,
+      payment_method: s.method,
+      amount: s.amount,
+      approval_no: s.approvalNo || null,
+      card_info: s.cardInfo || null,
+      memo: s.memo || null,
+      created_by: userId || null,
+    }));
+    const { error: payErr } = await db.from('sales_order_payments').insert(paymentRows);
+    if (payErr) console.error('[processPosCheckout] sales_order_payments insert failed:', payErr);
+  }
+
+  // ②-b 택배 정보 있으면 shipments 레코드 생성
+  if (shipping && shipping.recipient_name && shipping.recipient_phone && shipping.recipient_address) {
+    const { error: shipErr } = await db.from('shipments').insert({
+      source: 'STORE',
+      sales_order_id: saleOrderId,
+      branch_id: branchId,
+      recipient_name: shipping.recipient_name,
+      recipient_phone: shipping.recipient_phone,
+      recipient_address: shipping.recipient_address,
+      delivery_message: shipping.delivery_message || null,
+      sender_name: shipping.sender_name || null,
+      sender_phone: shipping.sender_phone || null,
+      status: 'PENDING',
+    });
+    if (shipErr) console.error('[processPosCheckout] shipments insert failed:', shipErr);
+  }
 
   // ③ 판매 항목 저장
   for (const item of cart) {

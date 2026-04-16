@@ -2,10 +2,34 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { processPosCheckout } from '@/lib/actions';
+import { processPosCheckout, createCustomer } from '@/lib/actions';
 import { requestCardApproval, isUsingMock } from '@/lib/card-terminal';
 import RefundModal from './RefundModal';
 import ReceiptModal from './ReceiptModal';
+
+type PaymentMethodId = 'cash' | 'card' | 'card_keyin' | 'kakao' | 'credit' | 'cod';
+const PAYMENT_METHOD_LABEL: Record<PaymentMethodId, string> = {
+  cash: '현금', card: '카드', card_keyin: '카드(키인)', kakao: '카카오',
+  credit: '외상', cod: '수령시수금',
+};
+
+interface PaymentRow {
+  method: PaymentMethodId;
+  amount: number;
+  approvalNo?: string;
+  cardInfo?: string;
+}
+
+interface ShippingForm {
+  enabled: boolean;
+  recipient_name: string;
+  recipient_phone: string;
+  recipient_address: string;
+  delivery_message: string;
+  senderSameAsBuyer: boolean;
+  sender_name: string;
+  sender_phone: string;
+}
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -73,11 +97,28 @@ export default function POSPage() {
   const [cardApprovalState, setCardApprovalState] = useState<'idle' | 'waiting' | 'approved' | 'error'>('idle');
   const [cardApprovalResult, setCardApprovalResult] = useState<{ approvalNo?: string; cardInfo?: string } | null>(null);
   const [cardApprovalError, setCardApprovalError] = useState('');
-  // quick register
-  const [showQuickReg, setShowQuickReg] = useState(false);
-  const [quickName, setQuickName] = useState('');
-  const [quickPhone, setQuickPhone] = useState('');
-  const [quickRegLoading, setQuickRegLoading] = useState(false);
+  // 고객 상세 추가 모달
+  const [showAddCustomerModal, setShowAddCustomerModal] = useState(false);
+  // 고객 선택 시 로드되는 상담·구매 요약
+  const [customerSummary, setCustomerSummary] = useState<{
+    loading: boolean;
+    consultations: any[];
+    orders: any[];
+    totalLtv: number;
+  }>({ loading: false, consultations: [], orders: [], totalLtv: 0 });
+  // 주문 메모
+  const [orderMemo, setOrderMemo] = useState('');
+  // 택배
+  const [shipping, setShipping] = useState<ShippingForm>({
+    enabled: false,
+    recipient_name: '', recipient_phone: '', recipient_address: '',
+    delivery_message: '',
+    senderSameAsBuyer: true,
+    sender_name: '', sender_phone: '',
+  });
+  // 분할 결제
+  const [splitMode, setSplitMode] = useState(false);
+  const [extraPayments, setExtraPayments] = useState<PaymentRow[]>([]);
 
   const [cartOpen, setCartOpen] = useState(false);
 
@@ -167,7 +208,6 @@ export default function POSPage() {
     } else {
       setCustomerResults([]);
       setShowCustomerDropdown(false);
-      setShowQuickReg(false);
     }
   }, [customerSearch, customers]);
 
@@ -237,19 +277,75 @@ export default function POSPage() {
 
   // ── 고객 선택 ─────────────────────────────────────────────────────────────
   const selectCustomer = async (customer: Customer) => {
-    const supabase = createClient();
+    const supabase = createClient() as any;
     const { data: lastHistory } = await supabase
       .from('point_history').select('balance')
       .eq('customer_id', customer.id)
-      .order('created_at', { ascending: false }).limit(1).maybeSingle() as any;
+      .order('created_at', { ascending: false }).limit(1).maybeSingle();
 
     setSelectedCustomer({ ...customer, currentPoints: lastHistory?.balance || 0 });
     setCustomerSearch('');
     setCustomerResults([]);
     setShowCustomerDropdown(false);
-    setShowQuickReg(false);
     setUsePoints(false);
     setPointsToUse(0);
+
+    // 택배 sender가 "구매자와 동일"이면 구매자 정보로 프리필
+    setShipping(prev => prev.senderSameAsBuyer
+      ? { ...prev, sender_name: customer.name, sender_phone: customer.phone }
+      : prev);
+
+    // 상담·구매 이력 요약 로드
+    setCustomerSummary(prev => ({ ...prev, loading: true }));
+    try {
+      const [consultRes, ordersRes] = await Promise.all([
+        supabase
+          .from('customer_consultations')
+          .select('id, consultation_type, content, created_at')
+          .eq('customer_id', customer.id)
+          .order('created_at', { ascending: false })
+          .limit(3),
+        supabase
+          .from('sales_orders')
+          .select('id, order_number, total_amount, ordered_at, status, branch:branches(name)')
+          .eq('customer_id', customer.id)
+          .order('ordered_at', { ascending: false })
+          .limit(3),
+      ]);
+      const orders = (ordersRes.data || []) as any[];
+      const totalLtv = orders
+        .filter(o => !['CANCELLED', 'REFUNDED'].includes(o.status))
+        .reduce((s: number, o: any) => s + (o.total_amount || 0), 0);
+      setCustomerSummary({
+        loading: false,
+        consultations: (consultRes.data as any[]) || [],
+        orders,
+        totalLtv,
+      });
+    } catch {
+      setCustomerSummary({ loading: false, consultations: [], orders: [], totalLtv: 0 });
+    }
+  };
+
+  // ── 상세 고객 추가 → 저장 후 자동 선택 ──────────────────────────────────────
+  const handleCustomerCreated = async (phone: string) => {
+    // 방금 만들어진 고객을 customers 리스트에 반영하고 자동 선택
+    const supabase = createClient() as any;
+    const { data: grades } = await supabase.from('customer_grades').select('code, point_rate');
+    const gMap = new Map((grades || []).map((g: any) => [g.code, parseFloat(g.point_rate) || 1.0]));
+    const normPhone = phone.replace(/-/g, '');
+    const { data: newCust } = await supabase
+      .from('customers')
+      .select('id, name, phone, grade')
+      .order('created_at', { ascending: false })
+      .limit(50);
+    const match = ((newCust as any[]) || []).find(c => (c.phone || '').replace(/-/g, '') === normPhone) || (newCust as any[])?.[0];
+    if (match) {
+      const enriched: Customer = { ...match, grade_point_rate: gMap.get(match.grade) || 1.0 };
+      setCustomers(prev => [enriched, ...prev.filter(p => p.id !== enriched.id)]);
+      await selectCustomer(enriched);
+    }
+    setShowAddCustomerModal(false);
   };
 
   const clearCustomer = () => {
@@ -257,38 +353,13 @@ export default function POSPage() {
     setCustomerSearch('');
     setCustomerResults([]);
     setShowCustomerDropdown(false);
-    setShowQuickReg(false);
     setUsePoints(false);
     setPointsToUse(0);
+    setCustomerSummary({ loading: false, consultations: [], orders: [], totalLtv: 0 });
     customerInputRef.current?.focus();
   };
 
-  // ── 빠른 고객 등록 ─────────────────────────────────────────────────────────
-  const handleQuickRegister = async () => {
-    if (!quickName.trim() || !quickPhone.trim()) return;
-    setQuickRegLoading(true);
-    const supabase = createClient();
-    const { data, error } = await (supabase as any).from('customers').insert({
-      name: quickName.trim(),
-      phone: quickPhone.trim(),
-      grade: 'NORMAL',
-      is_active: true,
-      primary_branch_id: selectedBranch || null,
-    }).select('id, name, phone, grade').single();
-
-    if (error) {
-      alert(`등록 실패: ${error.message}`);
-      setQuickRegLoading(false);
-      return;
-    }
-    // 고객 목록에 추가
-    const newCustomer = { ...(data as any), grade_point_rate: 1.0 };
-    setCustomers(prev => [...prev, newCustomer]);
-    await selectCustomer(newCustomer);
-    setQuickName('');
-    setQuickPhone('');
-    setQuickRegLoading(false);
-  };
+  // (구) 빠른 고객 등록은 CustomerAddModal(상세 입력)로 대체됨
 
   // ── 품목 할인 ──────────────────────────────────────────────────────────────
   const updateDiscount = (productId: string, discount: number) => {
@@ -366,6 +437,33 @@ export default function POSPage() {
     setProcessing(true);
     const selectedBranchData = branches.find(b => b.id === selectedBranch);
 
+    // 분할 결제 splits 구성
+    let paymentSplits: PaymentRow[] = [];
+    if (splitMode) {
+      const extraSum = extraPayments.reduce((s, p) => s + (p.amount || 0), 0);
+      const primaryAmt = Math.max(0, finalAmount - extraSum);
+      if (primaryAmt > 0) {
+        paymentSplits.push({
+          method: paymentMethod,
+          amount: primaryAmt,
+          approvalNo: isDeptStore && deptApprovalNo ? deptApprovalNo : cardApprovalResult?.approvalNo,
+          cardInfo: isDeptStore
+            ? [deptCardCompany, deptInstallment !== '0' ? `${deptInstallment}개월` : '일시불'].filter(Boolean).join(' · ')
+            : cardApprovalResult?.cardInfo,
+        });
+      }
+      paymentSplits.push(...extraPayments.filter(p => p.amount > 0));
+    }
+
+    // 택배 정보 유효성
+    const useShipping = shipping.enabled && shipping.recipient_name.trim() && shipping.recipient_phone.trim() && shipping.recipient_address.trim();
+    if (shipping.enabled && !useShipping) { alert('택배 수령인 이름·연락처·주소를 모두 입력하세요.'); setProcessing(false); return; }
+
+    const memoCombined = [
+      orderMemo.trim(),
+      isDeptStore && deptMemo.trim() ? `[백화점] ${deptMemo.trim()}` : '',
+    ].filter(Boolean).join(' · ') || undefined;
+
     try {
       const result = await processPosCheckout({
         branchId: selectedBranch,
@@ -388,7 +486,16 @@ export default function POSPage() {
         cardInfo: isDeptStore
           ? [deptCardCompany, deptInstallment !== '0' ? `${deptInstallment}개월` : '일시불'].filter(Boolean).join(' · ')
           : cardApprovalResult?.cardInfo,
-        memo: isDeptStore && deptMemo ? deptMemo : undefined,
+        memo: memoCombined,
+        paymentSplits: paymentSplits.length > 0 ? paymentSplits.map(p => ({ method: p.method, amount: p.amount, approvalNo: p.approvalNo, cardInfo: p.cardInfo })) : undefined,
+        shipping: useShipping ? {
+          recipient_name: shipping.recipient_name.trim(),
+          recipient_phone: shipping.recipient_phone.trim(),
+          recipient_address: shipping.recipient_address.trim(),
+          delivery_message: shipping.delivery_message.trim() || undefined,
+          sender_name: shipping.senderSameAsBuyer ? (selectedCustomer?.name || '') : shipping.sender_name.trim(),
+          sender_phone: shipping.senderSameAsBuyer ? (selectedCustomer?.phone || '') : shipping.sender_phone.trim(),
+        } : null,
       });
 
       if (result.error) {
@@ -424,6 +531,7 @@ export default function POSPage() {
       setCart([]);
       setSelectedCustomer(null);
       setCustomerSearch('');
+      setCustomerSummary({ loading: false, consultations: [], orders: [], totalLtv: 0 });
       setUsePoints(false);
       setPointsToUse(0);
       setDiscountInput('');
@@ -431,6 +539,16 @@ export default function POSPage() {
       setCardApprovalState('idle');
       setCardApprovalResult(null);
       setCardApprovalError('');
+      setOrderMemo('');
+      setShipping({
+        enabled: false,
+        recipient_name: '', recipient_phone: '', recipient_address: '',
+        delivery_message: '',
+        senderSameAsBuyer: true,
+        sender_name: '', sender_phone: '',
+      });
+      setSplitMode(false);
+      setExtraPayments([]);
       // 백화점 수기입력 초기화
       setDeptApprovalNo('');
       setDeptCardCompany('');
@@ -719,7 +837,9 @@ export default function POSPage() {
               <div className="space-y-2">
                 <div className="flex items-center justify-between p-2.5 bg-blue-50 rounded-lg border border-blue-200">
                   <div>
-                    <p className="font-medium text-blue-800 text-sm">{selectedCustomer.name}</p>
+                    <p className="font-medium text-blue-800 text-sm">{selectedCustomer.name}
+                      <span className="text-slate-400 text-xs ml-2">{selectedCustomer.phone}</span>
+                    </p>
                     <div className="flex items-center gap-2 mt-0.5">
                       <span className={`px-1.5 py-0.5 text-xs rounded ${GRADE_BADGE[selectedCustomer.grade]}`}>
                         {GRADE_LABELS[selectedCustomer.grade]}
@@ -727,10 +847,53 @@ export default function POSPage() {
                       <span className="text-xs text-green-600 font-medium">
                         {selectedCustomer.currentPoints?.toLocaleString() || 0}P 보유
                       </span>
+                      {customerSummary.totalLtv > 0 && (
+                        <span className="text-xs text-slate-500">LTV {customerSummary.totalLtv.toLocaleString()}원</span>
+                      )}
                     </div>
                   </div>
                   <button onClick={clearCustomer} className="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
                 </div>
+
+                {/* 상담·구매 히스토리 요약 */}
+                {(customerSummary.consultations.length > 0 || customerSummary.orders.length > 0) && (
+                  <div className="rounded-lg border border-slate-200 bg-white p-2 space-y-1.5 text-xs">
+                    {customerSummary.consultations.length > 0 && (
+                      <div>
+                        <p className="text-[10px] font-semibold text-slate-500 uppercase mb-0.5">최근 상담 {customerSummary.consultations.length}건</p>
+                        <ul className="space-y-0.5">
+                          {customerSummary.consultations.map((c: any) => (
+                            <li key={c.id} className="flex gap-1.5 text-slate-600">
+                              <span className="text-slate-400 whitespace-nowrap">{String(c.created_at).slice(0,10)}</span>
+                              <span className="text-slate-500 whitespace-nowrap">[{c.consultation_type || '기타'}]</span>
+                              <span className="truncate flex-1">
+                                {typeof c.content === 'string' ? c.content : (c.content?.text || '-')}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {customerSummary.orders.length > 0 && (
+                      <div className="pt-1 border-t border-slate-100">
+                        <p className="text-[10px] font-semibold text-slate-500 uppercase mb-0.5">최근 주문 {customerSummary.orders.length}건</p>
+                        <ul className="space-y-0.5">
+                          {customerSummary.orders.map((o: any) => (
+                            <li key={o.id} className="flex justify-between text-slate-600">
+                              <span>
+                                <span className="text-slate-400 mr-1.5">{String(o.ordered_at).slice(0,10)}</span>
+                                <span className="font-mono text-[10px] text-slate-500">{o.order_number}</span>
+                              </span>
+                              <span className={['CANCELLED','REFUNDED'].includes(o.status) ? 'line-through text-slate-400' : 'font-medium'}>
+                                {Number(o.total_amount || 0).toLocaleString()}원
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {selectedCustomer.currentPoints && selectedCustomer.currentPoints > 0 && (
                   <div className="flex items-center gap-2 p-2 bg-green-50 rounded border border-green-200">
                     <input
@@ -759,16 +922,25 @@ export default function POSPage() {
               </div>
             ) : (
               <div>
-                <input
-                  ref={customerInputRef}
-                  type="text"
-                  placeholder="고객 검색 (이름 / 전화번호)"
-                  value={customerSearch}
-                  onChange={e => setCustomerSearch(e.target.value)}
-                  onFocus={() => customerSearch.length >= 1 && setShowCustomerDropdown(true)}
-                  onBlur={() => setTimeout(() => { setShowCustomerDropdown(false); setShowQuickReg(false); }, 200)}
-                  className="input text-sm"
-                />
+                <div className="flex gap-2">
+                  <input
+                    ref={customerInputRef}
+                    type="text"
+                    placeholder="고객 검색 (이름 / 전화번호)"
+                    value={customerSearch}
+                    onChange={e => setCustomerSearch(e.target.value)}
+                    onFocus={() => customerSearch.length >= 1 && setShowCustomerDropdown(true)}
+                    onBlur={() => setTimeout(() => { setShowCustomerDropdown(false); }, 200)}
+                    className="input text-sm flex-1"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowAddCustomerModal(true)}
+                    className="px-3 py-2 text-sm rounded-md bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 whitespace-nowrap"
+                  >
+                    + 고객 추가
+                  </button>
+                </div>
                 {showCustomerDropdown && (
                   <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-64 overflow-auto">
                     {customerResults.map(c => (
@@ -787,50 +959,10 @@ export default function POSPage() {
                         </div>
                       </button>
                     ))}
-                    {/* 신규 등록 */}
-                    {!showQuickReg ? (
-                      <button
-                        onMouseDown={e => { e.preventDefault(); setShowQuickReg(true); }}
-                        className="w-full text-left px-3 py-2.5 text-blue-600 hover:bg-blue-50 text-sm border-t border-slate-100 font-medium"
-                      >
-                        + 신규 고객 등록
-                      </button>
-                    ) : (
-                      <div className="p-3 border-t border-slate-100 space-y-2">
-                        <p className="text-xs font-semibold text-slate-600">빠른 고객 등록</p>
-                        <input
-                          type="text" placeholder="이름 *" value={quickName}
-                          onChange={e => setQuickName(e.target.value)}
-                          onMouseDown={e => e.stopPropagation()}
-                          className="input text-sm"
-                          autoFocus
-                        />
-                        <input
-                          type="text" placeholder="전화번호 * (010-XXXX-XXXX)" value={quickPhone}
-                          onChange={e => setQuickPhone(e.target.value)}
-                          onMouseDown={e => e.stopPropagation()}
-                          onKeyDown={e => e.key === 'Enter' && handleQuickRegister()}
-                          className="input text-sm"
-                        />
-                        <div className="flex gap-2">
-                          <button
-                            onMouseDown={e => { e.preventDefault(); handleQuickRegister(); }}
-                            disabled={!quickName.trim() || !quickPhone.trim() || quickRegLoading}
-                            className="flex-1 btn-primary py-1.5 text-sm disabled:opacity-50"
-                          >
-                            {quickRegLoading ? '등록 중...' : '등록 후 선택'}
-                          </button>
-                          <button
-                            onMouseDown={e => { e.preventDefault(); setShowQuickReg(false); }}
-                            className="flex-1 btn-secondary py-1.5 text-sm"
-                          >
-                            취소
-                          </button>
-                        </div>
+                    {customerResults.length === 0 && (
+                      <div className="p-3 text-center text-xs text-slate-400">
+                        검색 결과 없음 · 우측 <span className="text-blue-600 font-medium">고객 추가</span> 버튼으로 등록
                       </div>
-                    )}
-                    {customerResults.length === 0 && !showQuickReg && (
-                      <p className="px-3 py-2 text-xs text-slate-400 text-center">검색 결과 없음</p>
                     )}
                   </div>
                 )}
@@ -866,6 +998,83 @@ export default function POSPage() {
             </div>
           </div>
 
+          {/* 주문 메모 (전 채널) */}
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">주문 메모 (특이사항)</label>
+            <input
+              type="text"
+              value={orderMemo}
+              onChange={e => setOrderMemo(e.target.value)}
+              placeholder="예: 알러지 있음 / 다음주 픽업 / 이벤트 할인 등"
+              className="input text-sm"
+            />
+          </div>
+
+          {/* 택배 섹션 */}
+          <div className="rounded-lg border border-slate-200 overflow-hidden">
+            <label className="flex items-center gap-2 px-3 py-2 bg-slate-50 border-b border-slate-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={shipping.enabled}
+                onChange={e => setShipping(prev => ({ ...prev, enabled: e.target.checked }))}
+                className="w-4 h-4"
+              />
+              <span className="text-sm font-medium text-slate-700">택배 배송</span>
+              <span className="text-xs text-slate-400">수령인·발신인 정보 입력</span>
+            </label>
+            {shipping.enabled && (
+              <div className="p-3 space-y-2">
+                <p className="text-[11px] font-semibold text-slate-500 uppercase">수령인 (받는 분)</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <input type="text" placeholder="이름 *" value={shipping.recipient_name}
+                    onChange={e => setShipping(p => ({ ...p, recipient_name: e.target.value }))}
+                    className="input text-sm" />
+                  <input type="text" placeholder="연락처 *" value={shipping.recipient_phone}
+                    onChange={e => setShipping(p => ({ ...p, recipient_phone: e.target.value }))}
+                    className="input text-sm" />
+                </div>
+                <input type="text" placeholder="주소 *" value={shipping.recipient_address}
+                  onChange={e => setShipping(p => ({ ...p, recipient_address: e.target.value }))}
+                  className="input text-sm" />
+                <input type="text" placeholder="배송 메시지 (선택)" value={shipping.delivery_message}
+                  onChange={e => setShipping(p => ({ ...p, delivery_message: e.target.value }))}
+                  className="input text-sm" />
+
+                <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+                  <input type="checkbox"
+                    id="sender-same"
+                    checked={shipping.senderSameAsBuyer}
+                    onChange={e => {
+                      const same = e.target.checked;
+                      setShipping(prev => ({
+                        ...prev,
+                        senderSameAsBuyer: same,
+                        sender_name: same ? (selectedCustomer?.name || '') : prev.sender_name,
+                        sender_phone: same ? (selectedCustomer?.phone || '') : prev.sender_phone,
+                      }));
+                    }}
+                    className="w-4 h-4" />
+                  <label htmlFor="sender-same" className="text-sm text-slate-700 cursor-pointer">
+                    보내는 분 = 구매자와 동일
+                  </label>
+                </div>
+                {!shipping.senderSameAsBuyer && (
+                  <>
+                    <p className="text-[11px] font-semibold text-slate-500 uppercase">보내는 분</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <input type="text" placeholder="이름" value={shipping.sender_name}
+                        onChange={e => setShipping(p => ({ ...p, sender_name: e.target.value }))}
+                        className="input text-sm" />
+                      <input type="text" placeholder="연락처" value={shipping.sender_phone}
+                        onChange={e => setShipping(p => ({ ...p, sender_phone: e.target.value }))}
+                        className="input text-sm" />
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* 결제 수단 — 백화점이면 간소화 */}
           {isDeptStore && (
             <div className="flex items-center gap-2 px-2 py-1.5 bg-purple-50 rounded-lg border border-purple-200">
@@ -886,11 +1095,17 @@ export default function POSPage() {
                   { id: 'card_keyin' as const, label: '카드(키인)' },
                   { id: 'kakao' as const, label: '카카오' },
                   { id: 'credit' as const, label: '외상' },
+                  { id: 'cod' as const, label: '수령시수금' },
                 ]
             ).map(({ id, label }) => (
               <button
                 key={id}
-                onClick={() => { setPaymentMethod(id); setCashReceived(''); setCardApprovalState('idle'); setCardApprovalResult(null); setCardApprovalError(''); }}
+                onClick={() => {
+                  setPaymentMethod(id as any);
+                  setCashReceived('');
+                  setCardApprovalState('idle'); setCardApprovalResult(null); setCardApprovalError('');
+                  if (id === 'cod' && !shipping.enabled) setShipping(p => ({ ...p, enabled: true }));
+                }}
                 className={`py-2 rounded-md text-sm font-medium transition-colors ${
                   paymentMethod === id ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                 }`}
@@ -898,6 +1113,86 @@ export default function POSPage() {
                 {label}
               </button>
             ))}
+          </div>
+
+          {/* 분할 결제 / 부분 결제 */}
+          <div className="rounded-lg border border-slate-200">
+            <label className="flex items-center justify-between gap-2 px-3 py-2 bg-slate-50 cursor-pointer border-b border-slate-200">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={splitMode}
+                  onChange={e => {
+                    setSplitMode(e.target.checked);
+                    if (!e.target.checked) setExtraPayments([]);
+                  }}
+                  className="w-4 h-4"
+                />
+                <span className="text-sm font-medium text-slate-700">분할 / 부분 결제</span>
+              </div>
+              <span className="text-[11px] text-slate-400">일부 현장 결제 + 나머지 외상/다른 방식</span>
+            </label>
+            {splitMode && (() => {
+              const extraSum = extraPayments.reduce((s, p) => s + (p.amount || 0), 0);
+              const primaryAmt = Math.max(0, finalAmount - extraSum);
+              return (
+                <div className="p-3 space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-slate-500">주 결제: {PAYMENT_METHOD_LABEL[paymentMethod]}</span>
+                    <span className="font-semibold text-slate-700">{primaryAmt.toLocaleString()}원</span>
+                  </div>
+                  {extraPayments.map((p, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <select
+                        value={p.method}
+                        onChange={e => {
+                          const method = e.target.value as PaymentMethodId;
+                          setExtraPayments(prev => prev.map((row, i) => i === idx ? { ...row, method } : row));
+                        }}
+                        className="input text-xs py-1 w-28"
+                      >
+                        {(['cash','card','card_keyin','kakao','credit','cod'] as PaymentMethodId[]).map(m => (
+                          <option key={m} value={m}>{PAYMENT_METHOD_LABEL[m]}</option>
+                        ))}
+                      </select>
+                      <input
+                        type="text"
+                        value={p.amount ? p.amount.toLocaleString() : ''}
+                        onChange={e => {
+                          const raw = parseInt(e.target.value.replace(/[^0-9]/g, '')) || 0;
+                          setExtraPayments(prev => prev.map((row, i) => i === idx ? { ...row, amount: raw } : row));
+                        }}
+                        placeholder="금액"
+                        className="input text-sm text-right flex-1"
+                      />
+                      <button
+                        onClick={() => setExtraPayments(prev => prev.filter((_, i) => i !== idx))}
+                        className="text-red-400 hover:text-red-600 text-lg leading-none"
+                      >✕</button>
+                    </div>
+                  ))}
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setExtraPayments(prev => [...prev, { method: 'credit', amount: Math.max(0, finalAmount - primaryAmt - extraSum + (primaryAmt > 0 ? primaryAmt : 0)) }])}
+                      className="text-xs text-blue-600 hover:underline"
+                    >+ 결제 행 추가</button>
+                    {primaryAmt > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setExtraPayments(prev => [...prev, { method: 'credit', amount: primaryAmt }])}
+                        className="text-xs text-amber-600 hover:underline"
+                      >나머지 전액 외상</button>
+                    )}
+                  </div>
+                  {primaryAmt + extraSum !== finalAmount && (
+                    <p className="text-[11px] text-amber-600">
+                      합계 {(primaryAmt + extraSum).toLocaleString()}원 / 결제금액 {finalAmount.toLocaleString()}원
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
           </div>
 
           {/* 현금 거스름돈 */}
@@ -1096,6 +1391,101 @@ export default function POSPage() {
           }}
         />
       )}
+
+      {showAddCustomerModal && (
+        <CustomerAddModal
+          defaultBranchId={selectedBranch}
+          onClose={() => setShowAddCustomerModal(false)}
+          onCreated={handleCustomerCreated}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── 고객 상세 추가 모달 ────────────────────────────────────────────────────────
+function CustomerAddModal({ defaultBranchId, onClose, onCreated }: {
+  defaultBranchId: string;
+  onClose: () => void;
+  onCreated: (phone: string) => void;
+}) {
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [address, setAddress] = useState('');
+  const [grade, setGrade] = useState('NORMAL');
+  const [healthNote, setHealthNote] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    if (!name.trim() || !phone.trim()) { setError('이름·연락처는 필수입니다.'); return; }
+    setSaving(true);
+    const fd = new FormData();
+    fd.append('name', name.trim());
+    fd.append('phone', phone.trim());
+    if (email.trim()) fd.append('email', email.trim());
+    if (address.trim()) fd.append('address', address.trim());
+    fd.append('grade', grade);
+    if (defaultBranchId) fd.append('primary_branch_id', defaultBranchId);
+    if (healthNote.trim()) fd.append('health_note', healthNote.trim());
+    const res = await createCustomer(fd);
+    setSaving(false);
+    if ((res as any)?.error) { setError((res as any).error); return; }
+    onCreated(phone.trim());
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg w-full max-w-md max-h-[90vh] overflow-y-auto">
+        <div className="flex justify-between items-center px-5 py-3 border-b">
+          <div>
+            <h2 className="font-bold">고객 추가</h2>
+            <p className="text-xs text-slate-500 mt-0.5">등록 후 바로 이번 주문에 배정됩니다.</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-5 space-y-3">
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">이름 *</label>
+            <input value={name} onChange={e => setName(e.target.value)} autoFocus required className="input text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">연락처 *</label>
+            <input value={phone} onChange={e => setPhone(e.target.value)} required placeholder="010-XXXX-XXXX" className="input text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">이메일</label>
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)} className="input text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">주소</label>
+            <input value={address} onChange={e => setAddress(e.target.value)} className="input text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">등급</label>
+            <select value={grade} onChange={e => setGrade(e.target.value)} className="input text-sm">
+              <option value="NORMAL">일반</option>
+              <option value="VIP">VIP</option>
+              <option value="VVIP">VVIP</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">건강 메모 (선택)</label>
+            <textarea value={healthNote} onChange={e => setHealthNote(e.target.value)} rows={2}
+              placeholder="알러지·복용 중 약 등" className="input text-sm resize-none" />
+          </div>
+          {error && <p className="text-xs text-red-600">{error}</p>}
+          <div className="flex gap-2 pt-2">
+            <button type="submit" disabled={saving} className="flex-1 btn-primary disabled:opacity-50">
+              {saving ? '저장 중...' : '등록 후 선택'}
+            </button>
+            <button type="button" onClick={onClose} className="flex-1 btn-secondary">취소</button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
