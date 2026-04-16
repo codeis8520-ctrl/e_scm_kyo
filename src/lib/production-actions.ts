@@ -26,13 +26,28 @@ export async function getBomList() {
   const supabase = await createClient();
   const { data, error } = await (supabase as any)
     .from('product_bom')
-    .select('*, product:products(id, name, code), material:products!product_bom_material_id_fkey(id, name, code, unit)')
+    .select('*, product:products(id, name, code, product_type), material:products!product_bom_material_id_fkey(id, name, code, unit, cost, product_type)')
+    .order('sort_order', { ascending: true })
     .order('created_at', { ascending: false });
   if (error) return { data: [], error: error.message };
   return { data: data || [] };
 }
 
-export async function createBom(productId: string, materialId: string, quantity: number) {
+type BomLine = {
+  id?: string;
+  material_id: string;
+  quantity: number;
+  loss_rate?: number;
+  notes?: string | null;
+  sort_order?: number;
+};
+
+export async function createBom(
+  productId: string,
+  materialId: string,
+  quantity: number,
+  opts?: { loss_rate?: number; notes?: string | null; sort_order?: number },
+) {
   if (!productId || !materialId || quantity <= 0) {
     return { error: '입력값이 올바르지 않습니다.' };
   }
@@ -41,8 +56,69 @@ export async function createBom(productId: string, materialId: string, quantity:
     product_id: productId,
     material_id: materialId,
     quantity,
+    loss_rate: opts?.loss_rate ?? 0,
+    notes: opts?.notes ?? null,
+    sort_order: opts?.sort_order ?? 0,
   });
   if (error) return { error: error.message };
+  revalidatePath('/production');
+  return { success: true };
+}
+
+export async function updateBom(
+  id: string,
+  patch: { quantity?: number; loss_rate?: number; notes?: string | null; sort_order?: number },
+) {
+  if (!id) return { error: 'id가 필요합니다.' };
+  const supabase = await createClient();
+  const { error } = await (supabase as any).from('product_bom').update(patch).eq('id', id);
+  if (error) return { error: error.message };
+  revalidatePath('/production');
+  return { success: true };
+}
+
+// BOM 전체 저장 (완제품 하나의 BOM 일괄 upsert + 제거)
+export async function saveBom(productId: string, lines: BomLine[]) {
+  if (!productId) return { error: '완제품이 지정되지 않았습니다.' };
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  // 기존 행 조회 → 삭제 대상 추출
+  const { data: existing } = await db
+    .from('product_bom')
+    .select('id, material_id')
+    .eq('product_id', productId);
+
+  const existingIds: string[] = (existing || []).map((r: any) => r.id);
+  const keepIds = new Set(lines.filter(l => l.id).map(l => l.id!));
+  const toDelete = existingIds.filter(id => !keepIds.has(id));
+
+  if (toDelete.length > 0) {
+    const { error: delErr } = await db.from('product_bom').delete().in('id', toDelete);
+    if (delErr) return { error: `기존 행 삭제 실패: ${delErr.message}` };
+  }
+
+  // upsert: id 있는 행은 update, 없는 행은 insert
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.material_id || line.quantity <= 0) continue;
+    const payload = {
+      product_id: productId,
+      material_id: line.material_id,
+      quantity: line.quantity,
+      loss_rate: line.loss_rate ?? 0,
+      notes: line.notes ?? null,
+      sort_order: line.sort_order ?? i,
+    };
+    if (line.id) {
+      const { error } = await db.from('product_bom').update(payload).eq('id', line.id);
+      if (error) return { error: `행 업데이트 실패: ${error.message}` };
+    } else {
+      const { error } = await db.from('product_bom').insert(payload);
+      if (error) return { error: `행 추가 실패: ${error.message}` };
+    }
+  }
+
   revalidatePath('/production');
   return { success: true };
 }
@@ -95,14 +171,14 @@ export async function createProductionOrder(formData: FormData) {
   // BOM 검증
   const { data: bomItems } = await db
     .from('product_bom')
-    .select('material_id, quantity, material:products!product_bom_material_id_fkey(name)')
+    .select('material_id, quantity, loss_rate, material:products!product_bom_material_id_fkey(name)')
     .eq('product_id', productId);
 
   if (!bomItems || bomItems.length === 0) {
     return { error: '이 제품에는 BOM 정보가 없습니다.' };
   }
 
-  // 재고 충분 여부 사전 확인 (지시 시점)
+  // 재고 충분 여부 사전 확인 (지시 시점) — 손실률 반영
   for (const item of bomItems) {
     const { data: inv } = await db
       .from('inventories')
@@ -111,9 +187,9 @@ export async function createProductionOrder(formData: FormData) {
       .eq('product_id', item.material_id)
       .maybeSingle();
 
-    const required = item.quantity * quantity;
+    const required = item.quantity * quantity * (1 + Number(item.loss_rate || 0) / 100);
     if (!inv || inv.quantity < required) {
-      return { error: `원재료 "${item.material?.name}" 재고 부족 (필요: ${required}, 현재: ${inv?.quantity ?? 0})` };
+      return { error: `원재료 "${item.material?.name}" 재고 부족 (필요: ${required.toFixed(3)}, 현재: ${inv?.quantity ?? 0})` };
     }
   }
 
@@ -181,17 +257,17 @@ export async function completeProductionOrder(id: string) {
   const branchId = order.branch_id;
   if (!branchId) return { error: '지점 정보가 없습니다.' };
 
-  // BOM 조회
+  // BOM 조회 (손실률 포함)
   const { data: bomItems } = await db
     .from('product_bom')
-    .select('material_id, quantity, material:products!product_bom_material_id_fkey(name)')
+    .select('material_id, quantity, loss_rate, material:products!product_bom_material_id_fkey(name)')
     .eq('product_id', order.product_id);
 
   if (!bomItems || bomItems.length === 0) {
     return { error: 'BOM 정보가 없습니다.' };
   }
 
-  // 재고 충분 여부 재확인 (착수 이후 변동 가능)
+  // 재고 충분 여부 재확인 (착수 이후 변동 가능) — 손실률 반영
   for (const item of bomItems) {
     const { data: inv } = await db
       .from('inventories')
@@ -200,16 +276,16 @@ export async function completeProductionOrder(id: string) {
       .eq('product_id', item.material_id)
       .maybeSingle();
 
-    const required = item.quantity * order.quantity;
+    const required = item.quantity * order.quantity * (1 + Number(item.loss_rate || 0) / 100);
     if (!inv || inv.quantity < required) {
-      return { error: `원재료 "${item.material?.name}" 재고 부족 (필요: ${required}, 현재: ${inv?.quantity ?? 0})` };
+      return { error: `원재료 "${item.material?.name}" 재고 부족 (필요: ${required.toFixed(3)}, 현재: ${inv?.quantity ?? 0})` };
     }
   }
 
   try {
-    // 원재료 재고 차감 + 이동 기록
+    // 원재료 재고 차감 + 이동 기록 (손실률 반영)
     for (const item of bomItems) {
-      const required = item.quantity * order.quantity;
+      const required = item.quantity * order.quantity * (1 + Number(item.loss_rate || 0) / 100);
 
       const { data: inv } = await db
         .from('inventories')
@@ -229,7 +305,7 @@ export async function completeProductionOrder(id: string) {
         quantity: -required,
         reference_id: id,
         reference_type: 'PRODUCTION_ORDER',
-        memo: `생산 차감: ${order.order_number}`,
+        memo: `생산 차감: ${order.order_number}${Number(item.loss_rate) > 0 ? ` (손실률 ${item.loss_rate}%)` : ''}`,
       });
     }
 
@@ -316,8 +392,9 @@ export async function getProductionPreview(productId: string, branchId: string, 
 
   const { data: bomItems } = await db
     .from('product_bom')
-    .select('material_id, quantity, material:products!product_bom_material_id_fkey(name, unit, cost)')
-    .eq('product_id', productId);
+    .select('material_id, quantity, loss_rate, material:products!product_bom_material_id_fkey(name, unit, cost, product_type)')
+    .eq('product_id', productId)
+    .order('sort_order', { ascending: true });
 
   if (!bomItems) return { data: [] };
 
@@ -330,13 +407,18 @@ export async function getProductionPreview(productId: string, branchId: string, 
         .eq('product_id', item.material_id)
         .maybeSingle();
 
-      const required = item.quantity * quantity;
+      const lossRate = Number(item.loss_rate || 0);
+      const base = item.quantity * quantity;
+      const required = base * (1 + lossRate / 100);
       const available = inv?.quantity ?? 0;
       return {
         material_id: item.material_id,
         material_name: item.material?.name,
+        material_type: item.material?.product_type,
         unit: item.material?.unit || '개',
         cost: item.material?.cost || 0,
+        base_required: base,
+        loss_rate: lossRate,
         required,
         available,
         shortage: Math.max(0, required - available),

@@ -3,7 +3,8 @@ export const DB_SCHEMA = `
 
 --- 지점·제품·재고 ---
 branches: id, name, code, channel(STORE/DEPT_STORE/ONLINE/EVENT), address, phone, is_active
-products: id, name, code, barcode, unit, price(판매가), cost(원가), is_active
+products: id, name, code, barcode, unit, price(판매가), cost(원가), product_type(FINISHED/RAW/SUB), is_active
+  ※ product_type: FINISHED=완제품, RAW=원자재, SUB=부자재 — BOM 조립/필터의 기준
 product_files: id, product_id, file_url, file_name, file_type(image/document), sort_order
 inventories: id, branch_id, product_id, quantity, safety_stock  [UNIQUE(branch_id, product_id)]
 inventory_movements: id, branch_id, product_id, movement_type(IN/OUT/ADJUST/TRANSFER/PRODUCTION), quantity, memo, created_at
@@ -29,7 +30,8 @@ purchase_orders: id, order_number(PO-...), supplier_id, branch_id, status(DRAFT/
 purchase_order_items: id, purchase_order_id, product_id, ordered_quantity, received_quantity, unit_price
 
 --- 생산 ---
-bom: id, product_id(완제품), material_id(원재료), quantity_required
+product_bom: id, product_id(완제품), material_id(원/부자재), quantity, loss_rate(%), notes, sort_order
+  ※ 실제 소요량 = quantity × (1 + loss_rate/100)
 production_orders: id, order_number(WO-...), product_id(완제품), branch_id, quantity, status(PENDING/IN_PROGRESS/COMPLETED/CANCELLED), started_at, completed_at, memo
 
 --- B2B 거래 ---

@@ -72,6 +72,8 @@ CREATE TABLE products (
     name VARCHAR(200) NOT NULL,
     code VARCHAR(50) UNIQUE NOT NULL,
     category_id UUID REFERENCES categories(id),
+    product_type TEXT NOT NULL DEFAULT 'FINISHED'
+      CHECK (product_type IN ('FINISHED','RAW','SUB')),
     unit VARCHAR(20) DEFAULT '개',
     price DECIMAL(12, 0) NOT NULL,
     cost DECIMAL(12, 0),
@@ -90,6 +92,10 @@ CREATE TABLE product_bom (
     product_id UUID NOT NULL REFERENCES products(id),
     material_id UUID NOT NULL REFERENCES products(id),
     quantity DECIMAL(10, 3) NOT NULL,
+    loss_rate NUMERIC(5,2) NOT NULL DEFAULT 0
+      CHECK (loss_rate >= 0 AND loss_rate <= 100),
+    notes TEXT,
+    sort_order INT NOT NULL DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     UNIQUE(product_id, material_id)
 );

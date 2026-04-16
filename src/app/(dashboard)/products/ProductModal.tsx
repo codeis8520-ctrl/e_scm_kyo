@@ -5,11 +5,14 @@ import { createProduct, updateProduct, deleteProduct, getCategories, addProductF
 import { createClient } from '@/lib/supabase/client';
 import { validators } from '@/lib/validators';
 
+type ProductType = 'FINISHED' | 'RAW' | 'SUB';
+
 interface Product {
   id?: string;
   name: string;
   code: string;
   category_id: string | null;
+  product_type: ProductType;
   unit: string;
   price: number;
   cost: number | null;
@@ -20,6 +23,12 @@ interface Product {
   spec?: Record<string, string> | null;
   description?: string | null;
 }
+
+const TYPE_META: Record<ProductType, { label: string; hint: string; color: string }> = {
+  FINISHED: { label: '완제품', hint: '판매되는 최종 제품', color: 'border-blue-600 text-blue-700 bg-blue-50' },
+  RAW:      { label: '원자재', hint: '제품 제조의 핵심 원료 (예: 홍삼, 대추)', color: 'border-emerald-600 text-emerald-700 bg-emerald-50' },
+  SUB:      { label: '부자재', hint: '포장·첨가물·보조재 (예: 병, 캡, 라벨)', color: 'border-amber-600 text-amber-700 bg-amber-50' },
+};
 
 interface Props {
   product?: Product | null;
@@ -33,6 +42,7 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
     name: product?.name || '',
     code: product?.code || '',
     category_id: product?.category_id || null,
+    product_type: (product?.product_type as ProductType) || 'FINISHED',
     unit: product?.unit || '개',
     price: product?.price || 0,
     cost: product?.cost || null,
@@ -259,6 +269,30 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
             {fieldErrors.name && (
               <p className="mt-1 text-xs text-red-500">{fieldErrors.name}</p>
             )}
+          </div>
+
+          {/* 제품 타입 선택 */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">제품 유형 *</label>
+            <div className="grid grid-cols-3 gap-2">
+              {(['FINISHED', 'RAW', 'SUB'] as const).map((t) => {
+                const meta = TYPE_META[t];
+                const active = formData.product_type === t;
+                return (
+                  <button
+                    type="button"
+                    key={t}
+                    onClick={() => setFormData({ ...formData, product_type: t })}
+                    className={`px-3 py-2.5 rounded-md border-2 text-sm font-medium transition-colors ${
+                      active ? meta.color : 'border-slate-200 text-slate-500 bg-white hover:bg-slate-50'
+                    }`}
+                  >
+                    {meta.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-1 text-xs text-slate-400">{TYPE_META[formData.product_type].hint}</p>
           </div>
 
           {/* 이미지 업로드 섹션 */}

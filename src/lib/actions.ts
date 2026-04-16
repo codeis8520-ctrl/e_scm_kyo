@@ -35,10 +35,13 @@ export async function createProduct(formData: FormData) {
   const rawBarcode = formData.get('barcode') as string;
   const rawImageUrl = formData.get('image_url') as string;
   const rawSpec = formData.get('spec') as string;
+  const rawType = formData.get('product_type') as string;
+  const productType = (rawType === 'RAW' || rawType === 'SUB' || rawType === 'FINISHED') ? rawType : 'FINISHED';
   const productData = {
     name,
     code,
     category_id: (rawCategoryId && rawCategoryId !== 'null') ? rawCategoryId : null,
+    product_type: productType,
     unit: formData.get('unit') as string || '개',
     price: parseInt(formData.get('price') as string),
     cost: parseInt(formData.get('cost') as string) || null,
@@ -87,10 +90,13 @@ export async function updateProduct(id: string, formData: FormData) {
   const rawImageUrl = formData.get('image_url') as string;
   const rawCode = (formData.get('code') as string)?.trim().toUpperCase();
   const rawSpec = formData.get('spec') as string;
+  const rawType = formData.get('product_type') as string;
+  const productType = (rawType === 'RAW' || rawType === 'SUB' || rawType === 'FINISHED') ? rawType : undefined;
   const productData = {
     name: formData.get('name') as string,
     ...(rawCode ? { code: rawCode } : {}),
     category_id: (rawCategoryId && rawCategoryId !== 'null') ? rawCategoryId : null,
+    ...(productType ? { product_type: productType } : {}),
     unit: formData.get('unit') as string || '개',
     price: parseInt(formData.get('price') as string),
     cost: parseInt(formData.get('cost') as string) || null,

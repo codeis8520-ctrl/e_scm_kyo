@@ -1,13 +1,39 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  getBomList, createBom, deleteBom,
+  getBomList, saveBom,
   getProductionOrders, createProductionOrder,
   startProductionOrder, completeProductionOrder, cancelProductionOrder,
   getProductionPreview,
 } from '@/lib/production-actions';
 import { createClient } from '@/lib/supabase/client';
+
+type ProductType = 'FINISHED' | 'RAW' | 'SUB';
+const TYPE_BADGE: Record<ProductType, { label: string; cls: string }> = {
+  FINISHED: { label: '완제품', cls: 'bg-blue-100 text-blue-700' },
+  RAW:      { label: '원자재', cls: 'bg-emerald-100 text-emerald-700' },
+  SUB:      { label: '부자재', cls: 'bg-amber-100 text-amber-700' },
+};
+
+interface Material {
+  id: string;
+  name: string;
+  code: string;
+  unit?: string;
+  cost?: number | null;
+  product_type: ProductType;
+}
+
+interface BomLine {
+  id?: string;        // 기존 행이면 존재
+  material_id: string;
+  quantity: number;
+  loss_rate: number;
+  notes: string;
+  sort_order: number;
+  material?: Material;
+}
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -47,7 +73,7 @@ export default function ProductionPage() {
 
   const [tab, setTab] = useState<'orders' | 'bom'>('orders');
   const [showNewOrderModal, setShowNewOrderModal] = useState(false);
-  const [showBomModal, setShowBomModal]           = useState(false);
+  const [selectedFinishedId, setSelectedFinishedId] = useState<string>('');
 
   // ── 초기 데이터 ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -62,7 +88,7 @@ export default function ProductionPage() {
         setSelectedBranch(rows[0].id);
       }
     });
-    supabase.from('products').select('id, name, code').eq('is_active', true).order('name').then(({ data }) => {
+    supabase.from('products').select('id, name, code, unit, cost, product_type').eq('is_active', true).order('name').then(({ data }) => {
       setProducts(data || []);
     });
   }, [isBranchUser]);
@@ -130,7 +156,7 @@ export default function ProductionPage() {
               {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
           )}
-          <button onClick={() => setShowBomModal(true)} className="btn-secondary text-sm">BOM 관리</button>
+          <button onClick={() => setTab('bom')} className="btn-secondary text-sm">BOM 조립</button>
           <button onClick={() => setShowNewOrderModal(true)} className="btn-primary text-sm">+ 생산 지시</button>
         </div>
       </div>
@@ -250,65 +276,22 @@ export default function ProductionPage() {
       )}
 
       {tab === 'bom' && (
-        <div className="card">
-          <div className="overflow-x-auto">
-          <table className="table min-w-[450px]">
-            <thead>
-              <tr>
-                <th>완제품</th>
-                <th>원재료</th>
-                <th>단위</th>
-                <th>소요량</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan={5} className="text-center py-8">로딩 중...</td></tr>
-              ) : bomList.length === 0 ? (
-                <tr><td colSpan={5} className="text-center py-8 text-slate-400">등록된 BOM이 없습니다</td></tr>
-              ) : bomList.map((bom: any) => (
-                <tr key={bom.id}>
-                  <td>{bom.product?.name} <span className="text-xs text-slate-400">({bom.product?.code})</span></td>
-                  <td>{bom.material?.name} <span className="text-xs text-slate-400">({bom.material?.code})</span></td>
-                  <td className="text-sm text-slate-500">{bom.material?.unit || '-'}</td>
-                  <td>{bom.quantity}</td>
-                  <td>
-                    <button
-                      onClick={async () => {
-                        if (!confirm('BOM 항목을 삭제하시겠습니까?')) return;
-                        const r = await deleteBom(bom.id);
-                        if (r.error) alert(r.error); else loadData();
-                      }}
-                      className="text-xs text-red-500 hover:text-red-700"
-                    >
-                      삭제
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          </div>
-        </div>
+        <BomComposerLayout
+          products={products}
+          bomList={bomList}
+          selectedFinishedId={selectedFinishedId}
+          onSelectFinished={setSelectedFinishedId}
+          onSaved={loadData}
+        />
       )}
 
       {showNewOrderModal && selectedBranch && (
         <NewOrderModal
-          products={products.filter(p => bomByProduct(p.id).length > 0)}
+          products={products.filter(p => p.product_type === 'FINISHED' && bomByProduct(p.id).length > 0)}
           branchId={selectedBranch}
           branchName={branches.find(b => b.id === selectedBranch)?.name || ''}
           onClose={() => setShowNewOrderModal(false)}
           onSuccess={() => { setShowNewOrderModal(false); loadData(); }}
-        />
-      )}
-
-      {showBomModal && (
-        <BomModal
-          products={products}
-          bomList={bomList}
-          onClose={() => setShowBomModal(false)}
-          onSuccess={() => loadData()}
         />
       )}
     </div>
@@ -446,140 +429,380 @@ function NewOrderModal({ products, branchId, branchName, onClose, onSuccess }: {
   );
 }
 
-// ─── BOM 등록 모달 ─────────────────────────────────────────────────────────────
+// ─── BOM 조립 레이아웃 (좌: 완제품, 우: Composer) ────────────────────────────
 
-function BomModal({ products, bomList: initialBomList, onClose, onSuccess }: {
+function BomComposerLayout({
+  products, bomList, selectedFinishedId, onSelectFinished, onSaved,
+}: {
   products: any[];
   bomList: any[];
-  onClose: () => void;
-  onSuccess: () => void;
+  selectedFinishedId: string;
+  onSelectFinished: (id: string) => void;
+  onSaved: () => void;
 }) {
-  const [localBomList, setLocalBomList] = useState(initialBomList);
-  const [productId, setProductId] = useState('');
-  const [materialId, setMaterialId] = useState('');
-  const [quantity, setQuantity] = useState<number>(1);
-  const [submitting, setSubmitting] = useState(false);
-  const [deleting, setDeleting] = useState<string | null>(null);
+  const [productSearch, setProductSearch] = useState('');
 
-  const existingBom = localBomList.filter((b: any) => b.product_id === productId);
-  const availableMaterials = products.filter(
-    p => p.id !== productId && !existingBom.some((b: any) => b.material_id === p.id)
+  const finishedProducts: Material[] = useMemo(
+    () => products.filter(p => p.product_type === 'FINISHED' || p.product_type == null),
+    [products],
+  );
+  const materialCandidates: Material[] = useMemo(
+    () => products.filter(p => p.product_type === 'RAW' || p.product_type === 'SUB'),
+    [products],
   );
 
-  const refreshBomList = async () => {
-    const { data } = await getBomList();
-    setLocalBomList(data || []);
+  const bomCountByProduct = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const b of bomList) map[b.product_id] = (map[b.product_id] || 0) + 1;
+    return map;
+  }, [bomList]);
+
+  const filteredFinished = productSearch
+    ? finishedProducts.filter(p =>
+        p.name.toLowerCase().includes(productSearch.toLowerCase()) ||
+        (p.code || '').toLowerCase().includes(productSearch.toLowerCase()))
+    : finishedProducts;
+
+  const selectedProduct = finishedProducts.find(p => p.id === selectedFinishedId) || null;
+  const selectedBomLines: BomLine[] = useMemo(() => {
+    return bomList
+      .filter((b: any) => b.product_id === selectedFinishedId)
+      .sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+      .map((b: any, i: number) => ({
+        id: b.id,
+        material_id: b.material_id,
+        quantity: Number(b.quantity),
+        loss_rate: Number(b.loss_rate || 0),
+        notes: b.notes || '',
+        sort_order: b.sort_order ?? i,
+        material: b.material,
+      }));
+  }, [bomList, selectedFinishedId]);
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      {/* 좌: 완제품 목록 */}
+      <div className="card lg:col-span-1">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-slate-700">완제품</h3>
+          <span className="text-xs text-slate-400">{filteredFinished.length}개</span>
+        </div>
+        <input
+          type="text"
+          value={productSearch}
+          onChange={e => setProductSearch(e.target.value)}
+          placeholder="완제품명 검색..."
+          className="input text-sm mb-3"
+        />
+        <div className="max-h-[520px] overflow-y-auto divide-y divide-slate-100 rounded border border-slate-100">
+          {filteredFinished.length === 0 ? (
+            <div className="text-center text-slate-400 text-sm py-8">완제품이 없습니다</div>
+          ) : filteredFinished.map(p => {
+            const count = bomCountByProduct[p.id] || 0;
+            const selected = p.id === selectedFinishedId;
+            return (
+              <button
+                key={p.id}
+                onClick={() => onSelectFinished(p.id)}
+                className={`w-full text-left px-3 py-2.5 transition-colors ${
+                  selected ? 'bg-blue-50' : 'hover:bg-slate-50'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className={`font-medium text-sm truncate ${selected ? 'text-blue-700' : 'text-slate-700'}`}>{p.name}</span>
+                  {count > 0 ? (
+                    <span className="text-xs text-blue-600 bg-blue-100 rounded-full px-2">{count}</span>
+                  ) : (
+                    <span className="text-xs text-slate-300">미구성</span>
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-400 font-mono mt-0.5">{p.code}</p>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 우: 조립 Composer */}
+      <div className="lg:col-span-2">
+        {!selectedProduct ? (
+          <div className="card text-center text-slate-400 py-16">
+            <p className="text-sm">좌측에서 완제품을 선택하면 BOM을 조립할 수 있습니다.</p>
+            <p className="text-xs mt-2">원자재·부자재를 추가하고 수량·손실률을 입력하세요.</p>
+          </div>
+        ) : (
+          <BomComposer
+            key={selectedProduct.id}
+            product={selectedProduct}
+            initialLines={selectedBomLines}
+            candidates={materialCandidates}
+            onSaved={onSaved}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BomComposer({
+  product, initialLines, candidates, onSaved,
+}: {
+  product: Material;
+  initialLines: BomLine[];
+  candidates: Material[];
+  onSaved: () => void;
+}) {
+  const [lines, setLines] = useState<BomLine[]>(initialLines);
+  const [matSearch, setMatSearch] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    setLines(initialLines);
+    setDirty(false);
+  }, [initialLines]);
+
+  const usedIds = new Set(lines.map(l => l.material_id));
+  const filteredCandidates = (matSearch
+    ? candidates.filter(c =>
+        c.name.toLowerCase().includes(matSearch.toLowerCase()) ||
+        (c.code || '').toLowerCase().includes(matSearch.toLowerCase()))
+    : candidates
+  ).filter(c => !usedIds.has(c.id)).slice(0, 20);
+
+  const addLine = (mat: Material) => {
+    setLines(prev => {
+      const next = [...prev, {
+        material_id: mat.id,
+        quantity: 1,
+        loss_rate: 0,
+        notes: '',
+        sort_order: prev.length,
+        material: mat,
+      }];
+      return next;
+    });
+    setMatSearch('');
+    setDirty(true);
   };
 
-  const handleSubmit = async () => {
-    setSubmitting(true);
-    const r = await createBom(productId, materialId, quantity);
-    setSubmitting(false);
+  const removeLine = (idx: number) => {
+    setLines(prev => prev.filter((_, i) => i !== idx).map((l, i) => ({ ...l, sort_order: i })));
+    setDirty(true);
+  };
+
+  const updateLine = (idx: number, patch: Partial<BomLine>) => {
+    setLines(prev => prev.map((l, i) => i === idx ? { ...l, ...patch } : l));
+    setDirty(true);
+  };
+
+  const moveLine = (idx: number, dir: -1 | 1) => {
+    setLines(prev => {
+      const next = [...prev];
+      const target = idx + dir;
+      if (target < 0 || target >= next.length) return prev;
+      [next[idx], next[target]] = [next[target], next[idx]];
+      return next.map((l, i) => ({ ...l, sort_order: i }));
+    });
+    setDirty(true);
+  };
+
+  const totalCost = lines.reduce((sum, l) => {
+    const cost = Number(l.material?.cost || 0);
+    const qty = l.quantity * (1 + l.loss_rate / 100);
+    return sum + cost * qty;
+  }, 0);
+
+  const hasInvalid = lines.some(l => !l.material_id || l.quantity <= 0);
+
+  const handleSave = async () => {
+    if (hasInvalid) { alert('수량은 0보다 커야 합니다.'); return; }
+    setSaving(true);
+    const r = await saveBom(product.id, lines.map((l, i) => ({
+      id: l.id,
+      material_id: l.material_id,
+      quantity: l.quantity,
+      loss_rate: l.loss_rate,
+      notes: l.notes || null,
+      sort_order: i,
+    })));
+    setSaving(false);
     if (r.error) { alert(r.error); return; }
-    await refreshBomList();
-    setMaterialId('');
-    setQuantity(1);
+    setDirty(false);
+    onSaved();
   };
 
-  const handleDelete = async (bomId: string) => {
-    if (!confirm('이 BOM 항목을 삭제하시겠습니까?')) return;
-    setDeleting(bomId);
-    await deleteBom(bomId);
-    await refreshBomList();
-    setDeleting(null);
-  };
-
-  const handleClose = () => {
-    onSuccess(); // refresh parent data on close
-    onClose();
+  const handleReset = () => {
+    if (dirty && !confirm('변경사항이 저장되지 않았습니다. 되돌릴까요?')) return;
+    setLines(initialLines);
+    setDirty(false);
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50">
-      <div className="bg-white w-full max-w-lg mx-4 sm:mx-auto max-h-[90vh] overflow-y-auto rounded-t-xl sm:rounded-xl shadow-xl flex flex-col">
-        <div className="flex justify-between items-center px-6 py-4 border-b">
-          <h2 className="font-bold text-slate-800">BOM 관리</h2>
-          <button onClick={handleClose} className="text-slate-400 hover:text-slate-600 text-xl">✕</button>
+    <div className="card">
+      <div className="flex items-start justify-between gap-3 mb-4 pb-3 border-b border-slate-100">
+        <div>
+          <p className="text-xs text-slate-400 font-mono">{product.code}</p>
+          <h3 className="font-bold text-slate-800 text-lg">{product.name}</h3>
+          <p className="text-xs text-slate-500 mt-1">자재 {lines.length}종 · 예상 원가 <span className="font-medium text-slate-700">{Math.round(totalCost).toLocaleString()}원</span> / 완제품 1단위</p>
         </div>
-        <div className="p-4 sm:p-6 space-y-4 overflow-y-auto flex-1">
-          <div>
-            <label className="block text-sm font-medium mb-1">완제품 *</label>
-            <select value={productId} onChange={e => { setProductId(e.target.value); setMaterialId(''); }} className="input">
-              <option value="">선택하세요</option>
-              {products.map(p => <option key={p.id} value={p.id}>{p.name} ({p.code})</option>)}
-            </select>
-          </div>
-
-          {productId && existingBom.length > 0 && (
-            <div>
-              <p className="text-sm font-medium mb-2 text-slate-600">현재 BOM 구성</p>
-              <div className="border rounded-lg overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-50">
-                    <tr>
-                      <th className="text-left px-3 py-2 text-xs text-slate-500 font-medium">원재료</th>
-                      <th className="text-right px-3 py-2 text-xs text-slate-500 font-medium">소요량</th>
-                      <th className="w-12"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {existingBom.map((b: any) => (
-                      <tr key={b.id} className="border-t border-slate-100">
-                        <td className="px-3 py-2">{b.material?.name} <span className="text-slate-400 text-xs">({b.material?.code})</span></td>
-                        <td className="px-3 py-2 text-right">{b.quantity} {b.material?.unit}</td>
-                        <td className="px-3 py-2 text-center">
-                          <button
-                            onClick={() => handleDelete(b.id)}
-                            disabled={deleting === b.id}
-                            className="text-red-400 hover:text-red-600 text-xs"
-                          >
-                            삭제
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          <div className="border-t pt-4">
-            <p className="text-sm font-medium mb-3">원재료 추가</p>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs text-slate-500 mb-1">원재료 *</label>
-                <select value={materialId} onChange={e => setMaterialId(e.target.value)} className="input" disabled={!productId}>
-                  <option value="">선택하세요</option>
-                  {availableMaterials.map(p => <option key={p.id} value={p.id}>{p.name} ({p.code})</option>)}
-                </select>
-                {productId && availableMaterials.length === 0 && (
-                  <p className="text-xs text-slate-400 mt-1">추가 가능한 원재료가 없습니다.</p>
-                )}
-              </div>
-              <div>
-                <label className="block text-xs text-slate-500 mb-1">소요량 *</label>
-                <input
-                  type="number" min="0.001" step="0.001" value={quantity}
-                  onChange={e => setQuantity(parseFloat(e.target.value) || 1)}
-                  onFocus={e => e.target.select()}
-                  className="input"
-                />
-              </div>
-              <button
-                onClick={handleSubmit}
-                disabled={!productId || !materialId || quantity <= 0 || submitting}
-                className="btn-primary disabled:opacity-50"
-              >
-                {submitting ? '등록 중...' : '+ 원재료 추가'}
-              </button>
-            </div>
-          </div>
-        </div>
-        <div className="px-4 sm:px-6 py-4 border-t">
-          <button onClick={handleClose} className="w-full btn-secondary">완료</button>
+        <div className="flex gap-2">
+          <button
+            onClick={handleReset}
+            disabled={!dirty || saving}
+            className="px-3 py-1.5 text-sm rounded border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+          >
+            되돌리기
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={!dirty || saving || hasInvalid}
+            className="btn-primary px-4 py-1.5 text-sm disabled:opacity-50"
+          >
+            {saving ? '저장 중...' : dirty ? '저장' : '저장됨'}
+          </button>
         </div>
       </div>
+
+      {/* 자재 추가 검색 */}
+      <div className="mb-4">
+        <div className="relative">
+          <input
+            type="text"
+            value={matSearch}
+            onChange={e => setMatSearch(e.target.value)}
+            placeholder="원자재·부자재 검색 후 클릭해 추가..."
+            className="input text-sm"
+          />
+        </div>
+        {matSearch && (
+          <div className="mt-1 border border-slate-200 rounded-md max-h-48 overflow-y-auto bg-white">
+            {filteredCandidates.length === 0 ? (
+              <div className="text-center text-slate-400 text-xs py-3">결과 없음</div>
+            ) : filteredCandidates.map(c => {
+              const meta = TYPE_BADGE[c.product_type] || TYPE_BADGE.RAW;
+              return (
+                <button
+                  key={c.id}
+                  onClick={() => addLine(c)}
+                  className="w-full text-left px-3 py-2 hover:bg-blue-50 flex items-center justify-between gap-2"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className={`badge text-[10px] ${meta.cls}`}>{meta.label}</span>
+                      <span className="text-sm font-medium text-slate-700 truncate">{c.name}</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 font-mono">{c.code} · 단가 {Number(c.cost || 0).toLocaleString()}원</p>
+                  </div>
+                  <span className="text-blue-600 text-sm font-medium">+ 추가</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* BOM 행 목록 */}
+      {lines.length === 0 ? (
+        <div className="text-center py-10 text-slate-400 border-2 border-dashed border-slate-200 rounded-lg">
+          <p className="text-sm">위 검색창에서 자재를 추가하세요.</p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[700px]">
+            <thead className="text-xs text-slate-500">
+              <tr className="border-b border-slate-200">
+                <th className="text-left font-medium py-2 w-10">#</th>
+                <th className="text-left font-medium py-2">자재</th>
+                <th className="text-right font-medium py-2 w-28">수량 *</th>
+                <th className="text-right font-medium py-2 w-24">손실률(%)</th>
+                <th className="text-left font-medium py-2 min-w-[160px]">메모</th>
+                <th className="text-right font-medium py-2 w-24">실소요</th>
+                <th className="w-28"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {lines.map((line, idx) => {
+                const mat = line.material;
+                const typeMeta = mat ? (TYPE_BADGE[mat.product_type] || TYPE_BADGE.RAW) : null;
+                const actual = line.quantity * (1 + line.loss_rate / 100);
+                return (
+                  <tr key={(line.id || 'new') + '-' + idx} className="border-b border-slate-100">
+                    <td className="py-2">
+                      <div className="flex flex-col gap-0.5">
+                        <button onClick={() => moveLine(idx, -1)} disabled={idx === 0} className="text-slate-300 hover:text-slate-600 text-xs leading-none disabled:opacity-30">▲</button>
+                        <button onClick={() => moveLine(idx, 1)} disabled={idx === lines.length - 1} className="text-slate-300 hover:text-slate-600 text-xs leading-none disabled:opacity-30">▼</button>
+                      </div>
+                    </td>
+                    <td className="py-2">
+                      <div className="flex items-center gap-2">
+                        {typeMeta && <span className={`badge text-[10px] ${typeMeta.cls}`}>{typeMeta.label}</span>}
+                        <div className="min-w-0">
+                          <p className="font-medium text-slate-700 truncate">{mat?.name || '?'}</p>
+                          <p className="text-[11px] text-slate-400 font-mono">{mat?.code}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="py-2">
+                      <div className="flex items-center justify-end gap-1">
+                        <input
+                          type="number"
+                          min="0.001"
+                          step="0.001"
+                          value={line.quantity}
+                          onChange={e => updateLine(idx, { quantity: parseFloat(e.target.value) || 0 })}
+                          onFocus={e => e.target.select()}
+                          className="input text-right py-1 w-20"
+                        />
+                        <span className="text-xs text-slate-400 w-8">{mat?.unit || '개'}</span>
+                      </div>
+                    </td>
+                    <td className="py-2">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="0.1"
+                        value={line.loss_rate}
+                        onChange={e => updateLine(idx, { loss_rate: Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)) })}
+                        onFocus={e => e.target.select()}
+                        className="input text-right py-1 w-20"
+                      />
+                    </td>
+                    <td className="py-2 pr-2">
+                      <input
+                        type="text"
+                        value={line.notes}
+                        onChange={e => updateLine(idx, { notes: e.target.value })}
+                        placeholder="비고 (선택)"
+                        className="input py-1 text-sm"
+                      />
+                    </td>
+                    <td className="py-2 text-right text-xs text-slate-600">
+                      <span className={line.loss_rate > 0 ? 'text-amber-600 font-medium' : ''}>
+                        {actual.toFixed(3).replace(/\.?0+$/, '')}
+                      </span>
+                      <span className="text-slate-400 ml-0.5">{mat?.unit || ''}</span>
+                    </td>
+                    <td className="py-2 text-right">
+                      <button
+                        onClick={() => removeLine(idx)}
+                        className="text-xs text-red-400 hover:text-red-600"
+                      >
+                        제거
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {dirty && (
+        <p className="mt-3 text-xs text-amber-600">저장되지 않은 변경사항이 있습니다.</p>
+      )}
     </div>
   );
 }

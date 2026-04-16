@@ -97,7 +97,8 @@ export default function CustomersPage() {
   const [gradeFilter, setGradeFilter] = useState('');
   const [hasConsult, setHasConsult] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>('recent_consult');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [editCustomer, setEditCustomer] = useState<Customer | null>(null);
   const [upgrading, setUpgrading] = useState(false);
@@ -133,11 +134,21 @@ export default function CustomersPage() {
     }
   }, []);
 
-  // 디바운스 검색 / 필터
+  // 디바운스 검색 / 필터: 검색어·필터·정렬 조건이 있을 때만 조회
   useEffect(() => {
+    const hasCondition = search.trim() !== '' || gradeFilter !== '' || hasConsult;
+    if (!hasCondition) {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      // 모든 조건이 비워지면 리스트를 비우고 빈 상태로 복귀
+      setCustomers([]);
+      setTotal(0);
+      setHasSearched(false);
+      return;
+    }
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       setPage(1);
+      setHasSearched(true);
       fetchCustomers(search, gradeFilter, 1, hasConsult, sortKey);
     }, 300);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
@@ -145,7 +156,7 @@ export default function CustomersPage() {
 
   // 페이지 변경
   useEffect(() => {
-    if (page > 1) fetchCustomers(search, gradeFilter, page, hasConsult, sortKey);
+    if (page > 1 && hasSearched) fetchCustomers(search, gradeFilter, page, hasConsult, sortKey);
   }, [page]);
 
   // 자동 포커스
@@ -318,7 +329,19 @@ export default function CustomersPage() {
           </tr>
         </thead>
         <tbody>
-          {loading ? (
+          {!hasSearched && !loading ? (
+            <tr>
+              <td colSpan={6} className="py-14 text-center">
+                <div className="inline-flex flex-col items-center gap-2 text-slate-400">
+                  <svg className="w-10 h-10 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                  <p className="text-sm">이름·연락처·주소·제품명으로 검색하거나 필터를 지정해 고객을 조회하세요.</p>
+                  <p className="text-xs text-slate-400">예) "김", "010-1234", "홍삼", 등급/상담 이력/정렬 선택</p>
+                </div>
+              </td>
+            </tr>
+          ) : loading ? (
             <tr>
               <td colSpan={6} className="text-center text-slate-400 py-8">
                 로딩 중...

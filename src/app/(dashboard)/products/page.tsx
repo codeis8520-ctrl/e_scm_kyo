@@ -4,11 +4,14 @@ import { useState, useEffect, useCallback } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import ProductModal from './ProductModal';
 
+type ProductType = 'FINISHED' | 'RAW' | 'SUB';
+
 interface Product {
   id: string;
   name: string;
   code: string;
   category_id: string | null;
+  product_type: ProductType;
   unit: string;
   price: number;
   cost: number | null;
@@ -19,10 +22,17 @@ interface Product {
   category?: { id: string; name: string };
 }
 
+const TYPE_BADGE: Record<ProductType, { label: string; cls: string }> = {
+  FINISHED: { label: '완제품', cls: 'bg-blue-100 text-blue-700' },
+  RAW:      { label: '원자재', cls: 'bg-emerald-100 text-emerald-700' },
+  SUB:      { label: '부자재', cls: 'bg-amber-100 text-amber-700' },
+};
+
 export default function ProductsPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState('');
   const [activeFilter, setActiveFilter] = useState<'' | 'true' | 'false'>('');
+  const [typeFilter, setTypeFilter] = useState<'' | ProductType>('');
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editProduct, setEditProduct] = useState<Product | null>(null);
@@ -37,11 +47,12 @@ export default function ProductsPage() {
       .order('name');
 
     if (activeFilter !== '') query = (query as any).eq('is_active', activeFilter === 'true');
+    if (typeFilter !== '') query = (query as any).eq('product_type', typeFilter);
 
     const { data } = await query;
     setProducts(data || []);
     setLoading(false);
-  }, [activeFilter]);
+  }, [activeFilter, typeFilter]);
 
   useEffect(() => { fetchProducts(); }, [fetchProducts]);
 
@@ -92,6 +103,19 @@ export default function ProductsPage() {
             </button>
           ))}
         </div>
+        <div className="flex rounded-lg border border-slate-200 overflow-hidden text-sm">
+          {([['', '모든 유형'], ['FINISHED', '완제품'], ['RAW', '원자재'], ['SUB', '부자재']] as [string, string][]).map(([v, label]) => (
+            <button
+              key={v}
+              onClick={() => setTypeFilter(v as '' | ProductType)}
+              className={`px-3 py-1.5 font-medium transition-colors ${
+                typeFilter === v ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="overflow-x-auto">
@@ -101,6 +125,7 @@ export default function ProductsPage() {
               <th></th>
               <th>제품코드</th>
               <th>제품명</th>
+              <th>유형</th>
               <th>바코드</th>
               <th>카테고리</th>
               <th>단위</th>
@@ -114,9 +139,9 @@ export default function ProductsPage() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={10} className="text-center text-slate-400 py-8">로딩 중...</td></tr>
+              <tr><td colSpan={13} className="text-center text-slate-400 py-8">로딩 중...</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={11} className="text-center text-slate-400 py-8">
+              <tr><td colSpan={13} className="text-center text-slate-400 py-8">
                 {search ? `"${search}" 검색 결과 없음` : '등록된 제품이 없습니다'}
               </td></tr>
             ) : filtered.map(product => {
@@ -135,6 +160,12 @@ export default function ProductsPage() {
                   </td>
                   <td className="font-mono text-xs text-slate-500">{product.code}</td>
                   <td className="font-medium">{product.name}</td>
+                  <td>
+                    {(() => {
+                      const meta = TYPE_BADGE[product.product_type as ProductType] || TYPE_BADGE.FINISHED;
+                      return <span className={`badge ${meta.cls}`}>{meta.label}</span>;
+                    })()}
+                  </td>
                   <td className="font-mono text-xs text-slate-400">{product.barcode || '-'}</td>
                   <td className="text-sm text-slate-500">{product.category?.name || '-'}</td>
                   <td className="text-sm text-slate-500">{product.unit}</td>
