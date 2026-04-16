@@ -717,14 +717,16 @@ function NewOrderModal({ products, branches, defaultBranchId, factories, onClose
                     {preview.map((p, i) => {
                       const actual = Math.ceil(p.required);
                       const hasLoss = p.loss_rate > 0;
+                      const rawUnit = String(p.unit || '').trim();
+                      const unit = rawUnit && !/^\d+$/.test(rawUnit) ? rawUnit : '개';
                       return (
                         <tr key={i}>
                           <td className="px-3 py-1.5">{p.material_name}</td>
                           <td className="px-3 py-1.5 text-right">
-                            <span className="font-medium">{actual.toLocaleString()}</span> {p.unit || '개'}
+                            <span className="font-medium">{actual.toLocaleString()}</span> {unit}
                             {hasLoss && (
                               <span className="block text-[10px] text-slate-400">
-                                {p.base_required}{p.unit || '개'} × loss {p.loss_rate}% → 올림
+                                {p.base_required}{unit} × loss {p.loss_rate}% → 올림
                               </span>
                             )}
                           </td>
