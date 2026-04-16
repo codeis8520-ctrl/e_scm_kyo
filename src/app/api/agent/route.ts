@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server';
 import { miniMaxClient, MiniMaxMessage, type TokenUsage } from '@/lib/ai/client';
 import { AGENT_TOOLS, WRITE_TOOLS, executeTool } from '@/lib/ai/tools';
 import { DB_SCHEMA, BUSINESS_RULES } from '@/lib/ai/schema';
-import { loadMemories, extractMemory, extractMemoryFromWrite } from '@/lib/ai/memory';
+import { loadMemories, bumpMemoryUsage, extractMemory, extractMemoryFromWrite } from '@/lib/ai/memory';
 
 const SYSTEM_PROMPT = `당신은 경옥채(한약·건강기능식품 전문 기업)의 사내 ERP AI 직원입니다.
 직원이 자연어로 요청하면 도구를 사용해 실제 데이터를 조회·처리합니다.
@@ -106,7 +106,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ── 메모리 로딩 ──────────────────────────────────────────────────────────
-    const memories = await loadMemories(db).catch(() => '');
+    const { text: memoriesText, ids: memoryIds } = await loadMemories(db).catch(() => ({ text: '', ids: [] as string[] }));
 
     // ── 사용자 컨텍스트 주입 ─────────────────────────────────────────────────
     const now = new Date();
@@ -125,7 +125,7 @@ export async function POST(req: NextRequest) {
     // system 프롬프트를 static(캐싱) / dynamic(매 요청)으로 분리
     const dynamicContext = [
       contextLines ? `\n== 현재 사용자 == ${contextLines}` : '',
-      memories ? `\n${memories}` : '',
+      memoriesText ? `\n${memoriesText}` : '',
     ].filter(Boolean).join('');
 
     const messages: MiniMaxMessage[] = [
@@ -247,8 +247,11 @@ export async function POST(req: NextRequest) {
       console.log(`[Agent] Completed. Tools: ${toolsUsed.join(', ')} | Tokens: in=${totalUsage.input_tokens} out=${totalUsage.output_tokens} cached=${totalUsage.cache_read_tokens}`);
     }
 
-    // ── 대화 로그 저장 (fire-and-forget) ──────────────────────────────────────
+    // ── 대화 로그 저장 + 메모리 usage_count 증분 (fire-and-forget) ───────────
     const isSuccess = !!finalResponse && !finalResponse.includes('오류');
+    if (isSuccess && memoryIds.length) {
+      bumpMemoryUsage(db, memoryIds).catch(() => {});
+    }
     db.from('agent_conversations').insert({
       session_id: body.session_id || null,
       user_id: context?.userId || null,
@@ -442,8 +445,8 @@ function buildConfirmDescription(toolName: string, args: Record<string, any>): s
       lines.push('• 재고가 자동으로 증가합니다.');
       break;
     case 'create_production_order':
-      lines.push('🏭 생산 지시서 생성 확인');
-      add('제품', args.product_name); add('지점', args.branch_name);
+      lines.push('🏭 생산 지시서 생성 확인 (OEM 위탁)');
+      add('제품', args.product_name); add('입고 지점', args.branch_name);
       add('수량', `${args.quantity}개`); add('메모', args.memo);
       break;
     case 'start_production_order':
@@ -453,8 +456,8 @@ function buildConfirmDescription(toolName: string, args: Record<string, any>): s
     case 'complete_production_order':
       lines.push('🎯 생산 완료 확인');
       add('지시번호', args.order_number);
-      lines.push('• BOM 원재료가 재고에서 차감됩니다.');
-      lines.push('• 완제품 재고가 증가합니다.');
+      lines.push('• 완제품이 입고 지점 재고로 증가합니다.');
+      lines.push('• OEM 공장이 원재료를 자체 조달하므로 재고 차감은 없습니다.');
       break;
     case 'send_sms':
       lines.push('📱 SMS 발송 확인');

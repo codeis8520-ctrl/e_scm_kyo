@@ -13,21 +13,23 @@
 
 // ─── 메모리 로딩 (시스템 프롬프트 주입용) ─────────────────────────────────────
 
-export async function loadMemories(db: any): Promise<string> {
+export async function loadMemories(db: any): Promise<{ text: string; ids: string[] }> {
   const { data } = await db
     .from('agent_memories')
-    .select('memory_type, category, content')
+    .select('id, memory_type, category, content')
     .eq('is_active', true)
     .order('usage_count', { ascending: false })
     .limit(20);
 
-  if (!data?.length) return '';
+  if (!data?.length) return { text: '', ids: [] };
 
   const sections: Record<string, string[]> = {};
+  const ids: string[] = [];
   for (const m of data) {
     const key = m.category;
     if (!sections[key]) sections[key] = [];
     sections[key].push(`[${m.memory_type}] ${m.content}`);
+    ids.push(m.id);
   }
 
   const lines = ['== 축적된 업무 지식 (과거 경험) =='];
@@ -36,7 +38,28 @@ export async function loadMemories(db: any): Promise<string> {
     lines.push(...entries);
   }
 
-  return lines.join('\n');
+  return { text: lines.join('\n'), ids };
+}
+
+// 로드된 메모리 ID에 대해 usage_count를 +1 (참조 기록).
+// 호출 측에서 fire-and-forget으로 사용.
+export async function bumpMemoryUsage(db: any, ids: string[]) {
+  if (!ids?.length) return;
+  // Supabase JS는 expression update를 지원하지 않아, 1건씩 raw SQL 없이 처리.
+  // RPC가 없으므로 간단히 조회 후 업데이트. (최대 20건이라 비용 미미)
+  const { data } = await db
+    .from('agent_memories')
+    .select('id, usage_count')
+    .in('id', ids);
+  if (!data?.length) return;
+  const now = new Date().toISOString();
+  await Promise.all(
+    data.map((m: any) =>
+      db.from('agent_memories')
+        .update({ usage_count: (m.usage_count || 0) + 1, last_used_at: now })
+        .eq('id', m.id),
+    ),
+  );
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -208,14 +231,14 @@ export async function extractMemory(
       break;
     }
 
-    // 생산 완료 → 흐름 패턴
+    // 생산 완료 → 흐름 패턴 (OEM 위탁 모델)
     case 'complete_production_order': {
       if (!parsed.error) {
         await upsertMemory(db, {
           memory_type: 'pattern',
           category: 'production',
           source_key: `pattern:production_flow`,
-          content: `생산 흐름: create_production_order → start_production_order → complete_production_order. 완료 시 BOM 원재료 자동 차감, 완제품 재고 증가`,
+          content: `생산 흐름(OEM 위탁): create_production_order(공장·입고지점 지정) → start_production_order → complete_production_order. 완료 시 완제품만 입고 지점에 증가. 원/부자재 차감 없음(OEM 자체 조달). BOM은 원가 산정 참고용.`,
           source_query: toolName,
         });
       }
