@@ -33,6 +33,7 @@ interface OrderRow {
   branch: { id: string; name: string } | null;
   customer: { id: string; name: string; phone: string } | null;
   items: { id: string; quantity: number }[];
+  shipments: { branch_id: string | null }[] | null;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -110,7 +111,8 @@ export default function SalesListTab() {
         approval_no, card_info,
         branch:branches(id, name),
         customer:customers(id, name, phone),
-        items:sales_order_items(id, quantity)
+        items:sales_order_items(id, quantity),
+        shipments(branch_id)
       `)
       .gte('ordered_at', `${startDate}T00:00:00`)
       .lte('ordered_at', `${endDate}T23:59:59`)
@@ -358,7 +360,22 @@ export default function SalesListTab() {
                         </div>
                       ) : <span className="text-slate-300 text-xs">비회원</span>}
                     </td>
-                    <td className="text-xs text-slate-500">{o.branch?.name || '-'}</td>
+                    <td className="text-xs text-slate-500">
+                      {o.branch?.name || '-'}
+                      {(() => {
+                        const shipFromId = o.shipments?.[0]?.branch_id;
+                        if (!shipFromId || shipFromId === o.branch?.id) return null;
+                        const shipFromName = branches.find(b => b.id === shipFromId)?.name || '타지점';
+                        return (
+                          <span
+                            className="ml-1 inline-flex items-center px-1 text-[10px] rounded bg-indigo-50 text-indigo-600 border border-indigo-100"
+                            title={`출고: ${shipFromName}`}
+                          >
+                            🚚{shipFromName}
+                          </span>
+                        );
+                      })()}
+                    </td>
                     <td className="text-center text-xs text-slate-500">{(o.items || []).length}종</td>
                     <td>
                       <span className="text-sm">{PAY_LABEL[o.payment_method] || o.payment_method}</span>
@@ -457,7 +474,7 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
           .select('id, payment_method, amount, approval_no, card_info, memo, paid_at')
           .eq('sales_order_id', orderId).order('paid_at').then((r: any) => r.error ? { data: [] } : r),
         sb.from('shipments')
-          .select('*')
+          .select('*, branch:branches(id, name)')
           .eq('sales_order_id', orderId).maybeSingle(),
       ]);
       if (!active) return;
@@ -659,6 +676,11 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
               <div>
                 <p className="text-sm font-semibold text-slate-700 mb-2">택배</p>
                 <div className="p-3 rounded-md border border-slate-200 text-sm space-y-1">
+                  {shipment.branch?.id && shipment.branch.id !== order.branch?.id && (
+                    <p className="text-[11px] text-indigo-600 bg-indigo-50 border border-indigo-100 rounded px-2 py-1 inline-block">
+                      🚚 출고 지점: <span className="font-semibold">{shipment.branch.name}</span> (판매 지점과 다름 — 재고는 {shipment.branch.name}에서 차감됨)
+                    </p>
+                  )}
                   <p><span className="text-slate-500 text-xs mr-2">받는 분</span>
                     {shipment.recipient_name} · {shipment.recipient_phone}</p>
                   <p className="text-slate-600">

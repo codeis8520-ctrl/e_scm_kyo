@@ -1191,7 +1191,13 @@ export async function processPosCheckout(payload: CheckoutPayload) {
 
   // ④ 재고 차감 + 이동 기록 (출고 지점 기준)
   const stockUpdates: Record<string, number> = {};
-  const movementMemo = stockBranchId === branchId ? null : `판매 지점: ${branchCode}, 출고 지점: ${stockBranchId}`;
+  let movementMemo: string | null = null;
+  if (stockBranchId !== branchId) {
+    const { data: bns } = await supabase
+      .from('branches').select('id, name').in('id', [branchId, stockBranchId]);
+    const nameOf = (id: string) => (bns as any[] | null)?.find(b => b.id === id)?.name || id;
+    movementMemo = `판매: ${nameOf(branchId)}, 출고: ${nameOf(stockBranchId)}`;
+  }
   for (const item of cart) {
     const { data: inv } = await supabase
       .from('inventories').select('id, quantity')
