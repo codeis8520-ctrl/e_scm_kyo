@@ -4,8 +4,6 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { createClient } from '@/lib/supabase/client';
 import { processPosCheckout, createCustomer } from '@/lib/actions';
-import { requestCardApproval, isUsingMock } from '@/lib/card-terminal';
-import RefundModal from './RefundModal';
 import ReceiptModal from './ReceiptModal';
 
 const SalesListTab = dynamic(() => import('./SalesListTab'), {
@@ -104,7 +102,6 @@ export default function POSPage() {
   const [processing, setProcessing] = useState(false);
   const [usePoints, setUsePoints] = useState(false);
   const [pointsToUse, setPointsToUse] = useState(0);
-  const [showRefundModal, setShowRefundModal] = useState(false);
   const [receiptData, setReceiptData] = useState<any>(null);
   const [editingQtyId, setEditingQtyId] = useState<string | null>(null);
   const [editingQtyVal, setEditingQtyVal] = useState('');
@@ -113,9 +110,6 @@ export default function POSPage() {
   const [editingDiscountType, setEditingDiscountType] = useState<'amount' | 'percent'>('amount');
   const [discountType, setDiscountType] = useState<'amount' | 'percent'>('amount');
   const [discountInput, setDiscountInput] = useState('');
-  const [cardApprovalState, setCardApprovalState] = useState<'idle' | 'waiting' | 'approved' | 'error'>('idle');
-  const [cardApprovalResult, setCardApprovalResult] = useState<{ approvalNo?: string; cardInfo?: string } | null>(null);
-  const [cardApprovalError, setCardApprovalError] = useState('');
   // 고객 상세 추가 모달
   const [showAddCustomerModal, setShowAddCustomerModal] = useState(false);
   // 고객 선택 시 로드되는 상담·구매 요약
@@ -137,6 +131,8 @@ export default function POSPage() {
     sender_name: '', sender_phone: '',
     sender_zipcode: '', sender_address: '', sender_address_detail: '',
   });
+  // 출고 지점 (택배 활성 시. 기본 = 판매 지점)
+  const [shipFromBranchId, setShipFromBranchId] = useState<string>('');
 
   // Daum postcode script (한 번 로드)
   useEffect(() => {
@@ -236,11 +232,26 @@ export default function POSPage() {
         setSelectedBranch(branchesData[0].id);
       }
 
+      // 출고 지점 기본 = 판매 지점 (사용자가 택배 활성 시 변경 가능)
+      if (isBranchUser && initialBranchId) {
+        setShipFromBranchId(initialBranchId);
+      } else if (branchesData.length > 0) {
+        setShipFromBranchId(branchesData[0].id);
+      }
+
       setLoading(false);
     };
     fetchData();
     searchRef.current?.focus();
   }, [isBranchUser, initialBranchId]);
+
+  // 택배 미활성 상태에서 판매 지점 변경 시 출고 지점도 동기화
+  useEffect(() => {
+    if (!shipping.enabled && selectedBranch) {
+      setShipFromBranchId(selectedBranch);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedBranch]);
 
   // ── 고객 검색 ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -443,31 +454,6 @@ export default function POSPage() {
   const cashReceivedNum = parseInt(cashReceived.replace(/,/g, '')) || 0;
   const change = paymentMethod === 'cash' && cashReceivedNum > 0 ? cashReceivedNum - finalAmount : 0;
 
-  // ── 카드 단말기 승인 요청 ──────────────────────────────────────────────────
-  const handleCardApproval = async () => {
-    if (cart.length === 0 || !selectedBranch) return;
-    setCardApprovalState('waiting');
-    setCardApprovalError('');
-
-    const taxAmount = Math.round(finalAmount * 10 / 110);
-    const result = await requestCardApproval(finalAmount, taxAmount);
-
-    if (!result.success) {
-      setCardApprovalState('error');
-      setCardApprovalError(result.errorMessage || '승인 실패');
-      return;
-    }
-
-    const cardInfo = [
-      result.cardName,
-      result.cardLast4 ? `*${result.cardLast4}` : undefined,
-      result.installment && result.installment !== '00' ? `${parseInt(result.installment)}개월` : '일시불',
-    ].filter(Boolean).join(' ');
-
-    setCardApprovalResult({ approvalNo: result.approvalNo, cardInfo });
-    setCardApprovalState('approved');
-  };
-
   // ── 결제 처리 ─────────────────────────────────────────────────────────────
   const handlePayment = async () => {
     if (cart.length === 0) return;
@@ -493,10 +479,10 @@ export default function POSPage() {
         paymentSplits.push({
           method: paymentMethod,
           amount: primaryAmt,
-          approvalNo: isDeptStore && deptApprovalNo ? deptApprovalNo : cardApprovalResult?.approvalNo,
+          approvalNo: isDeptStore && deptApprovalNo ? deptApprovalNo : undefined,
           cardInfo: isDeptStore
             ? [deptCardCompany, deptInstallment !== '0' ? `${deptInstallment}개월` : '일시불'].filter(Boolean).join(' · ')
-            : cardApprovalResult?.cardInfo,
+            : undefined,
         });
       }
       paymentSplits.push(...extraPayments.filter(p => p.amount > 0));
@@ -537,12 +523,13 @@ export default function POSPage() {
         pointsToUse,
         cashReceived: cashReceivedNum > 0 ? cashReceivedNum : undefined,
         userId: getCookie('user_id'),
-        approvalNo: isDeptStore && deptApprovalNo ? deptApprovalNo : cardApprovalResult?.approvalNo,
+        approvalNo: isDeptStore && deptApprovalNo ? deptApprovalNo : undefined,
         cardInfo: isDeptStore
           ? [deptCardCompany, deptInstallment !== '0' ? `${deptInstallment}개월` : '일시불'].filter(Boolean).join(' · ')
-          : cardApprovalResult?.cardInfo,
+          : undefined,
         memo: memoCombined,
         paymentSplits: paymentSplits.length > 0 ? paymentSplits.map(p => ({ method: p.method, amount: p.amount, approvalNo: p.approvalNo, cardInfo: p.cardInfo })) : undefined,
+        shipFromBranchId: useShipping ? (shipFromBranchId || selectedBranch) : undefined,
         shipping: useShipping ? {
           recipient_name: shipping.recipient_name.trim(),
           recipient_phone: shipping.recipient_phone.trim(),
@@ -583,8 +570,10 @@ export default function POSPage() {
         finalAmount, pointsUsed: usePoints ? pointsToUse : 0, pointsEarned: pointsEarned || 0,
         paymentMethod, cashReceived: paymentMethod === 'cash' && cashReceivedNum > 0 ? cashReceivedNum : undefined,
         change: paymentMethod === 'cash' && change > 0 ? change : undefined,
-        approvalNo: cardApprovalResult?.approvalNo,
-        cardInfo: cardApprovalResult?.cardInfo,
+        approvalNo: isDeptStore && deptApprovalNo ? deptApprovalNo : undefined,
+        cardInfo: isDeptStore
+          ? [deptCardCompany, deptInstallment !== '0' ? `${deptInstallment}개월` : '일시불'].filter(Boolean).join(' · ')
+          : undefined,
         orderedAt: new Date().toISOString(),
       });
 
@@ -596,9 +585,6 @@ export default function POSPage() {
       setPointsToUse(0);
       setDiscountInput('');
       setCashReceived('');
-      setCardApprovalState('idle');
-      setCardApprovalResult(null);
-      setCardApprovalError('');
       setOrderMemo('');
       setShipping({
         enabled: false,
@@ -609,6 +595,7 @@ export default function POSPage() {
         sender_name: '', sender_phone: '',
         sender_zipcode: '', sender_address: '', sender_address_detail: '',
       });
+      setShipFromBranchId(selectedBranch);
       setSplitMode(false);
       setExtraPayments([]);
       // 백화점 수기입력 초기화
@@ -1117,6 +1104,27 @@ export default function POSPage() {
             </label>
             {shipping.enabled && (
               <div className="p-3 space-y-3">
+                {/* 출고 지점 */}
+                <div>
+                  <p className="text-[11px] font-semibold text-slate-500 uppercase mb-1">출고 지점</p>
+                  <select
+                    value={shipFromBranchId}
+                    onChange={e => setShipFromBranchId(e.target.value)}
+                    className="input text-sm"
+                  >
+                    {branches.map((b: any) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name}{b.id === selectedBranch ? ' (판매 지점)' : ''}{b.is_headquarters ? ' · 본사' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  {shipFromBranchId && shipFromBranchId !== selectedBranch && (
+                    <p className="text-[11px] text-amber-600 mt-1">
+                      판매 지점과 다릅니다. 재고는 출고 지점에서 차감됩니다.
+                    </p>
+                  )}
+                </div>
+
                 {/* 수령인 */}
                 <div className="space-y-2">
                   <p className="text-[11px] font-semibold text-slate-500 uppercase">수령인 (받는 분)</p>
@@ -1230,7 +1238,6 @@ export default function POSPage() {
                 onClick={() => {
                   setPaymentMethod(id as any);
                   setCashReceived('');
-                  setCardApprovalState('idle'); setCardApprovalResult(null); setCardApprovalError('');
                   if (id === 'cod' && !shipping.enabled) setShipping(p => ({ ...p, enabled: true }));
                 }}
                 className={`py-2 rounded-md text-sm font-medium transition-colors ${
@@ -1432,82 +1439,16 @@ export default function POSPage() {
             </div>
           )}
 
-          {/* 결제 버튼 — 카드(단말기): 승인 → 결제완료 2단계 / 백화점·나머지: 즉시 결제 */}
-          {paymentMethod === 'card' && !isDeptStore ? (
-            <div className="space-y-2">
-              {/* 카드 승인 상태 표시 */}
-              {cardApprovalState === 'waiting' && (
-                <div className="flex items-center gap-2 p-3 bg-blue-50 rounded-lg border border-blue-200 text-sm text-blue-700">
-                  <span className="animate-spin">⏳</span>
-                  <span>단말기에서 카드를 읽어주세요...</span>
-                </div>
-              )}
-              {cardApprovalState === 'approved' && cardApprovalResult && (
-                <div className="p-3 bg-green-50 rounded-lg border border-green-200 text-sm space-y-0.5">
-                  <p className="font-semibold text-green-700">승인 완료</p>
-                  {cardApprovalResult.cardInfo && <p className="text-green-600">{cardApprovalResult.cardInfo}</p>}
-                  {cardApprovalResult.approvalNo && <p className="text-xs text-slate-500">승인번호: {cardApprovalResult.approvalNo}</p>}
-                </div>
-              )}
-              {cardApprovalState === 'error' && (
-                <div className="p-3 bg-red-50 rounded-lg border border-red-200 text-sm text-red-600">
-                  {cardApprovalError}
-                </div>
-              )}
-
-              {cardApprovalState !== 'approved' ? (
-                <div className="space-y-1">
-                  {isUsingMock() && (
-                    <p className="text-center text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded py-1">
-                      테스트 모드 — 가상 단말기 응답 (2초 후 자동 승인)
-                    </p>
-                  )}
-                  <button
-                    onClick={handleCardApproval}
-                    disabled={cart.length === 0 || !selectedBranch || cardApprovalState === 'waiting'}
-                    className="w-full btn-primary py-3 text-base font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {cardApprovalState === 'waiting' ? '승인 대기 중...' : `카드 승인 요청 (${finalAmount.toLocaleString()}원)`}
-                  </button>
-                </div>
-              ) : (
-                <button
-                  onClick={handlePayment}
-                  disabled={processing}
-                  className="w-full py-3 text-base font-semibold rounded-lg bg-green-600 hover:bg-green-700 text-white disabled:opacity-50"
-                >
-                  {processing ? '처리 중...' : '결제 완료'}
-                </button>
-              )}
-            </div>
-          ) : (
-            <button
-              onClick={handlePayment}
-              disabled={cart.length === 0 || !selectedBranch || processing || (paymentMethod === 'cash' && cashReceivedNum > 0 && change < 0)}
-              className="w-full btn-primary py-3 text-base font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {processing ? '처리 중...' : `결제 (${finalAmount.toLocaleString()}원)`}
-            </button>
-          )}
+          {/* 결제 버튼 — 단말기 연동 없음(추후 적용). 클릭 시 즉시 완료 처리. */}
           <button
-            onClick={() => setShowRefundModal(true)}
-            className="w-full py-2 text-sm text-red-500 border border-red-200 rounded-lg hover:bg-red-50"
+            onClick={handlePayment}
+            disabled={cart.length === 0 || !selectedBranch || processing || (paymentMethod === 'cash' && cashReceivedNum > 0 && change < 0)}
+            className="w-full btn-primary py-3 text-base font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            환불 처리
+            {processing ? '처리 중...' : `결제 (${finalAmount.toLocaleString()}원)`}
           </button>
         </div>
       </div>
-
-      {showRefundModal && (
-        <RefundModal
-          branchId={selectedBranch}
-          onClose={() => setShowRefundModal(false)}
-          onSuccess={(returnNumber) => {
-            setShowRefundModal(false);
-            alert(`환불 완료\n환불번호: ${returnNumber}`);
-          }}
-        />
-      )}
 
       {receiptData && (
         <ReceiptModal

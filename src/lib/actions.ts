@@ -1045,6 +1045,7 @@ export interface CheckoutPayload {
   memo?: string;
   paymentSplits?: PaymentSplit[];   // 분할 결제. 비어있으면 단일 결제로 처리.
   shipping?: ShippingInfo | null;   // 택배 정보 (있으면 shipments 레코드 생성)
+  shipFromBranchId?: string;        // 출고 지점 (택배 활성 시). 없으면 branchId 사용. 판매 지점과 다르면 재고는 출고 지점에서 차감.
 }
 
 export async function processPosCheckout(payload: CheckoutPayload) {
@@ -1055,8 +1056,11 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     branchId, branchCode, branchChannel, customerId, gradePointRate,
     cart, totalAmount, discountAmount, finalAmount, paymentMethod,
     usePoints, pointsToUse, userId, approvalNo, cardInfo,
-    paymentSplits, shipping,
+    paymentSplits, shipping, shipFromBranchId,
   } = payload;
+
+  // 재고 차감/출고 지점: 택배 출고처가 판매 지점과 다르면 출고처에서 차감.
+  const stockBranchId = (shipping && shipFromBranchId) ? shipFromBranchId : branchId;
 
   // 분할 결제 정규화: 비어있으면 단일 결제 하나로 간주
   const splits: PaymentSplit[] = (paymentSplits && paymentSplits.length > 0)
@@ -1072,14 +1076,15 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     : 'mixed';
   const firstCard = splits.find(s => s.method === 'card' || s.method === 'card_keyin');
 
-  // ① 재고 사전 확인
+  // ① 재고 사전 확인 (출고 지점 기준)
   for (const item of cart) {
     const { data: inv } = await supabase
       .from('inventories').select('id, quantity')
-      .eq('branch_id', branchId).eq('product_id', item.productId).single();
+      .eq('branch_id', stockBranchId).eq('product_id', item.productId).single();
     const qty = (inv as any)?.quantity ?? 0;
     if (!inv || qty < item.quantity) {
-      return { error: `"${item.name}" 재고 부족 (현재: ${qty}개, 요청: ${item.quantity}개)` };
+      const where = stockBranchId === branchId ? '' : ' (출고 지점)';
+      return { error: `"${item.name}" 재고 부족${where} (현재: ${qty}개, 요청: ${item.quantity}개)` };
     }
   }
 
@@ -1139,7 +1144,7 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     const payloadBase: any = {
       source: 'STORE',
       sales_order_id: saleOrderId,
-      branch_id: branchId,
+      branch_id: stockBranchId, // 출고 지점
       sender_name: senderName,
       sender_phone: senderPhone,
       recipient_name: shipping.recipient_name,
@@ -1184,22 +1189,23 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     });
   }
 
-  // ④ 재고 차감 + 이동 기록
+  // ④ 재고 차감 + 이동 기록 (출고 지점 기준)
   const stockUpdates: Record<string, number> = {};
+  const movementMemo = stockBranchId === branchId ? null : `판매 지점: ${branchCode}, 출고 지점: ${stockBranchId}`;
   for (const item of cart) {
     const { data: inv } = await supabase
       .from('inventories').select('id, quantity')
-      .eq('branch_id', branchId).eq('product_id', item.productId).single();
+      .eq('branch_id', stockBranchId).eq('product_id', item.productId).single();
     const inv_ = inv as any;
     await db.from('inventories').update({ quantity: inv_.quantity - item.quantity }).eq('id', inv_.id);
     await db.from('inventory_movements').insert({
-      branch_id: branchId,
+      branch_id: stockBranchId,
       product_id: item.productId,
       movement_type: 'OUT',
       quantity: item.quantity,
       reference_id: saleOrderId,
       reference_type: 'POS_SALE',
-      memo: null,
+      memo: movementMemo,
     });
     stockUpdates[item.productId] = inv_.quantity - item.quantity;
   }
