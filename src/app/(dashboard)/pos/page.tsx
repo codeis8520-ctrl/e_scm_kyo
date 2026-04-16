@@ -736,7 +736,7 @@ export default function POSPage() {
 
       {/* 오른쪽: 장바구니 + 결제 */}
       <div className={`
-        sm:w-[400px] sm:static sm:flex sm:flex-col sm:shrink-0
+        sm:w-[440px] sm:static sm:flex sm:flex-col sm:shrink-0
         fixed bottom-0 left-0 right-0 z-50 flex flex-col
         bg-white rounded-t-2xl sm:rounded-lg shadow
         transition-transform duration-300 ease-in-out
@@ -754,7 +754,7 @@ export default function POSPage() {
         </div>
 
         {/* 장바구니 목록 */}
-        <div className="flex-1 overflow-auto p-3 space-y-2">
+        <div className="flex-1 overflow-auto p-3 space-y-2 min-h-[220px]">
           {cart.map(item => (
             <div key={item.productId} className="p-2.5 bg-slate-50 rounded-lg space-y-1.5">
               <div className="flex items-center gap-2">
@@ -926,9 +926,9 @@ export default function POSPage() {
                   <button onClick={clearCustomer} className="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
                 </div>
 
-                {/* 상담·구매 히스토리 요약 */}
+                {/* 상담·구매 히스토리 요약 — 장바구니 자리 잠식 방지용 최대 높이 */}
                 {(customerSummary.consultations.length > 0 || customerSummary.orders.length > 0) && (
-                  <div className="rounded-lg border border-slate-200 bg-white p-2 space-y-1.5 text-xs">
+                  <div className="rounded-lg border border-slate-200 bg-white p-2 space-y-1.5 text-xs max-h-[140px] overflow-y-auto">
                     {customerSummary.consultations.length > 0 && (
                       <div>
                         <p className="text-[10px] font-semibold text-slate-500 uppercase mb-0.5">최근 상담 {customerSummary.consultations.length}건</p>
@@ -1238,7 +1238,6 @@ export default function POSPage() {
                 onClick={() => {
                   setPaymentMethod(id as any);
                   setCashReceived('');
-                  if (id === 'cod' && !shipping.enabled) setShipping(p => ({ ...p, enabled: true }));
                 }}
                 className={`py-2 rounded-md text-sm font-medium transition-colors ${
                   paymentMethod === id ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
