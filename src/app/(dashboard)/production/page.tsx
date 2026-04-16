@@ -16,6 +16,8 @@ const TYPE_BADGE: Record<ProductType, { label: string; cls: string }> = {
   SUB:      { label: '부자재', cls: 'bg-amber-100 text-amber-700' },
 };
 
+interface Category { id: string; name: string; }
+
 interface Material {
   id: string;
   name: string;
@@ -23,6 +25,47 @@ interface Material {
   unit?: string;
   cost?: number | null;
   product_type: ProductType;
+  category_id?: string | null;
+  category?: { id: string; name: string } | null;
+}
+
+// ── 한글 초성 검색 ────────────────────────────────────────────────────────────
+//   "홍삼" → "ㅎㅅ"  /  "ㅎㅅ" 입력 시 "홍삼/흑삼" 매칭
+const HANGUL_INITIALS = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
+function getInitial(ch: string): string {
+  const code = ch.charCodeAt(0);
+  if (code >= 0xac00 && code <= 0xd7a3) {
+    const idx = Math.floor((code - 0xac00) / 588);
+    return HANGUL_INITIALS[idx] || ch;
+  }
+  return ch;
+}
+function extractInitials(s: string): string {
+  let out = '';
+  for (const ch of s) out += getInitial(ch);
+  return out;
+}
+function isAllInitials(s: string): boolean {
+  if (!s) return false;
+  for (const ch of s) {
+    if (!HANGUL_INITIALS.includes(ch)) return false;
+  }
+  return true;
+}
+// 초성 OR 부분문자열 매칭 (대소문자 무시)
+function materialMatch(mat: Material, queryRaw: string): boolean {
+  const q = queryRaw.trim();
+  if (!q) return true;
+  const name = mat.name || '';
+  const code = (mat.code || '').toLowerCase();
+  const ql = q.toLowerCase();
+  if (name.toLowerCase().includes(ql) || code.includes(ql)) return true;
+  // 초성 검색
+  if (isAllInitials(q)) {
+    const initials = extractInitials(name);
+    if (initials.includes(q)) return true;
+  }
+  return false;
 }
 
 interface BomLine {
@@ -62,6 +105,7 @@ const STATUS_BADGE: Record<string, string> = {
 export default function ProductionPage() {
   const [branches, setBranches]   = useState<any[]>([]);
   const [products, setProducts]   = useState<any[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [bomList, setBomList]     = useState<any[]>([]);
   const [orders, setOrders]       = useState<any[]>([]);
   const [loading, setLoading]     = useState(true);
@@ -88,8 +132,16 @@ export default function ProductionPage() {
         setSelectedBranch(rows[0].id);
       }
     });
-    supabase.from('products').select('id, name, code, unit, cost, product_type').eq('is_active', true).order('name').then(({ data }) => {
-      setProducts(data || []);
+    supabase
+      .from('products')
+      .select('id, name, code, unit, cost, product_type, category_id, category:categories(id, name)')
+      .eq('is_active', true)
+      .order('name')
+      .then(({ data }) => {
+        setProducts(data || []);
+      });
+    supabase.from('categories').select('id, name').order('name').then(({ data }) => {
+      setCategories((data as any) || []);
     });
   }, [isBranchUser]);
 
@@ -278,6 +330,7 @@ export default function ProductionPage() {
       {tab === 'bom' && (
         <BomComposerLayout
           products={products}
+          categories={categories}
           bomList={bomList}
           selectedFinishedId={selectedFinishedId}
           onSelectFinished={setSelectedFinishedId}
@@ -432,9 +485,10 @@ function NewOrderModal({ products, branchId, branchName, onClose, onSuccess }: {
 // ─── BOM 조립 레이아웃 (좌: 완제품, 우: Composer) ────────────────────────────
 
 function BomComposerLayout({
-  products, bomList, selectedFinishedId, onSelectFinished, onSaved,
+  products, categories, bomList, selectedFinishedId, onSelectFinished, onSaved,
 }: {
   products: any[];
+  categories: Category[];
   bomList: any[];
   selectedFinishedId: string;
   onSelectFinished: (id: string) => void;
@@ -536,6 +590,7 @@ function BomComposerLayout({
             product={selectedProduct}
             initialLines={selectedBomLines}
             candidates={materialCandidates}
+            categories={categories}
             onSaved={onSaved}
           />
         )}
@@ -545,15 +600,19 @@ function BomComposerLayout({
 }
 
 function BomComposer({
-  product, initialLines, candidates, onSaved,
+  product, initialLines, candidates, categories, onSaved,
 }: {
   product: Material;
   initialLines: BomLine[];
   candidates: Material[];
+  categories: Category[];
   onSaved: () => void;
 }) {
   const [lines, setLines] = useState<BomLine[]>(initialLines);
   const [matSearch, setMatSearch] = useState('');
+  const [typeFilter, setTypeFilter] = useState<'' | 'RAW' | 'SUB'>('');
+  const [categoryFilter, setCategoryFilter] = useState<string>('');
+  const [showBrowser, setShowBrowser] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
 
@@ -562,13 +621,35 @@ function BomComposer({
     setDirty(false);
   }, [initialLines]);
 
+  // 사용 가능한 카테고리 (현재 후보 자재에 실제로 존재하는 것만 노출)
+  const relevantCategoryIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const c of candidates) if (c.category_id) ids.add(c.category_id);
+    return ids;
+  }, [candidates]);
+  const relevantCategories = categories.filter(c => relevantCategoryIds.has(c.id));
+
+  // 타입별 카운트 (필터 chip 숫자 표기용)
+  const typeCounts = useMemo(() => {
+    let raw = 0, sub = 0;
+    for (const c of candidates) {
+      if (c.product_type === 'RAW') raw++;
+      else if (c.product_type === 'SUB') sub++;
+    }
+    return { raw, sub, all: raw + sub };
+  }, [candidates]);
+
   const usedIds = new Set(lines.map(l => l.material_id));
-  const filteredCandidates = (matSearch
-    ? candidates.filter(c =>
-        c.name.toLowerCase().includes(matSearch.toLowerCase()) ||
-        (c.code || '').toLowerCase().includes(matSearch.toLowerCase()))
-    : candidates
-  ).filter(c => !usedIds.has(c.id)).slice(0, 20);
+  const filteredCandidates = useMemo(() => {
+    return candidates.filter(c => {
+      if (usedIds.has(c.id)) return false;
+      if (typeFilter && c.product_type !== typeFilter) return false;
+      if (categoryFilter && c.category_id !== categoryFilter) return false;
+      if (!materialMatch(c, matSearch)) return false;
+      return true;
+    });
+  }, [candidates, usedIds, typeFilter, categoryFilter, matSearch]);
+  const shownCandidates = filteredCandidates.slice(0, 60);
 
   const addLine = (mat: Material) => {
     setLines(prev => {
@@ -664,40 +745,132 @@ function BomComposer({
         </div>
       </div>
 
-      {/* 자재 추가 검색 */}
-      <div className="mb-4">
-        <div className="relative">
-          <input
-            type="text"
-            value={matSearch}
-            onChange={e => setMatSearch(e.target.value)}
-            placeholder="원자재·부자재 검색 후 클릭해 추가..."
-            className="input text-sm"
-          />
+      {/* 자재 브라우저 (검색 + 타입/카테고리 필터 + 상시 리스트) */}
+      <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <div className="relative flex-1">
+            <input
+              type="text"
+              value={matSearch}
+              onChange={e => setMatSearch(e.target.value)}
+              placeholder="이름·코드 또는 초성 검색 (예: ㅎㅅ → 홍삼)"
+              className="input text-sm"
+            />
+            {matSearch && (
+              <button
+                onClick={() => setMatSearch('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-sm"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+          <button
+            onClick={() => setShowBrowser(s => !s)}
+            className="text-xs text-slate-500 hover:text-slate-700 whitespace-nowrap"
+          >
+            {showBrowser ? '접기' : '펼치기'}
+          </button>
         </div>
-        {matSearch && (
-          <div className="mt-1 border border-slate-200 rounded-md max-h-48 overflow-y-auto bg-white">
-            {filteredCandidates.length === 0 ? (
-              <div className="text-center text-slate-400 text-xs py-3">결과 없음</div>
-            ) : filteredCandidates.map(c => {
-              const meta = TYPE_BADGE[c.product_type] || TYPE_BADGE.RAW;
+
+        {/* 타입 chip */}
+        <div className="flex flex-wrap gap-1 mb-1.5">
+          {([
+            ['', '전체', typeCounts.all],
+            ['RAW', '원자재', typeCounts.raw],
+            ['SUB', '부자재', typeCounts.sub],
+          ] as [string, string, number][]).map(([v, label, count]) => {
+            const active = typeFilter === v;
+            const color = v === 'RAW' ? 'border-emerald-500 bg-emerald-50 text-emerald-700'
+              : v === 'SUB' ? 'border-amber-500 bg-amber-50 text-amber-700'
+              : 'border-slate-700 bg-slate-700 text-white';
+            return (
+              <button
+                key={v || 'all'}
+                onClick={() => setTypeFilter(v as '' | 'RAW' | 'SUB')}
+                className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+                  active ? color : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+                }`}
+              >
+                {label} <span className="opacity-70 ml-1">({count})</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* 카테고리 chip */}
+        {relevantCategories.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            <button
+              onClick={() => setCategoryFilter('')}
+              className={`px-2.5 py-1 text-[11px] rounded-full border transition-colors ${
+                !categoryFilter ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+              }`}
+            >
+              모든 카테고리
+            </button>
+            {relevantCategories.map(cat => {
+              const active = categoryFilter === cat.id;
               return (
                 <button
-                  key={c.id}
-                  onClick={() => addLine(c)}
-                  className="w-full text-left px-3 py-2 hover:bg-blue-50 flex items-center justify-between gap-2"
+                  key={cat.id}
+                  onClick={() => setCategoryFilter(active ? '' : cat.id)}
+                  className={`px-2.5 py-1 text-[11px] rounded-full border transition-colors ${
+                    active ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+                  }`}
                 >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className={`badge text-[10px] ${meta.cls}`}>{meta.label}</span>
-                      <span className="text-sm font-medium text-slate-700 truncate">{c.name}</span>
-                    </div>
-                    <p className="text-[11px] text-slate-400 font-mono">{c.code} · 단가 {Number(c.cost || 0).toLocaleString()}원</p>
-                  </div>
-                  <span className="text-blue-600 text-sm font-medium">+ 추가</span>
+                  {cat.name}
                 </button>
               );
             })}
+          </div>
+        )}
+
+        {/* 결과 브라우저 */}
+        {showBrowser && (
+          <div className="mt-2 bg-white rounded-md border border-slate-200 max-h-64 overflow-y-auto">
+            {filteredCandidates.length === 0 ? (
+              <div className="text-center text-slate-400 text-xs py-6">
+                {candidates.length === 0 ? '등록된 원·부자재가 없습니다.' : '조건에 맞는 자재가 없습니다.'}
+              </div>
+            ) : (
+              <>
+                <ul className="divide-y divide-slate-100">
+                  {shownCandidates.map(c => {
+                    const meta = TYPE_BADGE[c.product_type] || TYPE_BADGE.RAW;
+                    return (
+                      <li key={c.id}>
+                        <button
+                          onClick={() => addLine(c)}
+                          className="w-full text-left px-3 py-2 hover:bg-blue-50 flex items-center justify-between gap-2"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className={`badge text-[10px] ${meta.cls}`}>{meta.label}</span>
+                              <span className="text-sm font-medium text-slate-700 truncate">{c.name}</span>
+                              {c.category?.name && (
+                                <span className="text-[10px] text-slate-400 bg-slate-100 rounded px-1.5 py-0.5 whitespace-nowrap">
+                                  {c.category.name}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-slate-400 font-mono mt-0.5">
+                              {c.code} · {c.unit || '개'} · 단가 {Number(c.cost || 0).toLocaleString()}원
+                            </p>
+                          </div>
+                          <span className="text-blue-600 text-xs font-medium whitespace-nowrap">+ 추가</span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+                {filteredCandidates.length > shownCandidates.length && (
+                  <div className="text-center text-[11px] text-slate-400 py-2 border-t border-slate-100">
+                    {filteredCandidates.length - shownCandidates.length}개 더 있음 — 검색어나 필터로 좁혀 주세요.
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
       </div>
