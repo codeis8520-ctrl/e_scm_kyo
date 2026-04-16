@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { formatPhone } from '@/lib/validators';
 import { settleCreditOrder } from '@/lib/accounting-actions';
@@ -39,13 +39,16 @@ interface Consultation {
   id: string;
   consultation_type: string;
   content: Record<string, any>;
-  consulted_by?: { name: string };
+  consulted_by?: { name: string } | null;
+  consulted_by_id?: string | null;
   created_at: string;
 }
 
 interface Tag { id: string; name: string; color: string; }
 interface Branch { id: string; name: string; }
 interface User { id: string; name: string; }
+
+type TabKey = 'timeline' | 'consultations' | 'purchases' | 'info';
 
 const GRADE_COLORS: Record<string, string> = {
   NORMAL: 'bg-slate-100 text-slate-700',
@@ -58,7 +61,38 @@ const PAYMENT_LABELS: Record<string, string> = {
   card_keyin: '카드(키인)', credit: '외상',
 };
 
+const CONSULT_TYPES = ['전화 상담', '방문 상담', '구매 상담', '민원 처리', '기타'] as const;
+const CONSULT_STYLE: Record<string, { bg: string; dot: string; text: string; border: string }> = {
+  '전화 상담': { bg: 'bg-sky-50', dot: 'bg-sky-500', text: 'text-sky-700', border: 'border-sky-200' },
+  '방문 상담': { bg: 'bg-emerald-50', dot: 'bg-emerald-500', text: 'text-emerald-700', border: 'border-emerald-200' },
+  '구매 상담': { bg: 'bg-violet-50', dot: 'bg-violet-500', text: 'text-violet-700', border: 'border-violet-200' },
+  '민원 처리': { bg: 'bg-red-50', dot: 'bg-red-500', text: 'text-red-700', border: 'border-red-200' },
+  '기타': { bg: 'bg-slate-50', dot: 'bg-slate-400', text: 'text-slate-700', border: 'border-slate-200' },
+};
+function consultStyle(t?: string | null) {
+  if (!t) return CONSULT_STYLE['기타'];
+  return CONSULT_STYLE[t] || CONSULT_STYLE['기타'];
+}
+
 function fmtDate(date: Date): string { return date.toISOString().slice(0, 10); }
+function fmtDateTime(iso: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function relativeTime(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const diff = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (diff < 60) return '방금';
+  if (diff < 3600) return `${Math.floor(diff / 60)}분 전`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}시간 전`;
+  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}일 전`;
+  if (diff < 86400 * 30) return `${Math.floor(diff / (86400 * 7))}주 전`;
+  if (diff < 86400 * 365) return `${Math.floor(diff / (86400 * 30))}개월 전`;
+  return `${Math.floor(diff / (86400 * 365))}년 전`;
+}
 
 const PERIOD_PRESETS = [
   { label: '1개월', months: 1 },
@@ -76,9 +110,20 @@ function getDateRange(months: number): { start: string; end: string } {
   return { start: fmtDate(start), end: fmtDate(end) };
 }
 
+function extractText(content: any): string {
+  if (!content) return '';
+  if (typeof content === 'string') return content;
+  if (typeof content.text === 'string') return content.text;
+  if (typeof content.summary === 'string') return content.summary;
+  try { return JSON.stringify(content); } catch { return ''; }
+}
+
 export default function CustomerDetailPage() {
   const params = useParams();
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const customerId = params.id as string;
+  const initialTab = (searchParams.get('tab') as TabKey) || 'consultations';
 
   const [customer, setCustomer] = useState<CustomerDetail | null>(null);
   const [purchaseOrders, setPurchaseOrders] = useState<any[]>([]);
@@ -89,16 +134,26 @@ export default function CustomerDetailPage() {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'info' | 'purchases' | 'consultations'>('info');
-  const [showConsultModal, setShowConsultModal] = useState(false);
+  const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
   const [showAssignModal, setShowAssignModal] = useState(false);
 
-  const [activePeriod, setActivePeriod] = useState(1); // months (default 1개월)
+  const [activePeriod, setActivePeriod] = useState(1);
   const [purchaseDateRange, setPurchaseDateRange] = useState(() => getDateRange(1));
-  const [consultDateRange, setConsultDateRange] = useState(() => getDateRange(1));
+  const [consultDateRange, setConsultDateRange] = useState(() => getDateRange(12));
   const [settlingOrderId, setSettlingOrderId] = useState<string | null>(null);
   const [purchaseProductSearch, setPurchaseProductSearch] = useState('');
   const [purchaseBranchFilter, setPurchaseBranchFilter] = useState('');
+
+  // 상담 기록 필터/입력 상태
+  const [consultTypeFilter, setConsultTypeFilter] = useState<string>('');
+  const [consultTextSearch, setConsultTextSearch] = useState('');
+  const [quickType, setQuickType] = useState<string>('전화 상담');
+  const [quickContent, setQuickContent] = useState('');
+  const [savingQuick, setSavingQuick] = useState(false);
+  const [editingConsultId, setEditingConsultId] = useState<string | null>(null);
+  const [editType, setEditType] = useState('');
+  const [editContent, setEditContent] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
 
   useEffect(() => { fetchData(); }, [customerId]);
 
@@ -158,16 +213,13 @@ export default function CustomerDetailPage() {
     setLoading(false);
   };
 
-  // 기간 퀵 프리셋
   const handlePeriodPreset = (months: number) => {
     setActivePeriod(months);
     const range = getDateRange(months);
     setPurchaseDateRange(range);
-    // fetchData will be triggered after state update
     setTimeout(() => fetchData(), 0);
   };
 
-  // 전체 펼치기/접기
   const toggleExpandAll = () => {
     if (allExpanded) {
       setExpandedOrders(new Set());
@@ -178,7 +230,6 @@ export default function CustomerDetailPage() {
     }
   };
 
-  // 제품 구매 빈도
   const productFrequency = useMemo(() => {
     const freq: Record<string, number> = {};
     for (const order of purchaseOrders) {
@@ -193,7 +244,6 @@ export default function CustomerDetailPage() {
       .slice(0, 8);
   }, [purchaseOrders]);
 
-  // 월별 그룹핑
   const ordersWithMonthDividers = useMemo(() => {
     const result: { type: 'divider' | 'order'; month?: string; order?: any }[] = [];
     let lastMonth = '';
@@ -215,7 +265,6 @@ export default function CustomerDetailPage() {
     const orderCount = validOrders.length;
     const lastDate = purchaseOrders.length > 0 ? purchaseOrders[0].ordered_at?.slice(0, 10) : null;
 
-    // 평균 주문 간격
     let avgInterval: number | null = null;
     if (validOrders.length >= 2) {
       const dates = validOrders.map(o => new Date(o.ordered_at).getTime()).sort((a, b) => b - a);
@@ -235,6 +284,41 @@ export default function CustomerDetailPage() {
     };
   }, [purchaseOrders]);
 
+  // 상담 카운트 by type
+  const consultCountByType = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const c of consultations) {
+      counts[c.consultation_type] = (counts[c.consultation_type] || 0) + 1;
+    }
+    return counts;
+  }, [consultations]);
+
+  // 필터링된 상담
+  const filteredConsultations = useMemo(() => {
+    const q = consultTextSearch.trim().toLowerCase();
+    return consultations.filter(c => {
+      if (consultTypeFilter && c.consultation_type !== consultTypeFilter) return false;
+      if (q) {
+        const text = extractText(c.content).toLowerCase();
+        if (!text.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [consultations, consultTypeFilter, consultTextSearch]);
+
+  // 통합 타임라인 (상담 + 주문 시간순)
+  const timelineItems = useMemo(() => {
+    type Item =
+      | { kind: 'consult'; at: string; data: Consultation }
+      | { kind: 'order'; at: string; data: any };
+    const items: Item[] = [];
+    for (const c of consultations) items.push({ kind: 'consult', at: c.created_at, data: c });
+    for (const o of purchaseOrders) items.push({ kind: 'order', at: o.ordered_at, data: o });
+    items.sort((a, b) => (b.at || '').localeCompare(a.at || ''));
+    return items;
+  }, [consultations, purchaseOrders]);
+
+  // 태그 관련
   const handleAddTag = async (tagId: string) => {
     const supabase = createClient() as any;
     await supabase.from('customer_tag_map').insert({ customer_id: customerId, tag_id: tagId });
@@ -254,14 +338,67 @@ export default function CustomerDetailPage() {
     setShowAssignModal(false);
   };
 
-  const handleAddConsultation = async (type: string, content: string) => {
+  // 상담 추가/수정/삭제
+  const handleQuickAdd = async () => {
+    if (!quickContent.trim() || savingQuick) return;
+    setSavingQuick(true);
+    try {
+      const supabase = createClient() as any;
+      const userId = getCookie('user_id');
+      const { error } = await supabase.from('customer_consultations').insert({
+        customer_id: customerId,
+        consultation_type: quickType,
+        content: { text: quickContent.trim() },
+        consulted_by: userId || null,
+      });
+      if (error) {
+        alert('저장 실패: ' + error.message);
+      } else {
+        setQuickContent('');
+        await fetchData();
+      }
+    } finally {
+      setSavingQuick(false);
+    }
+  };
+
+  const startEditConsult = (c: Consultation) => {
+    setEditingConsultId(c.id);
+    setEditType(c.consultation_type);
+    setEditContent(extractText(c.content));
+  };
+  const cancelEdit = () => {
+    setEditingConsultId(null);
+    setEditType('');
+    setEditContent('');
+  };
+  const saveEdit = async () => {
+    if (!editingConsultId || savingEdit) return;
+    setSavingEdit(true);
+    try {
+      const supabase = createClient() as any;
+      const { error } = await supabase
+        .from('customer_consultations')
+        .update({
+          consultation_type: editType,
+          content: { text: editContent.trim() },
+        })
+        .eq('id', editingConsultId);
+      if (error) alert('수정 실패: ' + error.message);
+      else {
+        cancelEdit();
+        await fetchData();
+      }
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+  const deleteConsult = async (id: string) => {
+    if (!confirm('이 상담 기록을 삭제할까요?')) return;
     const supabase = createClient() as any;
-    const userId = getCookie('user_id');
-    await supabase.from('customer_consultations').insert({
-      customer_id: customerId, consultation_type: type, content: { text: content }, consulted_by: userId || null,
-    });
-    fetchData();
-    setShowConsultModal(false);
+    const { error } = await supabase.from('customer_consultations').delete().eq('id', id);
+    if (error) alert('삭제 실패: ' + error.message);
+    else await fetchData();
   };
 
   const handleSettleCredit = async (orderId: string, method: 'cash' | 'card' | 'kakao' | 'card_keyin') => {
@@ -284,7 +421,7 @@ export default function CustomerDetailPage() {
 
   const handleDateFilterChange = (type: 'purchase' | 'consult', field: 'start' | 'end', value: string) => {
     if (type === 'purchase') {
-      setActivePeriod(-1); // 수동 선택 → 프리셋 해제
+      setActivePeriod(-1);
       setPurchaseDateRange(prev => ({ ...prev, [field]: value }));
     } else {
       setConsultDateRange(prev => ({ ...prev, [field]: value }));
@@ -316,9 +453,12 @@ export default function CustomerDetailPage() {
             <p className="text-slate-500">{formatPhone(customer.phone)}</p>
           </div>
         </div>
-        <span className={`px-3 py-1 rounded-full text-sm font-medium ${GRADE_COLORS[customer.grade] || ''}`}>
-          {GRADE_LABELS[customer.grade] || customer.grade}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className={`px-3 py-1 rounded-full text-sm font-medium ${GRADE_COLORS[customer.grade] || ''}`}>
+            {GRADE_LABELS[customer.grade] || customer.grade}
+          </span>
+          {!customer.is_active && <span className="badge badge-error">비활성</span>}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -370,6 +510,31 @@ export default function CustomerDetailPage() {
           )}
 
           <div className="card">
+            <h3 className="font-semibold mb-3">상담 요약</h3>
+            <dl className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <dt className="text-slate-500">총 상담 건수</dt>
+                <dd className="font-medium text-slate-700">{consultations.length}건</dd>
+              </div>
+              {consultations[0] && (
+                <div className="flex justify-between">
+                  <dt className="text-slate-500">최근 상담</dt>
+                  <dd className="text-slate-700">{relativeTime(consultations[0].created_at)}</dd>
+                </div>
+              )}
+              {Object.entries(consultCountByType).map(([type, count]) => (
+                <div key={type} className="flex justify-between items-center">
+                  <dt className="text-xs text-slate-500">
+                    <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 ${consultStyle(type).dot}`}></span>
+                    {type}
+                  </dt>
+                  <dd className="text-xs text-slate-600">{count}건</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+
+          <div className="card">
             <h3 className="font-semibold mb-3">구매 요약</h3>
             <dl className="space-y-2 text-sm">
               <div className="flex justify-between"><dt className="text-slate-500">주문 건수</dt><dd>{purchaseStats.orderCount}건</dd></div>
@@ -389,11 +554,17 @@ export default function CustomerDetailPage() {
         <div className="lg:col-span-2">
           <div className="flex overflow-x-auto gap-1 border-b border-slate-200 mb-4">
             {([
-              { key: 'info' as const, label: '기본 정보' },
-              { key: 'purchases' as const, label: `구매 이력 (${purchaseOrders.length})` },
-              { key: 'consultations' as const, label: `상담 기록 (${consultations.length})` },
+              { key: 'consultations' as TabKey, label: `상담 기록 (${consultations.length})` },
+              { key: 'timeline' as TabKey, label: `통합 타임라인` },
+              { key: 'purchases' as TabKey, label: `구매 이력 (${purchaseOrders.length})` },
+              { key: 'info' as TabKey, label: '기본 정보' },
             ]).map(t => (
-              <button key={t.key} onClick={() => setActiveTab(t.key)}
+              <button key={t.key} onClick={() => {
+                setActiveTab(t.key);
+                const sp = new URLSearchParams(searchParams.toString());
+                sp.set('tab', t.key);
+                router.replace(`/customers/${customerId}?${sp.toString()}`, { scroll: false });
+              }}
                 className={`px-4 py-2 font-medium border-b-2 -mb-px whitespace-nowrap ${
                   activeTab === t.key ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500'
                 }`}>
@@ -402,10 +573,300 @@ export default function CustomerDetailPage() {
             ))}
           </div>
 
+          {/* 상담 기록 (기본 탭) */}
+          {activeTab === 'consultations' && (
+            <div className="space-y-4">
+              {/* 빠른 추가 */}
+              <div className="card border-blue-100 bg-blue-50/30">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="font-semibold text-sm text-slate-700">상담 기록 추가</h4>
+                  <div className="flex flex-wrap gap-1">
+                    {CONSULT_TYPES.map(t => {
+                      const s = consultStyle(t);
+                      const active = quickType === t;
+                      return (
+                        <button
+                          key={t}
+                          onClick={() => setQuickType(t)}
+                          className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+                            active ? `${s.bg} ${s.text} ${s.border} font-medium` : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
+                          }`}
+                        >
+                          {t}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <textarea
+                  value={quickContent}
+                  onChange={(e) => setQuickContent(e.target.value)}
+                  placeholder="상담 내용을 입력하세요 (Ctrl+Enter로 저장)"
+                  rows={3}
+                  onKeyDown={(e) => {
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') handleQuickAdd();
+                  }}
+                  className="input text-sm w-full"
+                />
+                <div className="flex justify-end gap-2 mt-2">
+                  <button
+                    onClick={() => setQuickContent('')}
+                    disabled={!quickContent}
+                    className="text-sm text-slate-500 hover:text-slate-700 disabled:opacity-40 px-3"
+                  >
+                    지우기
+                  </button>
+                  <button
+                    onClick={handleQuickAdd}
+                    disabled={!quickContent.trim() || savingQuick}
+                    className="btn-primary py-1.5 px-4 text-sm disabled:opacity-50"
+                  >
+                    {savingQuick ? '저장 중...' : '저장'}
+                  </button>
+                </div>
+              </div>
+
+              {/* 필터 */}
+              <div className="flex flex-wrap gap-2 items-center">
+                <div className="flex flex-wrap gap-1">
+                  <button
+                    onClick={() => setConsultTypeFilter('')}
+                    className={`px-2.5 py-1 text-xs rounded-full border ${
+                      !consultTypeFilter ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    전체 ({consultations.length})
+                  </button>
+                  {CONSULT_TYPES.map(t => {
+                    const s = consultStyle(t);
+                    const active = consultTypeFilter === t;
+                    const cnt = consultCountByType[t] || 0;
+                    if (cnt === 0 && !active) return null;
+                    return (
+                      <button
+                        key={t}
+                        onClick={() => setConsultTypeFilter(active ? '' : t)}
+                        className={`px-2.5 py-1 text-xs rounded-full border ${
+                          active ? `${s.bg} ${s.text} ${s.border} font-medium` : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        {t} ({cnt})
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2 items-center">
+                <input
+                  type="date"
+                  value={consultDateRange.start}
+                  onChange={(e) => handleDateFilterChange('consult', 'start', e.target.value)}
+                  className="input w-36"
+                />
+                <span className="text-slate-400">~</span>
+                <input
+                  type="date"
+                  value={consultDateRange.end}
+                  onChange={(e) => handleDateFilterChange('consult', 'end', e.target.value)}
+                  className="input w-36"
+                />
+                <input
+                  type="text"
+                  value={consultTextSearch}
+                  onChange={(e) => setConsultTextSearch(e.target.value)}
+                  placeholder="상담 내용 검색"
+                  className="input flex-1 min-w-[150px]"
+                />
+                <button onClick={() => fetchData()} className="btn-secondary">기간 조회</button>
+                <button
+                  onClick={() => {
+                    setConsultDateRange(getDateRange(12));
+                    setConsultTypeFilter('');
+                    setConsultTextSearch('');
+                    setTimeout(() => fetchData(), 0);
+                  }}
+                  className="text-sm text-slate-500 hover:text-slate-700"
+                >
+                  초기화
+                </button>
+              </div>
+
+              {/* 타임라인 리스트 */}
+              {filteredConsultations.length > 0 ? (
+                <div className="relative pl-4 border-l-2 border-slate-200 space-y-3">
+                  {filteredConsultations.map(consult => {
+                    const s = consultStyle(consult.consultation_type);
+                    const isEditing = editingConsultId === consult.id;
+                    return (
+                      <div key={consult.id} className="relative">
+                        <span className={`absolute -left-[21px] top-4 w-3 h-3 rounded-full ring-4 ring-white ${s.dot}`}></span>
+                        <div className={`card border ${s.border}`}>
+                          {isEditing ? (
+                            <div className="space-y-2">
+                              <select value={editType} onChange={(e) => setEditType(e.target.value)} className="input text-sm">
+                                {CONSULT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                              </select>
+                              <textarea
+                                value={editContent}
+                                onChange={(e) => setEditContent(e.target.value)}
+                                rows={4}
+                                className="input text-sm w-full"
+                              />
+                              <div className="flex justify-end gap-2">
+                                <button onClick={cancelEdit} className="text-sm text-slate-500 hover:text-slate-700 px-3">취소</button>
+                                <button
+                                  onClick={saveEdit}
+                                  disabled={savingEdit || !editContent.trim()}
+                                  className="btn-primary py-1.5 px-4 text-sm disabled:opacity-50"
+                                >
+                                  {savingEdit ? '저장 중...' : '수정 저장'}
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <div className="flex justify-between items-start gap-2 mb-1.5">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className={`inline-block px-2 py-0.5 text-xs font-medium rounded border ${s.bg} ${s.text} ${s.border}`}>
+                                    {consult.consultation_type || '기타'}
+                                  </span>
+                                  <span className="text-xs text-slate-500">{consult.consulted_by?.name || '시스템'}</span>
+                                </div>
+                                <div className="flex items-center gap-2 text-xs text-slate-400 whitespace-nowrap">
+                                  <span title={fmtDateTime(consult.created_at)}>{relativeTime(consult.created_at)}</span>
+                                  <span>·</span>
+                                  <span>{fmtDateTime(consult.created_at)}</span>
+                                  <button
+                                    onClick={() => startEditConsult(consult)}
+                                    className="text-slate-400 hover:text-blue-600 ml-1"
+                                    title="수정"
+                                  >
+                                    수정
+                                  </button>
+                                  <button
+                                    onClick={() => deleteConsult(consult.id)}
+                                    className="text-slate-400 hover:text-red-600"
+                                    title="삭제"
+                                  >
+                                    삭제
+                                  </button>
+                                </div>
+                              </div>
+                              <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">
+                                {extractText(consult.content) || <span className="text-slate-400">(내용 없음)</span>}
+                              </p>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="card text-center text-slate-400 py-8">
+                  {consultations.length === 0 ? '상담 기록이 없습니다' : '조건에 맞는 상담이 없습니다'}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 통합 타임라인 */}
+          {activeTab === 'timeline' && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <p className="text-xs text-slate-500">상담과 주문을 시간 순으로 모아 고객 히스토리를 통합 추적합니다.</p>
+                <div className="text-xs text-slate-500">
+                  상담 {consultations.length}건 · 주문 {purchaseOrders.length}건
+                </div>
+              </div>
+
+              {timelineItems.length === 0 ? (
+                <div className="card text-center text-slate-400 py-8">기록된 활동이 없습니다</div>
+              ) : (
+                <div className="relative pl-4 border-l-2 border-slate-200 space-y-3">
+                  {timelineItems.map((item, idx) => {
+                    if (item.kind === 'consult') {
+                      const c = item.data;
+                      const s = consultStyle(c.consultation_type);
+                      return (
+                        <div key={`c-${c.id}`} className="relative">
+                          <span className={`absolute -left-[21px] top-4 w-3 h-3 rounded-full ring-4 ring-white ${s.dot}`}></span>
+                          <div className={`card border ${s.border}`}>
+                            <div className="flex justify-between items-start gap-2 mb-1.5">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className={`inline-block px-2 py-0.5 text-xs font-medium rounded border ${s.bg} ${s.text} ${s.border}`}>
+                                  상담 · {c.consultation_type || '기타'}
+                                </span>
+                                <span className="text-xs text-slate-500">{c.consulted_by?.name || '시스템'}</span>
+                              </div>
+                              <div className="text-xs text-slate-400 whitespace-nowrap">
+                                <span title={fmtDateTime(c.created_at)}>{relativeTime(c.created_at)}</span>
+                                <span className="mx-1">·</span>
+                                <span>{fmtDateTime(c.created_at)}</span>
+                              </div>
+                            </div>
+                            <p className="text-sm text-slate-700 whitespace-pre-wrap line-clamp-3">
+                              {extractText(c.content) || <span className="text-slate-400">(내용 없음)</span>}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    }
+                    // order
+                    const o = item.data;
+                    const isRefunded = ['REFUNDED', 'PARTIALLY_REFUNDED'].includes(o.status);
+                    const isCancelled = o.status === 'CANCELLED';
+                    const statusLabel: Record<string, string> = { COMPLETED: '완료', CANCELLED: '취소', REFUNDED: '환불', PARTIALLY_REFUNDED: '부분환불' };
+                    const mainItems = (o.items || []).slice(0, 3).map((i: any) => i.product?.name).filter(Boolean);
+                    const extraCount = (o.items?.length || 0) - mainItems.length;
+                    return (
+                      <div key={`o-${o.id}`} className="relative">
+                        <span className="absolute -left-[21px] top-4 w-3 h-3 rounded-full ring-4 ring-white bg-blue-500"></span>
+                        <div className={`card border border-blue-100 ${isCancelled || isRefunded ? 'opacity-60' : ''}`}>
+                          <div className="flex justify-between items-start gap-2 mb-1.5">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="inline-block px-2 py-0.5 text-xs font-medium rounded border bg-blue-50 text-blue-700 border-blue-200">
+                                주문 · {o.order_number}
+                              </span>
+                              <span className="text-xs text-slate-500">{o.branch?.name}</span>
+                              {o.status !== 'COMPLETED' && (
+                                <span className="text-xs text-amber-600">{statusLabel[o.status] || o.status}</span>
+                              )}
+                            </div>
+                            <div className="text-xs text-slate-400 whitespace-nowrap">
+                              <span title={fmtDateTime(o.ordered_at)}>{relativeTime(o.ordered_at)}</span>
+                              <span className="mx-1">·</span>
+                              <span>{fmtDateTime(o.ordered_at)}</span>
+                            </div>
+                          </div>
+                          <div className="flex justify-between items-center gap-4">
+                            <p className="text-sm text-slate-700 flex-1 truncate">
+                              {mainItems.join(', ')}
+                              {extraCount > 0 && <span className="text-slate-400"> 외 {extraCount}종</span>}
+                            </p>
+                            <span className={`font-semibold text-sm ${isRefunded || isCancelled ? 'line-through text-slate-400' : 'text-slate-800'}`}>
+                              {(o.total_amount || 0).toLocaleString()}원
+                            </span>
+                          </div>
+                          <div className="flex gap-3 mt-1 text-xs text-slate-500">
+                            {o.payment_method && <span>결제: {PAYMENT_LABELS[o.payment_method] || o.payment_method}</span>}
+                            {o.payment_method === 'credit' && !o.credit_settled && (
+                              <span className="text-orange-600 font-medium">수금 전</span>
+                            )}
+                            {o.points_earned > 0 && <span className="text-blue-600">+{o.points_earned.toLocaleString()}P</span>}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* 구매 이력 */}
           {activeTab === 'purchases' && (
             <div className="space-y-4">
-              {/* 기간 퀵버튼 + 필터 */}
               <div className="flex flex-col gap-3">
                 <div className="flex flex-wrap gap-1.5">
                   {PERIOD_PRESETS.map(p => (
@@ -440,7 +901,6 @@ export default function CustomerDetailPage() {
                 </div>
               </div>
 
-              {/* 제품 구매 빈도 */}
               {productFrequency.length > 0 && (
                 <div className="flex flex-wrap gap-2 p-3 bg-slate-50 rounded-lg">
                   <span className="text-xs text-slate-500 font-medium self-center mr-1">구매 제품:</span>
@@ -454,7 +914,6 @@ export default function CustomerDetailPage() {
                 </div>
               )}
 
-              {/* 전체 펼치기 + 주문 목록 */}
               {purchaseOrders.length > 0 && (
                 <div className="flex justify-end">
                   <button onClick={toggleExpandAll} className="text-xs text-slate-500 hover:text-slate-700">
@@ -467,7 +926,7 @@ export default function CustomerDetailPage() {
                 <div className="card text-center text-slate-400 py-8">구매 이력이 없습니다</div>
               ) : (
                 <div className="space-y-1">
-                  {ordersWithMonthDividers.map((item, idx) => {
+                  {ordersWithMonthDividers.map((item) => {
                     if (item.type === 'divider') {
                       return (
                         <div key={`div-${item.month}`} className="flex items-center gap-3 py-2 mt-2 first:mt-0">
@@ -565,39 +1024,6 @@ export default function CustomerDetailPage() {
             </div>
           )}
 
-          {/* 상담 기록 */}
-          {activeTab === 'consultations' && (
-            <div className="space-y-4">
-              <div className="flex flex-wrap gap-2 items-center">
-                <input type="date" value={consultDateRange.start} onChange={(e) => handleDateFilterChange('consult', 'start', e.target.value)} className="input w-36" />
-                <span className="text-slate-400">~</span>
-                <input type="date" value={consultDateRange.end} onChange={(e) => handleDateFilterChange('consult', 'end', e.target.value)} className="input w-36" />
-                <button onClick={() => fetchData()} className="btn-secondary">조회</button>
-                <button onClick={() => { setConsultDateRange(getDateRange(1)); setTimeout(() => fetchData(), 0); }} className="text-sm text-slate-500 hover:text-slate-700">초기화</button>
-              </div>
-              <button onClick={() => setShowConsultModal(true)} className="btn-primary">+ 상담 기록 추가</button>
-              {consultations.length > 0 ? (
-                <div className="space-y-3">
-                  {consultations.map(consult => (
-                    <div key={consult.id} className="card">
-                      <div className="flex justify-between items-start mb-2">
-                        <div>
-                          <span className="font-medium">{consult.consultation_type}</span>
-                          <span className="text-slate-400 mx-2">·</span>
-                          <span className="text-sm text-slate-500">{consult.consulted_by?.name || '시스템'}</span>
-                        </div>
-                        <span className="text-xs text-slate-400">{new Date(consult.created_at).toLocaleDateString('ko-KR')}</span>
-                      </div>
-                      <p className="text-sm text-slate-600 whitespace-pre-wrap">{consult.content?.text || JSON.stringify(consult.content)}</p>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="card text-center text-slate-400 py-8">상담 기록이 없습니다</div>
-              )}
-            </div>
-          )}
-
           {activeTab === 'info' && (
             <div className="card">
               <h3 className="font-semibold mb-4">추가 정보</h3>
@@ -607,41 +1033,7 @@ export default function CustomerDetailPage() {
         </div>
       </div>
 
-      {showConsultModal && <ConsultModal onClose={() => setShowConsultModal(false)} onSubmit={handleAddConsultation} />}
       {showAssignModal && <AssignModal currentUserId={customer.assigned_to?.id} users={users} onClose={() => setShowAssignModal(false)} onSubmit={handleUpdateAssignedTo} />}
-    </div>
-  );
-}
-
-function ConsultModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (type: string, content: string) => void }) {
-  const [type, setType] = useState('전화 상담');
-  const [content, setContent] = useState('');
-  const types = ['전화 상담', '방문 상담', '구매 상담', '민원 처리', '기타'];
-
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50">
-      <div className="bg-white w-full max-w-lg mx-4 sm:mx-auto max-h-[90vh] overflow-y-auto rounded-t-xl sm:rounded-xl p-4 sm:p-6">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-lg font-bold">상담 기록 추가</h2>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">✕</button>
-        </div>
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">상담 유형</label>
-            <select value={type} onChange={(e) => setType(e.target.value)} className="input">
-              {types.map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">내용</label>
-            <textarea value={content} onChange={(e) => setContent(e.target.value)} rows={5} className="input" placeholder="상담 내용을 입력하세요..." />
-          </div>
-          <div className="flex gap-2">
-            <button onClick={() => { if (content.trim()) onSubmit(type, content); }} className="flex-1 btn-primary">저장</button>
-            <button onClick={onClose} className="flex-1 btn-secondary">취소</button>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
