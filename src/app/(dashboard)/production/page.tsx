@@ -32,6 +32,7 @@ interface Material {
   product_type: ProductType;
   category_id?: string | null;
   category?: { id: string; name: string } | null;
+  image_url?: string | null;
 }
 
 // ── 한글 초성 검색 ────────────────────────────────────────────────────────────
@@ -156,14 +157,14 @@ export default function ProductionPage() {
       // 마이그레이션 042가 미적용이면 product_type 컬럼이 없어 실패 → 폴백
       let res: any = await supabase
         .from('products')
-        .select('id, name, code, unit, cost, product_type, category_id, category:categories(id, name)')
+        .select('id, name, code, unit, cost, image_url, product_type, category_id, category:categories(id, name)')
         .eq('is_active', true)
         .order('name');
       if (res.error) {
         console.warn('[production] products query fallback (migration 042?):', res.error.message);
         res = await supabase
           .from('products')
-          .select('id, name, code, unit, cost, category_id, category:categories(id, name)')
+          .select('id, name, code, unit, cost, image_url, category_id, category:categories(id, name)')
           .eq('is_active', true)
           .order('name');
       }
@@ -928,6 +929,7 @@ function BomComposer({
   const [dirty, setDirtyState] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showCopyModal, setShowCopyModal] = useState(false);
+  const [materialPreviewId, setMaterialPreviewId] = useState<string | null>(null);
 
   const setDirty = (d: boolean) => { setDirtyState(d); onDirtyChange?.(d); };
   const setSaving = (s: boolean) => { setSavingState(s); onSavingChange?.(s); };
@@ -1227,19 +1229,32 @@ function BomComposer({
                           onClick={() => addLine(c)}
                           className="w-full text-left px-3 py-2 hover:bg-blue-50 flex items-center justify-between gap-2"
                         >
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
-                              <span className={`badge text-[10px] ${meta.cls}`}>{meta.label}</span>
-                              <span className="text-sm font-medium text-slate-700 truncate">{c.name}</span>
-                              {c.category?.name && (
-                                <span className="text-[10px] text-slate-400 bg-slate-100 rounded px-1.5 py-0.5 whitespace-nowrap">
-                                  {c.category.name}
-                                </span>
-                              )}
+                          <div className="flex items-center gap-2 min-w-0 flex-1">
+                            {c.image_url ? (
+                              <img
+                                src={c.image_url}
+                                alt=""
+                                onClick={e => { e.stopPropagation(); setMaterialPreviewId(c.id); }}
+                                className="w-10 h-10 rounded object-cover border border-slate-200 shrink-0 hover:opacity-80"
+                                title="클릭하여 이미지 미리보기"
+                              />
+                            ) : (
+                              <div className="w-10 h-10 rounded bg-slate-100 shrink-0" />
+                            )}
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className={`badge text-[10px] ${meta.cls}`}>{meta.label}</span>
+                                <span className="text-sm font-medium text-slate-700 truncate">{c.name}</span>
+                                {c.category?.name && (
+                                  <span className="text-[10px] text-slate-400 bg-slate-100 rounded px-1.5 py-0.5 whitespace-nowrap">
+                                    {c.category.name}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-slate-400 font-mono mt-0.5">
+                                {c.code} · {c.unit || '개'} · 단가 {Number(c.cost || 0).toLocaleString()}원
+                              </p>
                             </div>
-                            <p className="text-[11px] text-slate-400 font-mono mt-0.5">
-                              {c.code} · {c.unit || '개'} · 단가 {Number(c.cost || 0).toLocaleString()}원
-                            </p>
                           </div>
                           <span className="text-blue-600 text-xs font-medium whitespace-nowrap">+ 추가</span>
                         </button>
@@ -1292,6 +1307,17 @@ function BomComposer({
                     </td>
                     <td className="py-2">
                       <div className="flex items-center gap-2">
+                        {mat?.image_url ? (
+                          <img
+                            src={mat.image_url}
+                            alt=""
+                            onClick={() => mat?.id && setMaterialPreviewId(mat.id)}
+                            className="w-9 h-9 rounded object-cover border border-slate-200 shrink-0 cursor-pointer hover:opacity-80"
+                            title="클릭하여 이미지 미리보기"
+                          />
+                        ) : (
+                          <div className="w-9 h-9 rounded bg-slate-100 shrink-0" />
+                        )}
                         {typeMeta && <span className={`badge text-[10px] ${typeMeta.cls}`}>{typeMeta.label}</span>}
                         <div className="min-w-0">
                           <p className="font-medium text-slate-700 truncate">{mat?.name || '?'}</p>
@@ -1369,6 +1395,75 @@ function BomComposer({
           onPick={handleCopyFrom}
         />
       )}
+
+      {materialPreviewId && (
+        <MaterialImagePreview
+          productId={materialPreviewId}
+          onClose={() => setMaterialPreviewId(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── 자재 이미지 미리보기 (대표 + 추가 이미지) ─────────────────────────────
+function MaterialImagePreview({ productId, onClose }: { productId: string; onClose: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [name, setName] = useState<string>('');
+  const [images, setImages] = useState<Array<{ url: string; label?: string }>>([]);
+  const [activeIdx, setActiveIdx] = useState(0);
+
+  useEffect(() => {
+    (async () => {
+      const sb: any = createClient();
+      const [prodRes, filesRes] = await Promise.all([
+        sb.from('products').select('name, image_url').eq('id', productId).maybeSingle(),
+        sb.from('product_files').select('file_url, file_name, file_type, sort_order')
+          .eq('product_id', productId).order('sort_order').then((r: any) => r.error ? { data: [] } : r),
+      ]);
+      const list: Array<{ url: string; label?: string }> = [];
+      if (prodRes.data?.image_url) list.push({ url: prodRes.data.image_url, label: '대표' });
+      for (const f of (filesRes.data || [])) {
+        if (f.file_type === 'image' && f.file_url) list.push({ url: f.file_url, label: f.file_name });
+      }
+      setName(prodRes.data?.name || '');
+      setImages(list);
+      setActiveIdx(0);
+      setLoading(false);
+    })();
+  }, [productId]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={onClose}>
+      <div className="bg-white rounded-lg w-full max-w-2xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-center px-4 py-2.5 border-b">
+          <p className="font-semibold text-sm">{name || '자재 이미지'}{images.length > 0 && <span className="text-slate-400 text-xs ml-2">{activeIdx + 1} / {images.length}</span>}</p>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-2xl leading-none">×</button>
+        </div>
+        <div className="flex-1 overflow-auto p-4 flex items-center justify-center bg-slate-50">
+          {loading ? (
+            <p className="text-sm text-slate-400">불러오는 중...</p>
+          ) : images.length === 0 ? (
+            <p className="text-sm text-slate-400">등록된 이미지가 없습니다.</p>
+          ) : (
+            <img src={images[activeIdx].url} alt={images[activeIdx].label || ''} className="max-w-full max-h-[60vh] object-contain rounded" />
+          )}
+        </div>
+        {images.length > 1 && (
+          <div className="px-3 py-2 border-t flex gap-2 overflow-x-auto">
+            {images.map((im, i) => (
+              <button
+                key={i}
+                onClick={() => setActiveIdx(i)}
+                className={`shrink-0 rounded border-2 overflow-hidden transition-colors ${i === activeIdx ? 'border-blue-500' : 'border-transparent hover:border-slate-300'}`}
+                title={im.label}
+              >
+                <img src={im.url} alt="" className="w-14 h-14 object-cover" />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
