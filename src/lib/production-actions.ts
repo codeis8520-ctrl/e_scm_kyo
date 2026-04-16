@@ -100,9 +100,58 @@ function isMissingColumnError(err: any): boolean {
   return code === '42703' || (msg.includes('column') && msg.includes('does not exist'));
 }
 
+// ─── BOM 기반 원가 산정 (자동 롤업) ─────────────────────────────────────────────
+//   완제품 1단위 원가 = Σ(자재 원가 × quantity × (1 + loss_rate/100))
+export async function computeBomCost(productId: string): Promise<number> {
+  if (!productId) return 0;
+  const supabase = await createClient();
+  const { data } = await (supabase as any)
+    .from('product_bom')
+    .select('quantity, loss_rate, material:products!product_bom_material_id_fkey(cost)')
+    .eq('product_id', productId);
+
+  if (!data || data.length === 0) return 0;
+  let total = 0;
+  for (const row of data as any[]) {
+    const matCost = Number(row.material?.cost || 0);
+    const qty = Number(row.quantity || 0) * (1 + Number(row.loss_rate || 0) / 100);
+    total += matCost * qty;
+  }
+  return Math.round(total);
+}
+
+// cost_source='BOM'인 완제품만 products.cost 갱신
+async function applyBomCostIfAuto(db: any, productId: string): Promise<void> {
+  if (!productId) return;
+  const { data: product } = await db
+    .from('products')
+    .select('id, product_type, cost_source')
+    .eq('id', productId)
+    .maybeSingle();
+  if (!product) return;
+  if (product.product_type !== 'FINISHED') return;
+  if (product.cost_source !== 'BOM') return;
+
+  const cost = await computeBomCost(productId);
+  await db.from('products').update({ cost }).eq('id', productId);
+}
+
+// 자재(RAW/SUB)의 cost가 변경됐거나 BOM 행이 바뀌었을 때,
+// 해당 자재를 사용하는 완제품 중 cost_source='BOM'인 것들의 원가 갱신
+async function applyBomCostForMaterialConsumers(db: any, materialId: string): Promise<void> {
+  if (!materialId) return;
+  const { data: rows } = await db
+    .from('product_bom')
+    .select('product_id')
+    .eq('material_id', materialId);
+  const ids = [...new Set(((rows || []) as any[]).map((r: any) => r.product_id))];
+  for (const pid of ids) {
+    await applyBomCostIfAuto(db, pid as string);
+  }
+}
+
 // BOM 전체 저장 (완제품 하나의 BOM 일괄 upsert + 제거)
 export async function saveBom(productId: string, lines: BomLine[]) {
-  console.log('[saveBom] start', { productId, linesCount: lines?.length, firstLine: lines?.[0] });
   if (!productId) return { error: '완제품이 지정되지 않았습니다.' };
   const supabase = await createClient();
   const db = supabase as any;
@@ -121,7 +170,6 @@ export async function saveBom(productId: string, lines: BomLine[]) {
   const existingIds: string[] = (existing || []).map((r: any) => r.id);
   const keepIds = new Set(lines.filter(l => l.id).map(l => l.id!));
   const toDelete = existingIds.filter(id => !keepIds.has(id));
-  console.log('[saveBom] existing', existingIds.length, 'keep', keepIds.size, 'delete', toDelete.length);
 
   if (toDelete.length > 0) {
     const { error: delErr } = await db.from('product_bom').delete().in('id', toDelete);
@@ -151,36 +199,37 @@ export async function saveBom(productId: string, lines: BomLine[]) {
     };
 
     if (line.id) {
-      console.log('[saveBom] UPDATE row', line.id, enhanced);
-      let { error, data } = await db.from('product_bom').update(enhanced).eq('id', line.id).select();
+      let { error } = await db.from('product_bom').update(enhanced).eq('id', line.id);
       if (error && isMissingColumnError(error)) {
-        console.warn('[saveBom] 마이그레이션 042 미적용 — minimal update로 폴백');
-        const retry = await db.from('product_bom').update(minimal).eq('id', line.id).select();
-        error = retry.error; data = retry.data;
+        const retry = await db.from('product_bom').update(minimal).eq('id', line.id);
+        error = retry.error;
       }
       if (error) {
         console.error('[saveBom] update failed:', error);
         return { error: `행 업데이트 실패: ${error.message}` };
       }
-      console.log('[saveBom] UPDATE success, rows:', data?.length);
     } else {
-      console.log('[saveBom] INSERT row', enhanced);
-      let { error, data } = await db.from('product_bom').insert(enhanced).select();
+      let { error } = await db.from('product_bom').insert(enhanced);
       if (error && isMissingColumnError(error)) {
-        console.warn('[saveBom] 마이그레이션 042 미적용 — minimal insert로 폴백');
-        const retry = await db.from('product_bom').insert(minimal).select();
-        error = retry.error; data = retry.data;
+        const retry = await db.from('product_bom').insert(minimal);
+        error = retry.error;
       }
       if (error) {
         console.error('[saveBom] insert failed:', error);
         return { error: `행 추가 실패: ${error.message}` };
       }
-      console.log('[saveBom] INSERT success, returned:', data);
     }
   }
 
-  console.log('[saveBom] done for productId', productId);
+  // BOM 변경 → cost_source='BOM'인 완제품은 자동 원가 재산정
+  try {
+    await applyBomCostIfAuto(db, productId);
+  } catch (err) {
+    console.error('[saveBom] applyBomCostIfAuto failed (ignored):', err);
+  }
+
   revalidatePath('/production');
+  revalidatePath('/products');
   return { success: true };
 }
 

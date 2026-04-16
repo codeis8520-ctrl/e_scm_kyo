@@ -77,6 +77,8 @@ CREATE TABLE products (
     unit VARCHAR(20) DEFAULT '개',
     price DECIMAL(12, 0) NOT NULL,
     cost DECIMAL(12, 0),
+    cost_source TEXT NOT NULL DEFAULT 'MANUAL'
+      CHECK (cost_source IN ('MANUAL','BOM')),
     barcode VARCHAR(50),
     image_url TEXT,
     is_active BOOLEAN DEFAULT true,

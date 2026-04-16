@@ -3,8 +3,9 @@ export const DB_SCHEMA = `
 
 --- 지점·제품·재고 ---
 branches: id, name, code, channel(STORE/DEPT_STORE/ONLINE/EVENT), address, phone, is_active
-products: id, name, code, barcode, unit, price(판매가), cost(원가), product_type(FINISHED/RAW/SUB), is_active
+products: id, name, code, barcode, unit, price(판매가), cost(원가), cost_source(MANUAL/BOM), product_type(FINISHED/RAW/SUB), is_active
   ※ product_type: FINISHED=완제품, RAW=원자재, SUB=부자재 — BOM 조립/필터의 기준
+  ※ cost_source=BOM이면 완제품 cost는 BOM 합계에서 자동 산정(서버 액션). RAW/SUB는 판매가 미사용(price=cost로 동기화).
 product_files: id, product_id, file_url, file_name, file_type(image/document), sort_order
 inventories: id, branch_id, product_id, quantity, safety_stock  [UNIQUE(branch_id, product_id)]
 inventory_movements: id, branch_id, product_id, movement_type(IN/OUT/ADJUST/TRANSFER/PRODUCTION), quantity, memo, created_at

@@ -12,6 +12,7 @@ interface Product {
   code: string;
   category_id: string | null;
   product_type: ProductType;
+  cost_source?: 'MANUAL' | 'BOM';
   unit: string;
   price: number;
   cost: number | null;
@@ -169,9 +170,20 @@ export default function ProductsPage() {
                   <td className="font-mono text-xs text-slate-400">{product.barcode || '-'}</td>
                   <td className="text-sm text-slate-500">{product.category?.name || '-'}</td>
                   <td className="text-sm text-slate-500">{product.unit}</td>
-                  <td className="text-right font-medium">{product.price.toLocaleString()}원</td>
+                  <td className="text-right font-medium">
+                    {product.product_type === 'FINISHED'
+                      ? `${product.price.toLocaleString()}원`
+                      : <span className="text-slate-300">-</span>}
+                  </td>
                   <td className="text-right text-slate-500">
-                    {product.cost != null ? `${product.cost.toLocaleString()}원` : '-'}
+                    {product.cost != null ? (
+                      <div className="inline-flex items-center gap-1">
+                        <span>{product.cost.toLocaleString()}원</span>
+                        {product.product_type === 'FINISHED' && product.cost_source === 'BOM' && (
+                          <span className="text-[10px] px-1 rounded bg-blue-100 text-blue-700" title="BOM 자동 산정">자동</span>
+                        )}
+                      </div>
+                    ) : <span className="text-slate-300">-</span>}
                   </td>
                   <td className="text-right">
                     {m !== null ? (

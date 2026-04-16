@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { fireNotificationTrigger } from '@/lib/notification-triggers';
+import { computeBomCost } from '@/lib/production-actions';
 
 // ============ Products ============
 
@@ -37,14 +38,27 @@ export async function createProduct(formData: FormData) {
   const rawSpec = formData.get('spec') as string;
   const rawType = formData.get('product_type') as string;
   const productType = (rawType === 'RAW' || rawType === 'SUB' || rawType === 'FINISHED') ? rawType : 'FINISHED';
+  const rawCostSource = formData.get('cost_source') as string;
+  let costSource: 'MANUAL' | 'BOM' = (rawCostSource === 'BOM' ? 'BOM' : 'MANUAL');
+  if (productType !== 'FINISHED') costSource = 'MANUAL'; // RAW/SUB는 항상 수동
+
+  const priceInput = parseInt(formData.get('price') as string);
+  const costInput = parseInt(formData.get('cost') as string) || null;
+
+  // RAW/SUB는 판매가 UI가 숨겨지므로 price = cost로 동기화 (schema NOT NULL 회피)
+  const finalPrice = productType === 'FINISHED'
+    ? (Number.isFinite(priceInput) ? priceInput : 0)
+    : (costInput || 0);
+
   const productData = {
     name,
     code,
     category_id: (rawCategoryId && rawCategoryId !== 'null') ? rawCategoryId : null,
     product_type: productType,
+    cost_source: costSource,
     unit: formData.get('unit') as string || '개',
-    price: parseInt(formData.get('price') as string),
-    cost: parseInt(formData.get('cost') as string) || null,
+    price: finalPrice,
+    cost: costInput,
     barcode: (rawBarcode && rawBarcode !== 'null') ? rawBarcode : null,
     is_taxable: formData.get('is_taxable') !== 'false',
     image_url: rawImageUrl || null,
@@ -92,14 +106,29 @@ export async function updateProduct(id: string, formData: FormData) {
   const rawSpec = formData.get('spec') as string;
   const rawType = formData.get('product_type') as string;
   const productType = (rawType === 'RAW' || rawType === 'SUB' || rawType === 'FINISHED') ? rawType : undefined;
-  const productData = {
+  const rawCostSource = formData.get('cost_source') as string;
+  const costSource: 'MANUAL' | 'BOM' | undefined =
+    rawCostSource === 'BOM' ? 'BOM' : rawCostSource === 'MANUAL' ? 'MANUAL' : undefined;
+  const finalCostSource = (productType === 'RAW' || productType === 'SUB') ? 'MANUAL' : costSource;
+
+  const priceInput = parseInt(formData.get('price') as string);
+  const costInput = parseInt(formData.get('cost') as string) || null;
+
+  // RAW/SUB은 판매가 UI가 숨겨지므로 price = cost (NOT NULL 회피)
+  const isMaterial = productType === 'RAW' || productType === 'SUB';
+  const finalPrice = isMaterial
+    ? (costInput || 0)
+    : (Number.isFinite(priceInput) ? priceInput : 0);
+
+  const productData: any = {
     name: formData.get('name') as string,
     ...(rawCode ? { code: rawCode } : {}),
     category_id: (rawCategoryId && rawCategoryId !== 'null') ? rawCategoryId : null,
     ...(productType ? { product_type: productType } : {}),
+    ...(finalCostSource ? { cost_source: finalCostSource } : {}),
     unit: formData.get('unit') as string || '개',
-    price: parseInt(formData.get('price') as string),
-    cost: parseInt(formData.get('cost') as string) || null,
+    price: finalPrice,
+    cost: costInput,
     barcode: (rawBarcode && rawBarcode !== 'null') ? rawBarcode : null,
     is_active: formData.get('is_active') === 'true',
     is_taxable: formData.get('is_taxable') !== 'false',
@@ -110,12 +139,44 @@ export async function updateProduct(id: string, formData: FormData) {
 
   // @ts-ignore
   const { error } = await supabase.from('products').update(productData).eq('id', id);
-  
+
   if (error) {
     return { error: error.message };
   }
-  
+
+  // 후처리: BOM 원가 자동 반영
+  //   1) 완제품이 cost_source=BOM이면 BOM 합계로 cost 재산정
+  //   2) RAW/SUB의 cost가 바뀌었으면 이를 사용하는 완제품(cost_source=BOM)의 cost 재산정
+  try {
+    const db = supabase as any;
+    if (productType === 'FINISHED' && finalCostSource === 'BOM') {
+      const newCost = await computeBomCost(id);
+      await db.from('products').update({ cost: newCost }).eq('id', id);
+    }
+    if (isMaterial) {
+      const { data: usedRows } = await db
+        .from('product_bom')
+        .select('product_id')
+        .eq('material_id', id);
+      const usedIds = [...new Set(((usedRows || []) as any[]).map((r: any) => r.product_id))];
+      for (const pid of usedIds) {
+        const { data: p } = await db
+          .from('products')
+          .select('id, cost_source, product_type')
+          .eq('id', pid)
+          .maybeSingle();
+        if (p?.cost_source === 'BOM' && p?.product_type === 'FINISHED') {
+          const newCost = await computeBomCost(pid as string);
+          await db.from('products').update({ cost: newCost }).eq('id', pid);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[updateProduct] BOM cost roll-up failed (ignored):', err);
+  }
+
   revalidatePath('/products');
+  revalidatePath('/production');
   return { success: true };
 }
 

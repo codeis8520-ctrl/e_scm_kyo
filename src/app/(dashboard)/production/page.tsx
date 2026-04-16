@@ -155,7 +155,6 @@ export default function ProductionPage() {
   }, [isBranchUser]);
 
   const loadData = useCallback(async () => {
-    console.log('[ProductionPage] loadData start');
     setLoading(true);
     const [bomRes, orderRes] = await Promise.all([
       getBomList(),
@@ -164,11 +163,7 @@ export default function ProductionPage() {
         status: filterStatus || undefined,
       }),
     ]);
-    console.log('[ProductionPage] loadData: bomList rows =', bomRes.data?.length, 'error =', (bomRes as any).error);
-    if (bomRes.data && bomRes.data.length > 0) {
-      const sample = (bomRes.data as any[]).slice(0, 3).map((b: any) => ({ id: b.id, pid: b.product_id, mid: b.material_id }));
-      console.log('[ProductionPage] bomList sample:', sample);
-    }
+    if ((bomRes as any).error) console.error('[ProductionPage] getBomList error:', (bomRes as any).error);
     setBomList(bomRes.data || []);
     setOrders(orderRes.data || []);
     setLoading(false);
@@ -709,22 +704,16 @@ function BomComposer({
   const shownCandidates = filteredCandidates.slice(0, 60);
 
   const addLine = (mat: Material) => {
-    console.log('[BomComposer] addLine:', { product_id: product.id, material_id: mat.id, material_name: mat.name });
-    setLines(prev => {
-      const next = [...prev, {
-        material_id: mat.id,
-        quantity: 1,
-        loss_rate: 0,
-        notes: '',
-        sort_order: prev.length,
-        material: mat,
-      }];
-      console.log('[BomComposer] lines after add:', next.length, '(was', prev.length, ')');
-      return next;
-    });
+    setLines(prev => [...prev, {
+      material_id: mat.id,
+      quantity: 1,
+      loss_rate: 0,
+      notes: '',
+      sort_order: prev.length,
+      material: mat,
+    }]);
     setMatSearch('');
     setDirty(true);
-    console.log('[BomComposer] dirty set to true');
   };
 
   const removeLine = (idx: number) => {
@@ -757,14 +746,6 @@ function BomComposer({
   const hasInvalid = lines.some(l => !l.material_id || l.quantity <= 0);
 
   const handleSave = async () => {
-    console.log('[BomComposer] handleSave CLICKED', {
-      product_id: product.id,
-      product_name: product.name,
-      lines_count: lines.length,
-      dirty,
-      hasInvalid,
-      lines_preview: lines.map(l => ({ id: l.id, mid: l.material_id, qty: l.quantity })),
-    });
     setSaveError(null);
     if (hasInvalid) { setSaveError('수량은 0보다 커야 합니다.'); return; }
     setSaving(true);
@@ -777,18 +758,14 @@ function BomComposer({
         notes: l.notes || null,
         sort_order: i,
       }));
-      console.log('[BomComposer] calling saveBom', { product_id: product.id, payload_count: payload.length });
       const r = await saveBom(product.id, payload);
-      console.log('[BomComposer] saveBom result', r);
       if (r.error) {
         console.error('[BomComposer] saveBom error:', r.error);
         setSaveError(r.error);
         return;
       }
       setDirty(false);
-      console.log('[BomComposer] calling onSaved (loadData)');
       await Promise.resolve(onSaved());
-      console.log('[BomComposer] onSaved complete');
     } catch (err: any) {
       console.error('[BomComposer] save threw:', err);
       setSaveError(err?.message || '알 수 없는 오류');
