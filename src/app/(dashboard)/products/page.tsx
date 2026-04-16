@@ -160,7 +160,14 @@ export default function ProductsPage() {
                       : <div className="w-8 h-8 bg-slate-100 rounded" />}
                   </td>
                   <td className="font-mono text-xs text-slate-500">{product.code}</td>
-                  <td className="font-medium">{product.name}</td>
+                  <td>
+                    <button
+                      onClick={() => handleEdit(product)}
+                      className="font-medium text-left text-blue-700 hover:underline hover:text-blue-800"
+                    >
+                      {product.name}
+                    </button>
+                  </td>
                   <td>
                     {(() => {
                       const meta = TYPE_BADGE[product.product_type as ProductType] || TYPE_BADGE.FINISHED;
