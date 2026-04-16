@@ -119,6 +119,8 @@ export default function POSPage() {
     orders: any[];
     totalLtv: number;
   }>({ loading: false, consultations: [], orders: [], totalLtv: 0 });
+  // 이력 접힘 상태 (고객 바뀌면 펼침으로 리셋)
+  const [historyCollapsed, setHistoryCollapsed] = useState(false);
   // 주문 메모
   const [orderMemo, setOrderMemo] = useState('');
   // 택배
@@ -347,6 +349,7 @@ export default function POSPage() {
     setShowCustomerDropdown(false);
     setUsePoints(false);
     setPointsToUse(0);
+    setHistoryCollapsed(false);
 
     // 택배 sender가 "구매자와 동일"이면 구매자 정보로 프리필
     setShipping(prev => prev.senderSameAsBuyer
@@ -926,9 +929,21 @@ export default function POSPage() {
                   <button onClick={clearCustomer} className="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
                 </div>
 
-                {/* 상담·구매 히스토리 요약 — 장바구니 자리 잠식 방지용 최대 높이 */}
+                {/* 상담·구매 히스토리 요약 — 확인 후 접어서 장바구니 공간 확보 가능 */}
                 {(customerSummary.consultations.length > 0 || customerSummary.orders.length > 0) && (
-                  <div className="rounded-lg border border-slate-200 bg-white p-2 space-y-1.5 text-xs max-h-[140px] overflow-y-auto">
+                  <div className="rounded-lg border border-slate-200 bg-white text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setHistoryCollapsed(v => !v)}
+                      className="w-full flex items-center justify-between px-2 py-1.5 hover:bg-slate-50 rounded-t-lg"
+                    >
+                      <span className="text-[10px] font-semibold text-slate-500 uppercase">
+                        이력 · 상담 {customerSummary.consultations.length} / 주문 {customerSummary.orders.length}
+                      </span>
+                      <span className="text-slate-400 text-[10px]">{historyCollapsed ? '▸ 펼치기' : '▾ 접기'}</span>
+                    </button>
+                    {!historyCollapsed && (
+                    <div className="px-2 pb-2 space-y-1.5 max-h-[140px] overflow-y-auto border-t border-slate-100 pt-1.5">
                     {customerSummary.consultations.length > 0 && (
                       <div>
                         <p className="text-[10px] font-semibold text-slate-500 uppercase mb-0.5">최근 상담 {customerSummary.consultations.length}건</p>
@@ -971,6 +986,8 @@ export default function POSPage() {
                           })}
                         </ul>
                       </div>
+                    )}
+                    </div>
                     )}
                   </div>
                 )}
