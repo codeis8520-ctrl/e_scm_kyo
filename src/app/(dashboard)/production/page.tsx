@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  getBomList, saveBom,
+  getBomList, saveBom, getBomByProduct,
   getProductionOrders, createProductionOrder,
   startProductionOrder, completeProductionOrder, cancelProductionOrder,
   getProductionPreview,
@@ -624,6 +624,8 @@ function BomComposerLayout({
             onSaved={onSaved}
             onDirtyChange={handleDirtyChange}
             onSavingChange={handleSavingChange}
+            finishedProducts={finishedProducts}
+            bomCountByProduct={bomCountByProduct}
           />
         )}
       </div>
@@ -633,6 +635,7 @@ function BomComposerLayout({
 
 function BomComposer({
   product, initialLines, candidates, categories, onSaved, onDirtyChange, onSavingChange,
+  finishedProducts = [], bomCountByProduct = {},
 }: {
   product: Material;
   initialLines: BomLine[];
@@ -641,6 +644,8 @@ function BomComposer({
   onSaved: () => void | Promise<void>;
   onDirtyChange?: (dirty: boolean) => void;
   onSavingChange?: (saving: boolean) => void;
+  finishedProducts?: Material[];
+  bomCountByProduct?: Record<string, number>;
 }) {
   const [lines, setLines] = useState<BomLine[]>(initialLines);
   const [matSearch, setMatSearch] = useState('');
@@ -650,6 +655,7 @@ function BomComposer({
   const [saving, setSavingState] = useState(false);
   const [dirty, setDirtyState] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [showCopyModal, setShowCopyModal] = useState(false);
 
   const setDirty = (d: boolean) => { setDirtyState(d); onDirtyChange?.(d); };
   const setSaving = (s: boolean) => { setSavingState(s); onSavingChange?.(s); };
@@ -780,6 +786,26 @@ function BomComposer({
     setDirty(false);
   };
 
+  // 다른 완제품 BOM을 가져와 현재 composer에 로드 (id 제거 → 저장 시 INSERT)
+  const handleCopyFrom = async (sourceProductId: string, sourceProductName: string) => {
+    if (lines.length > 0 && !confirm(`현재 구성된 자재 ${lines.length}종이 "${sourceProductName}"의 BOM으로 교체됩니다. 계속할까요?`)) return;
+    const res = await getBomByProduct(sourceProductId);
+    if ((res as any).error) { setSaveError((res as any).error); setShowCopyModal(false); return; }
+    const src = (res.data as any[]) || [];
+    const newLines: BomLine[] = src.map((row: any, i: number) => ({
+      // id 제거 — 저장 시 현재 completed product로 새 INSERT
+      material_id: row.material_id,
+      quantity: Number(row.quantity || 0),
+      loss_rate: Number(row.loss_rate || 0),
+      notes: row.notes || '',
+      sort_order: i,
+      material: row.material,
+    }));
+    setLines(newLines);
+    setDirty(true);
+    setShowCopyModal(false);
+  };
+
   return (
     <div className="card">
       <div className="flex items-start justify-between gap-3 mb-4 pb-3 border-b border-slate-100">
@@ -789,6 +815,14 @@ function BomComposer({
           <p className="text-xs text-slate-500 mt-1">자재 {lines.length}종 · 예상 원가 <span className="font-medium text-slate-700">{Math.round(totalCost).toLocaleString()}원</span> / 완제품 1단위</p>
         </div>
         <div className="flex gap-2">
+          <button
+            onClick={() => setShowCopyModal(true)}
+            disabled={saving}
+            className="px-3 py-1.5 text-sm rounded border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+            title="다른 완제품의 BOM을 복사해서 편집"
+          >
+            BOM 복사
+          </button>
           <button
             onClick={handleReset}
             disabled={!dirty || saving}
@@ -1053,6 +1087,86 @@ function BomComposer({
       {dirty && (
         <p className="mt-3 text-xs text-amber-600">저장되지 않은 변경사항이 있습니다.</p>
       )}
+
+      {showCopyModal && (
+        <CopyBomModal
+          excludeId={product.id}
+          finishedProducts={finishedProducts}
+          bomCountByProduct={bomCountByProduct}
+          onClose={() => setShowCopyModal(false)}
+          onPick={handleCopyFrom}
+        />
+      )}
+    </div>
+  );
+}
+
+function CopyBomModal({
+  excludeId, finishedProducts, bomCountByProduct, onClose, onPick,
+}: {
+  excludeId: string;
+  finishedProducts: Material[];
+  bomCountByProduct: Record<string, number>;
+  onClose: () => void;
+  onPick: (sourceId: string, sourceName: string) => void;
+}) {
+  const [search, setSearch] = useState('');
+  const candidates = finishedProducts
+    .filter(p => p.id !== excludeId && (bomCountByProduct[p.id] || 0) > 0)
+    .filter(p => !search ||
+      p.name.toLowerCase().includes(search.toLowerCase()) ||
+      (p.code || '').toLowerCase().includes(search.toLowerCase()) ||
+      (isAllInitials(search) && extractInitials(p.name).includes(search)))
+    .slice(0, 50);
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg w-full max-w-lg max-h-[80vh] flex flex-col">
+        <div className="flex justify-between items-center px-5 py-3 border-b">
+          <div>
+            <h2 className="font-bold">BOM 복사</h2>
+            <p className="text-xs text-slate-500 mt-0.5">선택한 완제품의 BOM 구성을 이 완제품으로 복제합니다.</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+        </div>
+        <div className="p-4 border-b">
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="완제품명·코드·초성 검색"
+            autoFocus
+            className="input text-sm"
+          />
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {candidates.length === 0 ? (
+            <p className="text-center text-slate-400 text-sm py-8">
+              {finishedProducts.length === 0 ? '등록된 완제품이 없습니다.' : 'BOM이 등록된 다른 완제품이 없습니다.'}
+            </p>
+          ) : (
+            <ul className="divide-y divide-slate-100">
+              {candidates.map(p => {
+                const count = bomCountByProduct[p.id] || 0;
+                return (
+                  <li key={p.id}>
+                    <button
+                      onClick={() => onPick(p.id, p.name)}
+                      className="w-full text-left px-4 py-3 hover:bg-blue-50 flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <p className="font-medium text-sm text-slate-800 truncate">{p.name}</p>
+                        <p className="text-[11px] text-slate-400 font-mono mt-0.5">{p.code}</p>
+                      </div>
+                      <span className="text-xs text-blue-700 bg-blue-100 rounded-full px-2 py-0.5 whitespace-nowrap">자재 {count}종</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

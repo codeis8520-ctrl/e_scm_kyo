@@ -1,7 +1,9 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import Link from 'next/link';
 import { createProduct, updateProduct, deleteProduct, getCategories, addProductFile, deleteProductFile } from '@/lib/actions';
+import { getWhereUsed } from '@/lib/production-actions';
 import { createClient } from '@/lib/supabase/client';
 import { validators } from '@/lib/validators';
 
@@ -56,6 +58,7 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
   });
   const [bomComputedCost, setBomComputedCost] = useState<number | null>(null);
   const [bomLinesCount, setBomLinesCount] = useState(0);
+  const [whereUsed, setWhereUsed] = useState<any[]>([]);
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
@@ -109,6 +112,17 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [formData.cost_source, bomComputedCost]);
+
+  // 원자재·부자재 수정 시: 사용처 완제품 목록 (where-used)
+  useEffect(() => {
+    if (!product?.id || (formData.product_type !== 'RAW' && formData.product_type !== 'SUB')) {
+      setWhereUsed([]);
+      return;
+    }
+    getWhereUsed(product.id).then((res: any) => {
+      setWhereUsed((res.data as any[]) || []);
+    });
+  }, [product?.id, formData.product_type]);
 
   // edit 모드에서만 파일 목록 로드
   useEffect(() => {
@@ -643,6 +657,62 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
               className="mt-1 input resize-none"
             />
           </div>
+
+          {/* Where-used: 원자재·부자재 수정 시, 이 자재를 쓰는 완제품 목록 */}
+          {product?.id && (formData.product_type === 'RAW' || formData.product_type === 'SUB') && (
+            <div className="border-t pt-4">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-sm font-semibold text-slate-700">이 자재를 사용하는 완제품</p>
+                <span className="text-xs text-slate-400">{whereUsed.length}종</span>
+              </div>
+              {whereUsed.length === 0 ? (
+                <p className="text-xs text-slate-400">아직 이 자재를 쓰는 완제품이 없습니다.</p>
+              ) : (
+                <div className="rounded-md border border-slate-200 overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50">
+                      <tr>
+                        <th className="text-left px-3 py-1.5 text-xs text-slate-500 font-medium">완제품</th>
+                        <th className="text-right px-3 py-1.5 text-xs text-slate-500 font-medium">소요량</th>
+                        <th className="text-right px-3 py-1.5 text-xs text-slate-500 font-medium">손실률</th>
+                        <th className="w-10"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {whereUsed.map((w: any) => (
+                        <tr key={w.id} className="border-t border-slate-100">
+                          <td className="px-3 py-1.5">
+                            <p className="font-medium text-slate-700">{w.product?.name}</p>
+                            <p className="text-[11px] text-slate-400 font-mono">{w.product?.code}</p>
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums">
+                            {Number(w.quantity || 0)}
+                            <span className="text-xs text-slate-400 ml-1">{w.product?.unit || ''}</span>
+                          </td>
+                          <td className="px-3 py-1.5 text-right text-xs">
+                            {Number(w.loss_rate || 0) > 0 ? `${w.loss_rate}%` : '-'}
+                          </td>
+                          <td className="px-3 py-1.5 text-right">
+                            <Link
+                              href="/production"
+                              onClick={() => onClose()}
+                              className="text-xs text-blue-600 hover:underline"
+                              title="BOM 조립으로 이동"
+                            >
+                              보기 →
+                            </Link>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <p className="mt-1.5 text-[11px] text-slate-400">
+                이 자재의 매입 단가를 변경하면 위 완제품 중 BOM 자동 산정 모드인 경우 원가가 즉시 갱신됩니다.
+              </p>
+            </div>
+          )}
 
           {/* 추가 이미지 / 파일 섹션 (edit 모드 전용) */}
           {product?.id && (

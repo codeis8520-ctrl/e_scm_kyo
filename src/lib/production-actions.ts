@@ -241,6 +241,48 @@ export async function deleteBom(id: string) {
   return { success: true };
 }
 
+// ─── BOM 복사 · Where-used ───────────────────────────────────────────────────
+
+// 특정 완제품의 BOM 라인 (복사 소스로 사용)
+export async function getBomByProduct(productId: string) {
+  if (!productId) return { data: [] };
+  const supabase = await createClient();
+  const db = supabase as any;
+  let res = await db
+    .from('product_bom')
+    .select('id, material_id, quantity, loss_rate, notes, sort_order, material:products!product_bom_material_id_fkey(id, name, code, unit, cost, product_type)')
+    .eq('product_id', productId)
+    .order('sort_order', { ascending: true });
+  if (res.error && isMissingColumnError(res.error)) {
+    res = await db
+      .from('product_bom')
+      .select('id, material_id, quantity, material:products!product_bom_material_id_fkey(id, name, code, unit, cost)')
+      .eq('product_id', productId);
+  }
+  if (res.error) return { data: [], error: res.error.message };
+  return { data: res.data || [] };
+}
+
+// 특정 자재(RAW/SUB)를 사용하는 완제품 목록 (where-used)
+export async function getWhereUsed(materialId: string) {
+  if (!materialId) return { data: [] };
+  const supabase = await createClient();
+  const db = supabase as any;
+  let res = await db
+    .from('product_bom')
+    .select('id, quantity, loss_rate, notes, product:products!product_bom_product_id_fkey(id, name, code, unit, cost, product_type, cost_source)')
+    .eq('material_id', materialId)
+    .order('created_at', { ascending: false });
+  if (res.error && isMissingColumnError(res.error)) {
+    res = await db
+      .from('product_bom')
+      .select('id, quantity, product:products!product_bom_product_id_fkey(id, name, code, unit, cost)')
+      .eq('material_id', materialId);
+  }
+  if (res.error) return { data: [], error: res.error.message };
+  return { data: res.data || [] };
+}
+
 // ─── 생산 지시 조회 ────────────────────────────────────────────────────────────
 
 export async function getProductionOrders(filters?: { branchId?: string; status?: string }) {
