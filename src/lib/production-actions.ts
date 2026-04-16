@@ -98,6 +98,7 @@ function isMissingColumnError(err: any): boolean {
 
 // BOM 전체 저장 (완제품 하나의 BOM 일괄 upsert + 제거)
 export async function saveBom(productId: string, lines: BomLine[]) {
+  console.log('[saveBom] start', { productId, linesCount: lines?.length, firstLine: lines?.[0] });
   if (!productId) return { error: '완제품이 지정되지 않았습니다.' };
   const supabase = await createClient();
   const db = supabase as any;
@@ -116,6 +117,7 @@ export async function saveBom(productId: string, lines: BomLine[]) {
   const existingIds: string[] = (existing || []).map((r: any) => r.id);
   const keepIds = new Set(lines.filter(l => l.id).map(l => l.id!));
   const toDelete = existingIds.filter(id => !keepIds.has(id));
+  console.log('[saveBom] existing', existingIds.length, 'keep', keepIds.size, 'delete', toDelete.length);
 
   if (toDelete.length > 0) {
     const { error: delErr } = await db.from('product_bom').delete().in('id', toDelete);
@@ -145,30 +147,35 @@ export async function saveBom(productId: string, lines: BomLine[]) {
     };
 
     if (line.id) {
-      let { error } = await db.from('product_bom').update(enhanced).eq('id', line.id);
+      console.log('[saveBom] UPDATE row', line.id, enhanced);
+      let { error, data } = await db.from('product_bom').update(enhanced).eq('id', line.id).select();
       if (error && isMissingColumnError(error)) {
         console.warn('[saveBom] 마이그레이션 042 미적용 — minimal update로 폴백');
-        const retry = await db.from('product_bom').update(minimal).eq('id', line.id);
-        error = retry.error;
+        const retry = await db.from('product_bom').update(minimal).eq('id', line.id).select();
+        error = retry.error; data = retry.data;
       }
       if (error) {
         console.error('[saveBom] update failed:', error);
         return { error: `행 업데이트 실패: ${error.message}` };
       }
+      console.log('[saveBom] UPDATE success, rows:', data?.length);
     } else {
-      let { error } = await db.from('product_bom').insert(enhanced);
+      console.log('[saveBom] INSERT row', enhanced);
+      let { error, data } = await db.from('product_bom').insert(enhanced).select();
       if (error && isMissingColumnError(error)) {
         console.warn('[saveBom] 마이그레이션 042 미적용 — minimal insert로 폴백');
-        const retry = await db.from('product_bom').insert(minimal);
-        error = retry.error;
+        const retry = await db.from('product_bom').insert(minimal).select();
+        error = retry.error; data = retry.data;
       }
       if (error) {
         console.error('[saveBom] insert failed:', error);
         return { error: `행 추가 실패: ${error.message}` };
       }
+      console.log('[saveBom] INSERT success, returned:', data);
     }
   }
 
+  console.log('[saveBom] done for productId', productId);
   revalidatePath('/production');
   return { success: true };
 }
