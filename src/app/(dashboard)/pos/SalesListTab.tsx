@@ -33,7 +33,7 @@ interface OrderRow {
   branch: { id: string; name: string } | null;
   customer: { id: string; name: string; phone: string } | null;
   items: { id: string; quantity: number }[];
-  shipments: { branch_id: string | null; recipient_name: string | null; status: string | null }[] | null;
+  shipments?: { branch_id: string | null; recipient_name: string | null; status: string | null }[];
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -111,8 +111,7 @@ export default function SalesListTab() {
         approval_no, card_info,
         branch:branches(id, name),
         customer:customers(id, name, phone),
-        items:sales_order_items(id, quantity),
-        shipments(branch_id, recipient_name, status)
+        items:sales_order_items(id, quantity)
       `)
       .gte('ordered_at', `${startDate}T00:00:00`)
       .lte('ordered_at', `${endDate}T23:59:59`)
@@ -126,7 +125,28 @@ export default function SalesListTab() {
 
     const { data, error } = await q;
     if (error) console.error('[SalesListTab] load error:', error);
-    setOrders((data as any) || []);
+    const rows = (data as any[]) || [];
+
+    if (rows.length > 0) {
+      const orderIds = rows.map((r: any) => r.id);
+      const { data: shipData } = await sb
+        .from('shipments')
+        .select('sales_order_id, branch_id, recipient_name, status')
+        .in('sales_order_id', orderIds);
+      if (shipData) {
+        const shipMap = new Map<string, any[]>();
+        for (const s of shipData as any[]) {
+          const arr = shipMap.get(s.sales_order_id) || [];
+          arr.push(s);
+          shipMap.set(s.sales_order_id, arr);
+        }
+        for (const r of rows) {
+          r.shipments = shipMap.get(r.id) || [];
+        }
+      }
+    }
+
+    setOrders(rows);
     setLoading(false);
   }, [startDate, endDate, branchFilter, paymentFilter, statusFilter, includeCancelled]);
 
