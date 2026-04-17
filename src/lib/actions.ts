@@ -1154,10 +1154,11 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     // sender_* 는 NOT NULL 이므로 '' 로라도 채움 (없으면 구매자 정보 대체)
     const senderName = shipping.sender_name || '';
     const senderPhone = shipping.sender_phone || '';
+    const itemsSummary = cart.map(c => c.quantity > 1 ? `${c.name} x${c.quantity}` : c.name).join(', ');
     const payloadBase: any = {
       source: 'STORE',
       sales_order_id: saleOrderId,
-      branch_id: stockBranchId, // 출고 지점
+      branch_id: stockBranchId,
       sender_name: senderName,
       sender_phone: senderPhone,
       recipient_name: shipping.recipient_name,
@@ -1166,6 +1167,7 @@ export async function processPosCheckout(payload: CheckoutPayload) {
       recipient_address: shipping.recipient_address,
       recipient_address_detail: shipping.recipient_address_detail || null,
       delivery_message: shipping.delivery_message || null,
+      items_summary: itemsSummary || null,
       status: 'PENDING',
     };
     const payloadFull = {
