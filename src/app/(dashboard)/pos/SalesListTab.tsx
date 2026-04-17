@@ -33,7 +33,7 @@ interface OrderRow {
   branch: { id: string; name: string } | null;
   customer: { id: string; name: string; phone: string } | null;
   items: { id: string; quantity: number }[];
-  shipments: { branch_id: string | null }[] | null;
+  shipments: { branch_id: string | null; recipient_name: string | null; status: string | null }[] | null;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -112,7 +112,7 @@ export default function SalesListTab() {
         branch:branches(id, name),
         customer:customers(id, name, phone),
         items:sales_order_items(id, quantity),
-        shipments(branch_id)
+        shipments(branch_id, recipient_name, status)
       `)
       .gte('ordered_at', `${startDate}T00:00:00`)
       .lte('ordered_at', `${endDate}T23:59:59`)
@@ -329,14 +329,15 @@ export default function SalesListTab() {
                 <th className="text-center">품목</th>
                 <th>결제</th>
                 <th className="text-right">금액</th>
+                <th>배송</th>
                 <th>상태</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={8} className="text-center py-10 text-slate-400">로딩 중...</td></tr>
+                <tr><td colSpan={9} className="text-center py-10 text-slate-400">로딩 중...</td></tr>
               ) : filtered.length === 0 ? (
-                <tr><td colSpan={8} className="text-center py-10 text-slate-400">
+                <tr><td colSpan={9} className="text-center py-10 text-slate-400">
                   조건에 맞는 판매 내역이 없습니다
                 </td></tr>
               ) : filtered.map(o => {
@@ -348,7 +349,14 @@ export default function SalesListTab() {
                     onClick={() => setSelectedOrderId(o.id)}
                     className={`cursor-pointer hover:bg-slate-50 ${isCancelled || isRefunded ? 'opacity-60' : ''}`}
                   >
-                    <td className="font-mono text-xs text-blue-700">{o.order_number}</td>
+                    <td>
+                      <button
+                        onClick={e => { e.stopPropagation(); setSelectedOrderId(o.id); }}
+                        className="font-mono text-xs text-blue-700 hover:text-blue-900 hover:underline"
+                      >
+                        {o.order_number}
+                      </button>
+                    </td>
                     <td className="text-xs text-slate-500 whitespace-nowrap">
                       {(o.ordered_at || '').slice(0, 16).replace('T', ' ')}
                     </td>
@@ -385,6 +393,23 @@ export default function SalesListTab() {
                     </td>
                     <td className={`text-right font-semibold ${isRefunded || isCancelled ? 'line-through text-slate-400' : 'text-slate-800'}`}>
                       {(o.total_amount || 0).toLocaleString()}원
+                    </td>
+                    <td className="text-center text-xs">
+                      {o.shipments && o.shipments.length > 0 ? (
+                        <span className="inline-flex items-center gap-0.5" title={`받는 분: ${o.shipments[0].recipient_name || '-'}`}>
+                          📦
+                          <span className={`badge text-[10px] ${
+                            o.shipments[0].status === 'DELIVERED' ? 'bg-green-100 text-green-700'
+                            : o.shipments[0].status === 'SHIPPED' ? 'bg-blue-100 text-blue-700'
+                            : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            {o.shipments[0].status === 'DELIVERED' ? '배달완료'
+                            : o.shipments[0].status === 'SHIPPED' ? '발송'
+                            : o.shipments[0].status === 'PRINTED' ? '인쇄'
+                            : '대기'}
+                          </span>
+                        </span>
+                      ) : <span className="text-slate-300">-</span>}
                     </td>
                     <td>
                       <span className={`badge text-[10px] ${STATUS_BADGE[o.status] || ''}`}>
@@ -701,9 +726,18 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
                       )}
                     </p>
                   )}
-                  <p className="text-xs pt-1">
-                    <span className="badge text-[10px] bg-slate-100 text-slate-600">배송 {shipment.status}</span>
-                    {shipment.tracking_number && <span className="ml-1.5 font-mono text-slate-500">{shipment.tracking_number}</span>}
+                  <p className="text-xs pt-1 flex items-center gap-1.5">
+                    <span className={`badge text-[10px] ${
+                      shipment.status === 'DELIVERED' ? 'bg-green-100 text-green-700'
+                      : shipment.status === 'SHIPPED' ? 'bg-blue-100 text-blue-700'
+                      : 'bg-slate-100 text-slate-600'
+                    }`}>
+                      {shipment.status === 'DELIVERED' ? '배달완료'
+                      : shipment.status === 'SHIPPED' ? '발송완료'
+                      : shipment.status === 'PRINTED' ? '송장인쇄'
+                      : '발송대기'}
+                    </span>
+                    {shipment.tracking_number && <span className="font-mono text-slate-500">{shipment.tracking_number}</span>}
                   </p>
                 </div>
               </div>
