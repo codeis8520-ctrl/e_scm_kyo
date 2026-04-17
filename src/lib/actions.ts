@@ -1097,7 +1097,7 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     ? Math.floor(finalAmount * (gradePointRate || 1.0) / 100)
     : 0;
 
-  const { data: saleOrder, error: saleError } = await db.from('sales_orders').insert({
+  const salePayload: any = {
     order_number: orderNumber,
     channel: branchChannel || 'STORE',
     branch_id: branchId,
@@ -1116,8 +1116,21 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     customer_grade_at_order: customerId ? (payload as any).customerGrade || null : null,
     point_rate_applied: customerId ? (gradePointRate || 1.0) : null,
     credit_settled: hasCredit ? false : null,
-  }).select().single();
+  };
 
+  let { data: saleOrder, error: saleError } = await db.from('sales_orders').insert(salePayload).select().single();
+  if (saleError) {
+    const msg = String(saleError.message || '').toLowerCase();
+    const isMissingCol = String((saleError as any).code || '') === '42703'
+      || (msg.includes('column') && msg.includes('does not exist'));
+    if (isMissingCol) {
+      delete salePayload.customer_grade_at_order;
+      delete salePayload.point_rate_applied;
+      const retry = await db.from('sales_orders').insert(salePayload).select().single();
+      saleOrder = retry.data;
+      saleError = retry.error;
+    }
+  }
   if (saleError) return { error: saleError.message };
   const saleOrderId = (saleOrder as any).id;
 
@@ -1162,7 +1175,7 @@ export async function processPosCheckout(payload: CheckoutPayload) {
       sender_address_detail: shipping.sender_address_detail || null,
     };
 
-    let { error: shipErr } = await db.from('shipments').insert(payloadFull);
+    let { data: shipData, error: shipErr } = await db.from('shipments').insert(payloadFull).select('id');
     // 마이그레이션 046 미적용(sender_* 컬럼 부재)이면 기본 payload로 재시도
     if (shipErr) {
       const msg = String(shipErr.message || '').toLowerCase();
@@ -1170,11 +1183,16 @@ export async function processPosCheckout(payload: CheckoutPayload) {
       const isMissingCol = code === '42703' || (msg.includes('column') && msg.includes('does not exist'));
       if (isMissingCol) {
         console.warn('[processPosCheckout] shipments sender 컬럼 없음 — 046 미적용. base payload로 재시도.');
-        const retry = await db.from('shipments').insert(payloadBase);
+        const retry = await db.from('shipments').insert(payloadBase).select('id');
         shipErr = retry.error;
+        shipData = retry.data;
       }
     }
-    if (shipErr) console.error('[processPosCheckout] shipments insert failed:', shipErr);
+    if (shipErr) {
+      console.error('[processPosCheckout] shipments insert failed:', shipErr);
+      return { error: `택배 정보 저장 실패: ${shipErr.message}` };
+    }
+    console.log('[processPosCheckout] shipment created:', shipData);
   }
 
   // ③ 판매 항목 저장

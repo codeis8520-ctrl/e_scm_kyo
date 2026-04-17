@@ -510,7 +510,13 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
       const sb = createClient() as any;
       const [ordRes, itemRes, payRes, shipRes] = await Promise.all([
         sb.from('sales_orders')
-          .select('*, branch:branches(id, name), customer:customers(id, name, phone)')
+          .select(`
+            id, order_number, ordered_at, status, total_amount, discount_amount,
+            payment_method, points_earned, points_used, credit_settled, memo,
+            approval_no, card_info,
+            branch:branches(id, name),
+            customer:customers(id, name, phone)
+          `)
           .eq('id', orderId).single(),
         sb.from('sales_order_items')
           .select('id, quantity, unit_price, discount_amount, total_price, product:products(id, name, code, unit)')
@@ -518,16 +524,28 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
         sb.from('sales_order_payments')
           .select('id, payment_method, amount, approval_no, card_info, memo, paid_at')
           .eq('sales_order_id', orderId).order('paid_at').then((r: any) => r.error ? { data: [] } : r),
-        sb.from('shipments')
-          .select(`
-            id, source, status, tracking_number, branch_id,
-            sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail,
-            recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail,
-            delivery_message, created_at,
-            branch:branches(id, name)
-          `)
-          .eq('sales_order_id', orderId).maybeSingle()
-          .then((r: any) => r.error ? { data: null } : r),
+        (async () => {
+          const full = await sb.from('shipments')
+            .select(`
+              id, source, status, tracking_number, branch_id,
+              sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail,
+              recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail,
+              delivery_message, created_at,
+              branch:branches(id, name)
+            `)
+            .eq('sales_order_id', orderId).maybeSingle();
+          if (!full.error) return full;
+          const fallback = await sb.from('shipments')
+            .select(`
+              id, source, status, tracking_number, branch_id,
+              sender_name, sender_phone,
+              recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail,
+              delivery_message, created_at,
+              branch:branches(id, name)
+            `)
+            .eq('sales_order_id', orderId).maybeSingle();
+          return fallback.error ? { data: null } : fallback;
+        })(),
       ]);
       if (!active) return;
       setOrder(ordRes.data || null);
