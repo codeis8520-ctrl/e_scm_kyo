@@ -111,8 +111,14 @@ export async function GET(request: NextRequest) {
       { headers }
     );
     if (!listRes.ok) {
-      console.error(`Cafe24 Orders 목록 오류: ${listRes.status}`);
-      return NextResponse.json({ orders: DEMO_ORDERS.map(o => ({ ...o, already_added: existingIds.has(o.cafe24_order_id) })) });
+      const errBody = await listRes.text().catch(() => '');
+      console.error(`Cafe24 Orders 목록 오류: ${listRes.status}`, errBody);
+      return NextResponse.json({
+        orders: [],
+        is_demo: false,
+        error: true,
+        demo_reason: `카페24 API 오류 (${listRes.status}) — 토큰 갱신 버튼을 눌러주세요.`,
+      });
     }
 
     const listJson = await listRes.json();

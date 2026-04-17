@@ -87,6 +87,21 @@ export async function refreshAccessToken(refreshToken: string): Promise<TokenRow
 }
 
 async function upsertTokens(data: any) {
+  // Cafe24 응답: expires_at (ISO 문자열) 또는 expires_in (초)
+  let accessExpiresAt = data.expires_at;
+  if (!accessExpiresAt && data.expires_in) {
+    accessExpiresAt = new Date(Date.now() + Number(data.expires_in) * 1000).toISOString();
+  }
+
+  let refreshExpiresAt = data.refresh_token_expires_at;
+  if (!refreshExpiresAt && data.refresh_token_expires_in) {
+    refreshExpiresAt = new Date(Date.now() + Number(data.refresh_token_expires_in) * 1000).toISOString();
+  }
+
+  console.log('[cafe24 upsertTokens] access_expires_at:', accessExpiresAt,
+    'refresh_expires_at:', refreshExpiresAt,
+    'raw keys:', Object.keys(data).join(', '));
+
   const { error } = await getSupabase()
     .from('cafe24_tokens')
     .upsert(
@@ -94,8 +109,8 @@ async function upsertTokens(data: any) {
         mall_id: MALL_ID,
         access_token: data.access_token,
         refresh_token: data.refresh_token,
-        access_token_expires_at: data.expires_at,
-        refresh_token_expires_at: data.refresh_token_expires_at,
+        access_token_expires_at: accessExpiresAt,
+        refresh_token_expires_at: refreshExpiresAt,
         scopes: data.scopes || [],
         updated_at: new Date().toISOString(),
       },
@@ -115,12 +130,13 @@ export async function getValidAccessToken(): Promise<string | null> {
   const expiresAt = new Date(row.access_token_expires_at).getTime();
   const now = Date.now();
 
-  // 만료 5분 전이면 갱신
-  if (now >= expiresAt - 5 * 60 * 1000) {
+  // expires_at이 유효하지 않거나 만료 5분 전이면 갱신
+  if (isNaN(expiresAt) || now >= expiresAt - 5 * 60 * 1000) {
     try {
       const refreshed = await refreshAccessToken(row.refresh_token);
       return refreshed.access_token;
-    } catch {
+    } catch (err) {
+      console.error('[cafe24 getValidAccessToken] refresh failed:', err);
       return null;
     }
   }

@@ -30,10 +30,12 @@ export async function GET(request: Request) {
   }
 
   const refreshExpiresAt = new Date(row.refresh_token_expires_at).getTime();
-  const daysLeft = Math.round((refreshExpiresAt - Date.now()) / (1000 * 60 * 60 * 24) * 10) / 10;
+  const daysLeft = isNaN(refreshExpiresAt)
+    ? null
+    : Math.round((refreshExpiresAt - Date.now()) / (1000 * 60 * 60 * 24) * 10) / 10;
 
-  // refresh_token 이미 만료 → 재인증 필요
-  if (daysLeft <= 0) {
+  // refresh_token 이미 만료 → 재인증 필요 (expires_at이 없으면 갱신 시도)
+  if (daysLeft !== null && daysLeft <= 0) {
     await logRefreshResult('expired', `refresh_token 만료됨 — /api/cafe24/auth 재인증 필요`);
     return NextResponse.json({
       success: false,
@@ -44,7 +46,7 @@ export async function GET(request: Request) {
   // 1차 시도
   try {
     const refreshed = await refreshAccessToken(row.refresh_token);
-    await logRefreshResult('success', `갱신 완료 (만료 ${daysLeft}일 전 갱신)`);
+    await logRefreshResult('success', `갱신 완료 (만료 ${daysLeft ?? '?'}일 전 갱신)`);
     return NextResponse.json({
       success: true,
       message: `토큰 갱신 완료`,
@@ -76,9 +78,9 @@ export async function GET(request: Request) {
         message: `갱신 2회 실패: ${err2.message}`,
         days_until_refresh_expiry: daysLeft,
         consecutive_failures: consecutiveFails + 1,
-        action_required: daysLeft <= 3
+        action_required: daysLeft !== null && daysLeft <= 3
           ? '⚠️ 긴급: refresh_token 만료 임박 — /api/cafe24/auth 재인증 필요'
-          : `남은 기간: ${daysLeft}일`,
+          : `남은 기간: ${daysLeft ?? '알 수 없음'}일`,
       }, { status: 200 });
     }
   }
