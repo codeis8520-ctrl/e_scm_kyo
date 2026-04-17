@@ -519,8 +519,15 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
           .select('id, payment_method, amount, approval_no, card_info, memo, paid_at')
           .eq('sales_order_id', orderId).order('paid_at').then((r: any) => r.error ? { data: [] } : r),
         sb.from('shipments')
-          .select('*, branch:branches(id, name)')
-          .eq('sales_order_id', orderId).maybeSingle(),
+          .select(`
+            id, source, status, tracking_number, branch_id,
+            sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail,
+            recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail,
+            delivery_message, created_at,
+            branch:branches(id, name)
+          `)
+          .eq('sales_order_id', orderId).maybeSingle()
+          .then((r: any) => r.error ? { data: null } : r),
       ]);
       if (!active) return;
       setOrder(ordRes.data || null);
