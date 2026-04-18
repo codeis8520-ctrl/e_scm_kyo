@@ -19,6 +19,7 @@ const REFUND_METHODS = [
 
 interface Props {
   branchId: string;
+  initialOrderNumber?: string;
   onClose: () => void;
   onSuccess: (returnNumber: string) => void;
 }
@@ -29,7 +30,7 @@ const daysAgoISO = (n: number) => {
   return d.toISOString().slice(0, 10);
 };
 
-export default function RefundModal({ branchId, onClose, onSuccess }: Props) {
+export default function RefundModal({ branchId, initialOrderNumber, onClose, onSuccess }: Props) {
   const [step, setStep] = useState<'search' | 'select'>('search');
   const [searchMode, setSearchMode] = useState<'orderNumber' | 'customer'>('customer');
   const [orderNumber, setOrderNumber] = useState('');
@@ -102,8 +103,17 @@ export default function RefundModal({ branchId, onClose, onSuccess }: Props) {
     setSearching(false);
   };
 
+  // 주문번호가 주어지면 바로 상세 로드 (판매현황 드로어에서 호출되는 경우)
+  useEffect(() => {
+    if (initialOrderNumber) {
+      loadOrderDetail(initialOrderNumber);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // 모달 열리면 최근 거래 자동 로드
   useEffect(() => {
+    if (initialOrderNumber) return;
     if (searchMode === 'customer' && step === 'search' && results.length === 0) {
       handleSearchByCustomer();
     }

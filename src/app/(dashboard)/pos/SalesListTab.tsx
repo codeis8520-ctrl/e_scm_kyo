@@ -83,6 +83,7 @@ export default function SalesListTab() {
 
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [showRefundModal, setShowRefundModal] = useState(false);
+  const [refundOrderNumber, setRefundOrderNumber] = useState<string | null>(null);
   const [reprintReceipt, setReprintReceipt] = useState<any>(null);
 
   // 초기 — 지점 목록
@@ -335,7 +336,7 @@ export default function SalesListTab() {
       <div className="card">
         <div className="flex items-center justify-between mb-2">
           <h3 className="font-semibold text-slate-700">판매 내역 ({filtered.length}건)</h3>
-          <button onClick={() => setShowRefundModal(true)}
+          <button onClick={() => { setRefundOrderNumber(null); setShowRefundModal(true); }}
             className="text-sm text-red-600 hover:underline">환불 처리</button>
         </div>
         <div className="overflow-x-auto">
@@ -449,7 +450,11 @@ export default function SalesListTab() {
           orderId={selectedOrderId}
           onClose={() => setSelectedOrderId(null)}
           onReprint={(r) => setReprintReceipt(r)}
-          onRefundIntent={() => { setSelectedOrderId(null); setShowRefundModal(true); }}
+          onRefundIntent={(orderNumber) => {
+            setSelectedOrderId(null);
+            setRefundOrderNumber(orderNumber);
+            setShowRefundModal(true);
+          }}
           onChanged={loadOrders}
         />
       )}
@@ -464,8 +469,14 @@ export default function SalesListTab() {
       {showRefundModal && (
         <RefundModal
           branchId={branchFilter || (branches[0]?.id ?? '')}
-          onClose={() => setShowRefundModal(false)}
-          onSuccess={(rn) => { setShowRefundModal(false); alert(`환불 완료 · ${rn}`); loadOrders(); }}
+          initialOrderNumber={refundOrderNumber ?? undefined}
+          onClose={() => { setShowRefundModal(false); setRefundOrderNumber(null); }}
+          onSuccess={(rn) => {
+            setShowRefundModal(false);
+            setRefundOrderNumber(null);
+            alert(`환불 완료 · ${rn}`);
+            loadOrders();
+          }}
         />
       )}
     </div>
@@ -494,7 +505,7 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
   orderId: string;
   onClose: () => void;
   onReprint: (receipt: any) => void;
-  onRefundIntent: () => void;
+  onRefundIntent: (orderNumber: string) => void;
   onChanged: () => void;
 }) {
   const [order, setOrder] = useState<any>(null);
@@ -792,8 +803,8 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
             <div className="flex gap-2 pt-3 border-t border-slate-100">
               <button onClick={handleReprint}
                 className="flex-1 btn-secondary py-2 text-sm">영수증 재발행</button>
-              {order.status === 'COMPLETED' && (
-                <button onClick={onRefundIntent}
+              {(order.status === 'COMPLETED' || order.status === 'PARTIALLY_REFUNDED') && (
+                <button onClick={() => onRefundIntent(order.order_number)}
                   className="flex-1 py-2 text-sm rounded-md border border-red-200 text-red-600 hover:bg-red-50">
                   환불 처리
                 </button>
