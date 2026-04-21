@@ -22,6 +22,7 @@ const ALL_NAV_ITEMS = [
   { href: '/system-codes', label: '코드', icon: '⚙️' },
   { href: '/reports', label: '보고서', icon: '📈' },
   { href: '/agent-memory', label: 'AI 메모리', icon: '🧠' },
+  { href: '/agent-conversations', label: 'AI 대화 기록', icon: '💬' },
 ];
 
 const ROLE_LABELS: Record<string, string> = {

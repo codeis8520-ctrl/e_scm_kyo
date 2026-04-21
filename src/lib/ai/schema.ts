@@ -160,4 +160,10 @@ sales_orders.receipt_status: 품목 receipt_status 집계(우선순위 PARCEL_PL
 [반품]
 - return_orders: 기존 sales_order 참조, 환불금액/포인트복원 포함
 - 반품 완료 시 재고 복구(IN) + 환불 분개 자동 생성
+
+[AI 에이전트 로그]
+- agent_conversations: 매 대화 자동 저장 (user_message, assistant_response, tools_used, tokens, model)
+- agent_memories: 대화에서 자동 추출된 별칭/패턴/오류/통찰. 시스템 프롬프트에 주입돼 재사용.
+- /agent-memory 화면: 메모리 목록·필터·활성화 관리
+- /agent-conversations 화면: 대화 이력 조회 — 본인 최근 30+건, 성공/실패 필터, 검색, 삭제. 관리자는 전체 조회 가능.
 `;
