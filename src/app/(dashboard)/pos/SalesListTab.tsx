@@ -894,11 +894,14 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
   const [shipment, setShipment] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [markingReceipt, setMarkingReceipt] = useState(false);
+  const [changingDeliveryType, setChangingDeliveryType] = useState(false);
 
   const markReceiptCompleted = async () => {
     if (markingReceipt) return;
-    const statusLabel = order?.receipt_status === 'QUICK_PLANNED' ? '퀵 수령'
-      : order?.receipt_status === 'PARCEL_PLANNED' ? '택배 수령'
+    const wasQuick = order?.receipt_status === 'QUICK_PLANNED';
+    const wasParcel = order?.receipt_status === 'PARCEL_PLANNED';
+    const statusLabel = wasQuick ? '퀵 수령'
+      : wasParcel ? '택배 수령'
       : order?.receipt_status === 'PICKUP_PLANNED' ? '방문 수령'
       : '수령';
     if (!confirm(`${statusLabel}을 완료 처리할까요?\n수령현황 → 수령완료, 수령일자 → 오늘`)) return;
@@ -915,16 +918,59 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
         setMarkingReceipt(false);
         return;
       }
-      // 배송 레코드가 있다면 함께 DELIVERED로 갱신
+      // 배송 레코드가 있다면 함께 DELIVERED로 갱신 +
+      // receipt_status가 바뀌기 전에 퀵/택배 단서를 shipments.delivery_type에 고정
       if (shipment?.id) {
-        await sb.from('shipments').update({ status: 'DELIVERED' }).eq('id', shipment.id);
+        const shipUpdate: any = { status: 'DELIVERED' };
+        if (!shipment.delivery_type) {
+          shipUpdate.delivery_type = wasQuick ? 'QUICK' : 'PARCEL';
+        }
+        const { error: shipErr } = await sb.from('shipments').update(shipUpdate).eq('id', shipment.id);
+        // delivery_type 컬럼 부재(050 미적용)면 그 필드 없이 재시도
+        if (shipErr) {
+          const msg = String(shipErr.message || '').toLowerCase();
+          if (msg.includes('delivery_type') || msg.includes('column')) {
+            await sb.from('shipments').update({ status: 'DELIVERED' }).eq('id', shipment.id);
+          }
+        }
       }
       // 로컬 상태 반영
       setOrder((prev: any) => prev ? { ...prev, receipt_status: 'RECEIVED', receipt_date: today } : prev);
-      if (shipment?.id) setShipment((prev: any) => prev ? { ...prev, status: 'DELIVERED' } : prev);
+      if (shipment?.id) {
+        setShipment((prev: any) => prev ? {
+          ...prev,
+          status: 'DELIVERED',
+          delivery_type: prev.delivery_type || (wasQuick ? 'QUICK' : 'PARCEL'),
+        } : prev);
+      }
       onChanged();
     } finally {
       setMarkingReceipt(false);
+    }
+  };
+
+  // 배송 유형(택배 ↔ 퀵) 수동 변경 — 레거시/오분류 보정
+  const changeDeliveryType = async (next: 'PARCEL' | 'QUICK') => {
+    if (!shipment?.id || changingDeliveryType) return;
+    const label = next === 'QUICK' ? '퀵배송' : '택배';
+    if (!confirm(`배송 유형을 ${label}로 변경할까요?`)) return;
+    setChangingDeliveryType(true);
+    try {
+      const sb = createClient() as any;
+      const { error } = await sb.from('shipments').update({ delivery_type: next }).eq('id', shipment.id);
+      if (error) {
+        const msg = String(error.message || '').toLowerCase();
+        if (msg.includes('delivery_type') || msg.includes('column')) {
+          alert('shipments.delivery_type 컬럼이 없습니다.\nSupabase에 migration 050을 먼저 적용해 주세요.');
+        } else {
+          alert('배송 유형 변경 실패: ' + error.message);
+        }
+        return;
+      }
+      setShipment((prev: any) => prev ? { ...prev, delivery_type: next } : prev);
+      onChanged();
+    } finally {
+      setChangingDeliveryType(false);
     }
   };
 
@@ -1277,6 +1323,21 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
                     <span className={`text-[10px] px-1.5 py-0.5 rounded border ${headerColor}`}>
                       {headerLabel}
                     </span>
+                    {!shipment.delivery_type && (
+                      <span className="text-[10px] text-amber-600 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5"
+                        title="shipments.delivery_type이 비어있어 receipt_status로 추론한 값입니다.">
+                        ⚠ 추론
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => changeDeliveryType(isQuick ? 'PARCEL' : 'QUICK')}
+                      disabled={changingDeliveryType}
+                      className="ml-auto text-[11px] text-slate-400 hover:text-slate-700 underline disabled:opacity-50"
+                      title={`${isQuick ? '택배' : '퀵배송'}로 변경`}
+                    >
+                      {changingDeliveryType ? '변경 중...' : `${isQuick ? '📦 택배' : '🛵 퀵'}로 변경`}
+                    </button>
                   </div>
                   <div className={`p-3 rounded-md border text-sm space-y-1 ${isQuick ? 'border-indigo-200 bg-indigo-50/30' : 'border-slate-200'}`}>
                     {shipment.branch?.id && shipment.branch.id !== order.branch?.id && (
