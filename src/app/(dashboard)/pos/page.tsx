@@ -1977,14 +1977,30 @@ function POSPageInner() {
             </div>
           )}
 
-          {/* 결제 버튼 */}
-          <button
-            onClick={handlePayment}
-            disabled={cart.length === 0 || !selectedBranch || !handlerId || processing || (paymentMethod === 'cash' && cashReceivedNum > 0 && change < 0)}
-            className="w-full btn-primary py-3 text-base font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {processing ? '처리 중...' : `결제 (${finalAmount.toLocaleString()}원) · ${handlerName}`}
-          </button>
+          {/* 결제 버튼 + 비활성 사유 안내 */}
+          {(() => {
+            const disabledReason =
+              cart.length === 0 ? '장바구니에 품목을 추가하세요'
+              : !selectedBranch ? '매출처를 선택하세요'
+              : !handlerId ? '담당자를 선택하세요'
+              : (paymentMethod === 'cash' && cashReceivedNum > 0 && change < 0)
+                  ? `받은 금액이 결제 금액보다 ${Math.abs(change).toLocaleString()}원 부족합니다`
+              : null;
+            return (
+              <>
+                <button
+                  onClick={handlePayment}
+                  disabled={!!disabledReason || processing}
+                  className="w-full btn-primary py-3 text-base font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {processing ? '처리 중...' : `결제 (${finalAmount.toLocaleString()}원) · ${handlerName}`}
+                </button>
+                {disabledReason && (
+                  <p className="text-xs text-amber-600 text-center mt-1">⚠ {disabledReason}</p>
+                )}
+              </>
+            );
+          })()}
         </div>
       </div>
 
