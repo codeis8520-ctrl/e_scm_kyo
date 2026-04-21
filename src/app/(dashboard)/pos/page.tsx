@@ -90,6 +90,11 @@ const APPROVAL_STATUS_LABEL: Record<ApprovalStatus, string> = {
 // 자주 사용하는 주문 옵션 프리셋
 const ORDER_OPTION_PRESETS = ['보자기 포장', '쇼핑백 증정', '서비스 지급', '수령 완료', '택배 예정', '퀵 예정', '방문 예정'];
 
+type ItemDeliveryType = 'PICKUP' | 'PARCEL' | 'QUICK';
+const ITEM_DELIVERY_LABEL: Record<ItemDeliveryType, string> = {
+  PICKUP: '🏠 현장', PARCEL: '📦 택배', QUICK: '🛵 퀵',
+};
+
 interface CartItem {
   productId: string;
   name: string;
@@ -98,6 +103,7 @@ interface CartItem {
   discount: number;
   barcode?: string;
   orderOption?: string;
+  deliveryType: ItemDeliveryType;  // 품목별 배송방식 (기본 PICKUP)
 }
 
 interface Customer {
@@ -374,6 +380,7 @@ function POSPageInner() {
           discount: Number(it.discount_amount || 0),
           barcode: prod?.barcode,
           orderOption: it.order_option || undefined,
+          deliveryType: (it.delivery_type as ItemDeliveryType) || 'PICKUP',
         };
       }).filter((c: CartItem) => !!c.productId);
       setCart(newCart);
@@ -438,6 +445,17 @@ function POSPageInner() {
       : 'NONE'; // RECEIVED · PICKUP_PLANNED → 배송 없음
     setShipping(prev => prev.type === target ? prev : { ...prev, type: target });
   }, [receiptStatus]);
+
+  // 품목별 배송 방식 변경 시 상단 배송 탭 자동 집계
+  //  - 택배 품목 있으면 탭 PARCEL (우선)
+  //  - 택배 없고 퀵 있으면 QUICK
+  //  - 전부 PICKUP이면 NONE
+  useEffect(() => {
+    const hasParcel = cart.some(c => c.deliveryType === 'PARCEL');
+    const hasQuick = cart.some(c => c.deliveryType === 'QUICK');
+    const target: DeliveryType = hasParcel ? 'PARCEL' : hasQuick ? 'QUICK' : 'NONE';
+    setShipping(prev => prev.type === target ? prev : { ...prev, type: target });
+  }, [cart]);
 
   // 결제수단에 맞춰 승인상태 기본값 추천 (사용자 변경값은 보존)
   useEffect(() => {
@@ -507,7 +525,16 @@ function POSPageInner() {
           item.productId === product.id ? { ...item, quantity: item.quantity + 1 } : item
         );
       }
-      return [...prev, { productId: product.id, name: product.name, price: product.price, quantity: 1, discount: 0, barcode: product.barcode }];
+      // 새 품목은 현재 배송 탭 기반으로 deliveryType 초기값 설정
+      const initialDeliveryType: ItemDeliveryType =
+        shipping.type === 'PARCEL' ? 'PARCEL'
+        : shipping.type === 'QUICK' ? 'QUICK'
+        : 'PICKUP';
+      return [...prev, {
+        productId: product.id, name: product.name, price: product.price,
+        quantity: 1, discount: 0, barcode: product.barcode,
+        deliveryType: initialDeliveryType,
+      }];
     });
     setSearch('');
     searchRef.current?.focus();
@@ -773,6 +800,7 @@ function POSPageInner() {
           quantity: c.quantity,
           discount: c.discount,
           orderOption: c.orderOption,
+          deliveryType: c.deliveryType || 'PICKUP',
         })),
         totalAmount: total,
         discountAmount: itemDiscountTotal + discountAmount + (usePoints ? pointsToUse : 0),
@@ -1407,6 +1435,24 @@ function POSPageInner() {
                     + 주문 옵션
                   </button>
                 )}
+                {/* 품목별 배송 방식 */}
+                <select
+                  value={item.deliveryType || 'PICKUP'}
+                  onChange={e => {
+                    const newType = e.target.value as ItemDeliveryType;
+                    setCart(prev => prev.map(c => c.productId === item.productId ? { ...c, deliveryType: newType } : c));
+                  }}
+                  className={`ml-auto text-xs py-0.5 px-1.5 rounded border focus:outline-none ${
+                    item.deliveryType === 'PARCEL' ? 'border-blue-300 bg-blue-50 text-blue-700'
+                    : item.deliveryType === 'QUICK' ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
+                    : 'border-slate-200 bg-white text-slate-600'
+                  }`}
+                  title="이 품목의 배송 방식"
+                >
+                  <option value="PICKUP">🏠 현장</option>
+                  <option value="PARCEL">📦 택배</option>
+                  <option value="QUICK">🛵 퀵</option>
+                </select>
               </div>
               <div className="flex items-center gap-1.5">
                 {editingDiscountId === item.productId ? (
@@ -1655,7 +1701,13 @@ function POSPageInner() {
                 <button
                   key={opt.v}
                   type="button"
-                  onClick={() => setShipping(prev => ({ ...prev, type: opt.v }))}
+                  onClick={() => {
+                    setShipping(prev => ({ ...prev, type: opt.v }));
+                    // 탭 전환 시 모든 품목 일괄 적용 (현장수령 override도 덮어씀 — 명시적 bulk 액션)
+                    const newDType: ItemDeliveryType =
+                      opt.v === 'PARCEL' ? 'PARCEL' : opt.v === 'QUICK' ? 'QUICK' : 'PICKUP';
+                    setCart(prev => prev.map(it => it.deliveryType === newDType ? it : { ...it, deliveryType: newDType }));
+                  }}
                   className={`flex-1 py-1.5 font-medium transition-colors ${shipping.type === opt.v
                     ? 'bg-white text-blue-600 border-b-2 border-blue-500 -mb-px'
                     : 'text-slate-500 hover:bg-white/60'}`}
@@ -1664,8 +1716,19 @@ function POSPageInner() {
                 </button>
               ))}
             </div>
-            {shipping.type !== 'NONE' && (
+            {shipping.type !== 'NONE' && (() => {
+              const pickupCnt = cart.filter(c => (c.deliveryType || 'PICKUP') === 'PICKUP').length;
+              const parcelCnt = cart.filter(c => c.deliveryType === 'PARCEL').length;
+              const quickCnt = cart.filter(c => c.deliveryType === 'QUICK').length;
+              const isMixed = pickupCnt > 0 && (parcelCnt > 0 || quickCnt > 0);
+              return (
               <div className="p-3 space-y-3">
+                {isMixed && (
+                  <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                    ⚠ 혼합: 🏠 현장 {pickupCnt}품목 · {shipping.type === 'QUICK' ? '🛵 퀵' : '📦 택배'} {shipping.type === 'QUICK' ? quickCnt : parcelCnt}품목
+                    <span className="block mt-0.5 text-[10px] text-amber-600">현장 품목은 즉시 수령, 배송 품목만 아래 주소로 발송됩니다.</span>
+                  </p>
+                )}
                 {/* 출고 지점 */}
                 <div>
                   <p className="text-[11px] font-semibold text-slate-500 uppercase mb-1">출고 지점</p>
@@ -1777,7 +1840,8 @@ function POSPageInner() {
                   )}
                 </div>
               </div>
-            )}
+              );
+            })()}
           </div>
 
           {/* 결제 수단 */}

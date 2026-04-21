@@ -895,6 +895,49 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
   const [loading, setLoading] = useState(true);
   const [markingReceipt, setMarkingReceipt] = useState(false);
   const [changingDeliveryType, setChangingDeliveryType] = useState(false);
+  const [markingItemId, setMarkingItemId] = useState<string | null>(null);
+
+  // 품목별 수령 완료 처리 — 모든 품목이 RECEIVED가 되면 주문 레벨도 자동 완료
+  const markItemReceived = async (itemId: string) => {
+    if (markingItemId) return;
+    setMarkingItemId(itemId);
+    try {
+      const sb = createClient() as any;
+      const today = new Date().toISOString().slice(0, 10);
+      const { error } = await sb
+        .from('sales_order_items')
+        .update({ receipt_status: 'RECEIVED', receipt_date: today })
+        .eq('id', itemId);
+      if (error) {
+        const msg = String(error.message || '').toLowerCase();
+        if (msg.includes('column') || msg.includes('receipt_status')) {
+          alert('sales_order_items.receipt_status 컬럼이 없습니다.\nSupabase에 migration 052를 먼저 적용해 주세요.');
+        } else {
+          alert('품목 수령 처리 실패: ' + error.message);
+        }
+        return;
+      }
+      const nextItems = items.map(it => it.id === itemId
+        ? { ...it, receipt_status: 'RECEIVED', receipt_date: today }
+        : it);
+      setItems(nextItems);
+      // 전 품목 RECEIVED이면 주문 레벨 + shipments도 완료
+      const allDone = nextItems.every(it => !it.receipt_status || it.receipt_status === 'RECEIVED');
+      if (allDone) {
+        await sb.from('sales_orders')
+          .update({ receipt_status: 'RECEIVED', receipt_date: today })
+          .eq('id', orderId);
+        if (shipment?.id) {
+          await sb.from('shipments').update({ status: 'DELIVERED' }).eq('id', shipment.id);
+          setShipment((prev: any) => prev ? { ...prev, status: 'DELIVERED' } : prev);
+        }
+        setOrder((prev: any) => prev ? { ...prev, receipt_status: 'RECEIVED', receipt_date: today } : prev);
+      }
+      onChanged();
+    } finally {
+      setMarkingItemId(null);
+    }
+  };
 
   const markReceiptCompleted = async () => {
     if (markingReceipt) return;
@@ -1005,10 +1048,17 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
             .eq('id', orderId).single();
         })(),
         (async () => {
+          // 052 적용: delivery_type, receipt_status, receipt_date 포함
           const full = await sb.from('sales_order_items')
-            .select('id, quantity, unit_price, discount_amount, total_price, order_option, product:products(id, name, code, unit)')
+            .select('id, quantity, unit_price, discount_amount, total_price, order_option, delivery_type, receipt_status, receipt_date, product:products(id, name, code, unit)')
             .eq('sales_order_id', orderId).order('id');
           if (!full.error) return full;
+          // 051만 적용
+          const v051 = await sb.from('sales_order_items')
+            .select('id, quantity, unit_price, discount_amount, total_price, order_option, product:products(id, name, code, unit)')
+            .eq('sales_order_id', orderId).order('id');
+          if (!v051.error) return v051;
+          // 051/052 모두 미적용
           return await sb.from('sales_order_items')
             .select('id, quantity, unit_price, discount_amount, total_price, product:products(id, name, code, unit)')
             .eq('sales_order_id', orderId).order('id');
@@ -1192,30 +1242,76 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
                     <tr className="text-xs text-slate-500">
                       <th className="text-left px-3 py-1.5">품목</th>
                       <th className="text-left px-3 py-1.5">주문 옵션</th>
+                      <th className="text-left px-3 py-1.5">배송</th>
+                      <th className="text-left px-3 py-1.5">수령</th>
                       <th className="text-right px-3 py-1.5">수량</th>
                       <th className="text-right px-3 py-1.5">단가</th>
                       <th className="text-right px-3 py-1.5">금액</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {items.map(it => (
-                      <tr key={it.id} className="border-t border-slate-100">
-                        <td className="px-3 py-1.5">
-                          <p className="font-medium">{it.product?.name || '-'}</p>
-                          <p className="text-[11px] text-slate-400 font-mono">{it.product?.code}</p>
-                        </td>
-                        <td className="px-3 py-1.5 text-xs text-indigo-700">
-                          {it.order_option ? (
-                            <span className="inline-block px-1.5 py-0.5 rounded bg-indigo-50 border border-indigo-100">
-                              🎀 {it.order_option}
+                    {items.map(it => {
+                      const itemDType = it.delivery_type || 'PICKUP';
+                      const itemRStatus = it.receipt_status || 'RECEIVED';
+                      const itemPending = itemRStatus !== 'RECEIVED' && order.status === 'COMPLETED';
+                      const dTypeLabel = itemDType === 'PARCEL' ? '📦 택배'
+                        : itemDType === 'QUICK' ? '🛵 퀵'
+                        : '🏠 현장';
+                      const dTypeColor = itemDType === 'PARCEL' ? 'bg-blue-50 text-blue-700 border-blue-200'
+                        : itemDType === 'QUICK' ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                        : 'bg-slate-50 text-slate-600 border-slate-200';
+                      const rLabel = itemRStatus === 'RECEIVED' ? '수령완료'
+                        : itemRStatus === 'PARCEL_PLANNED' ? '택배예정'
+                        : itemRStatus === 'QUICK_PLANNED' ? '퀵예정'
+                        : '방문예정';
+                      const rColor = itemRStatus === 'RECEIVED' ? 'bg-green-100 text-green-700'
+                        : itemRStatus === 'PARCEL_PLANNED' ? 'bg-blue-100 text-blue-700'
+                        : itemRStatus === 'QUICK_PLANNED' ? 'bg-indigo-100 text-indigo-700'
+                        : 'bg-slate-100 text-slate-600';
+                      return (
+                        <tr key={it.id} className="border-t border-slate-100">
+                          <td className="px-3 py-1.5">
+                            <p className="font-medium">{it.product?.name || '-'}</p>
+                            <p className="text-[11px] text-slate-400 font-mono">{it.product?.code}</p>
+                          </td>
+                          <td className="px-3 py-1.5 text-xs text-indigo-700">
+                            {it.order_option ? (
+                              <span className="inline-block px-1.5 py-0.5 rounded bg-indigo-50 border border-indigo-100">
+                                🎀 {it.order_option}
+                              </span>
+                            ) : <span className="text-slate-300">-</span>}
+                          </td>
+                          <td className="px-3 py-1.5">
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded border ${dTypeColor}`}>
+                              {dTypeLabel}
                             </span>
-                          ) : <span className="text-slate-300">-</span>}
-                        </td>
-                        <td className="px-3 py-1.5 text-right">{it.quantity}</td>
-                        <td className="px-3 py-1.5 text-right">{Number(it.unit_price).toLocaleString()}</td>
-                        <td className="px-3 py-1.5 text-right font-medium">{Number(it.total_price).toLocaleString()}</td>
-                      </tr>
-                    ))}
+                          </td>
+                          <td className="px-3 py-1.5">
+                            <div className="flex items-center gap-1">
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded ${rColor}`}>
+                                {rLabel}
+                              </span>
+                              {itemPending && (
+                                <button
+                                  onClick={() => markItemReceived(it.id)}
+                                  disabled={markingItemId === it.id}
+                                  className="text-[10px] px-1.5 py-0.5 rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+                                  title={`${rLabel} 품목 수령 완료`}
+                                >
+                                  {markingItemId === it.id ? '...' : '✓ 완료'}
+                                </button>
+                              )}
+                            </div>
+                            {it.receipt_date && (
+                              <p className="text-[10px] text-slate-400 mt-0.5">{it.receipt_date}</p>
+                            )}
+                          </td>
+                          <td className="px-3 py-1.5 text-right">{it.quantity}</td>
+                          <td className="px-3 py-1.5 text-right">{Number(it.unit_price).toLocaleString()}</td>
+                          <td className="px-3 py-1.5 text-right font-medium">{Number(it.total_price).toLocaleString()}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

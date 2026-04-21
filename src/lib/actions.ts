@@ -993,17 +993,20 @@ export async function autoUpgradeCustomerGrades() {
 
 // ============ POS Checkout ============
 
+export type ItemDeliveryType = 'PICKUP' | 'PARCEL' | 'QUICK';
+export type ReceiptStatus = 'RECEIVED' | 'PICKUP_PLANNED' | 'QUICK_PLANNED' | 'PARCEL_PLANNED';
+export type ApprovalStatus = 'COMPLETED' | 'CARD_PENDING' | 'UNSETTLED';
+
 export interface CartItem {
   productId: string;
   name: string;
   price: number;
   quantity: number;
   discount?: number;
-  orderOption?: string;   // 품목별 주문 옵션(보자기/쇼핑백/색상/서비스/혼합배송 등)
+  orderOption?: string;   // 품목별 주문 옵션(보자기/쇼핑백/색상/서비스 등)
+  deliveryType?: ItemDeliveryType;     // 품목별 배송 방식 (기본 PICKUP)
+  receiptDate?: string | null;          // 품목별 수령(예정) 일자
 }
-
-export type ReceiptStatus = 'RECEIVED' | 'PICKUP_PLANNED' | 'QUICK_PLANNED' | 'PARCEL_PLANNED';
-export type ApprovalStatus = 'COMPLETED' | 'CARD_PENDING' | 'UNSETTLED';
 
 export interface PaymentSplit {
   method: 'cash' | 'card' | 'card_keyin' | 'kakao' | 'credit' | 'cod';
@@ -1107,12 +1110,24 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     ? Math.floor(finalAmount * (gradePointRate || 1.0) / 100)
     : 0;
 
-  // 수령 현황 자동 추론 (명시값 우선)
+  // 품목별 배송 방식으로부터 주문 레벨 수령 상태 집계
+  //  - 모두 PICKUP → RECEIVED
+  //  - 하나라도 PARCEL → PARCEL_PLANNED (우선순위 최상)
+  //  - PARCEL 없고 QUICK 있음 → QUICK_PLANNED
+  //  - 기타 → PICKUP_PLANNED 또는 RECEIVED
+  const itemDeliveryTypes: ItemDeliveryType[] = cart.map(c => c.deliveryType || 'PICKUP');
+  const hasParcelItem = itemDeliveryTypes.includes('PARCEL');
+  const hasQuickItem = itemDeliveryTypes.includes('QUICK');
+  const allPickup = itemDeliveryTypes.every(t => t === 'PICKUP');
+
+  // 수령 현황 자동 추론 (명시값 우선 — 사용자가 수령현황을 명시적으로 선택한 경우)
   const inferredReceiptStatus: ReceiptStatus =
     payload.receiptStatus
-    ?? (shipping
-          ? (shipping.delivery_type === 'QUICK' ? 'QUICK_PLANNED' : 'PARCEL_PLANNED')
-          : 'RECEIVED');
+    ?? (hasParcelItem ? 'PARCEL_PLANNED'
+        : hasQuickItem ? 'QUICK_PLANNED'
+        : (shipping
+            ? (shipping.delivery_type === 'QUICK' ? 'QUICK_PLANNED' : 'PARCEL_PLANNED')
+            : 'RECEIVED'));
   // 승인 상태 자동 추론
   const inferredApprovalStatus: ApprovalStatus =
     payload.approvalStatus
@@ -1191,7 +1206,10 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     // sender_* 는 NOT NULL 이므로 '' 로라도 채움 (없으면 구매자 정보 대체)
     const senderName = shipping.sender_name || '';
     const senderPhone = shipping.sender_phone || '';
-    const itemsSummary = cart.map(c => c.quantity > 1 ? `${c.name} x${c.quantity}` : c.name).join(', ');
+    // items_summary: 실제 배송 대상(PARCEL/QUICK) 품목만 요약 — PICKUP 품목은 제외
+    const shipItems = cart.filter(c => (c.deliveryType || 'PICKUP') !== 'PICKUP');
+    const summarySource = shipItems.length > 0 ? shipItems : cart; // 레거시: 모두 기본값이면 전체
+    const itemsSummary = summarySource.map(c => c.quantity > 1 ? `${c.name} x${c.quantity}` : c.name).join(', ');
     const payloadBase: any = {
       source: 'STORE',
       sales_order_id: saleOrderId,
@@ -1244,8 +1262,13 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     console.log('[processPosCheckout] shipment created:', shipData);
   }
 
-  // ③ 판매 항목 저장
+  // ③ 판매 항목 저장 — 품목별 배송/수령 필드 포함
   for (const item of cart) {
+    const dtype: ItemDeliveryType = (item.deliveryType as ItemDeliveryType) || 'PICKUP';
+    const itemReceiptStatus: ReceiptStatus =
+      dtype === 'PARCEL' ? 'PARCEL_PLANNED'
+      : dtype === 'QUICK' ? 'QUICK_PLANNED'
+      : 'RECEIVED';  // PICKUP = 현장수령 (바로 받아감 가정)
     const itemPayload: any = {
       sales_order_id: saleOrderId,
       product_id: item.productId,
@@ -1253,15 +1276,22 @@ export async function processPosCheckout(payload: CheckoutPayload) {
       unit_price: item.price,
       discount_amount: item.discount || 0,
       total_price: item.price * item.quantity - (item.discount || 0),
-      order_option: (item as any).orderOption || null,
+      order_option: item.orderOption || null,
+      delivery_type: dtype,
+      receipt_status: itemReceiptStatus,
+      receipt_date: item.receiptDate || null,
     };
-    const r = await db.from('sales_order_items').insert(itemPayload);
+    const optionalCols = ['order_option', 'delivery_type', 'receipt_status', 'receipt_date'];
+    let r = await db.from('sales_order_items').insert(itemPayload);
+    // 컬럼 누락 대응: 단계적 제거 후 재시도 (051/052 미적용 환경)
     if (r.error) {
-      const msg = String(r.error.message || '').toLowerCase();
-      const code = String((r.error as any).code || '');
-      if (code === '42703' || (msg.includes('column') && msg.includes('does not exist'))) {
-        delete itemPayload.order_option;
-        await db.from('sales_order_items').insert(itemPayload);
+      const msg0 = String(r.error.message || '').toLowerCase();
+      const code0 = String((r.error as any).code || '');
+      if (code0 === '42703' || (msg0.includes('column') && msg0.includes('does not exist'))) {
+        // 052 컬럼부터 제거
+        const slim: any = { ...itemPayload };
+        for (const k of optionalCols) delete slim[k];
+        await db.from('sales_order_items').insert(slim);
       }
     }
   }

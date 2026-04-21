@@ -23,8 +23,11 @@ sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, ordered
   ※ approval_status=결제 승인 라이프사이클(status와 직교). card_keyin→CARD_PENDING, credit→UNSETTLED 자동 추론 가능.
   ※ payment_info=레거시 자유기입 컬럼(2026-04 UI 제거). 신규 입력 없음. 과거 데이터 조회만 노출.
   ※ ordered_by=판매·상담 담당자.
-sales_order_items: id, sales_order_id, product_id, quantity, unit_price, discount_amount, total_price, order_option
-  ※ order_option=품목별 부가 옵션(보자기 포장/쇼핑백/색상/서비스 지급 + 같은 전표 내 배송 방식 상이 시 기록).
+sales_order_items: id, sales_order_id, product_id, quantity, unit_price, discount_amount, total_price, order_option, delivery_type(PICKUP/PARCEL/QUICK), receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date
+  ※ order_option=품목별 부가 옵션(보자기 포장/쇼핑백/색상/서비스 지급 등).
+  ※ delivery_type=품목별 배송 방식 — 같은 전표에서 품목별로 다를 수 있음(예: 3품목 중 1품목만 택배, 2품목 현장수령). 단 shipments는 주문당 1건 유지(수령지 1곳만 전제; 2곳 이상은 새 전표 분리).
+  ※ receipt_status=품목별 수령 상태. sales_orders.receipt_status는 품목 상태 집계 결과. 품목 전부 RECEIVED이면 주문 RECEIVED + shipments.status=DELIVERED 자동.
+  ※ shipments.items_summary는 PICKUP 제외, PARCEL/QUICK 품목만 요약.
 sales_order_payments: id, sales_order_id, payment_method, amount, approval_no, card_info, memo, paid_at, created_by
   ※ 한 주문의 다중 결제(분할). 합계<총액이면 잔액=외상. payment_method='mixed'면 세부는 이 테이블에.
 
@@ -122,7 +125,9 @@ sales_orders.receipt_status: 제품 수령 흐름 (현장판매는 대부분 REC
   - RECEIVED=수령완료 · PICKUP_PLANNED=방문예정 · QUICK_PLANNED=퀵예정 · PARCEL_PLANNED=택배예정
   ※ 배송(shipments) 생성 시 delivery_type에 맞춰 receipt_status 자동 추론.
   ※ receipt_date: 수령(예정) 날짜. 방문예정·택배예정 조회 시 핵심 축.
-sales_order_items.order_option: 같은 전표 내 일부 품목이 "이미 수령" + 일부는 "택배 예정"인 혼합 전표에서 품목별 배송 방식·포장·서비스 기록.
+sales_order_items.order_option: 품목별 주문 부가 옵션(보자기/쇼핑백/색상/서비스 등). 배송 방식 기록용 아님.
+sales_order_items.delivery_type + receipt_status: 같은 전표 내 품목별 배송·수령 추적. 3품목 중 1품목만 택배 같은 혼합 시나리오 정식 지원(수령지는 1곳만 가정).
+sales_orders.receipt_status: 품목 receipt_status 집계(우선순위 PARCEL_PLANNED > QUICK_PLANNED > PICKUP_PLANNED > RECEIVED). 품목 모두 RECEIVED이면 자동 전이.
 
 [포인트]
 1P = 1원 할인. 포인트 적립 = 결제금액 × 등급별 적립률.
