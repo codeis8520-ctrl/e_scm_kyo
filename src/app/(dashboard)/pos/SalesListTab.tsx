@@ -778,13 +778,25 @@ export default function SalesListTab() {
                     </td>
                     <td className="align-top">
                       {firstShip ? (
-                        <div className="text-xs leading-tight">
-                          <p className="text-slate-700">{firstShip.recipient_name || '-'}</p>
-                          <p className="text-[10px] text-slate-400">{firstShip.recipient_phone || ''}</p>
-                          <p className="text-[10px] text-slate-500 line-clamp-1" title={`${firstShip.recipient_address || ''} ${firstShip.recipient_address_detail || ''}`}>
-                            {firstShip.recipient_address || ''}
-                          </p>
-                        </div>
+                        (() => {
+                          const firstShipQuick =
+                            firstShip.delivery_type === 'QUICK'
+                            || (!firstShip.delivery_type && o.receipt_status === 'QUICK_PLANNED');
+                          return (
+                            <div className="text-xs leading-tight">
+                              <p className="text-slate-700 flex items-center gap-1">
+                                <span className={firstShipQuick ? 'text-indigo-600' : 'text-blue-600'}>
+                                  {firstShipQuick ? '🛵' : '📦'}
+                                </span>
+                                {firstShip.recipient_name || '-'}
+                              </p>
+                              <p className="text-[10px] text-slate-400">{firstShip.recipient_phone || ''}</p>
+                              <p className="text-[10px] text-slate-500 line-clamp-1" title={`${firstShip.recipient_address || ''} ${firstShip.recipient_address_detail || ''}`}>
+                                {firstShip.recipient_address || ''}
+                              </p>
+                            </div>
+                          );
+                        })()
                       ) : <span className="text-slate-300 text-xs">-</span>}
                     </td>
                     <td className="align-top">
@@ -959,7 +971,19 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
           .select('id, payment_method, amount, approval_no, card_info, memo, paid_at')
           .eq('sales_order_id', orderId).order('paid_at').then((r: any) => r.error ? { data: [] } : r),
         (async () => {
+          // 마이그 050(delivery_type) + 046(sender_*) 모두 적용된 전체 셀렉트
           const full = await sb.from('shipments')
+            .select(`
+              id, source, delivery_type, status, tracking_number, branch_id,
+              sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail,
+              recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail,
+              delivery_message, created_at,
+              branch:branches(id, name)
+            `)
+            .eq('sales_order_id', orderId).maybeSingle();
+          if (!full.error) return full;
+          // delivery_type 미적용(050 없음) — 046은 있다고 가정하고 시도
+          const noType = await sb.from('shipments')
             .select(`
               id, source, status, tracking_number, branch_id,
               sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail,
@@ -968,7 +992,8 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
               branch:branches(id, name)
             `)
             .eq('sales_order_id', orderId).maybeSingle();
-          if (!full.error) return full;
+          if (!noType.error) return noType;
+          // 046도 미적용
           const fallback = await sb.from('shipments')
             .select(`
               id, source, status, tracking_number, branch_id,
@@ -1221,52 +1246,83 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
               )}
             </div>
 
-            {/* 택배 */}
-            {shipment && (
-              <div>
-                <p className="text-sm font-semibold text-slate-700 mb-2">택배</p>
-                <div className="p-3 rounded-md border border-slate-200 text-sm space-y-1">
-                  {shipment.branch?.id && shipment.branch.id !== order.branch?.id && (
-                    <p className="text-[11px] text-indigo-600 bg-indigo-50 border border-indigo-100 rounded px-2 py-1 inline-block">
-                      🚚 출고 지점: <span className="font-semibold">{shipment.branch.name}</span> (판매 지점과 다름 — 재고는 {shipment.branch.name}에서 차감됨)
+            {/* 배송 (택배 / 퀵 구분) */}
+            {shipment && (() => {
+              // 050 미적용 환경 대응: delivery_type 없으면 receipt_status로 추론, 그것도 없으면 택배로 가정
+              const isQuick =
+                shipment.delivery_type === 'QUICK'
+                || (!shipment.delivery_type && order.receipt_status === 'QUICK_PLANNED');
+              const headerLabel = isQuick ? '퀵배송' : '택배';
+              const headerIcon = isQuick ? '🛵' : '📦';
+              const headerColor = isQuick
+                ? 'bg-indigo-50 border-indigo-200 text-indigo-700'
+                : 'bg-blue-50 border-blue-200 text-blue-700';
+              // 퀵은 송장·인쇄 단계가 없음 — 상태 라벨 맵 분기
+              const statusLabel = isQuick
+                ? (shipment.status === 'DELIVERED' ? '수령완료'
+                   : shipment.status === 'SHIPPED' ? '출발'
+                   : '대기')
+                : (shipment.status === 'DELIVERED' ? '배달완료'
+                   : shipment.status === 'SHIPPED' ? '발송완료'
+                   : shipment.status === 'PRINTED' ? '송장인쇄'
+                   : '발송대기');
+              const statusBadge =
+                shipment.status === 'DELIVERED' ? 'bg-green-100 text-green-700'
+                : shipment.status === 'SHIPPED' ? 'bg-blue-100 text-blue-700'
+                : 'bg-slate-100 text-slate-600';
+              return (
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <p className="text-sm font-semibold text-slate-700">{headerIcon} {headerLabel}</p>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded border ${headerColor}`}>
+                      {headerLabel}
+                    </span>
+                  </div>
+                  <div className={`p-3 rounded-md border text-sm space-y-1 ${isQuick ? 'border-indigo-200 bg-indigo-50/30' : 'border-slate-200'}`}>
+                    {shipment.branch?.id && shipment.branch.id !== order.branch?.id && (
+                      <p className="text-[11px] text-indigo-600 bg-indigo-50 border border-indigo-100 rounded px-2 py-1 inline-block">
+                        🚚 출고 지점: <span className="font-semibold">{shipment.branch.name}</span> (판매 지점과 다름 — 재고는 {shipment.branch.name}에서 차감됨)
+                      </p>
+                    )}
+                    <p><span className="text-slate-500 text-xs mr-2">받는 분</span>
+                      {shipment.recipient_name} · {shipment.recipient_phone}</p>
+                    <p className="text-slate-600">
+                      {shipment.recipient_zipcode ? `[${shipment.recipient_zipcode}] ` : ''}
+                      {shipment.recipient_address}
+                      {shipment.recipient_address_detail ? ` ${shipment.recipient_address_detail}` : ''}
                     </p>
-                  )}
-                  <p><span className="text-slate-500 text-xs mr-2">받는 분</span>
-                    {shipment.recipient_name} · {shipment.recipient_phone}</p>
-                  <p className="text-slate-600">
-                    {shipment.recipient_zipcode ? `[${shipment.recipient_zipcode}] ` : ''}
-                    {shipment.recipient_address}
-                    {shipment.recipient_address_detail ? ` ${shipment.recipient_address_detail}` : ''}
-                  </p>
-                  {shipment.delivery_message && <p className="text-xs text-slate-500">메시지: {shipment.delivery_message}</p>}
-                  {shipment.sender_name && (
-                    <p className="pt-1 border-t border-slate-100 mt-1">
-                      <span className="text-slate-500 text-xs mr-2">보내는 분</span>
-                      {shipment.sender_name} · {shipment.sender_phone}
-                      {shipment.sender_address && (
-                        <span className="block text-slate-600 text-xs">
-                          {shipment.sender_zipcode ? `[${shipment.sender_zipcode}] ` : ''}
-                          {shipment.sender_address} {shipment.sender_address_detail || ''}
-                        </span>
+                    {shipment.delivery_message && (
+                      <p className="text-xs text-slate-500">
+                        {isQuick ? '퀵 기사 전달' : '배송'} 메시지: {shipment.delivery_message}
+                      </p>
+                    )}
+                    {/* 퀵은 보내는 분 일반적으로 불필요 — 택배만 표시 */}
+                    {!isQuick && shipment.sender_name && (
+                      <p className="pt-1 border-t border-slate-100 mt-1">
+                        <span className="text-slate-500 text-xs mr-2">보내는 분</span>
+                        {shipment.sender_name} · {shipment.sender_phone}
+                        {shipment.sender_address && (
+                          <span className="block text-slate-600 text-xs">
+                            {shipment.sender_zipcode ? `[${shipment.sender_zipcode}] ` : ''}
+                            {shipment.sender_address} {shipment.sender_address_detail || ''}
+                          </span>
+                        )}
+                      </p>
+                    )}
+                    <p className="text-xs pt-1 flex items-center gap-1.5">
+                      <span className={`badge text-[10px] ${statusBadge}`}>{statusLabel}</span>
+                      {/* 송장번호는 택배만 */}
+                      {!isQuick && shipment.tracking_number && (
+                        <span className="font-mono text-slate-500">{shipment.tracking_number}</span>
+                      )}
+                      {isQuick && (
+                        <span className="text-[10px] text-indigo-500">※ 퀵은 송장 없음 — 인편 직접 배송</span>
                       )}
                     </p>
-                  )}
-                  <p className="text-xs pt-1 flex items-center gap-1.5">
-                    <span className={`badge text-[10px] ${
-                      shipment.status === 'DELIVERED' ? 'bg-green-100 text-green-700'
-                      : shipment.status === 'SHIPPED' ? 'bg-blue-100 text-blue-700'
-                      : 'bg-slate-100 text-slate-600'
-                    }`}>
-                      {shipment.status === 'DELIVERED' ? '배달완료'
-                      : shipment.status === 'SHIPPED' ? '발송완료'
-                      : shipment.status === 'PRINTED' ? '송장인쇄'
-                      : '발송대기'}
-                    </span>
-                    {shipment.tracking_number && <span className="font-mono text-slate-500">{shipment.tracking_number}</span>}
-                  </p>
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* 액션 */}
             <div className="flex flex-wrap gap-2 pt-3 border-t border-slate-100">
