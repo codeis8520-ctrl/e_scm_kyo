@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import ReceiptModal from './ReceiptModal';
 import RefundModal from './RefundModal';
@@ -16,6 +17,29 @@ function getCookie(name: string): string | null {
 }
 
 interface Branch { id: string; name: string; code?: string; channel?: string; }
+interface StaffUser { id: string; name: string; branch_id: string | null; }
+
+interface OrderItem {
+  id: string;
+  quantity: number;
+  unit_price?: number;
+  total_price?: number;
+  order_option?: string | null;
+  product?: { id: string; name: string; code?: string } | null;
+}
+
+interface ShipmentRow {
+  id?: string;
+  branch_id: string | null;
+  delivery_type?: string | null;
+  recipient_name: string | null;
+  recipient_phone?: string | null;
+  recipient_address?: string | null;
+  recipient_address_detail?: string | null;
+  delivery_message?: string | null;
+  status: string | null;
+}
+
 interface OrderRow {
   id: string;
   order_number: string;
@@ -30,10 +54,17 @@ interface OrderRow {
   memo: string | null;
   approval_no: string | null;
   card_info: string | null;
+  receipt_status?: string | null;
+  receipt_date?: string | null;
+  approval_status?: string | null;
+  payment_info?: string | null;
   branch: { id: string; name: string } | null;
   customer: { id: string; name: string; phone: string } | null;
-  items: { id: string; quantity: number }[];
-  shipments?: { branch_id: string | null; recipient_name: string | null; status: string | null }[];
+  handler?: { id: string; name: string } | null;
+  items: OrderItem[];
+  shipments?: ShipmentRow[];
+  // client-side 상담 매칭 캐시 (고객당 상담내역 prefetch)
+  _consultMatch?: string | null;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -48,6 +79,23 @@ const STATUS_BADGE: Record<string, string> = {
 const PAY_LABEL: Record<string, string> = {
   cash: '현금', card: '카드', card_keyin: '카드(키인)', kakao: '카카오',
   credit: '외상', cod: '수령시수금', mixed: '복합',
+};
+const RECEIPT_STATUS_LABEL: Record<string, string> = {
+  RECEIVED: '수령', PICKUP_PLANNED: '방문예정', QUICK_PLANNED: '퀵예정', PARCEL_PLANNED: '택배예정',
+};
+const RECEIPT_STATUS_BADGE: Record<string, string> = {
+  RECEIVED: 'bg-green-100 text-green-700',
+  PICKUP_PLANNED: 'bg-slate-100 text-slate-600',
+  QUICK_PLANNED: 'bg-indigo-100 text-indigo-700',
+  PARCEL_PLANNED: 'bg-blue-100 text-blue-700',
+};
+const APPROVAL_STATUS_LABEL: Record<string, string> = {
+  COMPLETED: '결제완료', CARD_PENDING: '미승인(카드)', UNSETTLED: '미결',
+};
+const APPROVAL_STATUS_BADGE: Record<string, string> = {
+  COMPLETED: 'bg-green-50 text-green-700 border border-green-200',
+  CARD_PENDING: 'bg-indigo-50 text-indigo-700 border border-indigo-200',
+  UNSETTLED: 'bg-amber-50 text-amber-700 border border-amber-200',
 };
 
 function fmtDate(d: Date): string {
@@ -64,33 +112,51 @@ function daysAgo(n: number): string {
 type Period = 'today' | '7d' | '30d' | 'custom';
 
 export default function SalesListTab() {
+  const router = useRouter();
   const userRole = getCookie('user_role');
   const userBranchId = getCookie('user_branch_id');
   const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
 
   const [branches, setBranches] = useState<Branch[]>([]);
+  const [staff, setStaff] = useState<StaffUser[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [period, setPeriod] = useState<Period>('today');
   const [startDate, setStartDate] = useState(todayStr());
   const [endDate, setEndDate] = useState(todayStr());
+
+  // 기본(축약) 필터
   const [branchFilter, setBranchFilter] = useState(isBranchUser && userBranchId ? userBranchId : '');
   const [paymentFilter, setPaymentFilter] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<string>('');
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState('');                  // 고객명·전화·주문번호·메모 통합
   const [includeCancelled, setIncludeCancelled] = useState(true);
+
+  // 고급 검색 필터 (PDF 중요도 순 상위 먼저 노출)
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [consultSearch, setConsultSearch] = useState('');     // 상담내역
+  const [productSearch, setProductSearch] = useState('');     // 품목
+  const [orderOptionSearch, setOrderOptionSearch] = useState(''); // 주문옵션
+  const [recipientSearch, setRecipientSearch] = useState(''); // 받는 분
+  const [addressSearch, setAddressSearch] = useState('');     // 주소
+  const [handlerFilter, setHandlerFilter] = useState('');     // 담당자
+  const [shipFromFilter, setShipFromFilter] = useState('');   // 출고처
+  const [receiptStatusFilter, setReceiptStatusFilter] = useState('');
+  const [approvalStatusFilter, setApprovalStatusFilter] = useState('');
 
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [showRefundModal, setShowRefundModal] = useState(false);
   const [refundOrderNumber, setRefundOrderNumber] = useState<string | null>(null);
   const [reprintReceipt, setReprintReceipt] = useState<any>(null);
 
-  // 초기 — 지점 목록
+  // 초기 — 지점·직원 목록
   useEffect(() => {
     const sb = createClient() as any;
     sb.from('branches').select('id, name, code, channel').eq('is_active', true).order('name')
       .then(({ data }: any) => setBranches(data || []));
+    sb.from('users').select('id, name, branch_id').eq('is_active', true).order('name')
+      .then(({ data }: any) => setStaff((data || []) as StaffUser[]));
   }, []);
 
   // 기간 프리셋
@@ -104,36 +170,69 @@ export default function SalesListTab() {
   const loadOrders = useCallback(async () => {
     setLoading(true);
     const sb = createClient() as any;
-    let q = sb
-      .from('sales_orders')
-      .select(`
+    // 051 적용 전/후 모두 대응: full select → 실패 시 basic select 폴백
+    const buildQuery = (useExtended: boolean) => {
+      const baseSelect = useExtended ? `
+        id, order_number, ordered_at, status, total_amount, discount_amount,
+        payment_method, points_earned, points_used, credit_settled, memo,
+        approval_no, card_info,
+        receipt_status, receipt_date, approval_status, payment_info,
+        branch:branches(id, name),
+        customer:customers(id, name, phone),
+        handler:users!sales_orders_ordered_by_fkey(id, name),
+        items:sales_order_items(id, quantity, unit_price, total_price, order_option, product:products(id, name, code))
+      ` : `
         id, order_number, ordered_at, status, total_amount, discount_amount,
         payment_method, points_earned, points_used, credit_settled, memo,
         approval_no, card_info,
         branch:branches(id, name),
         customer:customers(id, name, phone),
-        items:sales_order_items(id, quantity)
-      `)
-      .gte('ordered_at', `${startDate}T00:00:00`)
-      .lte('ordered_at', `${endDate}T23:59:59`)
-      .order('ordered_at', { ascending: false })
-      .limit(500);
+        items:sales_order_items(id, quantity, unit_price, total_price, product:products(id, name, code))
+      `;
+      let q = sb.from('sales_orders').select(baseSelect)
+        .gte('ordered_at', `${startDate}T00:00:00`)
+        .lte('ordered_at', `${endDate}T23:59:59`)
+        .order('ordered_at', { ascending: false })
+        .limit(500);
+      if (branchFilter) q = q.eq('branch_id', branchFilter);
+      if (paymentFilter) q = q.eq('payment_method', paymentFilter);
+      if (statusFilter) q = q.eq('status', statusFilter);
+      if (!includeCancelled && !statusFilter) q = q.not('status', 'in', '(CANCELLED,REFUNDED)');
+      if (useExtended) {
+        if (handlerFilter) q = q.eq('ordered_by', handlerFilter);
+        if (receiptStatusFilter) q = q.eq('receipt_status', receiptStatusFilter);
+        if (approvalStatusFilter) q = q.eq('approval_status', approvalStatusFilter);
+      }
+      return q;
+    };
 
-    if (branchFilter) q = q.eq('branch_id', branchFilter);
-    if (paymentFilter) q = q.eq('payment_method', paymentFilter);
-    if (statusFilter) q = q.eq('status', statusFilter);
-    if (!includeCancelled && !statusFilter) q = q.not('status', 'in', '(CANCELLED,REFUNDED)');
-
-    const { data, error } = await q;
+    let { data, error } = await buildQuery(true);
+    if (error) {
+      const msg = String((error as any).message || '').toLowerCase();
+      const code = String((error as any).code || '');
+      if (code === '42703' || msg.includes('column') || msg.includes('relation')) {
+        console.warn('[SalesListTab] extended select 실패 — 기본 select로 폴백');
+        const retry = await buildQuery(false);
+        data = retry.data; error = retry.error;
+      }
+    }
     if (error) console.error('[SalesListTab] load error:', error);
     const rows = (data as any[]) || [];
 
     if (rows.length > 0) {
       const orderIds = rows.map((r: any) => r.id);
-      const { data: shipData } = await sb
+      const shipFullQ = await sb
         .from('shipments')
-        .select('sales_order_id, branch_id, recipient_name, status')
+        .select('sales_order_id, branch_id, delivery_type, recipient_name, recipient_phone, recipient_address, recipient_address_detail, status')
         .in('sales_order_id', orderIds);
+      let shipData = shipFullQ.data;
+      if (shipFullQ.error) {
+        const fallback = await sb
+          .from('shipments')
+          .select('sales_order_id, branch_id, recipient_name, recipient_phone, recipient_address, status')
+          .in('sales_order_id', orderIds);
+        shipData = fallback.data;
+      }
       if (shipData) {
         const shipMap = new Map<string, any[]>();
         for (const s of shipData as any[]) {
@@ -147,25 +246,118 @@ export default function SalesListTab() {
       }
     }
 
-    setOrders(rows);
+    // 출고처 필터 (client-side — shipments.branch_id)
+    let filteredRows = rows as OrderRow[];
+    if (shipFromFilter) {
+      filteredRows = filteredRows.filter(r =>
+        (r.shipments || []).some((s: any) => s.branch_id === shipFromFilter)
+      );
+    }
+
+    // 상담내역 검색 — 별도 쿼리로 customer_id 매칭 (상위 100건 상담 매치)
+    if (consultSearch.trim()) {
+      const q = consultSearch.trim();
+      const consultRes = await sb
+        .from('customer_consultations')
+        .select('customer_id, content, created_at')
+        .ilike('content', `%${q}%`)
+        .order('created_at', { ascending: false })
+        .limit(500);
+      const matchedIds = new Set<string>((consultRes.data || []).map((c: any) => c.customer_id));
+      const consultMap = new Map<string, string>();
+      for (const c of (consultRes.data as any[]) || []) {
+        if (!consultMap.has(c.customer_id)) {
+          const text = typeof c.content === 'string' ? c.content : (c.content?.text || '');
+          consultMap.set(c.customer_id, text.slice(0, 80));
+        }
+      }
+      filteredRows = filteredRows.filter(r => r.customer && matchedIds.has(r.customer.id));
+      for (const r of filteredRows) {
+        if (r.customer && consultMap.has(r.customer.id)) {
+          r._consultMatch = consultMap.get(r.customer.id) || null;
+        }
+      }
+    }
+
+    setOrders(filteredRows);
     setLoading(false);
-  }, [startDate, endDate, branchFilter, paymentFilter, statusFilter, includeCancelled]);
+  }, [startDate, endDate, branchFilter, paymentFilter, statusFilter, includeCancelled,
+      handlerFilter, receiptStatusFilter, approvalStatusFilter, shipFromFilter, consultSearch]);
 
   useEffect(() => { loadOrders(); }, [loadOrders]);
 
-  // 클라이언트 검색 (주문번호·고객명·고객전화·메모)
+  // 클라이언트 검색 (텍스트 기반 부가 조건)
   const filtered = useMemo(() => {
-    if (!search.trim()) return orders;
-    const q = search.trim().toLowerCase();
-    const digits = q.replace(/[^0-9]/g, '');
+    const mainQ = search.trim().toLowerCase();
+    const mainDigits = mainQ.replace(/[^0-9]/g, '');
+    const prodQ = productSearch.trim().toLowerCase();
+    const optQ = orderOptionSearch.trim().toLowerCase();
+    const recQ = recipientSearch.trim().toLowerCase();
+    const recDigits = recQ.replace(/[^0-9]/g, '');
+    const addrQ = addressSearch.trim().toLowerCase();
+
     return orders.filter(o => {
-      if (o.order_number?.toLowerCase().includes(q)) return true;
-      if (o.customer?.name?.toLowerCase().includes(q)) return true;
-      if (digits && o.customer?.phone?.replace(/[^0-9]/g, '').includes(digits)) return true;
-      if (o.memo?.toLowerCase().includes(q)) return true;
-      return false;
+      // 기본 검색
+      if (mainQ) {
+        const hit =
+          o.order_number?.toLowerCase().includes(mainQ) ||
+          o.customer?.name?.toLowerCase().includes(mainQ) ||
+          (mainDigits && o.customer?.phone?.replace(/[^0-9]/g, '').includes(mainDigits)) ||
+          o.memo?.toLowerCase().includes(mainQ);
+        if (!hit) return false;
+      }
+      // 품목 검색 (품목명 or 코드)
+      if (prodQ) {
+        const hit = (o.items || []).some(it =>
+          (it.product?.name || '').toLowerCase().includes(prodQ) ||
+          (it.product?.code || '').toLowerCase().includes(prodQ)
+        );
+        if (!hit) return false;
+      }
+      // 주문옵션 검색
+      if (optQ) {
+        const hit = (o.items || []).some(it =>
+          (it.order_option || '').toLowerCase().includes(optQ)
+        );
+        if (!hit) return false;
+      }
+      // 받는 분 검색 (이름·전화)
+      if (recQ) {
+        const hit = (o.shipments || []).some(s => {
+          if ((s.recipient_name || '').toLowerCase().includes(recQ)) return true;
+          if (recDigits && (s.recipient_phone || '').replace(/[^0-9]/g, '').includes(recDigits)) return true;
+          return false;
+        });
+        if (!hit) return false;
+      }
+      // 주소 검색 (배송지)
+      if (addrQ) {
+        const hit = (o.shipments || []).some(s => {
+          const addr = `${s.recipient_address || ''} ${s.recipient_address_detail || ''}`.toLowerCase();
+          return addr.includes(addrQ);
+        });
+        if (!hit) return false;
+      }
+      return true;
     });
-  }, [orders, search]);
+  }, [orders, search, productSearch, orderOptionSearch, recipientSearch, addressSearch]);
+
+  // 활성 필터 카운트 (고급 검색 버튼 배지)
+  const activeAdvancedCount = useMemo(() => {
+    const checks = [
+      consultSearch, productSearch, orderOptionSearch, recipientSearch, addressSearch,
+      handlerFilter, shipFromFilter, receiptStatusFilter, approvalStatusFilter,
+    ];
+    return checks.filter(v => !!v && v !== '').length;
+  }, [consultSearch, productSearch, orderOptionSearch, recipientSearch, addressSearch,
+      handlerFilter, shipFromFilter, receiptStatusFilter, approvalStatusFilter]);
+
+  const clearAdvanced = () => {
+    setConsultSearch(''); setProductSearch(''); setOrderOptionSearch('');
+    setRecipientSearch(''); setAddressSearch('');
+    setHandlerFilter(''); setShipFromFilter('');
+    setReceiptStatusFilter(''); setApprovalStatusFilter('');
+  };
 
   // 요약 카드
   const summary = useMemo(() => {
@@ -197,22 +389,46 @@ export default function SalesListTab() {
 
   const handleCsv = () => {
     if (filtered.length === 0) return;
-    const header = ['주문번호', '일시', '고객', '연락처', '지점', '품목수', '결제방법', '결제금액', '할인', '포인트적립', '외상정산', '상태', '메모'];
-    const rows = filtered.map(o => [
-      o.order_number,
-      (o.ordered_at || '').slice(0, 19).replace('T', ' '),
-      o.customer?.name || '',
-      o.customer?.phone || '',
-      o.branch?.name || '',
-      (o.items || []).length,
-      PAY_LABEL[o.payment_method] || o.payment_method,
-      o.total_amount,
-      o.discount_amount,
-      o.points_earned,
-      o.credit_settled === false ? '미정산' : (o.credit_settled === true ? '정산완료' : ''),
-      STATUS_LABEL[o.status] || o.status,
-      (o.memo || '').replace(/\n/g, ' '),
-    ]);
+    const header = [
+      '일자', '수령현황', '수령일자', '매출처', '출고처', '담당자',
+      '고객명', '연락처', '주문번호',
+      '품목', '수량', '합계', '결제수단', '승인', '결제정보',
+      '받는 분', '받는 분 연락처', '받는 분 주소', '특이사항',
+      '상담내역(고객)', '상태', '메모',
+    ];
+    const rows = filtered.map(o => {
+      const firstShip = (o.shipments || [])[0];
+      const shipFromBranch = firstShip?.branch_id
+        ? (branches.find(b => b.id === firstShip.branch_id)?.name || '')
+        : '';
+      const itemNames = (o.items || []).map(it => it.product?.name || '').filter(Boolean);
+      const itemLabel = itemNames.slice(0, 3).join(' / ') + (itemNames.length > 3 ? ` 외 ${itemNames.length - 3}` : '');
+      const totalQty = (o.items || []).reduce((s, it) => s + (it.quantity || 0), 0);
+      return [
+        (o.ordered_at || '').slice(0, 10),
+        RECEIPT_STATUS_LABEL[o.receipt_status || 'RECEIVED'] || '',
+        o.receipt_date || '',
+        o.branch?.name || '',
+        shipFromBranch,
+        o.handler?.name || '',
+        o.customer?.name || '',
+        o.customer?.phone || '',
+        o.order_number,
+        itemLabel,
+        totalQty,
+        o.total_amount,
+        PAY_LABEL[o.payment_method] || o.payment_method,
+        APPROVAL_STATUS_LABEL[o.approval_status || 'COMPLETED'] || '',
+        (o.payment_info || '').replace(/\n/g, ' '),
+        firstShip?.recipient_name || '',
+        firstShip?.recipient_phone || '',
+        `${firstShip?.recipient_address || ''} ${firstShip?.recipient_address_detail || ''}`.trim(),
+        (firstShip?.delivery_message || '').replace(/\n/g, ' '),
+        (o._consultMatch || '').replace(/\n/g, ' '),
+        STATUS_LABEL[o.status] || o.status,
+        (o.memo || '').replace(/\n/g, ' '),
+      ];
+    });
     const csv = [header, ...rows].map(r => r.map(cell => {
       const s = String(cell ?? '');
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -221,7 +437,7 @@ export default function SalesListTab() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `판매현황_${startDate}_${endDate}.csv`;
+    a.download = `판매조회_${startDate}_${endDate}.csv`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
@@ -262,39 +478,159 @@ export default function SalesListTab() {
             className="btn-secondary text-sm py-1.5 disabled:opacity-40">CSV 내보내기</button>
         </div>
 
-        {/* 세부 필터 */}
+        {/* 기본 필터 바 — 가장 빈번한 조회(고객명·전화·주문번호) */}
         <div className="flex flex-wrap gap-2">
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="고객명 · 전화번호 · 주문번호 · 메모"
+            className="input text-sm py-1 flex-1 min-w-[240px]"
+          />
           {!isBranchUser && (
             <select value={branchFilter} onChange={e => setBranchFilter(e.target.value)} className="input text-sm py-1 w-36">
-              <option value="">전체 지점</option>
+              <option value="">전체 매출처</option>
               {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
           )}
-          <select value={paymentFilter} onChange={e => setPaymentFilter(e.target.value)} className="input text-sm py-1 w-32">
+          <select value={paymentFilter} onChange={e => setPaymentFilter(e.target.value)} className="input text-sm py-1 w-28">
             <option value="">전체 결제</option>
-            {(['cash', 'card', 'card_keyin', 'kakao', 'credit', 'cod', 'mixed'] as const).map(m =>
+            {(['cash', 'card', 'credit', 'cod', 'mixed'] as const).map(m =>
               <option key={m} value={m}>{PAY_LABEL[m]}</option>)}
           </select>
-          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="input text-sm py-1 w-32">
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="input text-sm py-1 w-28">
             <option value="">전체 상태</option>
             <option value="COMPLETED">완료</option>
             <option value="PARTIALLY_REFUNDED">부분환불</option>
             <option value="REFUNDED">환불</option>
             <option value="CANCELLED">취소</option>
           </select>
-          <input
-            type="text"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="주문번호 · 고객명 · 전화 · 메모 검색"
-            className="input text-sm py-1 flex-1 min-w-[200px]"
-          />
+          <button
+            type="button"
+            onClick={() => setShowAdvanced(v => !v)}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium border transition-colors ${
+              showAdvanced || activeAdvancedCount > 0
+                ? 'bg-blue-600 text-white border-blue-600'
+                : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+            }`}
+            title="상담내역·품목·주문옵션·받는분·주소 등 정밀 검색 (F3)"
+          >
+            🔍 F3 검색 {activeAdvancedCount > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 rounded-full bg-white text-blue-700 text-[10px] font-bold">{activeAdvancedCount}</span>
+            )}
+          </button>
           <label className="flex items-center gap-1.5 text-sm text-slate-600 px-2">
             <input type="checkbox" checked={includeCancelled}
               onChange={e => setIncludeCancelled(e.target.checked)} className="w-4 h-4" />
             취소·환불 포함
           </label>
         </div>
+
+        {/* 고급 검색 패널 (PDF 중요도 순) */}
+        {showAdvanced && (
+          <div className="mt-1 pt-3 border-t border-slate-200 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-semibold text-slate-600">정밀 검색</p>
+              <div className="flex items-center gap-2">
+                {activeAdvancedCount > 0 && (
+                  <button onClick={clearAdvanced} className="text-xs text-red-500 hover:underline">조건 초기화</button>
+                )}
+                <span className="text-[11px] text-slate-400">중요도 순: 고객 → 상담 → 품목 → 주문옵션</span>
+              </div>
+            </div>
+            {/* 중요도 1-2: 상담 · 품목 */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] font-medium text-slate-500">상담내역</span>
+                <input
+                  type="text"
+                  value={consultSearch}
+                  onChange={e => setConsultSearch(e.target.value)}
+                  placeholder="상담 본문 키워드 (예: 혈압, 수면)"
+                  className="input text-sm py-1"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] font-medium text-slate-500">품목</span>
+                <input
+                  type="text"
+                  value={productSearch}
+                  onChange={e => setProductSearch(e.target.value)}
+                  placeholder="품목명 · 코드"
+                  className="input text-sm py-1"
+                />
+              </label>
+            </div>
+            {/* 중요도 3-4: 주문옵션 · 받는 분 */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] font-medium text-slate-500">주문옵션</span>
+                <input
+                  type="text"
+                  value={orderOptionSearch}
+                  onChange={e => setOrderOptionSearch(e.target.value)}
+                  placeholder="예: 보자기, 택배 예정"
+                  className="input text-sm py-1"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] font-medium text-slate-500">받는 분 / 연락처</span>
+                <input
+                  type="text"
+                  value={recipientSearch}
+                  onChange={e => setRecipientSearch(e.target.value)}
+                  placeholder="수령인 이름 · 전화"
+                  className="input text-sm py-1"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] font-medium text-slate-500">받는 분 주소</span>
+                <input
+                  type="text"
+                  value={addressSearch}
+                  onChange={e => setAddressSearch(e.target.value)}
+                  placeholder="배송지 주소 키워드"
+                  className="input text-sm py-1"
+                />
+              </label>
+            </div>
+            {/* 보조 필터: 출고처 · 담당자 · 수령/승인 상태 */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] font-medium text-slate-500">출고처</span>
+                <select value={shipFromFilter} onChange={e => setShipFromFilter(e.target.value)} className="input text-sm py-1">
+                  <option value="">전체</option>
+                  {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] font-medium text-slate-500">담당자</span>
+                <select value={handlerFilter} onChange={e => setHandlerFilter(e.target.value)} className="input text-sm py-1">
+                  <option value="">전체</option>
+                  {staff.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] font-medium text-slate-500">수령현황</span>
+                <select value={receiptStatusFilter} onChange={e => setReceiptStatusFilter(e.target.value)} className="input text-sm py-1">
+                  <option value="">전체</option>
+                  {(['RECEIVED', 'PICKUP_PLANNED', 'QUICK_PLANNED', 'PARCEL_PLANNED'] as const).map(s =>
+                    <option key={s} value={s}>{RECEIPT_STATUS_LABEL[s]}</option>
+                  )}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] font-medium text-slate-500">승인</span>
+                <select value={approvalStatusFilter} onChange={e => setApprovalStatusFilter(e.target.value)} className="input text-sm py-1">
+                  <option value="">전체</option>
+                  {(['COMPLETED', 'CARD_PENDING', 'UNSETTLED'] as const).map(s =>
+                    <option key={s} value={s}>{APPROVAL_STATUS_LABEL[s]}</option>
+                  )}
+                </select>
+              </label>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 요약 카드 */}
@@ -340,99 +676,131 @@ export default function SalesListTab() {
             className="text-sm text-red-600 hover:underline">환불 처리</button>
         </div>
         <div className="overflow-x-auto">
-          <table className="table text-sm min-w-[900px]">
+          <table className="table text-sm min-w-[1180px]">
             <thead>
-              <tr>
-                <th>주문번호</th>
-                <th>일시</th>
-                <th>고객</th>
-                <th>지점</th>
-                <th className="text-center">품목</th>
-                <th>결제</th>
-                <th className="text-right">금액</th>
-                <th>배송</th>
-                <th>상태</th>
+              <tr className="text-xs text-slate-500">
+                <th className="whitespace-nowrap">일자</th>
+                <th className="whitespace-nowrap">수령</th>
+                <th className="whitespace-nowrap">매출처</th>
+                <th className="whitespace-nowrap">출고처</th>
+                <th className="whitespace-nowrap">담당자</th>
+                <th>고객 / 연락처</th>
+                <th>품목</th>
+                <th className="text-center">수량</th>
+                <th className="text-right">합계</th>
+                <th className="whitespace-nowrap">결제 / 승인</th>
+                <th>받는 분 · 주소</th>
+                <th>상담 · 옵션</th>
+                <th className="whitespace-nowrap">상태</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={9} className="text-center py-10 text-slate-400">로딩 중...</td></tr>
+                <tr><td colSpan={13} className="text-center py-10 text-slate-400">로딩 중...</td></tr>
               ) : filtered.length === 0 ? (
-                <tr><td colSpan={9} className="text-center py-10 text-slate-400">
+                <tr><td colSpan={13} className="text-center py-10 text-slate-400">
                   조건에 맞는 판매 내역이 없습니다
                 </td></tr>
               ) : filtered.map(o => {
                 const isCancelled = o.status === 'CANCELLED';
                 const isRefunded = o.status === 'REFUNDED' || o.status === 'PARTIALLY_REFUNDED';
+                const shipFromId = o.shipments?.[0]?.branch_id;
+                const shipFromName = shipFromId
+                  ? (branches.find(b => b.id === shipFromId)?.name || '')
+                  : '';
+                const receiptKey = (o.receipt_status as keyof typeof RECEIPT_STATUS_LABEL) || 'RECEIVED';
+                const approvalKey = (o.approval_status as keyof typeof APPROVAL_STATUS_LABEL) || 'COMPLETED';
+                const items = o.items || [];
+                const itemNames = items.map(it => it.product?.name).filter(Boolean) as string[];
+                const totalQty = items.reduce((s, it) => s + (it.quantity || 0), 0);
+                const firstShip = (o.shipments || [])[0];
+                const optionBadges = items.map(it => it.order_option).filter(Boolean) as string[];
                 return (
                   <tr
                     key={o.id}
                     onClick={() => setSelectedOrderId(o.id)}
                     className={`cursor-pointer hover:bg-slate-50 ${isCancelled || isRefunded ? 'opacity-60' : ''}`}
                   >
-                    <td>
-                      <button
-                        onClick={e => { e.stopPropagation(); setSelectedOrderId(o.id); }}
-                        className="font-mono text-xs text-blue-700 hover:text-blue-900 hover:underline"
-                      >
-                        {o.order_number}
-                      </button>
+                    <td className="text-xs text-slate-600 whitespace-nowrap align-top">
+                      <p>{(o.ordered_at || '').slice(0, 10)}</p>
+                      <p className="text-[10px] text-slate-400">{(o.ordered_at || '').slice(11, 16)}</p>
                     </td>
-                    <td className="text-xs text-slate-500 whitespace-nowrap">
-                      {(o.ordered_at || '').slice(0, 16).replace('T', ' ')}
+                    <td className="whitespace-nowrap align-top">
+                      <span className={`badge text-[10px] ${RECEIPT_STATUS_BADGE[receiptKey] || 'bg-slate-100 text-slate-600'}`}>
+                        {RECEIPT_STATUS_LABEL[receiptKey] || '-'}
+                      </span>
+                      {o.receipt_date && <p className="text-[10px] text-slate-500 mt-0.5">{o.receipt_date}</p>}
                     </td>
-                    <td>
+                    <td className="text-xs text-slate-700 whitespace-nowrap align-top">{o.branch?.name || '-'}</td>
+                    <td className="text-xs text-slate-700 whitespace-nowrap align-top">
+                      {shipFromName ? (
+                        shipFromId === o.branch?.id ? (
+                          <span className="text-slate-400">동일</span>
+                        ) : (
+                          <span className="inline-flex items-center px-1 text-[10px] rounded bg-indigo-50 text-indigo-700 border border-indigo-100">
+                            🚚 {shipFromName}
+                          </span>
+                        )
+                      ) : <span className="text-slate-300">-</span>}
+                    </td>
+                    <td className="text-xs text-slate-700 whitespace-nowrap align-top">{o.handler?.name || '-'}</td>
+                    <td className="align-top">
                       {o.customer ? (
                         <div>
-                          <p className="font-medium">{o.customer.name}</p>
-                          <p className="text-xs text-slate-400">{o.customer.phone}</p>
+                          <p className="font-medium text-sm">{o.customer.name}</p>
+                          <p className="text-[11px] text-slate-400">{o.customer.phone}</p>
                         </div>
                       ) : <span className="text-slate-300 text-xs">비회원</span>}
                     </td>
-                    <td className="text-xs text-slate-500">
-                      {o.branch?.name || '-'}
-                      {(() => {
-                        const shipFromId = o.shipments?.[0]?.branch_id;
-                        if (!shipFromId || shipFromId === o.branch?.id) return null;
-                        const shipFromName = branches.find(b => b.id === shipFromId)?.name || '타지점';
-                        return (
-                          <span
-                            className="ml-1 inline-flex items-center px-1 text-[10px] rounded bg-indigo-50 text-indigo-600 border border-indigo-100"
-                            title={`출고: ${shipFromName}`}
-                          >
-                            🚚{shipFromName}
-                          </span>
-                        );
-                      })()}
+                    <td className="align-top">
+                      {itemNames.length > 0 ? (
+                        <div className="text-xs leading-tight">
+                          <p className="text-slate-700 line-clamp-2" title={itemNames.join(', ')}>
+                            {itemNames.slice(0, 2).join(' · ')}
+                            {itemNames.length > 2 && <span className="text-slate-400"> 외 {itemNames.length - 2}</span>}
+                          </p>
+                          <p className="text-[10px] text-slate-400">{items.length}종</p>
+                        </div>
+                      ) : <span className="text-slate-300 text-xs">-</span>}
                     </td>
-                    <td className="text-center text-xs text-slate-500">{(o.items || []).length}종</td>
-                    <td>
-                      <span className="text-sm">{PAY_LABEL[o.payment_method] || o.payment_method}</span>
-                      {o.credit_settled === false && (
-                        <span className="ml-1.5 badge text-[10px] bg-orange-100 text-orange-700">미정산</span>
-                      )}
-                    </td>
-                    <td className={`text-right font-semibold ${isRefunded || isCancelled ? 'line-through text-slate-400' : 'text-slate-800'}`}>
+                    <td className="text-center text-xs text-slate-600 align-top">{totalQty || '-'}</td>
+                    <td className={`text-right font-semibold align-top ${isRefunded || isCancelled ? 'line-through text-slate-400' : 'text-slate-800'}`}>
                       {(o.total_amount || 0).toLocaleString()}원
                     </td>
-                    <td className="text-center text-xs">
-                      {o.shipments && o.shipments.length > 0 ? (
-                        <span className="inline-flex items-center gap-0.5" title={`받는 분: ${o.shipments[0].recipient_name || '-'}`}>
-                          📦
-                          <span className={`badge text-[10px] ${
-                            o.shipments[0].status === 'DELIVERED' ? 'bg-green-100 text-green-700'
-                            : o.shipments[0].status === 'SHIPPED' ? 'bg-blue-100 text-blue-700'
-                            : 'bg-slate-100 text-slate-600'
-                          }`}>
-                            {o.shipments[0].status === 'DELIVERED' ? '배달완료'
-                            : o.shipments[0].status === 'SHIPPED' ? '발송'
-                            : o.shipments[0].status === 'PRINTED' ? '인쇄'
-                            : '대기'}
-                          </span>
-                        </span>
-                      ) : <span className="text-slate-300">-</span>}
+                    <td className="align-top whitespace-nowrap">
+                      <p className="text-xs">{PAY_LABEL[o.payment_method] || o.payment_method}</p>
+                      <span className={`badge text-[10px] mt-0.5 ${APPROVAL_STATUS_BADGE[approvalKey] || ''}`}>
+                        {APPROVAL_STATUS_LABEL[approvalKey] || '-'}
+                      </span>
+                      {o.credit_settled === false && (
+                        <span className="ml-1 badge text-[10px] bg-orange-100 text-orange-700">외상 미정산</span>
+                      )}
                     </td>
-                    <td>
+                    <td className="align-top">
+                      {firstShip ? (
+                        <div className="text-xs leading-tight">
+                          <p className="text-slate-700">{firstShip.recipient_name || '-'}</p>
+                          <p className="text-[10px] text-slate-400">{firstShip.recipient_phone || ''}</p>
+                          <p className="text-[10px] text-slate-500 line-clamp-1" title={`${firstShip.recipient_address || ''} ${firstShip.recipient_address_detail || ''}`}>
+                            {firstShip.recipient_address || ''}
+                          </p>
+                        </div>
+                      ) : <span className="text-slate-300 text-xs">-</span>}
+                    </td>
+                    <td className="align-top">
+                      {(o._consultMatch || optionBadges.length > 0) ? (
+                        <div className="space-y-1 text-[11px] max-w-[180px]">
+                          {o._consultMatch && (
+                            <p className="text-slate-600 line-clamp-2" title={o._consultMatch}>💬 {o._consultMatch}</p>
+                          )}
+                          {optionBadges.slice(0, 2).map((opt, i) => (
+                            <span key={i} className="inline-block mr-1 px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100">🎀 {opt}</span>
+                          ))}
+                          {optionBadges.length > 2 && <span className="text-[10px] text-slate-400">+{optionBadges.length - 2}</span>}
+                        </div>
+                      ) : <span className="text-slate-300 text-xs">-</span>}
+                    </td>
+                    <td className="align-top">
                       <span className={`badge text-[10px] ${STATUS_BADGE[o.status] || ''}`}>
                         {STATUS_LABEL[o.status] || o.status}
                       </span>
@@ -520,18 +888,39 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
       setLoading(true);
       const sb = createClient() as any;
       const [ordRes, itemRes, payRes, shipRes] = await Promise.all([
-        sb.from('sales_orders')
-          .select(`
-            id, order_number, ordered_at, status, total_amount, discount_amount,
-            payment_method, points_earned, points_used, credit_settled, memo,
-            approval_no, card_info,
-            branch:branches(id, name),
-            customer:customers(id, name, phone)
-          `)
-          .eq('id', orderId).single(),
-        sb.from('sales_order_items')
-          .select('id, quantity, unit_price, discount_amount, total_price, product:products(id, name, code, unit)')
-          .eq('sales_order_id', orderId).order('id'),
+        (async () => {
+          const full = await sb.from('sales_orders')
+            .select(`
+              id, order_number, ordered_at, status, total_amount, discount_amount,
+              payment_method, points_earned, points_used, credit_settled, memo,
+              approval_no, card_info,
+              receipt_status, receipt_date, approval_status, payment_info,
+              handler:users!sales_orders_ordered_by_fkey(id, name),
+              branch:branches(id, name),
+              customer:customers(id, name, phone)
+            `)
+            .eq('id', orderId).single();
+          if (!full.error) return full;
+          // 051 미적용·join 실패 폴백
+          return await sb.from('sales_orders')
+            .select(`
+              id, order_number, ordered_at, status, total_amount, discount_amount,
+              payment_method, points_earned, points_used, credit_settled, memo,
+              approval_no, card_info,
+              branch:branches(id, name),
+              customer:customers(id, name, phone)
+            `)
+            .eq('id', orderId).single();
+        })(),
+        (async () => {
+          const full = await sb.from('sales_order_items')
+            .select('id, quantity, unit_price, discount_amount, total_price, order_option, product:products(id, name, code, unit)')
+            .eq('sales_order_id', orderId).order('id');
+          if (!full.error) return full;
+          return await sb.from('sales_order_items')
+            .select('id, quantity, unit_price, discount_amount, total_price, product:products(id, name, code, unit)')
+            .eq('sales_order_id', orderId).order('id');
+        })(),
         sb.from('sales_order_payments')
           .select('id, payment_method, amount, approval_no, card_info, memo, paid_at')
           .eq('sales_order_id', orderId).order('paid_at').then((r: any) => r.error ? { data: [] } : r),
@@ -622,8 +1011,12 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
                 <p>{(order.ordered_at || '').slice(0, 19).replace('T', ' ')}</p>
               </div>
               <div>
-                <p className="text-[11px] text-slate-500">지점</p>
+                <p className="text-[11px] text-slate-500">매출처</p>
                 <p>{order.branch?.name || '-'}</p>
+              </div>
+              <div>
+                <p className="text-[11px] text-slate-500">담당자</p>
+                <p>{order.handler?.name || '-'}</p>
               </div>
               <div>
                 <p className="text-[11px] text-slate-500">고객</p>
@@ -635,13 +1028,47 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
               </div>
               <div>
                 <p className="text-[11px] text-slate-500">상태</p>
-                <p>
+                <div className="flex flex-wrap gap-1">
                   <span className={`badge text-[10px] ${STATUS_BADGE[order.status] || ''}`}>
                     {STATUS_LABEL[order.status] || order.status}
                   </span>
+                  {order.approval_status && order.approval_status !== 'COMPLETED' && (
+                    <span className={`badge text-[10px] ${
+                      order.approval_status === 'UNSETTLED' ? 'bg-amber-100 text-amber-700'
+                      : 'bg-indigo-100 text-indigo-700'
+                    }`}>
+                      {order.approval_status === 'UNSETTLED' ? '미결' : '미승인(카드)'}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div>
+                <p className="text-[11px] text-slate-500">수령</p>
+                <p className="flex items-center gap-1.5">
+                  <span className={`badge text-[10px] ${
+                    !order.receipt_status || order.receipt_status === 'RECEIVED' ? 'bg-green-100 text-green-700'
+                    : order.receipt_status === 'PARCEL_PLANNED' ? 'bg-blue-100 text-blue-700'
+                    : order.receipt_status === 'QUICK_PLANNED' ? 'bg-indigo-100 text-indigo-700'
+                    : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    {!order.receipt_status ? '수령완료'
+                     : order.receipt_status === 'RECEIVED' ? '수령완료'
+                     : order.receipt_status === 'PICKUP_PLANNED' ? '방문예정'
+                     : order.receipt_status === 'QUICK_PLANNED' ? '퀵예정'
+                     : '택배예정'}
+                  </span>
+                  {order.receipt_date && <span className="text-[11px] text-slate-500">{order.receipt_date}</span>}
                 </p>
               </div>
             </div>
+
+            {/* 결제정보 (자유기입) */}
+            {order.payment_info && (
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-md text-sm">
+                <p className="text-[11px] font-semibold text-slate-500 mb-1">결제 정보</p>
+                <p className="text-slate-700 whitespace-pre-wrap">{order.payment_info}</p>
+              </div>
+            )}
 
             {/* 메모 */}
             {order.memo && (
@@ -659,6 +1086,7 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
                   <thead className="bg-slate-50">
                     <tr className="text-xs text-slate-500">
                       <th className="text-left px-3 py-1.5">품목</th>
+                      <th className="text-left px-3 py-1.5">주문 옵션</th>
                       <th className="text-right px-3 py-1.5">수량</th>
                       <th className="text-right px-3 py-1.5">단가</th>
                       <th className="text-right px-3 py-1.5">금액</th>
@@ -670,6 +1098,13 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
                         <td className="px-3 py-1.5">
                           <p className="font-medium">{it.product?.name || '-'}</p>
                           <p className="text-[11px] text-slate-400 font-mono">{it.product?.code}</p>
+                        </td>
+                        <td className="px-3 py-1.5 text-xs text-indigo-700">
+                          {it.order_option ? (
+                            <span className="inline-block px-1.5 py-0.5 rounded bg-indigo-50 border border-indigo-100">
+                              🎀 {it.order_option}
+                            </span>
+                          ) : <span className="text-slate-300">-</span>}
                         </td>
                         <td className="px-3 py-1.5 text-right">{it.quantity}</td>
                         <td className="px-3 py-1.5 text-right">{Number(it.unit_price).toLocaleString()}</td>
@@ -800,12 +1235,22 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
             )}
 
             {/* 액션 */}
-            <div className="flex gap-2 pt-3 border-t border-slate-100">
+            <div className="flex flex-wrap gap-2 pt-3 border-t border-slate-100">
               <button onClick={handleReprint}
-                className="flex-1 btn-secondary py-2 text-sm">영수증 재발행</button>
+                className="flex-1 min-w-[120px] btn-secondary py-2 text-sm">영수증 재발행</button>
+              <button
+                onClick={() => {
+                  // 전표 복사 → POS 페이지로 이동 (copy_from 쿼리)
+                  window.location.href = `/pos?copy=${order.id}`;
+                }}
+                className="flex-1 min-w-[120px] py-2 text-sm rounded-md border border-indigo-200 text-indigo-700 hover:bg-indigo-50"
+                title="수령현황·날짜만 변경하여 새 판매 전표를 생성합니다"
+              >
+                📋 전표 복사
+              </button>
               {(order.status === 'COMPLETED' || order.status === 'PARTIALLY_REFUNDED') && (
                 <button onClick={() => onRefundIntent(order.order_number)}
-                  className="flex-1 py-2 text-sm rounded-md border border-red-200 text-red-600 hover:bg-red-50">
+                  className="flex-1 min-w-[120px] py-2 text-sm rounded-md border border-red-200 text-red-600 hover:bg-red-50">
                   환불 처리
                 </button>
               )}

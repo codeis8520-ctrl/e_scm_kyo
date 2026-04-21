@@ -1,7 +1,9 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, Suspense } from 'react';
 import dynamic from 'next/dynamic';
+import Link from 'next/link';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { processPosCheckout, createCustomer } from '@/lib/actions';
 import ReceiptModal from './ReceiptModal';
@@ -19,10 +21,11 @@ declare global {
   }
 }
 
-type PaymentMethodId = 'cash' | 'card' | 'card_keyin' | 'kakao' | 'credit' | 'cod';
-const PAYMENT_METHOD_LABEL: Record<PaymentMethodId, string> = {
-  cash: '현금', card: '카드', card_keyin: '카드(키인)', kakao: '카카오',
-  credit: '외상', cod: '수령시수금',
+type PaymentMethodId = 'cash' | 'card' | 'credit' | 'cod';
+const PAYMENT_METHOD_LABEL: Record<string, string> = {
+  cash: '현금', card: '카드', credit: '외상', cod: '수령시수금',
+  // legacy display (선택 불가, 기존 데이터 표시용)
+  card_keyin: '카드(키인)', kakao: '카카오', mixed: '복합',
 };
 
 interface PaymentRow {
@@ -32,8 +35,10 @@ interface PaymentRow {
   cardInfo?: string;
 }
 
+type DeliveryType = 'NONE' | 'PARCEL' | 'QUICK';
+
 interface ShippingForm {
-  enabled: boolean;
+  type: DeliveryType;
   recipient_name: string;
   recipient_phone: string;
   recipient_zipcode: string;
@@ -65,6 +70,26 @@ const GRADE_BADGE: Record<string, string> = {
   NORMAL: 'bg-slate-100 text-slate-600',
 };
 
+const CONSULT_TYPES = ['전화 상담', '방문 상담', '온라인 상담', '건강 상담', '불만 접수', '기타'];
+
+type ReceiptStatus = 'RECEIVED' | 'PICKUP_PLANNED' | 'QUICK_PLANNED' | 'PARCEL_PLANNED';
+const RECEIPT_STATUS_LABEL: Record<ReceiptStatus, string> = {
+  RECEIVED: '수령완료',
+  PICKUP_PLANNED: '방문예정',
+  QUICK_PLANNED: '퀵예정',
+  PARCEL_PLANNED: '택배예정',
+};
+
+type ApprovalStatus = 'COMPLETED' | 'CARD_PENDING' | 'UNSETTLED';
+const APPROVAL_STATUS_LABEL: Record<ApprovalStatus, string> = {
+  COMPLETED: '결제 완료',
+  CARD_PENDING: '미승인(카드)',
+  UNSETTLED: '미결',
+};
+
+// 자주 사용하는 주문 옵션 프리셋
+const ORDER_OPTION_PRESETS = ['보자기 포장', '쇼핑백 증정', '서비스 지급', '수령 완료', '택배 예정', '퀵 예정', '방문 예정'];
+
 interface CartItem {
   productId: string;
   name: string;
@@ -72,6 +97,7 @@ interface CartItem {
   quantity: number;
   discount: number;
   barcode?: string;
+  orderOption?: string;
 }
 
 interface Customer {
@@ -83,21 +109,41 @@ interface Customer {
   currentPoints?: number;
 }
 
+interface StaffUser {
+  id: string;
+  name: string;
+  role: string;
+  branch_id: string | null;
+}
+
 export default function POSPage() {
+  return (
+    <Suspense fallback={<div className="py-10 text-center text-slate-400">로딩 중...</div>}>
+      <POSPageInner />
+    </Suspense>
+  );
+}
+
+function POSPageInner() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const copyOrderId = searchParams?.get('copy') || null;
+
+  const [copyBanner, setCopyBanner] = useState<string | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [search, setSearch] = useState('');
   const [products, setProducts] = useState<any[]>([]);
   const [productMap, setProductMap] = useState<Map<string, any>>(new Map());
-  // inventory map: `${branchId}_${productId}` → quantity
   const [inventoryMap, setInventoryMap] = useState<Map<string, number>>(new Map());
   const [branches, setBranches] = useState<any[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [staff, setStaff] = useState<StaffUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [customerSearch, setCustomerSearch] = useState('');
   const [customerResults, setCustomerResults] = useState<Customer[]>([]);
   const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'kakao' | 'card_keyin' | 'credit'>('card');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethodId>('card');
   const [cashReceived, setCashReceived] = useState('');
   const [processing, setProcessing] = useState(false);
   const [usePoints, setUsePoints] = useState(false);
@@ -110,22 +156,42 @@ export default function POSPage() {
   const [editingDiscountType, setEditingDiscountType] = useState<'amount' | 'percent'>('amount');
   const [discountType, setDiscountType] = useState<'amount' | 'percent'>('amount');
   const [discountInput, setDiscountInput] = useState('');
-  // 고객 상세 추가 모달
   const [showAddCustomerModal, setShowAddCustomerModal] = useState(false);
-  // 고객 선택 시 로드되는 상담·구매 요약
-  const [customerSummary, setCustomerSummary] = useState<{
+
+  // 고객 이력 (상담·주문) — 좌측 상단 패널에 표시
+  const [history, setHistory] = useState<{
     loading: boolean;
     consultations: any[];
     orders: any[];
     totalLtv: number;
   }>({ loading: false, consultations: [], orders: [], totalLtv: 0 });
-  // 이력 접힘 상태 (고객 바뀌면 펼침으로 리셋)
-  const [historyCollapsed, setHistoryCollapsed] = useState(false);
+  const [historyTab, setHistoryTab] = useState<'consult' | 'orders'>('consult');
+
+  // 상담 작성
+  const [consultType, setConsultType] = useState<string>('방문 상담');
+  const [consultText, setConsultText] = useState('');
+  const [savingConsult, setSavingConsult] = useState(false);
+
   // 주문 메모
   const [orderMemo, setOrderMemo] = useState('');
-  // 택배
+
+  // 판매 메타 (PDF 스펙)
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const [saleDate, setSaleDate] = useState<string>(todayStr);
+  const [receiptStatus, setReceiptStatus] = useState<ReceiptStatus>('RECEIVED');
+  const [receiptDate, setReceiptDate] = useState<string>(todayStr);
+  const [approvalStatus, setApprovalStatus] = useState<ApprovalStatus>('COMPLETED');
+  const [paymentInfo, setPaymentInfo] = useState<string>('');
+  // 매출처 검색형 콤보
+  const [branchSearch, setBranchSearch] = useState<string>('');
+  const [showBranchDropdown, setShowBranchDropdown] = useState(false);
+  // 품목별 주문 옵션 편집
+  const [editingOptionId, setEditingOptionId] = useState<string | null>(null);
+  const [editingOptionVal, setEditingOptionVal] = useState<string>('');
+
+  // 배송 (택배/퀵)
   const [shipping, setShipping] = useState<ShippingForm>({
-    enabled: false,
+    type: 'NONE',
     recipient_name: '', recipient_phone: '',
     recipient_zipcode: '', recipient_address: '', recipient_address_detail: '',
     delivery_message: '',
@@ -133,10 +199,43 @@ export default function POSPage() {
     sender_name: '', sender_phone: '',
     sender_zipcode: '', sender_address: '', sender_address_detail: '',
   });
-  // 출고 지점 (택배 활성 시. 기본 = 판매 지점)
   const [shipFromBranchId, setShipFromBranchId] = useState<string>('');
 
-  // Daum postcode script (한 번 로드)
+  // 분할 결제
+  const [splitMode, setSplitMode] = useState(false);
+  const [extraPayments, setExtraPayments] = useState<PaymentRow[]>([]);
+
+  const [cartOpen, setCartOpen] = useState(false);
+  const [mainTab, setMainTab] = useState<MainTab>('checkout');
+
+  const searchRef = useRef<HTMLInputElement>(null);
+  const customerInputRef = useRef<HTMLInputElement>(null);
+  const editingQtyRef = useRef<HTMLInputElement>(null);
+  const editingDiscountRef = useRef<HTMLInputElement>(null);
+
+  const initialRole = getCookie('user_role');
+  const initialBranchId = getCookie('user_branch_id');
+  const initialUserId = getCookie('user_id');
+  const initialUserName = getCookie('user_name');
+
+  // 판매 지점: 로그인 사용자의 지점으로 고정 (콤보 제거)
+  const [selectedBranch, setSelectedBranch] = useState<string>(initialBranchId || '');
+  const [userRole] = useState<string | null>(initialRole);
+
+  // 판매 담당자 (기본 = 로그인 사용자, 변경 가능)
+  const [handlerId, setHandlerId] = useState<string>(initialUserId || '');
+
+  const selectedBranchData = branches.find(b => b.id === selectedBranch);
+  const isDeptStore = selectedBranchData?.channel === 'DEPT_STORE';
+
+  // 백화점 수기입력용 상태
+  const [deptApprovalNo, setDeptApprovalNo] = useState('');
+  const [deptCardCompany, setDeptCardCompany] = useState('');
+  const [deptInstallment, setDeptInstallment] = useState('0');
+  const [deptMemo, setDeptMemo] = useState('');
+  const [deptShowDetail, setDeptShowDetail] = useState(false);
+
+  // Daum postcode script
   useEffect(() => {
     if (typeof window !== 'undefined' && !window.daum) {
       const script = document.createElement('script');
@@ -160,54 +259,25 @@ export default function POSPage() {
       },
     }).open();
   };
-  // 분할 결제
-  const [splitMode, setSplitMode] = useState(false);
-  const [extraPayments, setExtraPayments] = useState<PaymentRow[]>([]);
-
-  const [cartOpen, setCartOpen] = useState(false);
-  const [mainTab, setMainTab] = useState<MainTab>('checkout');
-
-  const searchRef = useRef<HTMLInputElement>(null);
-  const customerInputRef = useRef<HTMLInputElement>(null);
-  const editingQtyRef = useRef<HTMLInputElement>(null);
-  const editingDiscountRef = useRef<HTMLInputElement>(null);
-
-  const initialRole = getCookie('user_role');
-  const initialBranchId = getCookie('user_branch_id');
-  const [selectedBranch, setSelectedBranch] = useState<string>(initialBranchId || '');
-  const [userRole] = useState<string | null>(initialRole);
-
-  const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
-
-  // 백화점 모드: 선택된 지점이 DEPT_STORE인 경우 결제 UI 최적화
-  const selectedBranchData = branches.find(b => b.id === selectedBranch);
-  const isDeptStore = selectedBranchData?.channel === 'DEPT_STORE';
-
-  // 백화점 수기입력용 상태
-  const [deptApprovalNo, setDeptApprovalNo] = useState('');
-  const [deptCardCompany, setDeptCardCompany] = useState('');
-  const [deptInstallment, setDeptInstallment] = useState('0');
-  const [deptMemo, setDeptMemo] = useState('');
-  const [deptShowDetail, setDeptShowDetail] = useState(false);
 
   // ── 초기 데이터 로드 ───────────────────────────────────────────────────────
   useEffect(() => {
     const fetchData = async () => {
       const supabase = createClient();
 
-      const [productsRes, branchesRes, customersRes, gradesRes, invRes] = await Promise.all([
+      const [productsRes, branchesRes, customersRes, gradesRes, invRes, usersRes] = await Promise.all([
         supabase.from('products').select('id, name, code, barcode, price, unit').eq('is_active', true).order('name'),
         supabase.from('branches').select('*').eq('is_active', true).order('created_at'),
         supabase.from('customers').select('id, name, phone, grade').eq('is_active', true).order('name'),
         supabase.from('customer_grades').select('code, point_rate'),
         supabase.from('inventories').select('product_id, branch_id, quantity'),
+        supabase.from('users').select('id, name, role, branch_id').eq('is_active', true).order('name'),
       ]);
 
       const gradesMap = new Map((gradesRes.data || []).map((g: any) => [g.code, parseFloat(g.point_rate) || 1.0]));
       const branchesData = (branchesRes.data || []) as any[];
       const productsData = (productsRes.data || []) as any[];
 
-      // 재고 맵 구성
       const invMap = new Map<string, number>();
       for (const inv of (invRes.data || []) as any[]) {
         invMap.set(`${inv.branch_id}_${inv.product_id}`, inv.quantity);
@@ -220,6 +290,7 @@ export default function POSPage() {
         ...c,
         grade_point_rate: gradesMap.get(c.grade) || 1.0,
       })));
+      setStaff(((usersRes.data as any[]) || []) as StaffUser[]);
 
       const pMap = new Map<string, any>();
       productsData.forEach(p => {
@@ -228,16 +299,12 @@ export default function POSPage() {
       });
       setProductMap(pMap);
 
-      if (isBranchUser && initialBranchId) {
+      // 판매 지점 확정: 쿠키 branch_id → 첫 번째 지점
+      if (initialBranchId) {
         setSelectedBranch(initialBranchId);
-      } else if (branchesData.length > 0) {
-        setSelectedBranch(branchesData[0].id);
-      }
-
-      // 출고 지점 기본 = 판매 지점 (사용자가 택배 활성 시 변경 가능)
-      if (isBranchUser && initialBranchId) {
         setShipFromBranchId(initialBranchId);
       } else if (branchesData.length > 0) {
+        setSelectedBranch(branchesData[0].id);
         setShipFromBranchId(branchesData[0].id);
       }
 
@@ -245,17 +312,137 @@ export default function POSPage() {
     };
     fetchData();
     searchRef.current?.focus();
-  }, [isBranchUser, initialBranchId]);
+  }, [initialBranchId]);
 
-  // 택배 미활성 상태에서 판매 지점 변경 시 출고 지점도 동기화
+  // ── 전표 복사 (copy 쿼리) — 초기 로드 완료 후 1회 ───────────────────────
   useEffect(() => {
-    if (!shipping.enabled && selectedBranch) {
+    if (!copyOrderId) return;
+    if (loading) return;             // 기초 데이터(products/branches/customers) 준비 후 적용
+    let aborted = false;
+    (async () => {
+      const sb = createClient() as any;
+      const full = await sb.from('sales_orders')
+        .select(`
+          id, order_number, branch_id, customer_id, memo,
+          items:sales_order_items(product_id, quantity, unit_price, discount_amount, order_option),
+          shipment:shipments(
+            branch_id, delivery_type, recipient_name, recipient_phone,
+            recipient_zipcode, recipient_address, recipient_address_detail,
+            delivery_message, sender_name, sender_phone,
+            sender_zipcode, sender_address, sender_address_detail
+          )
+        `)
+        .eq('id', copyOrderId).maybeSingle();
+      // 051/046 미적용 폴백
+      let src: any = full.data;
+      if (full.error) {
+        const retry = await sb.from('sales_orders')
+          .select(`
+            id, order_number, branch_id, customer_id, memo,
+            items:sales_order_items(product_id, quantity, unit_price, discount_amount),
+            shipment:shipments(
+              branch_id, recipient_name, recipient_phone,
+              recipient_zipcode, recipient_address, recipient_address_detail,
+              delivery_message
+            )
+          `)
+          .eq('id', copyOrderId).maybeSingle();
+        src = retry.data;
+      }
+      if (aborted || !src) {
+        router.replace('/pos');
+        return;
+      }
+
+      // 매출처 (매장)
+      if (src.branch_id) {
+        setSelectedBranch(src.branch_id);
+        setShipFromBranchId(src.branch_id);
+      }
+      // 고객
+      if (src.customer_id) {
+        const cust = customers.find(c => c.id === src.customer_id);
+        if (cust) await selectCustomer(cust);
+      }
+      // 카트
+      const newCart: CartItem[] = ((src.items as any[]) || []).map((it: any) => {
+        const prod = products.find(p => p.id === it.product_id);
+        return {
+          productId: it.product_id,
+          name: prod?.name || '(삭제된 품목)',
+          price: Number(it.unit_price ?? prod?.price ?? 0),
+          quantity: Number(it.quantity || 1),
+          discount: Number(it.discount_amount || 0),
+          barcode: prod?.barcode,
+          orderOption: it.order_option || undefined,
+        };
+      }).filter((c: CartItem) => !!c.productId);
+      setCart(newCart);
+      // 배송 복사 (있을 때만)
+      const shipRow = Array.isArray(src.shipment) ? src.shipment[0] : src.shipment;
+      if (shipRow && shipRow.recipient_name) {
+        const dtype = (shipRow.delivery_type === 'QUICK') ? 'QUICK' : 'PARCEL';
+        setShipping(prev => ({
+          ...prev,
+          type: dtype,
+          recipient_name: shipRow.recipient_name || '',
+          recipient_phone: shipRow.recipient_phone || '',
+          recipient_zipcode: shipRow.recipient_zipcode || '',
+          recipient_address: shipRow.recipient_address || '',
+          recipient_address_detail: shipRow.recipient_address_detail || '',
+          delivery_message: shipRow.delivery_message || '',
+          senderSameAsBuyer: !(shipRow.sender_name && shipRow.sender_name !== prev.sender_name),
+          sender_name: shipRow.sender_name || prev.sender_name,
+          sender_phone: shipRow.sender_phone || prev.sender_phone,
+          sender_zipcode: shipRow.sender_zipcode || '',
+          sender_address: shipRow.sender_address || '',
+          sender_address_detail: shipRow.sender_address_detail || '',
+        }));
+        if (shipRow.branch_id) setShipFromBranchId(shipRow.branch_id);
+      }
+      // 메모 + 초기화 규칙
+      setOrderMemo(src.memo || '');
+      setReceiptStatus('RECEIVED');
+      setReceiptDate(new Date().toISOString().slice(0, 10));
+      setSaleDate(new Date().toISOString().slice(0, 10));
+      setApprovalStatus('COMPLETED');
+      setPaymentInfo('');
+      setMainTab('checkout');
+
+      setCopyBanner(`📋 ${src.order_number} 복사 중 — 수령현황·일자·결제정보는 초기화됨`);
+      // URL 쿼리 정리 (새로고침 시 중복 적용 방지)
+      router.replace('/pos');
+    })();
+    return () => { aborted = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [copyOrderId, loading]);
+
+  // 배송 미활성 시 출고 지점을 판매 지점에 동기화
+  useEffect(() => {
+    if (shipping.type === 'NONE' && selectedBranch) {
       setShipFromBranchId(selectedBranch);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedBranch]);
+  }, [shipping.type, selectedBranch]);
 
-  // ── 고객 검색 ─────────────────────────────────────────────────────────────
+  // 배송 선택 시 수령현황 자동 추론 (사용자가 이미 임의 변경한 경우엔 유지하지 않음 —
+  //   단순 동기화 규칙: 배송 탭을 바꾸면 수령현황도 따라감. 이후 수동 변경 자유.)
+  useEffect(() => {
+    if (shipping.type === 'PARCEL') setReceiptStatus('PARCEL_PLANNED');
+    else if (shipping.type === 'QUICK') setReceiptStatus('QUICK_PLANNED');
+    else setReceiptStatus(prev => (prev === 'PARCEL_PLANNED' || prev === 'QUICK_PLANNED') ? 'RECEIVED' : prev);
+  }, [shipping.type]);
+
+  // 결제수단에 맞춰 승인상태 기본값 추천 (사용자 변경값은 보존)
+  useEffect(() => {
+    setApprovalStatus(prev => {
+      // 사용자가 명시적으로 건드린 흔적이 없는 경우에만 자동 보정
+      if (paymentMethod === 'credit') return prev === 'COMPLETED' ? 'UNSETTLED' : prev;
+      if (paymentMethod === 'cod') return prev === 'COMPLETED' ? 'UNSETTLED' : prev;
+      return prev;
+    });
+  }, [paymentMethod]);
+
+  // 고객 검색 (로컬 필터)
   useEffect(() => {
     if (customerSearch.length >= 1) {
       const q = customerSearch.toLowerCase();
@@ -271,20 +458,28 @@ export default function POSPage() {
     }
   }, [customerSearch, customers]);
 
-  // ── 수량 편집 포커스 ───────────────────────────────────────────────────────
   useEffect(() => {
     if (editingQtyId) editingQtyRef.current?.focus();
   }, [editingQtyId]);
-
-  // ── 할인 편집 포커스 ───────────────────────────────────────────────────────
   useEffect(() => {
     if (editingDiscountId) editingDiscountRef.current?.focus();
   }, [editingDiscountId]);
 
-  // ── 제품 필터 ─────────────────────────────────────────────────────────────
   const filteredProducts = products.filter(p =>
     p.name.includes(search) || p.code.includes(search)
   );
+
+  // 매출처 검색 결과
+  const isBranchLocked = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
+  const filteredBranches = useMemo(() => {
+    if (isBranchLocked) return branches;
+    const q = branchSearch.trim().toLowerCase();
+    if (!q) return branches;
+    return branches.filter((b: any) =>
+      (b.name || '').toLowerCase().includes(q) ||
+      (b.code || '').toLowerCase().includes(q)
+    );
+  }, [branches, branchSearch, isBranchLocked]);
 
   const getStock = useCallback((productId: string) =>
     inventoryMap.get(`${selectedBranch}_${productId}`) ?? null,
@@ -323,19 +518,49 @@ export default function POSPage() {
     setCart(prev => prev.map(item => item.productId === productId ? { ...item, quantity } : item));
   };
 
-  // ── 통합 검색 (바코드 + 이름/코드) ────────────────────────────────────────
   const handleSearchEnter = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== 'Enter' || !search.trim()) return;
     const trimmed = search.trim();
-    // 정확히 일치하면 즉시 담기 (바코드 스캔)
     const exact = productMap.get(trimmed);
     if (exact) { addToCart(exact); return; }
-    // 검색 결과가 1개면 담기
     if (filteredProducts.length === 1) { addToCart(filteredProducts[0]); return; }
     if (filteredProducts.length === 0) alert(`"${trimmed}" 해당 제품이 없습니다.`);
   };
 
-  // ── 고객 선택 ─────────────────────────────────────────────────────────────
+  // ── 고객 선택 + 이력 로드 ──────────────────────────────────────────────────
+  const loadCustomerHistory = async (customerId: string) => {
+    const supabase = createClient() as any;
+    setHistory(prev => ({ ...prev, loading: true }));
+    try {
+      const [consultRes, ordersRes] = await Promise.all([
+        supabase
+          .from('customer_consultations')
+          .select('id, consultation_type, content, created_at, consulted_by')
+          .eq('customer_id', customerId)
+          .order('created_at', { ascending: false })
+          .limit(20),
+        supabase
+          .from('sales_orders')
+          .select('id, order_number, total_amount, ordered_at, status, branch:branches(name), items:sales_order_items(quantity, product:products(name))')
+          .eq('customer_id', customerId)
+          .order('ordered_at', { ascending: false })
+          .limit(20),
+      ]);
+      const orders = (ordersRes.data || []) as any[];
+      const totalLtv = orders
+        .filter(o => !['CANCELLED', 'REFUNDED'].includes(o.status))
+        .reduce((s: number, o: any) => s + (o.total_amount || 0), 0);
+      setHistory({
+        loading: false,
+        consultations: (consultRes.data as any[]) || [],
+        orders,
+        totalLtv,
+      });
+    } catch {
+      setHistory({ loading: false, consultations: [], orders: [], totalLtv: 0 });
+    }
+  };
+
   const selectCustomer = async (customer: Customer) => {
     const supabase = createClient() as any;
     const { data: lastHistory } = await supabase
@@ -349,48 +574,16 @@ export default function POSPage() {
     setShowCustomerDropdown(false);
     setUsePoints(false);
     setPointsToUse(0);
-    setHistoryCollapsed(false);
+    setHistoryTab('consult');
 
-    // 택배 sender가 "구매자와 동일"이면 구매자 정보로 프리필
     setShipping(prev => prev.senderSameAsBuyer
       ? { ...prev, sender_name: customer.name, sender_phone: customer.phone }
       : prev);
 
-    // 상담·구매 이력 요약 로드
-    setCustomerSummary(prev => ({ ...prev, loading: true }));
-    try {
-      const [consultRes, ordersRes] = await Promise.all([
-        supabase
-          .from('customer_consultations')
-          .select('id, consultation_type, content, created_at')
-          .eq('customer_id', customer.id)
-          .order('created_at', { ascending: false })
-          .limit(3),
-        supabase
-          .from('sales_orders')
-          .select('id, order_number, total_amount, ordered_at, status, branch:branches(name), items:sales_order_items(quantity, product:products(name))')
-          .eq('customer_id', customer.id)
-          .order('ordered_at', { ascending: false })
-          .limit(3),
-      ]);
-      const orders = (ordersRes.data || []) as any[];
-      const totalLtv = orders
-        .filter(o => !['CANCELLED', 'REFUNDED'].includes(o.status))
-        .reduce((s: number, o: any) => s + (o.total_amount || 0), 0);
-      setCustomerSummary({
-        loading: false,
-        consultations: (consultRes.data as any[]) || [],
-        orders,
-        totalLtv,
-      });
-    } catch {
-      setCustomerSummary({ loading: false, consultations: [], orders: [], totalLtv: 0 });
-    }
+    loadCustomerHistory(customer.id);
   };
 
-  // ── 상세 고객 추가 → 저장 후 자동 선택 ──────────────────────────────────────
   const handleCustomerCreated = async (phone: string) => {
-    // 방금 만들어진 고객을 customers 리스트에 반영하고 자동 선택
     const supabase = createClient() as any;
     const { data: grades } = await supabase.from('customer_grades').select('code, point_rate');
     const gMap = new Map((grades || []).map((g: any) => [g.code, parseFloat(g.point_rate) || 1.0]));
@@ -416,11 +609,36 @@ export default function POSPage() {
     setShowCustomerDropdown(false);
     setUsePoints(false);
     setPointsToUse(0);
-    setCustomerSummary({ loading: false, consultations: [], orders: [], totalLtv: 0 });
+    setHistory({ loading: false, consultations: [], orders: [], totalLtv: 0 });
+    setConsultText('');
     customerInputRef.current?.focus();
   };
 
-  // (구) 빠른 고객 등록은 CustomerAddModal(상세 입력)로 대체됨
+  // ── 상담 저장 ─────────────────────────────────────────────────────────────
+  const saveConsultation = async () => {
+    if (!selectedCustomer) { alert('고객을 먼저 선택하세요.'); return; }
+    const trimmed = consultText.trim();
+    if (!trimmed) return;
+    setSavingConsult(true);
+    try {
+      const supabase = createClient() as any;
+      const { error } = await supabase.from('customer_consultations').insert({
+        customer_id: selectedCustomer.id,
+        consultation_type: consultType,
+        content: { text: trimmed },
+        consulted_by: handlerId || initialUserId || null,
+      });
+      if (error) {
+        alert('상담 저장 실패: ' + error.message);
+      } else {
+        setConsultText('');
+        await loadCustomerHistory(selectedCustomer.id);
+        setHistoryTab('consult');
+      }
+    } finally {
+      setSavingConsult(false);
+    }
+  };
 
   // ── 품목 할인 ──────────────────────────────────────────────────────────────
   const updateDiscount = (productId: string, discount: number) => {
@@ -457,10 +675,23 @@ export default function POSPage() {
   const cashReceivedNum = parseInt(cashReceived.replace(/,/g, '')) || 0;
   const change = paymentMethod === 'cash' && cashReceivedNum > 0 ? cashReceivedNum - finalAmount : 0;
 
+  // 담당자 목록 (같은 지점 우선, 나머지 뒤로)
+  const orderedStaff = useMemo(() => {
+    const sameBranch = staff.filter(u => u.branch_id === selectedBranch);
+    const otherBranch = staff.filter(u => u.branch_id !== selectedBranch);
+    return [...sameBranch, ...otherBranch];
+  }, [staff, selectedBranch]);
+
+  const handlerName = useMemo(
+    () => staff.find(s => s.id === handlerId)?.name || initialUserName || '미지정',
+    [staff, handlerId, initialUserName]
+  );
+
   // ── 결제 처리 ─────────────────────────────────────────────────────────────
   const handlePayment = async () => {
     if (cart.length === 0) return;
-    if (!selectedBranch) { alert('지점을 선택해주세요.'); return; }
+    if (!selectedBranch) { alert('지점 정보가 없습니다. 다시 로그인해주세요.'); return; }
+    if (!handlerId) { alert('담당자를 지정해주세요.'); return; }
     if (paymentMethod === 'credit' && !selectedCustomer) {
       alert('외상 결제는 고객을 먼저 선택해야 합니다.\n누가 외상했는지 기록되어야 합니다.');
       return;
@@ -471,9 +702,8 @@ export default function POSPage() {
     }
 
     setProcessing(true);
-    const selectedBranchData = branches.find(b => b.id === selectedBranch);
+    const branchData = branches.find(b => b.id === selectedBranch);
 
-    // 분할 결제 splits 구성
     let paymentSplits: PaymentRow[] = [];
     if (splitMode) {
       const extraSum = extraPayments.reduce((s, p) => s + (p.amount || 0), 0);
@@ -491,14 +721,13 @@ export default function POSPage() {
       paymentSplits.push(...extraPayments.filter(p => p.amount > 0));
     }
 
-    // 택배 정보 유효성
     const useShipping =
-      shipping.enabled &&
+      shipping.type !== 'NONE' &&
       shipping.recipient_name.trim() &&
       shipping.recipient_phone.trim() &&
       shipping.recipient_address.trim();
-    if (shipping.enabled && !useShipping) {
-      alert('택배 수령인 이름·연락처·주소(검색)를 모두 입력하세요.');
+    if (shipping.type !== 'NONE' && !useShipping) {
+      alert(`${shipping.type === 'QUICK' ? '퀵배송' : '택배'} 수령인 이름·연락처·주소(검색)를 모두 입력하세요.`);
       setProcessing(false);
       return;
     }
@@ -509,15 +738,36 @@ export default function POSPage() {
     ].filter(Boolean).join(' · ') || undefined;
 
     try {
+      // 판매 일자 → ISO timestamp (시각은 현재 시각 사용)
+      const saleIso = (() => {
+        if (!saleDate) return new Date().toISOString();
+        const now = new Date();
+        const d = new Date(`${saleDate}T00:00:00`);
+        d.setHours(now.getHours(), now.getMinutes(), now.getSeconds(), 0);
+        return d.toISOString();
+      })();
+
       const result = await processPosCheckout({
         branchId: selectedBranch,
-        branchCode: selectedBranchData?.code || 'ETC',
-        branchName: selectedBranchData?.name || '',
-        branchChannel: selectedBranchData?.channel || 'STORE',
+        branchCode: branchData?.code || 'ETC',
+        branchName: branchData?.name || '',
+        branchChannel: branchData?.channel || 'STORE',
         customerId: selectedCustomer?.id || null,
         customerGrade: selectedCustomer?.grade || null,
         gradePointRate: selectedCustomer?.grade_point_rate || 1.0,
-        cart,
+        saleDate: saleIso,
+        receiptStatus,
+        receiptDate: receiptDate || null,
+        approvalStatus,
+        paymentInfo: paymentInfo.trim() || undefined,
+        cart: cart.map(c => ({
+          productId: c.productId,
+          name: c.name,
+          price: c.price,
+          quantity: c.quantity,
+          discount: c.discount,
+          orderOption: c.orderOption,
+        })),
         totalAmount: total,
         discountAmount: itemDiscountTotal + discountAmount + (usePoints ? pointsToUse : 0),
         finalAmount,
@@ -525,7 +775,7 @@ export default function POSPage() {
         usePoints,
         pointsToUse,
         cashReceived: cashReceivedNum > 0 ? cashReceivedNum : undefined,
-        userId: getCookie('user_id'),
+        userId: handlerId || initialUserId,
         approvalNo: isDeptStore && deptApprovalNo ? deptApprovalNo : undefined,
         cardInfo: isDeptStore
           ? [deptCardCompany, deptInstallment !== '0' ? `${deptInstallment}개월` : '일시불'].filter(Boolean).join(' · ')
@@ -534,6 +784,7 @@ export default function POSPage() {
         paymentSplits: paymentSplits.length > 0 ? paymentSplits.map(p => ({ method: p.method, amount: p.amount, approvalNo: p.approvalNo, cardInfo: p.cardInfo })) : undefined,
         shipFromBranchId: useShipping ? (shipFromBranchId || selectedBranch) : undefined,
         shipping: useShipping ? {
+          delivery_type: shipping.type === 'QUICK' ? 'QUICK' : 'PARCEL',
           recipient_name: shipping.recipient_name.trim(),
           recipient_phone: shipping.recipient_phone.trim(),
           recipient_zipcode: shipping.recipient_zipcode.trim() || undefined,
@@ -556,7 +807,6 @@ export default function POSPage() {
 
       const { orderNumber, pointsEarned, stockUpdates } = result;
 
-      // 로컬 재고 맵 즉시 업데이트
       if (stockUpdates) {
         for (const [productId, newQty] of Object.entries(stockUpdates)) {
           const key = `${selectedBranch}_${productId}`;
@@ -564,9 +814,8 @@ export default function POSPage() {
         }
       }
 
-      // 영수증 표시
       setReceiptData({
-        orderNumber: orderNumber!, branchName: selectedBranchData?.name || '',
+        orderNumber: orderNumber!, branchName: branchData?.name || '',
         customerName: selectedCustomer?.name,
         items: cart.map(item => ({ name: item.name, quantity: item.quantity, unitPrice: item.price, totalPrice: item.price * item.quantity - (item.discount || 0), discount: item.discount || 0 })),
         totalAmount: total, discountAmount: itemDiscountTotal + discountAmount + (usePoints ? pointsToUse : 0),
@@ -583,14 +832,15 @@ export default function POSPage() {
       setCart([]);
       setSelectedCustomer(null);
       setCustomerSearch('');
-      setCustomerSummary({ loading: false, consultations: [], orders: [], totalLtv: 0 });
+      setHistory({ loading: false, consultations: [], orders: [], totalLtv: 0 });
+      setConsultText('');
       setUsePoints(false);
       setPointsToUse(0);
       setDiscountInput('');
       setCashReceived('');
       setOrderMemo('');
       setShipping({
-        enabled: false,
+        type: 'NONE',
         recipient_name: '', recipient_phone: '',
         recipient_zipcode: '', recipient_address: '', recipient_address_detail: '',
         delivery_message: '',
@@ -601,11 +851,17 @@ export default function POSPage() {
       setShipFromBranchId(selectedBranch);
       setSplitMode(false);
       setExtraPayments([]);
-      // 백화점 수기입력 초기화
       setDeptApprovalNo('');
       setDeptCardCompany('');
       setDeptInstallment('0');
       setDeptMemo('');
+      setSaleDate(new Date().toISOString().slice(0, 10));
+      setReceiptDate(new Date().toISOString().slice(0, 10));
+      setReceiptStatus('RECEIVED');
+      setApprovalStatus('COMPLETED');
+      setPaymentInfo('');
+      setCopyBanner(null);
+      // 담당자·매출처는 초기화 하지 않음 — 동일 담당자·지점에서 연속 판매하는 경우가 많음
 
     } catch (err: any) {
       console.error('결제 오류:', err);
@@ -615,7 +871,6 @@ export default function POSPage() {
     setProcessing(false);
   };
 
-  // ── 수량 직접 입력 커밋 ────────────────────────────────────────────────────
   const commitQtyEdit = (productId: string) => {
     const val = parseInt(editingQtyVal);
     if (!isNaN(val)) updateQuantity(productId, val);
@@ -626,100 +881,392 @@ export default function POSPage() {
   // ── 렌더링 ─────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-4">
+      {/* 전표 복사 배너 */}
+      {copyBanner && (
+        <div className="p-2 rounded-md bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs flex items-center justify-between">
+          <span>{copyBanner}</span>
+          <button onClick={() => setCopyBanner(null)} className="text-indigo-400 hover:text-indigo-600">✕</button>
+        </div>
+      )}
+
       {/* 판매관리 상단 탭 */}
-      <div className="flex gap-1 border-b border-slate-200">
-        {([
-          { key: 'checkout' as MainTab, label: '판매 등록' },
-          { key: 'list' as MainTab, label: '판매 현황' },
-        ]).map(t => (
-          <button
-            key={t.key}
-            onClick={() => setMainTab(t.key)}
-            className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-              mainTab === t.key ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
+      <div className="flex gap-1 border-b border-slate-200 items-center">
+        <div className="flex gap-1">
+          {([
+            { key: 'checkout' as MainTab, label: '판매 등록' },
+            { key: 'list' as MainTab, label: '판매 현황' },
+          ]).map(t => (
+            <button
+              key={t.key}
+              onClick={() => setMainTab(t.key)}
+              className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                mainTab === t.key ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {/* 판매 메타 헤더 (일자 · 매출처 · 출고처) */}
+      {mainTab === 'checkout' && (
+      <div className="card p-3 flex flex-wrap items-end gap-3">
+        <div className="flex flex-col gap-1">
+          <label className="text-[11px] font-semibold text-slate-500 uppercase">일자</label>
+          <input
+            type="date"
+            value={saleDate}
+            onChange={e => setSaleDate(e.target.value)}
+            className="input text-sm py-1.5 w-40"
+          />
+        </div>
+        <div className="flex flex-col gap-1 flex-1 min-w-[220px] relative">
+          <label className="text-[11px] font-semibold text-slate-500 uppercase">매출처</label>
+          {selectedBranchData ? (
+            <div className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-sm ${
+              isBranchLocked ? 'bg-slate-100 border-slate-200 text-slate-600'
+                             : 'bg-blue-50 border-blue-200 text-blue-800'
+            }`}>
+              <span className="font-medium">{selectedBranchData.name}</span>
+              {selectedBranchData.code && (
+                <span className="text-[10px] text-slate-400 font-mono">[{selectedBranchData.code}]</span>
+              )}
+              {isDeptStore && <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 text-[10px]">백화점</span>}
+              {!isBranchLocked && (
+                <button
+                  type="button"
+                  onClick={() => { setSelectedBranch(''); setBranchSearch(''); setShowBranchDropdown(true); }}
+                  className="ml-auto text-slate-400 hover:text-slate-600 text-xs"
+                >변경</button>
+              )}
+            </div>
+          ) : (
+            <input
+              type="text"
+              value={branchSearch}
+              onChange={e => { setBranchSearch(e.target.value); setShowBranchDropdown(true); }}
+              onFocus={() => setShowBranchDropdown(true)}
+              onBlur={() => setTimeout(() => setShowBranchDropdown(false), 200)}
+              placeholder="매출처 검색 (지점명 / 코드)"
+              className="input text-sm py-1.5"
+            />
+          )}
+          {showBranchDropdown && !selectedBranchData && (
+            <div className="absolute z-40 top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-64 overflow-auto">
+              {filteredBranches.length === 0 && (
+                <div className="p-3 text-center text-xs text-slate-400">결과 없음</div>
+              )}
+              {filteredBranches.map((b: any) => (
+                <button
+                  key={b.id}
+                  onMouseDown={() => {
+                    setSelectedBranch(b.id);
+                    setBranchSearch('');
+                    setShowBranchDropdown(false);
+                    setShipFromBranchId(b.id);
+                  }}
+                  className="w-full text-left px-3 py-2 hover:bg-blue-50 border-b border-slate-100 last:border-b-0"
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-slate-800">{b.name}</p>
+                      {b.code && <p className="text-[10px] text-slate-400 font-mono">{b.code}</p>}
+                    </div>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                      b.channel === 'DEPT_STORE' ? 'bg-purple-100 text-purple-700'
+                      : b.is_headquarters ? 'bg-indigo-100 text-indigo-700'
+                      : 'bg-slate-100 text-slate-600'
+                    }`}>
+                      {b.channel === 'DEPT_STORE' ? '백화점'
+                        : b.is_headquarters ? '본사'
+                        : b.channel === 'ONLINE' ? '온라인'
+                        : '한약국'}
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="flex flex-col gap-1 min-w-[180px]">
+          <label className="text-[11px] font-semibold text-slate-500 uppercase">출고처</label>
+          <select
+            value={shipFromBranchId}
+            onChange={e => setShipFromBranchId(e.target.value)}
+            className="input text-sm py-1.5"
+          >
+            {branches.map((b: any) => (
+              <option key={b.id} value={b.id}>
+                {b.name}{b.id === selectedBranch ? ' (매출처)' : ''}{b.is_headquarters ? ' · 본사' : ''}
+              </option>
+            ))}
+          </select>
+          {shipFromBranchId && shipFromBranchId !== selectedBranch && (
+            <span className="text-[10px] text-amber-600">매출처와 상이 — 재고는 출고처에서 차감</span>
+          )}
+        </div>
+      </div>
+      )}
 
       {mainTab === 'list' && <SalesListTab />}
 
       {mainTab === 'checkout' && (
-    <div className="flex flex-col sm:flex-row gap-4 sm:h-[calc(100vh-12rem)]">
-      {/* 왼쪽: 제품 검색 + 그리드 */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* 통합 검색 */}
-        <div className="mb-3">
-          <input
-            ref={searchRef}
-            type="text"
-            placeholder="제품명, 코드 검색 또는 바코드 스캔 후 Enter"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            onKeyDown={handleSearchEnter}
-            className="input w-full text-sm"
-            autoComplete="off"
-          />
-          {search && (
-            <p className="text-xs text-slate-400 mt-1 pl-1">
-              {filteredProducts.length}개 · Enter키로 첫 번째 항목 담기
-            </p>
-          )}
-        </div>
-
-        {/* 제품 그리드 */}
-        <div className="flex-1 overflow-auto pb-24 sm:pb-0">
-          {loading ? (
-            <p className="text-center text-slate-400 py-8">로딩 중...</p>
-          ) : filteredProducts.length === 0 && search ? (
-            <p className="text-center text-slate-400 py-8">검색 결과가 없습니다</p>
-          ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-              {filteredProducts.map(product => {
-                const stock = getStock(product.id);
-                const inCart = cart.find(i => i.productId === product.id)?.quantity ?? 0;
-                const isOutOfStock = stock !== null && stock === 0;
-                const isLow = stock !== null && stock > 0 && stock < 10;
-                return (
+    <div className="flex flex-col lg:flex-row gap-4 lg:h-[calc(100vh-10rem)]">
+      {/* 왼쪽: 고객·이력·상담 + 제품 */}
+      <div className="flex-1 flex flex-col min-w-0 gap-3">
+        {/* 상단 — 고객·이력·상담 패널 */}
+        <div className="card p-3 flex flex-col gap-3 lg:max-h-[46%] lg:flex-shrink-0 overflow-hidden">
+          {/* 고객 검색/선택 */}
+          <div className="relative">
+            {selectedCustomer ? (
+              <div className="flex items-center justify-between px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <Link href={`/customers/${selectedCustomer.id}`}
+                      className="font-semibold text-blue-800 hover:underline text-sm">
+                      {selectedCustomer.name}
+                    </Link>
+                    <span className="text-xs text-slate-500">{selectedCustomer.phone}</span>
+                    <span className={`px-1.5 py-0.5 text-[10px] rounded ${GRADE_BADGE[selectedCustomer.grade]}`}>
+                      {GRADE_LABELS[selectedCustomer.grade]}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3 mt-0.5 text-[11px] text-slate-500">
+                    <span className="text-green-600 font-medium">{(selectedCustomer.currentPoints || 0).toLocaleString()}P 보유</span>
+                    {history.totalLtv > 0 && <span>LTV {history.totalLtv.toLocaleString()}원</span>}
+                    <span>주문 {history.orders.length}건 · 상담 {history.consultations.length}건</span>
+                  </div>
+                </div>
+                <button onClick={clearCustomer}
+                  className="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0 ml-2">✕</button>
+              </div>
+            ) : (
+              <div className="flex gap-2">
+                <input
+                  ref={customerInputRef}
+                  type="text"
+                  placeholder="고객 검색 (이름 / 전화번호)"
+                  value={customerSearch}
+                  onChange={e => setCustomerSearch(e.target.value)}
+                  onFocus={() => customerSearch.length >= 1 && setShowCustomerDropdown(true)}
+                  onBlur={() => setTimeout(() => setShowCustomerDropdown(false), 200)}
+                  className="input text-sm flex-1"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowAddCustomerModal(true)}
+                  className="px-3 py-2 text-sm rounded-md bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 whitespace-nowrap"
+                >
+                  + 고객 추가
+                </button>
+              </div>
+            )}
+            {showCustomerDropdown && !selectedCustomer && (
+              <div className="absolute z-40 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-64 overflow-auto">
+                {customerResults.map(c => (
                   <button
-                    key={product.id}
-                    onClick={() => addToCart(product)}
-                    disabled={isOutOfStock}
-                    className={`bg-white p-3 rounded-lg shadow-sm text-left border transition-all ${
-                      isOutOfStock
-                        ? 'border-slate-100 opacity-40 cursor-not-allowed'
-                        : 'border-slate-100 hover:border-blue-300 hover:shadow-md active:scale-95'
-                    } ${inCart > 0 ? 'ring-2 ring-blue-400 ring-inset' : ''}`}
+                    key={c.id} onMouseDown={() => selectCustomer(c)}
+                    className="w-full text-left px-3 py-2.5 hover:bg-blue-50 border-b border-slate-100 last:border-b-0"
                   >
-                    {product.barcode && (
-                      <p className="text-xs text-slate-400 font-mono mb-0.5 truncate">{product.barcode}</p>
-                    )}
-                    <p className="font-medium text-slate-800 text-sm leading-tight">{product.name}</p>
-                    <p className="text-xs text-slate-400 mb-1.5">{product.code}</p>
-                    <p className="text-base font-bold text-blue-600">{product.price.toLocaleString()}원</p>
-                    <div className="flex items-center justify-between mt-1">
-                      <span className={`text-xs ${
-                        isOutOfStock ? 'text-red-500 font-semibold' :
-                        isLow ? 'text-orange-500' : 'text-slate-400'
-                      }`}>
-                        {stock === null ? '' : isOutOfStock ? '품절' : `재고 ${stock}`}
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="font-medium text-sm">{c.name}</p>
+                        <p className="text-xs text-slate-500">{c.phone}</p>
+                      </div>
+                      <span className={`px-1.5 py-0.5 text-xs rounded ${GRADE_BADGE[c.grade]}`}>
+                        {GRADE_LABELS[c.grade]}
                       </span>
-                      {inCart > 0 && (
-                        <span className="text-xs bg-blue-600 text-white px-1.5 py-0.5 rounded-full">{inCart}</span>
-                      )}
                     </div>
                   </button>
-                );
-              })}
+                ))}
+                {customerResults.length === 0 && (
+                  <div className="p-3 text-center text-xs text-slate-400">
+                    검색 결과 없음 · 우측 <span className="text-blue-600 font-medium">고객 추가</span> 버튼으로 등록
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* 이력(탭) + 상담 작성 — 고객 선택 시에만 노출 */}
+          {selectedCustomer ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 flex-1 min-h-[160px] overflow-hidden">
+              {/* 이력 탭 */}
+              <div className="flex flex-col border border-slate-200 rounded-lg overflow-hidden">
+                <div className="flex border-b border-slate-200 bg-slate-50 text-xs">
+                  <button
+                    onClick={() => setHistoryTab('consult')}
+                    className={`flex-1 py-1.5 font-medium transition-colors ${historyTab === 'consult'
+                      ? 'bg-white text-blue-600 border-b-2 border-blue-500 -mb-px' : 'text-slate-500 hover:text-slate-700'}`}
+                  >
+                    상담 이력 ({history.consultations.length})
+                  </button>
+                  <button
+                    onClick={() => setHistoryTab('orders')}
+                    className={`flex-1 py-1.5 font-medium transition-colors ${historyTab === 'orders'
+                      ? 'bg-white text-blue-600 border-b-2 border-blue-500 -mb-px' : 'text-slate-500 hover:text-slate-700'}`}
+                  >
+                    구매 이력 ({history.orders.length})
+                  </button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-2 text-xs space-y-1.5 bg-white">
+                  {history.loading ? (
+                    <p className="text-center text-slate-400 py-4">불러오는 중...</p>
+                  ) : historyTab === 'consult' ? (
+                    history.consultations.length === 0 ? (
+                      <p className="text-center text-slate-400 py-4">상담 이력이 없습니다.</p>
+                    ) : history.consultations.map((c: any) => {
+                      const text = typeof c.content === 'string' ? c.content : (c.content?.text || '-');
+                      return (
+                        <div key={c.id} className="border border-slate-100 rounded p-1.5 hover:bg-slate-50">
+                          <div className="flex justify-between text-[10px] text-slate-400 mb-0.5">
+                            <span className="font-medium text-slate-500">[{c.consultation_type || '기타'}]</span>
+                            <span>{String(c.created_at).slice(0, 10)}</span>
+                          </div>
+                          <p className="text-slate-700 whitespace-pre-wrap leading-snug">{text}</p>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    history.orders.length === 0 ? (
+                      <p className="text-center text-slate-400 py-4">구매 이력이 없습니다.</p>
+                    ) : history.orders.map((o: any) => {
+                      const items = (o.items || []) as any[];
+                      const names = items.map((i: any) => i.product?.name).filter(Boolean) as string[];
+                      const head = names.slice(0, 2).join(', ');
+                      const extra = names.length > 2 ? ` 외 ${names.length - 2}종` : '';
+                      const cancelled = ['CANCELLED', 'REFUNDED'].includes(o.status);
+                      return (
+                        <div key={o.id} className="border border-slate-100 rounded p-1.5 flex justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                              <span>{String(o.ordered_at).slice(0, 10)}</span>
+                              <span className="font-mono">{o.order_number}</span>
+                            </div>
+                            <p className="text-slate-700 truncate" title={names.join(', ')}>{head || '-'}{extra}</p>
+                          </div>
+                          <span className={`whitespace-nowrap font-medium text-xs ${cancelled ? 'line-through text-slate-400' : 'text-slate-700'}`}>
+                            {Number(o.total_amount || 0).toLocaleString()}원
+                          </span>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {/* 상담 작성 */}
+              <div className="flex flex-col border border-slate-200 rounded-lg overflow-hidden">
+                <div className="flex items-center gap-2 px-2 py-1.5 bg-slate-50 border-b border-slate-200">
+                  <span className="text-xs font-semibold text-slate-600">새 상담 기록</span>
+                  <select
+                    value={consultType}
+                    onChange={e => setConsultType(e.target.value)}
+                    className="ml-auto text-xs py-0.5 px-1.5 border border-slate-200 rounded bg-white"
+                  >
+                    {CONSULT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <textarea
+                  value={consultText}
+                  onChange={e => setConsultText(e.target.value)}
+                  placeholder={`고객 상태·주호소·권장 제품 등을 적으세요.\n이 내용은 고객 상담 이력으로 저장됩니다.`}
+                  rows={6}
+                  className="flex-1 p-2 text-xs resize-none focus:outline-none"
+                />
+                <div className="flex items-center justify-between p-2 border-t border-slate-200 bg-slate-50">
+                  <span className="text-[10px] text-slate-400">
+                    {consultText.length > 0 ? `${consultText.length}자` : '결제와 별개로 저장됩니다'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={saveConsultation}
+                    disabled={!consultText.trim() || savingConsult}
+                    className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {savingConsult ? '저장 중...' : '상담 저장'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-xs text-slate-400 border border-dashed border-slate-200 rounded-lg py-6">
+              고객을 선택하면 이력과 상담 작성 영역이 표시됩니다.
             </div>
           )}
         </div>
+
+        {/* 하단 — 제품 검색/그리드 (축소) */}
+        <div className="flex flex-col min-h-0 flex-1">
+          <div className="mb-2">
+            <input
+              ref={searchRef}
+              type="text"
+              placeholder="제품명, 코드 검색 또는 바코드 스캔 후 Enter"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              onKeyDown={handleSearchEnter}
+              className="input w-full text-sm"
+              autoComplete="off"
+            />
+            {search && (
+              <p className="text-xs text-slate-400 mt-1 pl-1">
+                {filteredProducts.length}개 · Enter키로 첫 번째 항목 담기
+              </p>
+            )}
+          </div>
+          <div className="flex-1 overflow-auto pb-24 lg:pb-0">
+            {loading ? (
+              <p className="text-center text-slate-400 py-8">로딩 중...</p>
+            ) : filteredProducts.length === 0 && search ? (
+              <p className="text-center text-slate-400 py-8">검색 결과가 없습니다</p>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-3 xl:grid-cols-4 gap-2">
+                {filteredProducts.map(product => {
+                  const stock = getStock(product.id);
+                  const inCart = cart.find(i => i.productId === product.id)?.quantity ?? 0;
+                  const isOutOfStock = stock !== null && stock === 0;
+                  const isLow = stock !== null && stock > 0 && stock < 10;
+                  return (
+                    <button
+                      key={product.id}
+                      onClick={() => addToCart(product)}
+                      disabled={isOutOfStock}
+                      className={`bg-white p-2 rounded-md shadow-sm text-left border transition-all ${
+                        isOutOfStock
+                          ? 'border-slate-100 opacity-40 cursor-not-allowed'
+                          : 'border-slate-100 hover:border-blue-300 hover:shadow-md active:scale-95'
+                      } ${inCart > 0 ? 'ring-2 ring-blue-400 ring-inset' : ''}`}
+                    >
+                      {product.barcode && (
+                        <p className="text-[10px] text-slate-400 font-mono mb-0.5 truncate">{product.barcode}</p>
+                      )}
+                      <p className="font-medium text-slate-800 text-xs leading-tight line-clamp-2">{product.name}</p>
+                      <p className="text-[10px] text-slate-400">{product.code}</p>
+                      <div className="flex items-center justify-between mt-1">
+                        <p className="text-sm font-bold text-blue-600">{product.price.toLocaleString()}원</p>
+                        {inCart > 0 && (
+                          <span className="text-[10px] bg-blue-600 text-white px-1.5 py-0.5 rounded-full">{inCart}</span>
+                        )}
+                      </div>
+                      <p className={`text-[10px] mt-0.5 ${
+                        isOutOfStock ? 'text-red-500 font-semibold' :
+                        isLow ? 'text-orange-500' : 'text-slate-400'
+                      }`}>
+                        {stock === null ? '\u00A0' : isOutOfStock ? '품절' : `재고 ${stock}`}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
-      {/* 모바일 장바구니 토글 버튼 (하단 고정) */}
-      <div className="sm:hidden fixed bottom-0 left-0 right-0 z-30 p-3 bg-white border-t shadow-lg">
+      {/* 모바일 장바구니 토글 버튼 */}
+      <div className="lg:hidden fixed bottom-0 left-0 right-0 z-30 p-3 bg-white border-t shadow-lg">
         <button
           onClick={() => setCartOpen(prev => !prev)}
           className="w-full btn-primary min-h-12 text-base font-semibold flex items-center justify-between px-4"
@@ -729,22 +1276,21 @@ export default function POSPage() {
         </button>
       </div>
 
-      {/* 모바일 장바구니 드로어 backdrop */}
       {cartOpen && (
         <div
-          className="sm:hidden fixed inset-0 z-40 bg-black/40"
+          className="lg:hidden fixed inset-0 z-40 bg-black/40"
           onClick={() => setCartOpen(false)}
         />
       )}
 
       {/* 오른쪽: 장바구니 + 결제 */}
       <div className={`
-        sm:w-[440px] sm:static sm:flex sm:flex-col sm:shrink-0
+        lg:w-[440px] lg:static lg:flex lg:flex-col lg:shrink-0
         fixed bottom-0 left-0 right-0 z-50 flex flex-col
-        bg-white rounded-t-2xl sm:rounded-lg shadow
+        bg-white rounded-t-2xl lg:rounded-lg shadow
         transition-transform duration-300 ease-in-out
-        ${cartOpen ? 'translate-y-0' : 'translate-y-full sm:translate-y-0'}
-        max-h-[90vh] sm:max-h-none sm:h-full
+        ${cartOpen ? 'translate-y-0' : 'translate-y-full lg:translate-y-0'}
+        max-h-[90vh] lg:max-h-none lg:h-full
       `}>
         <div className="px-4 py-3 border-b flex items-center justify-between">
           <h3 className="font-semibold">장바구니 {cart.length > 0 && <span className="text-sm font-normal text-slate-500">({cart.length}종)</span>}</h3>
@@ -752,12 +1298,12 @@ export default function POSPage() {
             {cart.length > 0 && (
               <button onClick={() => setCart([])} className="text-xs text-red-400 hover:text-red-600">전체 삭제</button>
             )}
-            <button onClick={() => setCartOpen(false)} className="sm:hidden text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+            <button onClick={() => setCartOpen(false)} className="lg:hidden text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
           </div>
         </div>
 
         {/* 장바구니 목록 */}
-        <div className="flex-1 overflow-auto p-3 space-y-2 min-h-[220px]">
+        <div className="flex-1 overflow-auto p-3 space-y-2 min-h-[160px]">
           {cart.map(item => (
             <div key={item.productId} className="p-2.5 bg-slate-50 rounded-lg space-y-1.5">
               <div className="flex items-center gap-2">
@@ -795,7 +1341,51 @@ export default function POSPage() {
                   <button onClick={() => removeFromCart(item.productId)} className="w-7 h-7 bg-red-100 text-red-500 rounded text-xs hover:bg-red-200">✕</button>
                 </div>
               </div>
-              {/* 품목 할인 */}
+              {/* 주문 옵션 (보자기/쇼핑백/혼합배송 등) */}
+              <div className="flex items-center gap-1.5">
+                {editingOptionId === item.productId ? (
+                  <>
+                    <input
+                      autoFocus
+                      type="text"
+                      list={`opt-presets-${item.productId}`}
+                      value={editingOptionVal}
+                      onChange={e => setEditingOptionVal(e.target.value)}
+                      onBlur={() => {
+                        setCart(prev => prev.map(c => c.productId === item.productId ? { ...c, orderOption: editingOptionVal.trim() || undefined } : c));
+                        setEditingOptionId(null); setEditingOptionVal('');
+                      }}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          setCart(prev => prev.map(c => c.productId === item.productId ? { ...c, orderOption: editingOptionVal.trim() || undefined } : c));
+                          setEditingOptionId(null); setEditingOptionVal('');
+                        } else if (e.key === 'Escape') {
+                          setEditingOptionId(null); setEditingOptionVal('');
+                        }
+                      }}
+                      placeholder="예: 보자기 포장 / 택배 예정"
+                      className="flex-1 border border-indigo-400 rounded text-xs px-2 py-1"
+                    />
+                    <datalist id={`opt-presets-${item.productId}`}>
+                      {ORDER_OPTION_PRESETS.map(p => <option key={p} value={p} />)}
+                    </datalist>
+                  </>
+                ) : item.orderOption ? (
+                  <button
+                    onClick={() => { setEditingOptionId(item.productId); setEditingOptionVal(item.orderOption || ''); }}
+                    className="text-xs px-2 py-0.5 rounded border border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+                  >
+                    🎀 {item.orderOption} <span className="text-indigo-400">✎</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => { setEditingOptionId(item.productId); setEditingOptionVal(''); }}
+                    className="text-xs px-2 py-0.5 rounded border border-slate-200 text-slate-400 hover:border-indigo-300 hover:text-indigo-500"
+                  >
+                    + 주문 옵션
+                  </button>
+                )}
+              </div>
               <div className="flex items-center gap-1.5">
                 {editingDiscountId === item.productId ? (
                   <>
@@ -859,21 +1449,37 @@ export default function POSPage() {
         </div>
 
         {/* 결제 영역 */}
-        <div className="p-4 border-t space-y-3">
-          {/* 지점 선택 */}
-          <select
-            value={selectedBranch}
-            onChange={e => setSelectedBranch(e.target.value)}
-            disabled={isBranchUser}
-            className={`input text-sm ${isBranchUser ? 'bg-slate-100 cursor-not-allowed' : ''}`}
-          >
-            <option value="">지점 선택</option>
-            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-          </select>
+        <div className="p-4 border-t space-y-3 overflow-y-auto max-h-[60vh] lg:max-h-[60%]">
+          {/* 담당자 */}
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-slate-500 whitespace-nowrap">담당자</label>
+            <select
+              value={handlerId}
+              onChange={e => setHandlerId(e.target.value)}
+              className="input text-sm flex-1"
+            >
+              {!orderedStaff.some(s => s.id === handlerId) && handlerId && (
+                <option value={handlerId}>{initialUserName || '현재 로그인'}</option>
+              )}
+              {orderedStaff.map(u => (
+                <option key={u.id} value={u.id}>
+                  {u.name}{u.branch_id === selectedBranch ? '' : ' (타 지점)'}
+                </option>
+              ))}
+            </select>
+            {handlerId !== initialUserId && initialUserId && (
+              <button
+                type="button"
+                onClick={() => setHandlerId(initialUserId)}
+                className="text-[11px] text-slate-400 hover:text-blue-600 whitespace-nowrap"
+                title="내 담당으로"
+              >↺ 나</button>
+            )}
+          </div>
 
           {/* 할인 */}
           <div className="flex items-center gap-2">
-            <span className="text-sm text-slate-500 whitespace-nowrap">할인</span>
+            <span className="text-xs text-slate-500 whitespace-nowrap">할인</span>
             <div className="flex rounded-md overflow-hidden border border-slate-200 shrink-0">
               <button
                 onClick={() => { setDiscountType('amount'); setDiscountInput(''); }}
@@ -905,167 +1511,32 @@ export default function POSPage() {
             )}
           </div>
 
-          {/* 고객 */}
-          <div className="relative">
-            {selectedCustomer ? (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between p-2.5 bg-blue-50 rounded-lg border border-blue-200">
-                  <div>
-                    <p className="font-medium text-blue-800 text-sm">{selectedCustomer.name}
-                      <span className="text-slate-400 text-xs ml-2">{selectedCustomer.phone}</span>
-                    </p>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span className={`px-1.5 py-0.5 text-xs rounded ${GRADE_BADGE[selectedCustomer.grade]}`}>
-                        {GRADE_LABELS[selectedCustomer.grade]}
-                      </span>
-                      <span className="text-xs text-green-600 font-medium">
-                        {selectedCustomer.currentPoints?.toLocaleString() || 0}P 보유
-                      </span>
-                      {customerSummary.totalLtv > 0 && (
-                        <span className="text-xs text-slate-500">LTV {customerSummary.totalLtv.toLocaleString()}원</span>
-                      )}
-                    </div>
-                  </div>
-                  <button onClick={clearCustomer} className="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
-                </div>
-
-                {/* 상담·구매 히스토리 요약 — 확인 후 접어서 장바구니 공간 확보 가능 */}
-                {(customerSummary.consultations.length > 0 || customerSummary.orders.length > 0) && (
-                  <div className="rounded-lg border border-slate-200 bg-white text-xs">
-                    <button
-                      type="button"
-                      onClick={() => setHistoryCollapsed(v => !v)}
-                      className="w-full flex items-center justify-between px-2 py-1.5 hover:bg-slate-50 rounded-t-lg"
-                    >
-                      <span className="text-[10px] font-semibold text-slate-500 uppercase">
-                        이력 · 상담 {customerSummary.consultations.length} / 주문 {customerSummary.orders.length}
-                      </span>
-                      <span className="text-slate-400 text-[10px]">{historyCollapsed ? '▸ 펼치기' : '▾ 접기'}</span>
-                    </button>
-                    {!historyCollapsed && (
-                    <div className="px-2 pb-2 space-y-1.5 max-h-[140px] overflow-y-auto border-t border-slate-100 pt-1.5">
-                    {customerSummary.consultations.length > 0 && (
-                      <div>
-                        <p className="text-[10px] font-semibold text-slate-500 uppercase mb-0.5">최근 상담 {customerSummary.consultations.length}건</p>
-                        <ul className="space-y-0.5">
-                          {customerSummary.consultations.map((c: any) => (
-                            <li key={c.id} className="flex gap-1.5 text-slate-600">
-                              <span className="text-slate-400 whitespace-nowrap">{String(c.created_at).slice(0,10)}</span>
-                              <span className="text-slate-500 whitespace-nowrap">[{c.consultation_type || '기타'}]</span>
-                              <span className="truncate flex-1">
-                                {typeof c.content === 'string' ? c.content : (c.content?.text || '-')}
-                              </span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {customerSummary.orders.length > 0 && (
-                      <div className="pt-1 border-t border-slate-100">
-                        <p className="text-[10px] font-semibold text-slate-500 uppercase mb-0.5">최근 주문 {customerSummary.orders.length}건</p>
-                        <ul className="space-y-0.5">
-                          {customerSummary.orders.map((o: any) => {
-                            const items = (o.items || []) as any[];
-                            const names = items.map((i: any) => i.product?.name).filter(Boolean) as string[];
-                            const head = names.slice(0, 2).join(', ');
-                            const extra = names.length > 2 ? ` 외 ${names.length - 2}종` : '';
-                            const label = head || '-';
-                            return (
-                              <li key={o.id} className="flex justify-between gap-2 text-slate-600">
-                                <span className="min-w-0 flex-1">
-                                  <span className="text-slate-400 mr-1.5">{String(o.ordered_at).slice(0,10)}</span>
-                                  <span className="truncate" title={names.join(', ')}>
-                                    {label}{extra}
-                                  </span>
-                                </span>
-                                <span className={['CANCELLED','REFUNDED'].includes(o.status) ? 'line-through text-slate-400 whitespace-nowrap' : 'font-medium whitespace-nowrap'}>
-                                  {Number(o.total_amount || 0).toLocaleString()}원
-                                </span>
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      </div>
-                    )}
-                    </div>
-                    )}
-                  </div>
-                )}
-                {selectedCustomer.currentPoints && selectedCustomer.currentPoints > 0 && (
-                  <div className="flex items-center gap-2 p-2 bg-green-50 rounded border border-green-200">
-                    <input
-                      type="checkbox" id="usePoints" checked={usePoints}
-                      onChange={e => {
-                        setUsePoints(e.target.checked);
-                        setPointsToUse(e.target.checked ? Math.min(selectedCustomer.currentPoints || 0, afterDiscount) : 0);
-                      }}
-                      className="w-4 h-4"
-                    />
-                    <label htmlFor="usePoints" className="text-xs text-green-700 flex-1 cursor-pointer">
-                      포인트 사용 (보유 {selectedCustomer.currentPoints.toLocaleString()}P)
-                    </label>
-                    {usePoints && (
-                      <input
-                        type="number"
-                        value={pointsToUse}
-                        onChange={e => setPointsToUse(Math.min(parseInt(e.target.value) || 0, Math.min(selectedCustomer.currentPoints || 0, afterDiscount)))}
-                        onFocus={e => e.target.select()}
-                        className="input w-20 text-right text-xs py-1"
-                        min="0" max={Math.min(selectedCustomer.currentPoints || 0, afterDiscount)}
-                      />
-                    )}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div>
-                <div className="flex gap-2">
-                  <input
-                    ref={customerInputRef}
-                    type="text"
-                    placeholder="고객 검색 (이름 / 전화번호)"
-                    value={customerSearch}
-                    onChange={e => setCustomerSearch(e.target.value)}
-                    onFocus={() => customerSearch.length >= 1 && setShowCustomerDropdown(true)}
-                    onBlur={() => setTimeout(() => { setShowCustomerDropdown(false); }, 200)}
-                    className="input text-sm flex-1"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowAddCustomerModal(true)}
-                    className="px-3 py-2 text-sm rounded-md bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 whitespace-nowrap"
-                  >
-                    + 고객 추가
-                  </button>
-                </div>
-                {showCustomerDropdown && (
-                  <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-64 overflow-auto">
-                    {customerResults.map(c => (
-                      <button
-                        key={c.id} onMouseDown={() => selectCustomer(c)}
-                        className="w-full text-left px-3 py-2.5 hover:bg-blue-50 border-b border-slate-100 last:border-b-0"
-                      >
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <p className="font-medium text-sm">{c.name}</p>
-                            <p className="text-xs text-slate-500">{c.phone}</p>
-                          </div>
-                          <span className={`px-1.5 py-0.5 text-xs rounded ${GRADE_BADGE[c.grade]}`}>
-                            {GRADE_LABELS[c.grade]}
-                          </span>
-                        </div>
-                      </button>
-                    ))}
-                    {customerResults.length === 0 && (
-                      <div className="p-3 text-center text-xs text-slate-400">
-                        검색 결과 없음 · 우측 <span className="text-blue-600 font-medium">고객 추가</span> 버튼으로 등록
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+          {/* 포인트 사용 */}
+          {selectedCustomer && (selectedCustomer.currentPoints ?? 0) > 0 && (
+            <div className="flex items-center gap-2 p-2 bg-green-50 rounded border border-green-200">
+              <input
+                type="checkbox" id="usePoints" checked={usePoints}
+                onChange={e => {
+                  setUsePoints(e.target.checked);
+                  setPointsToUse(e.target.checked ? Math.min(selectedCustomer.currentPoints || 0, afterDiscount) : 0);
+                }}
+                className="w-4 h-4"
+              />
+              <label htmlFor="usePoints" className="text-xs text-green-700 flex-1 cursor-pointer">
+                포인트 사용 (보유 {(selectedCustomer.currentPoints || 0).toLocaleString()}P)
+              </label>
+              {usePoints && (
+                <input
+                  type="number"
+                  value={pointsToUse}
+                  onChange={e => setPointsToUse(Math.min(parseInt(e.target.value) || 0, Math.min(selectedCustomer.currentPoints || 0, afterDiscount)))}
+                  onFocus={e => e.target.select()}
+                  className="input w-20 text-right text-xs py-1"
+                  min="0" max={Math.min(selectedCustomer.currentPoints || 0, afterDiscount)}
+                />
+              )}
+            </div>
+          )}
 
           {/* 금액 요약 */}
           <div className="space-y-1 text-sm">
@@ -1095,7 +1566,65 @@ export default function POSPage() {
             </div>
           </div>
 
-          {/* 주문 메모 (전 채널) */}
+          {/* 수령현황 + 수령일자 */}
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">수령 현황</label>
+              <select
+                value={receiptStatus}
+                onChange={e => setReceiptStatus(e.target.value as ReceiptStatus)}
+                className="input text-sm py-1.5"
+              >
+                {(['RECEIVED', 'PICKUP_PLANNED', 'QUICK_PLANNED', 'PARCEL_PLANNED'] as ReceiptStatus[]).map(s => (
+                  <option key={s} value={s}>{RECEIPT_STATUS_LABEL[s]}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">수령(예정) 일자</label>
+              <input
+                type="date"
+                value={receiptDate}
+                onChange={e => setReceiptDate(e.target.value)}
+                className="input text-sm py-1.5"
+              />
+            </div>
+          </div>
+
+          {/* 승인 상태 + 결제정보 */}
+          <div>
+            <div className="grid grid-cols-2 gap-2 mb-2">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">승인</label>
+                <select
+                  value={approvalStatus}
+                  onChange={e => setApprovalStatus(e.target.value as ApprovalStatus)}
+                  className="input text-sm py-1.5"
+                >
+                  {(['COMPLETED', 'CARD_PENDING', 'UNSETTLED'] as ApprovalStatus[]).map(s => (
+                    <option key={s} value={s}>{APPROVAL_STATUS_LABEL[s]}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">결제 정보</label>
+                <input
+                  type="text"
+                  value={paymentInfo}
+                  onChange={e => setPaymentInfo(e.target.value)}
+                  placeholder="카드 뒷 4자리 / 계좌 안내 등"
+                  className="input text-sm py-1.5"
+                />
+              </div>
+            </div>
+            {approvalStatus !== 'COMPLETED' && (
+              <p className={`text-[11px] ${approvalStatus === 'UNSETTLED' ? 'text-amber-600' : 'text-indigo-600'}`}>
+                {approvalStatus === 'UNSETTLED' ? '⚠ 미결 건: 계좌이체 수금 후 결제완료로 변경' : '⚠ 카드 키인 승인 대기 — 승인 후 결제완료로 변경'}
+              </p>
+            )}
+          </div>
+
+          {/* 주문 메모 */}
           <div>
             <label className="block text-xs text-slate-500 mb-1">주문 메모 (특이사항)</label>
             <input
@@ -1107,19 +1636,27 @@ export default function POSPage() {
             />
           </div>
 
-          {/* 택배 섹션 */}
+          {/* 배송: 없음 / 택배 / 퀵 */}
           <div className="rounded-lg border border-slate-200 overflow-hidden">
-            <label className="flex items-center gap-2 px-3 py-2 bg-slate-50 border-b border-slate-200 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={shipping.enabled}
-                onChange={e => setShipping(prev => ({ ...prev, enabled: e.target.checked }))}
-                className="w-4 h-4"
-              />
-              <span className="text-sm font-medium text-slate-700">택배 배송</span>
-              <span className="text-xs text-slate-400">수령인·발신인 정보 입력</span>
-            </label>
-            {shipping.enabled && (
+            <div className="flex border-b border-slate-200 bg-slate-50 text-xs">
+              {([
+                { v: 'NONE' as DeliveryType, label: '배송 없음' },
+                { v: 'PARCEL' as DeliveryType, label: '택배 배송' },
+                { v: 'QUICK' as DeliveryType, label: '퀵배송' },
+              ]).map(opt => (
+                <button
+                  key={opt.v}
+                  type="button"
+                  onClick={() => setShipping(prev => ({ ...prev, type: opt.v }))}
+                  className={`flex-1 py-1.5 font-medium transition-colors ${shipping.type === opt.v
+                    ? 'bg-white text-blue-600 border-b-2 border-blue-500 -mb-px'
+                    : 'text-slate-500 hover:bg-white/60'}`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            {shipping.type !== 'NONE' && (
               <div className="p-3 space-y-3">
                 {/* 출고 지점 */}
                 <div>
@@ -1141,6 +1678,12 @@ export default function POSPage() {
                     </p>
                   )}
                 </div>
+
+                {shipping.type === 'QUICK' && (
+                  <p className="text-[11px] text-indigo-600 bg-indigo-50 border border-indigo-100 rounded px-2 py-1">
+                    🛵 퀵배송: 당일 인편. 송장/알림톡 없이 인수자 확인 후 상태 업데이트 권장.
+                  </p>
+                )}
 
                 {/* 수령인 */}
                 <div className="space-y-2">
@@ -1169,7 +1712,9 @@ export default function POSPage() {
                     value={shipping.recipient_address_detail}
                     onChange={e => setShipping(p => ({ ...p, recipient_address_detail: e.target.value }))}
                     className="input text-sm" />
-                  <input type="text" placeholder="배송 메시지 (선택)" value={shipping.delivery_message}
+                  <input type="text"
+                    placeholder={shipping.type === 'QUICK' ? '퀵 기사 전달 메시지 (선택)' : '배송 메시지 (선택)'}
+                    value={shipping.delivery_message}
                     onChange={e => setShipping(p => ({ ...p, delivery_message: e.target.value }))}
                     className="input text-sm" />
                 </div>
@@ -1227,14 +1772,14 @@ export default function POSPage() {
             )}
           </div>
 
-          {/* 결제 수단 — 백화점이면 간소화 */}
+          {/* 결제 수단 */}
           {isDeptStore && (
             <div className="flex items-center gap-2 px-2 py-1.5 bg-purple-50 rounded-lg border border-purple-200">
               <span className="text-xs text-purple-700 font-medium">🏬 백화점 모드</span>
               <span className="text-xs text-purple-500">카드 결제는 백화점 단말기에서 처리</span>
             </div>
           )}
-          <div className={`grid gap-1.5 ${isDeptStore ? 'grid-cols-3' : 'grid-cols-3'}`}>
+          <div className="grid grid-cols-4 gap-1.5">
             {(isDeptStore
               ? [
                   { id: 'card' as const, label: '카드 (백화점)' },
@@ -1244,8 +1789,6 @@ export default function POSPage() {
               : [
                   { id: 'cash' as const, label: '현금' },
                   { id: 'card' as const, label: '카드' },
-                  { id: 'card_keyin' as const, label: '카드(키인)' },
-                  { id: 'kakao' as const, label: '카카오' },
                   { id: 'credit' as const, label: '외상' },
                   { id: 'cod' as const, label: '수령시수금' },
                 ]
@@ -1253,7 +1796,7 @@ export default function POSPage() {
               <button
                 key={id}
                 onClick={() => {
-                  setPaymentMethod(id as any);
+                  setPaymentMethod(id as PaymentMethodId);
                   setCashReceived('');
                 }}
                 className={`py-2 rounded-md text-sm font-medium transition-colors ${
@@ -1265,7 +1808,7 @@ export default function POSPage() {
             ))}
           </div>
 
-          {/* 분할 결제 / 부분 결제 */}
+          {/* 분할 결제 */}
           <div className="rounded-lg border border-slate-200">
             <label className="flex items-center justify-between gap-2 px-3 py-2 bg-slate-50 cursor-pointer border-b border-slate-200">
               <div className="flex items-center gap-2">
@@ -1301,7 +1844,7 @@ export default function POSPage() {
                         }}
                         className="input text-xs py-1 w-28"
                       >
-                        {(['cash','card','card_keyin','kakao','credit','cod'] as PaymentMethodId[]).map(m => (
+                        {(['cash','card','credit','cod'] as PaymentMethodId[]).map(m => (
                           <option key={m} value={m}>{PAYMENT_METHOD_LABEL[m]}</option>
                         ))}
                       </select>
@@ -1324,7 +1867,7 @@ export default function POSPage() {
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      onClick={() => setExtraPayments(prev => [...prev, { method: 'credit', amount: Math.max(0, finalAmount - primaryAmt - extraSum + (primaryAmt > 0 ? primaryAmt : 0)) }])}
+                      onClick={() => setExtraPayments(prev => [...prev, { method: 'credit', amount: Math.max(0, primaryAmt) }])}
                       className="text-xs text-blue-600 hover:underline"
                     >+ 결제 행 추가</button>
                     {primaryAmt > 0 && (
@@ -1362,7 +1905,6 @@ export default function POSPage() {
                 />
                 <span className="text-xs text-slate-400">원</span>
               </div>
-              {/* 빠른 입력 버튼 */}
               <div className="flex gap-1 flex-wrap">
                 {[10000, 50000, 100000].map(v => (
                   <button
@@ -1389,7 +1931,7 @@ export default function POSPage() {
             </div>
           )}
 
-          {/* 백화점 카드 결제 — 간편 입력 */}
+          {/* 백화점 카드 결제 수기 입력 */}
           {isDeptStore && paymentMethod === 'card' && (
             <div className="space-y-2 p-3 bg-purple-50 rounded-lg border border-purple-200">
               <div className="flex items-center justify-between">
@@ -1402,7 +1944,6 @@ export default function POSPage() {
                   {deptShowDetail ? '간편 입력' : '상세 입력'}
                 </button>
               </div>
-              {/* 기본: 카드사 + 할부만 (가장 빈번한 입력) */}
               <div className="flex gap-2">
                 <div className="flex gap-1 flex-wrap flex-1">
                   {['삼성', '현대', 'KB', '신한', '롯데', '하나', '우리', 'NH', 'BC'].map(c => (
@@ -1427,7 +1968,6 @@ export default function POSPage() {
                   <option value="12">12개월</option>
                 </select>
               </div>
-              {/* 상세: 승인번호 + 메모 (토글) */}
               {deptShowDetail && (
                 <div className="grid grid-cols-2 gap-2 pt-1 border-t border-purple-200">
                   <div>
@@ -1455,13 +1995,13 @@ export default function POSPage() {
             </div>
           )}
 
-          {/* 결제 버튼 — 단말기 연동 없음(추후 적용). 클릭 시 즉시 완료 처리. */}
+          {/* 결제 버튼 */}
           <button
             onClick={handlePayment}
-            disabled={cart.length === 0 || !selectedBranch || processing || (paymentMethod === 'cash' && cashReceivedNum > 0 && change < 0)}
+            disabled={cart.length === 0 || !selectedBranch || !handlerId || processing || (paymentMethod === 'cash' && cashReceivedNum > 0 && change < 0)}
             className="w-full btn-primary py-3 text-base font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {processing ? '처리 중...' : `결제 (${finalAmount.toLocaleString()}원)`}
+            {processing ? '처리 중...' : `결제 (${finalAmount.toLocaleString()}원) · ${handlerName}`}
           </button>
         </div>
       </div>
@@ -1506,7 +2046,6 @@ function CustomerAddModal({ defaultBranchId, onClose, onCreated }: {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    // Daum 우편번호 스크립트 로드 (1회)
     if (typeof window !== 'undefined' && !window.daum) {
       const script = document.createElement('script');
       script.src = 'https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js';

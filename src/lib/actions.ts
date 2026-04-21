@@ -999,7 +999,11 @@ export interface CartItem {
   price: number;
   quantity: number;
   discount?: number;
+  orderOption?: string;   // 품목별 주문 옵션(보자기/쇼핑백/색상/서비스/혼합배송 등)
 }
+
+export type ReceiptStatus = 'RECEIVED' | 'PICKUP_PLANNED' | 'QUICK_PLANNED' | 'PARCEL_PLANNED';
+export type ApprovalStatus = 'COMPLETED' | 'CARD_PENDING' | 'UNSETTLED';
 
 export interface PaymentSplit {
   method: 'cash' | 'card' | 'card_keyin' | 'kakao' | 'credit' | 'cod';
@@ -1010,6 +1014,7 @@ export interface PaymentSplit {
 }
 
 export interface ShippingInfo {
+  delivery_type?: 'PARCEL' | 'QUICK'; // 택배 | 퀵배송 (기본 PARCEL)
   recipient_name: string;
   recipient_phone: string;
   recipient_zipcode?: string;
@@ -1046,6 +1051,11 @@ export interface CheckoutPayload {
   paymentSplits?: PaymentSplit[];   // 분할 결제. 비어있으면 단일 결제로 처리.
   shipping?: ShippingInfo | null;   // 택배 정보 (있으면 shipments 레코드 생성)
   shipFromBranchId?: string;        // 출고 지점 (택배 활성 시). 없으면 branchId 사용. 판매 지점과 다르면 재고는 출고 지점에서 차감.
+  saleDate?: string;                // 판매 일자 (ordered_at) — 미지정 시 서버 now().
+  receiptStatus?: ReceiptStatus;    // 수령 현황. 미지정 시 배송 여부로 자동 추론.
+  receiptDate?: string | null;      // 수령(예정) 일자 YYYY-MM-DD. 선택.
+  approvalStatus?: ApprovalStatus;  // 승인 상태. 미지정 시 결제수단으로 자동 추론.
+  paymentInfo?: string;             // 결제정보 메모(카드/계좌 안내 등).
 }
 
 export async function processPosCheckout(payload: CheckoutPayload) {
@@ -1097,6 +1107,19 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     ? Math.floor(finalAmount * (gradePointRate || 1.0) / 100)
     : 0;
 
+  // 수령 현황 자동 추론 (명시값 우선)
+  const inferredReceiptStatus: ReceiptStatus =
+    payload.receiptStatus
+    ?? (shipping
+          ? (shipping.delivery_type === 'QUICK' ? 'QUICK_PLANNED' : 'PARCEL_PLANNED')
+          : 'RECEIVED');
+  // 승인 상태 자동 추론
+  const inferredApprovalStatus: ApprovalStatus =
+    payload.approvalStatus
+    ?? (paymentMethod === 'card_keyin' ? 'CARD_PENDING'
+        : (paymentMethod === 'credit' || hasCredit) ? 'UNSETTLED'
+        : 'COMPLETED');
+
   const salePayload: any = {
     order_number: orderNumber,
     channel: branchChannel || 'STORE',
@@ -1109,26 +1132,40 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     payment_method: topMethod,
     points_earned: pointsEarned,
     points_used: usePoints ? pointsToUse : 0,
-    ordered_at: new Date().toISOString(),
+    ordered_at: payload.saleDate || new Date().toISOString(),
     approval_no: approvalNo || firstCard?.approvalNo || null,
     card_info: cardInfo || firstCard?.cardInfo || null,
     memo: payload.memo || null,
     customer_grade_at_order: customerId ? (payload as any).customerGrade || null : null,
     point_rate_applied: customerId ? (gradePointRate || 1.0) : null,
     credit_settled: hasCredit ? false : null,
+    // 051 워크플로 필드
+    receipt_status: inferredReceiptStatus,
+    receipt_date: payload.receiptDate || null,
+    approval_status: inferredApprovalStatus,
+    payment_info: payload.paymentInfo || null,
   };
 
-  let { data: saleOrder, error: saleError } = await db.from('sales_orders').insert(salePayload).select().single();
+  // 컬럼 누락 방어: 단계적으로 optional 필드를 제거하며 재시도
+  const optionalKeys: string[] = [
+    'receipt_status', 'receipt_date', 'approval_status', 'payment_info',
+    'customer_grade_at_order', 'point_rate_applied',
+  ];
+  let saleOrder: any = null;
+  let saleError: any = null;
+  {
+    const first = await db.from('sales_orders').insert(salePayload).select().single();
+    saleOrder = first.data; saleError = first.error;
+  }
+  // 누락 컬럼이면 optional 제거 후 재시도 (최대 1회)
   if (saleError) {
     const msg = String(saleError.message || '').toLowerCase();
-    const isMissingCol = String((saleError as any).code || '') === '42703'
-      || (msg.includes('column') && msg.includes('does not exist'));
+    const code = String((saleError as any).code || '');
+    const isMissingCol = code === '42703' || (msg.includes('column') && msg.includes('does not exist'));
     if (isMissingCol) {
-      delete salePayload.customer_grade_at_order;
-      delete salePayload.point_rate_applied;
+      for (const k of optionalKeys) delete salePayload[k];
       const retry = await db.from('sales_orders').insert(salePayload).select().single();
-      saleOrder = retry.data;
-      saleError = retry.error;
+      saleOrder = retry.data; saleError = retry.error;
     }
   }
   if (saleError) return { error: saleError.message };
@@ -1172,22 +1209,32 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     };
     const payloadFull = {
       ...payloadBase,
+      delivery_type: shipping.delivery_type || 'PARCEL',
       sender_zipcode: shipping.sender_zipcode || null,
       sender_address: shipping.sender_address || null,
       sender_address_detail: shipping.sender_address_detail || null,
     };
 
     let { data: shipData, error: shipErr } = await db.from('shipments').insert(payloadFull).select('id');
-    // 마이그레이션 046 미적용(sender_* 컬럼 부재)이면 기본 payload로 재시도
+    // 마이그레이션 050/046 미적용 컬럼(delivery_type/sender_*) 방어 — 제거 후 재시도
     if (shipErr) {
       const msg = String(shipErr.message || '').toLowerCase();
       const code = String((shipErr as any).code || '');
       const isMissingCol = code === '42703' || (msg.includes('column') && msg.includes('does not exist'));
       if (isMissingCol) {
-        console.warn('[processPosCheckout] shipments sender 컬럼 없음 — 046 미적용. base payload로 재시도.');
-        const retry = await db.from('shipments').insert(payloadBase).select('id');
-        shipErr = retry.error;
-        shipData = retry.data;
+        console.warn('[processPosCheckout] shipments 신규 컬럼 없음 — 재시도:', msg);
+        // delivery_type만 빠진 경우 우선 시도
+        const { delivery_type, ...withoutType } = payloadFull;
+        const retryA = await db.from('shipments').insert(withoutType).select('id');
+        if (retryA.error) {
+          // sender_* 도 없는 경우 (046 미적용)
+          const retryB = await db.from('shipments').insert(payloadBase).select('id');
+          shipErr = retryB.error;
+          shipData = retryB.data;
+        } else {
+          shipErr = null;
+          shipData = retryA.data;
+        }
       }
     }
     if (shipErr) {
@@ -1199,14 +1246,24 @@ export async function processPosCheckout(payload: CheckoutPayload) {
 
   // ③ 판매 항목 저장
   for (const item of cart) {
-    await db.from('sales_order_items').insert({
+    const itemPayload: any = {
       sales_order_id: saleOrderId,
       product_id: item.productId,
       quantity: item.quantity,
       unit_price: item.price,
       discount_amount: item.discount || 0,
       total_price: item.price * item.quantity - (item.discount || 0),
-    });
+      order_option: (item as any).orderOption || null,
+    };
+    const r = await db.from('sales_order_items').insert(itemPayload);
+    if (r.error) {
+      const msg = String(r.error.message || '').toLowerCase();
+      const code = String((r.error as any).code || '');
+      if (code === '42703' || (msg.includes('column') && msg.includes('does not exist'))) {
+        delete itemPayload.order_option;
+        await db.from('sales_order_items').insert(itemPayload);
+      }
+    }
   }
 
   // ④ 재고 차감 + 이동 기록 (출고 지점 기준)

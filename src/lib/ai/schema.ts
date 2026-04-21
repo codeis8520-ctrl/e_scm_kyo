@@ -18,8 +18,12 @@ point_history: id, customer_id, sales_order_id, type(earn/use/adjust/expire), po
   ※ 고객 현재 포인트 = point_history에서 해당 고객의 최신 balance 값
 
 --- 판매(POS) ---
-sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, total_amount, discount_amount, points_used, points_earned, payment_method(cash/card/card_keyin/kakao/credit/cod/mixed), credit_settled(bool), credit_settled_at, credit_settled_method, memo, status(COMPLETED/CANCELLED/REFUNDED/PARTIALLY_REFUNDED), ordered_at
-sales_order_items: id, sales_order_id, product_id, quantity, unit_price, discount_amount, total_price
+sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, ordered_by(담당자), total_amount, discount_amount, points_used, points_earned, payment_method(cash/card/card_keyin/kakao/credit/cod/mixed), credit_settled(bool), credit_settled_at, credit_settled_method, memo, status(COMPLETED/CANCELLED/REFUNDED/PARTIALLY_REFUNDED), ordered_at, receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date, approval_status(COMPLETED/CARD_PENDING/UNSETTLED), payment_info
+  ※ receipt_status=수령현황(수령완료/방문예정/퀵예정/택배예정). 기본 RECEIVED. 배송 활성 시 PARCEL_PLANNED/QUICK_PLANNED 자동 지정.
+  ※ approval_status=결제 승인 라이프사이클(status와 직교). card_keyin→CARD_PENDING, credit→UNSETTLED 자동 추론 가능.
+  ※ payment_info=카드정보/승인일자/안내 계좌 등 자유기입. ordered_by=판매·상담 담당자.
+sales_order_items: id, sales_order_id, product_id, quantity, unit_price, discount_amount, total_price, order_option
+  ※ order_option=품목별 부가 옵션(보자기 포장/쇼핑백/색상/서비스 지급 + 같은 전표 내 배송 방식 상이 시 기록).
 sales_order_payments: id, sales_order_id, payment_method, amount, approval_no, card_info, memo, paid_at, created_by
   ※ 한 주문의 다중 결제(분할). 합계<총액이면 잔액=외상. payment_method='mixed'면 세부는 이 테이블에.
 
@@ -56,8 +60,9 @@ journal_entry_lines: id, journal_entry_id, account_id, debit, credit, memo
 accounting_period_closes: id, period(YYYY-MM), closed_at, closed_by, memo
 
 --- 배송 ---
-shipments: id, source(CAFE24/STORE), cafe24_order_id, sales_order_id, sender_name, sender_phone, recipient_name, recipient_phone, recipient_address, tracking_number, status(PENDING/PRINTED/SHIPPED/DELIVERED), branch_id, created_at
-  ※ branch_id = 출고 지점 (재고가 차감된 지점). POS에서 택배 활성 시 판매 지점과 다를 수 있음. 판매 지점은 sales_orders.branch_id 참조.
+shipments: id, source(CAFE24/STORE), delivery_type(PARCEL/QUICK), cafe24_order_id, sales_order_id, sender_name, sender_phone, recipient_name, recipient_phone, recipient_address, tracking_number, status(PENDING/PRINTED/SHIPPED/DELIVERED), branch_id, created_at
+  ※ branch_id = 출고 지점 (재고가 차감된 지점). POS에서 배송 활성 시 판매 지점과 다를 수 있음. 판매 지점은 sales_orders.branch_id 참조.
+  ※ delivery_type: PARCEL=택배(SweetTracker 송장·알림톡), QUICK=퀵배송(당일 인편·직접 배송).
 
 --- 알림·캠페인 ---
 notifications: id, customer_id, type(SMS/ALIMTALK), message, status(sent/failed/pending), sent_at, sent_by
@@ -102,8 +107,21 @@ PENDING → IN_PROGRESS → COMPLETED
 STORE=한약국 매장, DEPT_STORE=백화점, ONLINE=자사몰(카페24), EVENT=이벤트
 
 [결제]
-cash=현금, card=카드, card_keyin=카드수기, kakao=카카오페이, credit=외상
+cash=현금, card=카드, credit=외상, cod=수령시수금
+  ※ POS UI에서는 2026-04 기준 위 4종만 선택 가능. DB에는 legacy 값(card_keyin/kakao/mixed)이 남아있을 수 있음 — 조회/필터에서는 그대로 노출.
 외상(credit): 반드시 고객 지정 필요, credit_settled=false → 정산 시 true
+sales_orders.approval_status: 결제 승인 라이프사이클 (status와 직교):
+  - COMPLETED: 승인/수금 완료 (기본)
+  - CARD_PENDING: 카드 키인 승인 대기
+  - UNSETTLED: 미결(계좌이체 대기 등)
+  ※ approval_status=UNSETTLED 건은 "미결 건 정리" 대상.
+
+[수령]
+sales_orders.receipt_status: 제품 수령 흐름 (현장판매는 대부분 RECEIVED).
+  - RECEIVED=수령완료 · PICKUP_PLANNED=방문예정 · QUICK_PLANNED=퀵예정 · PARCEL_PLANNED=택배예정
+  ※ 배송(shipments) 생성 시 delivery_type에 맞춰 receipt_status 자동 추론.
+  ※ receipt_date: 수령(예정) 날짜. 방문예정·택배예정 조회 시 핵심 축.
+sales_order_items.order_option: 같은 전표 내 일부 품목이 "이미 수령" + 일부는 "택배 예정"인 혼합 전표에서 품목별 배송 방식·포장·서비스 기록.
 
 [포인트]
 1P = 1원 할인. 포인트 적립 = 결제금액 × 등급별 적립률.
@@ -128,9 +146,10 @@ cash=현금, card=카드, card_keyin=카드수기, kakao=카카오페이, credit
 
 [배송]
 - shipments: source=CAFE24(자사몰)/STORE(직접입력)
-- status: PENDING→PRINTED→SHIPPED→DELIVERED
-- tracking_number 등록 + SHIPPED 전환 시 알림톡 자동 발송
-- shipments.branch_id = 출고 지점(재고 차감 지점). POS 택배 주문에서 판매 지점(sales_orders.branch_id)과 다를 수 있음. "어느 지점에서 팔렸나"는 sales_orders.branch_id로, "어느 지점에서 나갔나"는 shipments.branch_id로 집계.
+- delivery_type: PARCEL=택배(tracking_number + 알림톡 플로우), QUICK=퀵배송(당일 인편 — tracking 없이 현장 처리)
+- status: PENDING→PRINTED→SHIPPED→DELIVERED (QUICK은 PRINTED 생략, SHIPPED부터 운영 일반적)
+- tracking_number 등록 + SHIPPED 전환 시 알림톡 자동 발송 (PARCEL 한정)
+- shipments.branch_id = 출고 지점(재고 차감 지점). POS 배송 주문에서 판매 지점(sales_orders.branch_id)과 다를 수 있음. "어느 지점에서 팔렸나"는 sales_orders.branch_id로, "어느 지점에서 나갔나"는 shipments.branch_id로 집계.
 
 [반품]
 - return_orders: 기존 sales_order 참조, 환불금액/포인트복원 포함
