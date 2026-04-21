@@ -1017,23 +1017,30 @@ function POSPageInner() {
             </div>
           )}
         </div>
-        <div className="flex flex-col gap-1 min-w-[180px]">
-          <label className="text-[11px] font-semibold text-slate-500 uppercase">출고처</label>
-          <select
-            value={shipFromBranchId}
-            onChange={e => setShipFromBranchId(e.target.value)}
-            className="input text-sm py-1.5"
-          >
-            {branches.map((b: any) => (
-              <option key={b.id} value={b.id}>
-                {b.name}{b.id === selectedBranch ? ' (매출처)' : ''}{b.is_headquarters ? ' · 본사' : ''}
-              </option>
-            ))}
-          </select>
-          {shipFromBranchId && shipFromBranchId !== selectedBranch && (
-            <span className="text-[10px] text-amber-600">매출처와 상이 — 재고는 출고처에서 차감</span>
-          )}
-        </div>
+        {/* 현장 수령 지점 — 택배/퀵이 아닐 때만 노출.
+            배송 시에는 하단 택배 섹션의 '출고 지점'으로 입력하여 의미 혼동 방지. */}
+        {shipping.type === 'NONE' && (
+          <div className="flex flex-col gap-1 min-w-[180px]">
+            <label className="text-[11px] font-semibold text-slate-500 uppercase">
+              수령 지점 <span className="text-slate-400 normal-case font-normal">(현장)</span>
+            </label>
+            <select
+              value={shipFromBranchId}
+              onChange={e => setShipFromBranchId(e.target.value)}
+              className="input text-sm py-1.5"
+              title="매출처와 다른 지점에서 현장 수령하는 경우(A점 구매·B점 수령). 재고는 수령 지점에서 차감됩니다."
+            >
+              {branches.map((b: any) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}{b.id === selectedBranch ? ' (매출처)' : ''}{b.is_headquarters ? ' · 본사' : ''}
+                </option>
+              ))}
+            </select>
+            {shipFromBranchId && shipFromBranchId !== selectedBranch && (
+              <span className="text-[10px] text-amber-600">매출처와 상이 — 재고는 {branches.find((b: any) => b.id === shipFromBranchId)?.name || '수령 지점'}에서 차감</span>
+            )}
+          </div>
+        )}
       </div>
       )}
 
