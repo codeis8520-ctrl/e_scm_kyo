@@ -513,9 +513,9 @@ export default function SalesListTab() {
                 ? 'bg-blue-600 text-white border-blue-600'
                 : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
             }`}
-            title="상담내역·품목·주문옵션·받는분·주소 등 정밀 검색 (F3)"
+            title="상담내역·품목·주문옵션·받는분·주소 등 정밀 검색"
           >
-            🔍 F3 검색 {activeAdvancedCount > 0 && (
+            🔍 검색 {activeAdvancedCount > 0 && (
               <span className="ml-1 px-1.5 py-0.5 rounded-full bg-white text-blue-700 text-[10px] font-bold">{activeAdvancedCount}</span>
             )}
           </button>
