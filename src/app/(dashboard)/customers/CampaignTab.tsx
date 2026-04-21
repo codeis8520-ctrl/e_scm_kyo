@@ -54,6 +54,19 @@ export default function CampaignTab() {
     completed: campaigns.filter(c => c.status === 'COMPLETED').length,
   };
 
+  const fmtScheduled = (iso: string | null) => {
+    if (!iso) return null;
+    const d = new Date(iso);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  const fmtRecurring = (c: Campaign) => {
+    if (!c.is_recurring || !c.recurring_month || !c.recurring_day) return null;
+    const hh = c.recurring_hour ?? 0;
+    const mm = c.recurring_minute ?? 0;
+    return `매년 ${c.recurring_month}/${c.recurring_day} ${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`;
+  };
+
   const handleSend = async (campaign: Campaign) => {
     if (!confirm(
       `"${campaign.name}" 캠페인을 발송하시겠습니까?\n\n` +
@@ -174,9 +187,11 @@ export default function CampaignTab() {
         ) : (
           <div className="space-y-3">
             {campaigns.map(c => {
-              const isPast = c.end_date < today;
-              const isFuture = c.start_date > today;
+              const isPast = !!c.end_date && c.end_date < today;
+              const isFuture = !!c.start_date && c.start_date > today;
               const isNow = !isPast && !isFuture;
+              const scheduledDisplay = fmtScheduled(c.scheduled_at);
+              const recurringDisplay = fmtRecurring(c);
               return (
                 <div
                   key={c.id}
@@ -198,7 +213,15 @@ export default function CampaignTab() {
                         {c.auto_send && <span className="text-xs text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">⚡ 자동</span>}
                       </div>
                       <div className="flex items-center gap-3 mt-1.5 text-xs text-slate-500 flex-wrap">
-                        <span>{c.start_date} ~ {c.end_date}</span>
+                        {scheduledDisplay ? (
+                          <span className="font-medium text-slate-700">📅 {scheduledDisplay} 예약</span>
+                        ) : recurringDisplay ? (
+                          <span className="font-medium text-slate-700">🔄 {recurringDisplay}</span>
+                        ) : (c.start_date || c.end_date) ? (
+                          <span>{c.start_date || '—'} ~ {c.end_date || '—'}</span>
+                        ) : (
+                          <span className="text-slate-400">시각 미지정</span>
+                        )}
                         <span>·</span>
                         <span>대상: {TARGET_GRADE_OPTIONS.find(o => o.value === c.target_grade)?.label || '전체'}</span>
                         {c.target_branch && <><span>·</span><span>{c.target_branch.name}</span></>}
@@ -279,22 +302,35 @@ function CampaignFormModal({ campaign, solapiTemplates, eventTypes, onClose, onS
   onSuccess: () => void;
 }) {
   const isEdit = !!campaign?.id;
+  // DB의 timestamptz(UTC ISO) → datetime-local input 형식('YYYY-MM-DDTHH:MM', 로컬 TZ)
+  const toDTLocal = (iso: string | null | undefined) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
   const [form, setForm] = useState({
     name: campaign?.name || '',
     description: campaign?.description || '',
     event_type: campaign?.event_type || 'CUSTOM',
+    scheduled_at_local: toDTLocal(campaign?.scheduled_at),
     start_date: campaign?.start_date || '',
     end_date: campaign?.end_date || '',
     is_recurring: campaign?.is_recurring ?? false,
     recurring_month: campaign?.recurring_month ?? null as number | null,
     recurring_day: campaign?.recurring_day ?? null as number | null,
     recurring_duration_days: campaign?.recurring_duration_days ?? null as number | null,
+    recurring_hour: campaign?.recurring_hour ?? null as number | null,
+    recurring_minute: campaign?.recurring_minute ?? null as number | null,
     target_grade: campaign?.target_grade || 'ALL',
     target_branch_id: campaign?.target_branch_id || '',
     solapi_template_id: campaign?.solapi_template_id || '',
     auto_send: campaign?.auto_send ?? false,
     variable_overrides: campaign?.variable_overrides || {} as Record<string, string>,
   });
+  const [showPeriod, setShowPeriod] = useState(!!(campaign?.start_date || campaign?.end_date));
   const [branches, setBranches] = useState<any[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -314,22 +350,38 @@ function CampaignFormModal({ campaign, solapiTemplates, eventTypes, onClose, onS
   const AUTO_PATTERN = /^(고객명|이름|성함|회원명|고객|전화번호|연락처|등급|상점명|매장명|브랜드명|업체명|회사명|url|링크)$/i;
   const manualVarKeys = templateVarKeys.map(k => k.replace(/^#\{/, '').replace(/\}$/, '').trim()).filter(k => !AUTO_PATTERN.test(k));
 
-  // is_recurring 변경 시 자동 채움
+  // is_recurring 변경 시 자동 채움 (scheduled_at 우선, 없으면 start_date 사용)
   const handleRecurringChange = (checked: boolean) => {
-    if (checked && form.start_date) {
-      const d = new Date(form.start_date);
+    if (!checked) {
       setForm({
         ...form,
-        is_recurring: true,
-        recurring_month: d.getMonth() + 1,
-        recurring_day: d.getDate(),
-        recurring_duration_days: form.end_date && form.start_date
-          ? Math.max(1, Math.ceil((new Date(form.end_date).getTime() - new Date(form.start_date).getTime()) / 86400000))
-          : 7,
+        is_recurring: false,
+        recurring_month: null,
+        recurring_day: null,
+        recurring_duration_days: null,
+        recurring_hour: null,
+        recurring_minute: null,
       });
-    } else {
-      setForm({ ...form, is_recurring: checked, recurring_month: null, recurring_day: null, recurring_duration_days: null });
+      return;
     }
+    const srcDate = form.scheduled_at_local
+      ? new Date(form.scheduled_at_local)
+      : form.start_date ? new Date(form.start_date) : null;
+    if (!srcDate || isNaN(srcDate.getTime())) {
+      setForm({ ...form, is_recurring: true });
+      return;
+    }
+    setForm({
+      ...form,
+      is_recurring: true,
+      recurring_month: srcDate.getMonth() + 1,
+      recurring_day: srcDate.getDate(),
+      recurring_hour: form.scheduled_at_local ? srcDate.getHours() : (form.recurring_hour ?? null),
+      recurring_minute: form.scheduled_at_local ? srcDate.getMinutes() : (form.recurring_minute ?? null),
+      recurring_duration_days: form.end_date && form.start_date
+        ? Math.max(1, Math.ceil((new Date(form.end_date).getTime() - new Date(form.start_date).getTime()) / 86400000))
+        : 7,
+    });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -337,8 +389,24 @@ function CampaignFormModal({ campaign, solapiTemplates, eventTypes, onClose, onS
     setSubmitting(true);
     setError('');
 
+    // datetime-local 은 로컬 TZ 문자열 — Date 생성자가 로컬로 해석 → UTC ISO로 저장
+    const scheduledAtISO = form.scheduled_at_local
+      ? new Date(form.scheduled_at_local).toISOString()
+      : null;
+
+    // 예약 시각·기간·반복 중 최소 하나는 있어야 함 (자동 발송이면 scheduled_at 필수)
+    if (form.auto_send && !scheduledAtISO) {
+      setSubmitting(false);
+      setError('⚡ 자동 발송을 체크했다면 발송 예약일시를 입력해주세요.');
+      return;
+    }
+
+    const { scheduled_at_local, ...rest } = form;
     const params = {
-      ...form,
+      ...rest,
+      scheduled_at: scheduledAtISO,
+      start_date: form.start_date || null,
+      end_date: form.end_date || null,
       target_branch_id: form.target_branch_id || null,
       solapi_template_id: form.solapi_template_id || null,
       template_content: selectedTemplate?.content || null,
@@ -388,13 +456,18 @@ function CampaignFormModal({ campaign, solapiTemplates, eventTypes, onClose, onS
                 {TARGET_GRADE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">시작일 *</label>
-              <input type="date" value={form.start_date} onChange={e => setForm({ ...form, start_date: e.target.value })} required className="input" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">종료일 *</label>
-              <input type="date" value={form.end_date} onChange={e => setForm({ ...form, end_date: e.target.value })} required className="input" />
+            <div className="col-span-2">
+              <label className="block text-sm font-medium mb-1">발송 예약일시 {form.auto_send && '*'}</label>
+              <input
+                type="datetime-local"
+                value={form.scheduled_at_local}
+                onChange={e => setForm({ ...form, scheduled_at_local: e.target.value })}
+                step={600}
+                className="input"
+              />
+              <p className="text-xs text-slate-400 mt-1">
+                10분 단위로 입력 (스케줄러 주기 = 10분). 미지정 시 수동 발송만 가능.
+              </p>
             </div>
             <div className="col-span-2">
               <label className="block text-sm font-medium mb-1">대상 지점</label>
@@ -403,6 +476,33 @@ function CampaignFormModal({ campaign, solapiTemplates, eventTypes, onClose, onS
                 {branches.map((b: any) => <option key={b.id} value={b.id}>{b.name}</option>)}
               </select>
             </div>
+          </div>
+
+          {/* 기간 설정 (선택) — 반복 캠페인 윈도우 표시용 */}
+          <div className="rounded-lg border border-slate-200">
+            <button
+              type="button"
+              onClick={() => setShowPeriod(v => !v)}
+              className="w-full px-3 py-2 flex items-center justify-between text-sm text-slate-600 hover:bg-slate-50"
+            >
+              <span>기간 설정 (선택)</span>
+              <span className="text-xs text-slate-400">{showPeriod ? '▲' : '▼'}</span>
+            </button>
+            {showPeriod && (
+              <div className="px-3 pb-3 grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium mb-1 text-slate-500">시작일</label>
+                  <input type="date" value={form.start_date} onChange={e => setForm({ ...form, start_date: e.target.value })} className="input text-sm py-1.5" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium mb-1 text-slate-500">종료일</label>
+                  <input type="date" value={form.end_date} onChange={e => setForm({ ...form, end_date: e.target.value })} className="input text-sm py-1.5" />
+                </div>
+                <p className="col-span-2 text-xs text-slate-400">
+                  반복 캠페인의 유효 범위 또는 기간성 이벤트 표시용. 단일 예약 발송만 필요하면 비워두세요.
+                </p>
+              </div>
+            )}
           </div>
 
           <div>
@@ -456,9 +556,44 @@ function CampaignFormModal({ campaign, solapiTemplates, eventTypes, onClose, onS
               <input type="checkbox" checked={form.is_recurring} onChange={e => handleRecurringChange(e.target.checked)} className="w-4 h-4" />
               <span className="text-sm">🔄 매년 반복 캠페인</span>
             </label>
+            {form.is_recurring && (
+              <div className="ml-6 grid grid-cols-4 gap-2">
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">월</label>
+                  <input type="number" min={1} max={12}
+                    value={form.recurring_month ?? ''}
+                    onChange={e => setForm({ ...form, recurring_month: e.target.value ? Number(e.target.value) : null })}
+                    className="input text-sm py-1" placeholder="예) 9" />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">일</label>
+                  <input type="number" min={1} max={31}
+                    value={form.recurring_day ?? ''}
+                    onChange={e => setForm({ ...form, recurring_day: e.target.value ? Number(e.target.value) : null })}
+                    className="input text-sm py-1" placeholder="예) 28" />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">시</label>
+                  <input type="number" min={0} max={23}
+                    value={form.recurring_hour ?? ''}
+                    onChange={e => setForm({ ...form, recurring_hour: e.target.value !== '' ? Number(e.target.value) : null })}
+                    className="input text-sm py-1" placeholder="예) 10" />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">분</label>
+                  <input type="number" min={0} max={59} step={10}
+                    value={form.recurring_minute ?? ''}
+                    onChange={e => setForm({ ...form, recurring_minute: e.target.value !== '' ? Number(e.target.value) : null })}
+                    className="input text-sm py-1" placeholder="0" />
+                </div>
+                <p className="col-span-4 text-xs text-slate-400">
+                  다음 해 복사 시 이 월/일/시각으로 scheduled_at이 자동 설정됩니다.
+                </p>
+              </div>
+            )}
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={form.auto_send} onChange={e => setForm({ ...form, auto_send: e.target.checked })} className="w-4 h-4" />
-              <span className="text-sm">⚡ 자동 발송 <span className="text-xs text-slate-400">(기간 시작 시 크론이 자동 발송, 미설정 시 수동 버튼 필요)</span></span>
+              <span className="text-sm">⚡ 예약 시각에 자동 발송 <span className="text-xs text-slate-400">(체크 시 scheduled_at 도달하면 스케줄러가 자동 발송. 체크 해제 시 수동 발송 버튼 필요)</span></span>
             </label>
           </div>
 

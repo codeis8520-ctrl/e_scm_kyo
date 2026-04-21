@@ -17,6 +17,9 @@ on:
     - cron: '0 1 * * 1'
     # 카페24 토큰 갱신 — 매일 02:00 KST (UTC 17:00)
     - cron: '0 17 * * *'
+    # 캠페인 예약 발송 스케줄러 — 10분 간격
+    # (GitHub Actions 무료 플랜은 고부하 시 수 분 지연될 수 있음 — 분 단위 정밀도 불요구 전제)
+    - cron: '*/10 * * * *'
   workflow_dispatch:
     inputs:
       job:
@@ -29,6 +32,7 @@ on:
           - birthday
           - dormant
           - cafe24-refresh
+          - campaign-scheduler
 
 jobs:
   cafe24-sync:
@@ -97,6 +101,24 @@ jobs:
           RESPONSE=$(curl -sSL -w "\n%{http_code}" \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "${{ secrets.APP_URL }}/api/cafe24/refresh")
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          CODE=$(echo "$RESPONSE" | tail -n 1)
+          echo "HTTP: $CODE"
+          echo "Body: $BODY"
+          if [ "$CODE" != "200" ]; then exit 1; fi
+
+  campaign-scheduler:
+    if: >-
+      github.event_name == 'schedule' && github.event.schedule == '*/10 * * * *' ||
+      github.event_name == 'workflow_dispatch' && inputs.job == 'campaign-scheduler'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 캠페인 예약 발송 스케줄러
+        run: |
+          echo "▶ 캠페인 스케줄러 호출"
+          RESPONSE=$(curl -sSL -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_URL }}/api/notifications/batch/campaign-scheduler")
           BODY=$(echo "$RESPONSE" | head -n -1)
           CODE=$(echo "$RESPONSE" | tail -n 1)
           echo "HTTP: $CODE"

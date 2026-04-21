@@ -60,12 +60,17 @@ export interface Campaign {
   name: string;
   description: string | null;
   event_type: string;
-  start_date: string;
-  end_date: string;
+  // 기간은 옵션(반복 캠페인의 윈도우 표시용으로만 의미있음)
+  start_date: string | null;
+  end_date: string | null;
+  // 예약 발송 시각 (단일 발송 경로). auto_send=true + 상태 ACTIVE + scheduled_at <= now() 이면 스케줄러가 자동 발송
+  scheduled_at: string | null;
   is_recurring: boolean;
   recurring_month: number | null;
   recurring_day: number | null;
   recurring_duration_days: number | null;
+  recurring_hour: number | null;
+  recurring_minute: number | null;
   target_grade: string;
   target_branch_id: string | null;
   solapi_template_id: string | null;

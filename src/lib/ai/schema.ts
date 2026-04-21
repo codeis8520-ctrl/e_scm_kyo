@@ -71,7 +71,10 @@ shipments: id, source(CAFE24/STORE), delivery_type(PARCEL/QUICK), cafe24_order_i
 --- 알림·캠페인 ---
 notifications: id, customer_id, type(SMS/ALIMTALK), message, status(sent/failed/pending), sent_at, sent_by
 notification_template_mappings: solapi_template_id, event_type, is_manual_sendable, description
-notification_campaigns: id, name, event_type, start_date, end_date, is_recurring, target_grade, target_branch_id, solapi_template_id, auto_send, status(DRAFT/ACTIVE/SENT/COMPLETED/CANCELLED), sent_count, failed_count
+notification_campaigns: id, name, event_type, scheduled_at(예약발송시각 timestamptz), start_date?, end_date?, is_recurring, recurring_month/day/hour/minute, target_grade, target_branch_id, solapi_template_id, auto_send, status(DRAFT/ACTIVE/SENT/COMPLETED/CANCELLED), sent_count, failed_count
+  ※ scheduled_at: 단일 예약 발송 시각. auto_send=true + ACTIVE + sent_at NULL + scheduled_at<=now() → 스케줄러(/api/notifications/batch/campaign-scheduler, 10분 주기)가 자동 발송.
+  ※ start_date/end_date: 2026-04 이후 옵션(반복 캠페인 윈도우 표시 용). 단일 예약은 scheduled_at만으로 충분.
+notification_batch_logs: id, batch_type(BIRTHDAY/DORMANT/CAMPAIGN_SCHEDULER), detail(JSONB), target_count, sent_count, failed_count, skipped_count, started_at, finished_at
 campaign_event_types: code, name, emoji, is_recurring_default, default_month, default_day
 
 --- 시스템 ---

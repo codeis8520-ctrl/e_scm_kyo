@@ -3,8 +3,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { requireSession } from '@/lib/session';
-import { sendKakaoMessages } from '@/lib/solapi/client';
-import { resolveAllVariables } from '@/lib/solapi/variable-resolver';
+import { sendCampaignCore } from '@/lib/campaign-send-core';
 import type { Campaign } from '@/lib/campaign-types';
 
 // ─── 권한 체크 ─────────────────────────────────────────────────────────────────
@@ -57,12 +56,17 @@ interface CreateCampaignParams {
   name: string;
   description?: string;
   event_type?: string;
-  start_date: string;
-  end_date: string;
+  // scheduled_at: ISO 8601 (예: "2026-05-08T10:00" 혹은 "2026-05-08T10:00:00Z")
+  scheduled_at?: string | null;
+  // start_date/end_date: 옵션(반복 캠페인 윈도우 표시 등)
+  start_date?: string | null;
+  end_date?: string | null;
   is_recurring?: boolean;
-  recurring_month?: number;
-  recurring_day?: number;
-  recurring_duration_days?: number;
+  recurring_month?: number | null;
+  recurring_day?: number | null;
+  recurring_duration_days?: number | null;
+  recurring_hour?: number | null;
+  recurring_minute?: number | null;
   target_grade?: string;
   target_branch_id?: string | null;
   solapi_template_id?: string;
@@ -76,6 +80,11 @@ export async function createCampaign(params: CreateCampaignParams): Promise<{ su
   let session;
   try { session = await requireHQ(); } catch (e: any) { return { error: e.message }; }
 
+  // scheduled_at 있고 start_date 비어있으면 자동 채움(목록 필터/정렬용)
+  const startDate = params.start_date
+    || (params.scheduled_at ? params.scheduled_at.slice(0, 10) : null);
+  const endDate = params.end_date || startDate;
+
   const supabase = await createClient();
   const { data, error } = await (supabase as any)
     .from('notification_campaigns')
@@ -83,12 +92,15 @@ export async function createCampaign(params: CreateCampaignParams): Promise<{ su
       name: params.name,
       description: params.description || null,
       event_type: params.event_type || 'CUSTOM',
-      start_date: params.start_date,
-      end_date: params.end_date,
+      scheduled_at: params.scheduled_at || null,
+      start_date: startDate,
+      end_date: endDate,
       is_recurring: params.is_recurring ?? false,
       recurring_month: params.recurring_month ?? null,
       recurring_day: params.recurring_day ?? null,
       recurring_duration_days: params.recurring_duration_days ?? null,
+      recurring_hour: params.recurring_hour ?? null,
+      recurring_minute: params.recurring_minute ?? null,
       target_grade: params.target_grade || 'ALL',
       target_branch_id: params.target_branch_id || null,
       solapi_template_id: params.solapi_template_id || null,
@@ -131,9 +143,16 @@ export async function updateCampaign(
     return { error: `현재 상태(${existing.status})에서는 수정할 수 없습니다.` };
   }
 
+  // scheduled_at 재지정 시 start_date 자동 반영(비어있으면)
+  const patch: any = { ...params };
+  if (params.scheduled_at && !params.start_date) {
+    patch.start_date = params.scheduled_at.slice(0, 10);
+    if (!params.end_date) patch.end_date = patch.start_date;
+  }
+
   const { data, error } = await (supabase as any)
     .from('notification_campaigns')
-    .update(params)
+    .update(patch)
     .eq('id', id)
     .select()
     .single();
@@ -233,7 +252,8 @@ export async function cancelCampaign(id: string): Promise<{ success?: boolean; e
   return { success: true };
 }
 
-// ─── 발송 (ACTIVE → SENT) ─────────────────────────────────────────────────────
+// ─── 발송 (ACTIVE → SENT) — UI 수동 경로 ─────────────────────────────────────
+// 스케줄러는 sendCampaignCore 를 직접 호출한다.
 
 export async function sendCampaign(id: string): Promise<{
   success?: boolean;
@@ -244,133 +264,14 @@ export async function sendCampaign(id: string): Promise<{
   let session;
   try { session = await requireHQ(); } catch (e: any) { return { error: e.message }; }
 
-  const supabase = await createClient();
-  const db = supabase as any;
-
-  // 캠페인 조회
-  const { data: campaign, error: campErr } = await db
-    .from('notification_campaigns')
-    .select('*')
-    .eq('id', id)
-    .single();
-
-  if (campErr) return { error: campErr.message };
-  if (!campaign) return { error: '캠페인을 찾을 수 없습니다.' };
-  if (campaign.status !== 'ACTIVE') {
-    return { error: 'ACTIVE 상태의 캠페인만 발송할 수 있습니다.' };
-  }
-  if (!campaign.solapi_template_id || !campaign.template_content) {
-    return { error: '템플릿 ID와 내용이 설정되어야 합니다.' };
-  }
-
-  // 대상 고객 조회
-  let customerQuery = db
-    .from('customers')
-    .select('id, name, phone')
-    .eq('is_active', true)
-    .not('phone', 'like', 'cafe24_%');
-
-  if (campaign.target_grade !== 'ALL') {
-    customerQuery = customerQuery.eq('grade', campaign.target_grade);
-  }
-  if (campaign.target_branch_id) {
-    customerQuery = customerQuery.eq('branch_id', campaign.target_branch_id);
-  }
-
-  const { data: customers, error: custErr } = await customerQuery;
-  if (custErr) return { error: `고객 조회 실패: ${custErr.message}` };
-  if (!customers || customers.length === 0) {
-    return { error: '발송 대상 고객이 없습니다.' };
-  }
-
-  const templateVariables: string[] = campaign.template_variables || [];
-  const variableOverrides: Record<string, string> = campaign.variable_overrides || {};
-
-  // 알림톡 일괄 발송
-  const result = await sendKakaoMessages(
-    customers.map((c: any) => {
-      const vars = resolveAllVariables(templateVariables, {
-        customerName: c.name,
-        customerPhone: c.phone,
-      });
-      // variable_overrides 머지
-      const mergedVars = { ...vars, ...variableOverrides };
-
-      // 텍스트 변수 치환
-      let text = campaign.template_content as string;
-      Object.entries(mergedVars).forEach(([k, v]) => {
-        text = text.replaceAll(k, v);
-      });
-
-      return {
-        to: c.phone,
-        templateId: campaign.solapi_template_id!,
-        variables: mergedVars,
-        text,
-        customerId: c.id,
-      };
-    }),
-  );
-
-  // notifications 테이블에 기록
-  const notifRows = customers.map((c: any, i: number) => {
-    const r = result.results[i];
-    const vars = resolveAllVariables(templateVariables, {
-      customerName: c.name,
-      customerPhone: c.phone,
-    });
-    const mergedVars = { ...vars, ...variableOverrides };
-    let msg = campaign.template_content as string;
-    Object.entries(mergedVars).forEach(([k, v]) => {
-      msg = msg.replaceAll(k, v);
-    });
-
-    return {
-      customer_id: c.id,
-      notification_type: 'KAKAO',
-      template_id: null,
-      template_code: campaign.solapi_template_id,
-      phone: c.phone,
-      message: msg,
-      status: r.success ? 'sent' : 'failed',
-      sent_at: new Date().toISOString(),
-      external_message_id: r.messageId || null,
-      error_message: r.error || null,
-      sent_by: session.id,
-      trigger_source: 'SCHEDULED',
-    };
-  });
-
-  const { error: insertErr } = await db.from('notifications').insert(notifRows);
-  if (insertErr) {
-    console.error('[sendCampaign] notifications insert 실패:', insertErr);
-  }
-
-  // 캠페인 상태 업데이트
-  const { error: updateErr } = await db
-    .from('notification_campaigns')
-    .update({
-      status: 'SENT',
-      sent_at: new Date().toISOString(),
-      sent_count: result.successCount,
-      failed_count: result.failCount,
-    })
-    .eq('id', id);
-
-  if (updateErr) {
-    console.error('[sendCampaign] campaign update 실패:', updateErr);
-    return {
-      success: true,
-      successCount: result.successCount,
-      failCount: result.failCount,
-    };
-  }
+  const r = await sendCampaignCore({ campaignId: id, sentByUserId: session.id });
+  if (!r.success) return { error: r.error };
 
   revalidatePath('/customers');
   return {
     success: true,
-    successCount: result.successCount,
-    failCount: result.failCount,
+    successCount: r.successCount,
+    failCount: r.failCount,
   };
 }
 
@@ -402,18 +303,32 @@ export async function copyCampaignForNextYear(id: string): Promise<{
   const nextEnd = new Date(source.end_date);
   nextEnd.setFullYear(nextEnd.getFullYear() + 1);
 
+  // 발송 시각은 반복 스펙(recurring_hour/minute)이 있으면 해당 시각으로, 없으면 자정으로
+  const nextStartDateStr = nextStart.toISOString().slice(0, 10);
+  let nextScheduledAt: string | null = null;
+  if (source.recurring_month && source.recurring_day) {
+    const hh = source.recurring_hour ?? 0;
+    const mm = source.recurring_minute ?? 0;
+    // KST(+09:00) 기준 로컬 시각을 ISO로 구성 → DB는 UTC로 저장
+    const local = new Date(`${nextStartDateStr}T${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}:00+09:00`);
+    nextScheduledAt = local.toISOString();
+  }
+
   const { data: newCampaign, error: insertErr } = await db
     .from('notification_campaigns')
     .insert({
       name: source.name.replace(/\d{4}/, String(nextStart.getFullYear())),
       description: source.description,
       event_type: source.event_type,
-      start_date: nextStart.toISOString().slice(0, 10),
+      scheduled_at: nextScheduledAt,
+      start_date: nextStartDateStr,
       end_date: nextEnd.toISOString().slice(0, 10),
       is_recurring: true,
       recurring_month: source.recurring_month,
       recurring_day: source.recurring_day,
       recurring_duration_days: source.recurring_duration_days,
+      recurring_hour: source.recurring_hour,
+      recurring_minute: source.recurring_minute,
       target_grade: source.target_grade,
       target_branch_id: source.target_branch_id,
       solapi_template_id: source.solapi_template_id,
