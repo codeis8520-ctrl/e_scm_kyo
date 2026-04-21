@@ -1014,6 +1014,22 @@ export default function CustomerDetailPage() {
                                 </div>
                               </div>
                             )}
+                            {!isCancelled && !isRefunded && (
+                              <div className="mt-3 pt-3 border-t border-slate-200 flex justify-end">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (confirm(`${order.order_number} 전표를 복사해 새 판매로 등록할까요?\n수령현황·일자·승인 상태는 초기화됩니다.`)) {
+                                      router.push(`/pos?copy=${order.id}`);
+                                    }
+                                  }}
+                                  className="text-xs px-3 py-1.5 rounded border border-indigo-200 text-indigo-700 hover:bg-indigo-50"
+                                  title="이 전표의 품목·배송·고객 정보를 복사해 새 판매 전표 생성"
+                                >
+                                  📋 이 전표 복사하여 새 판매 등록
+                                </button>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>

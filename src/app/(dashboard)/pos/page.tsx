@@ -1134,7 +1134,7 @@ function POSPageInner() {
                       const extra = names.length > 2 ? ` 외 ${names.length - 2}종` : '';
                       const cancelled = ['CANCELLED', 'REFUNDED'].includes(o.status);
                       return (
-                        <div key={o.id} className="border border-slate-100 rounded p-1.5 flex justify-between gap-2">
+                        <div key={o.id} className="border border-slate-100 rounded p-1.5 flex justify-between gap-2 group">
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
                               <span>{String(o.ordered_at).slice(0, 10)}</span>
@@ -1142,9 +1142,26 @@ function POSPageInner() {
                             </div>
                             <p className="text-slate-700 truncate" title={names.join(', ')}>{head || '-'}{extra}</p>
                           </div>
-                          <span className={`whitespace-nowrap font-medium text-xs ${cancelled ? 'line-through text-slate-400' : 'text-slate-700'}`}>
-                            {Number(o.total_amount || 0).toLocaleString()}원
-                          </span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className={`whitespace-nowrap font-medium text-xs ${cancelled ? 'line-through text-slate-400' : 'text-slate-700'}`}>
+                              {Number(o.total_amount || 0).toLocaleString()}원
+                            </span>
+                            {!cancelled && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const warn = cart.length > 0
+                                    ? '현재 장바구니 내용이 복사된 전표로 대체됩니다. 진행할까요?'
+                                    : `${o.order_number} 전표를 복사해 새 판매로 등록할까요?`;
+                                  if (confirm(warn)) router.push(`/pos?copy=${o.id}`);
+                                }}
+                                title="이 전표를 복사해 새 판매 등록"
+                                className="text-[10px] px-1.5 py-0.5 rounded border border-indigo-200 text-indigo-600 hover:bg-indigo-50 opacity-70 group-hover:opacity-100"
+                              >
+                                📋 복사
+                              </button>
+                            )}
+                          </div>
                         </div>
                       );
                     })
