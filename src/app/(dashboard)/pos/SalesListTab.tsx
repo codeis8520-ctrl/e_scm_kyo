@@ -881,6 +881,40 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
   const [payments, setPayments] = useState<any[]>([]);
   const [shipment, setShipment] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [markingReceipt, setMarkingReceipt] = useState(false);
+
+  const markReceiptCompleted = async () => {
+    if (markingReceipt) return;
+    const statusLabel = order?.receipt_status === 'QUICK_PLANNED' ? '퀵 수령'
+      : order?.receipt_status === 'PARCEL_PLANNED' ? '택배 수령'
+      : order?.receipt_status === 'PICKUP_PLANNED' ? '방문 수령'
+      : '수령';
+    if (!confirm(`${statusLabel}을 완료 처리할까요?\n수령현황 → 수령완료, 수령일자 → 오늘`)) return;
+    setMarkingReceipt(true);
+    try {
+      const sb = createClient() as any;
+      const today = new Date().toISOString().slice(0, 10);
+      const { error: orderErr } = await sb
+        .from('sales_orders')
+        .update({ receipt_status: 'RECEIVED', receipt_date: today })
+        .eq('id', orderId);
+      if (orderErr) {
+        alert('수령 완료 처리 실패: ' + orderErr.message);
+        setMarkingReceipt(false);
+        return;
+      }
+      // 배송 레코드가 있다면 함께 DELIVERED로 갱신
+      if (shipment?.id) {
+        await sb.from('shipments').update({ status: 'DELIVERED' }).eq('id', shipment.id);
+      }
+      // 로컬 상태 반영
+      setOrder((prev: any) => prev ? { ...prev, receipt_status: 'RECEIVED', receipt_date: today } : prev);
+      if (shipment?.id) setShipment((prev: any) => prev ? { ...prev, status: 'DELIVERED' } : prev);
+      onChanged();
+    } finally {
+      setMarkingReceipt(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -1236,6 +1270,18 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
 
             {/* 액션 */}
             <div className="flex flex-wrap gap-2 pt-3 border-t border-slate-100">
+              {/* 수령 완료 처리 — 예정 상태일 때만 노출 */}
+              {order.receipt_status && order.receipt_status !== 'RECEIVED' && order.status === 'COMPLETED' && (
+                <button
+                  onClick={markReceiptCompleted}
+                  disabled={markingReceipt}
+                  className="flex-1 min-w-[140px] py-2 text-sm rounded-md bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+                  title={`${order.receipt_status === 'QUICK_PLANNED' ? '퀵' : order.receipt_status === 'PARCEL_PLANNED' ? '택배' : '방문'} 수령 완료 처리`}
+                >
+                  {markingReceipt ? '처리 중...'
+                    : `✓ ${order.receipt_status === 'QUICK_PLANNED' ? '퀵' : order.receipt_status === 'PARCEL_PLANNED' ? '택배' : '방문'} 수령 완료`}
+                </button>
+              )}
               <button onClick={handleReprint}
                 className="flex-1 min-w-[120px] btn-secondary py-2 text-sm">영수증 재발행</button>
               <button
