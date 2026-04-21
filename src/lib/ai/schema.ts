@@ -21,7 +21,8 @@ point_history: id, customer_id, sales_order_id, type(earn/use/adjust/expire), po
 sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, ordered_by(담당자), total_amount, discount_amount, points_used, points_earned, payment_method(cash/card/card_keyin/kakao/credit/cod/mixed), credit_settled(bool), credit_settled_at, credit_settled_method, memo, status(COMPLETED/CANCELLED/REFUNDED/PARTIALLY_REFUNDED), ordered_at, receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date, approval_status(COMPLETED/CARD_PENDING/UNSETTLED), payment_info
   ※ receipt_status=수령현황(수령완료/방문예정/퀵예정/택배예정). 기본 RECEIVED. 배송 활성 시 PARCEL_PLANNED/QUICK_PLANNED 자동 지정.
   ※ approval_status=결제 승인 라이프사이클(status와 직교). card_keyin→CARD_PENDING, credit→UNSETTLED 자동 추론 가능.
-  ※ payment_info=카드정보/승인일자/안내 계좌 등 자유기입. ordered_by=판매·상담 담당자.
+  ※ payment_info=레거시 자유기입 컬럼(2026-04 UI 제거). 신규 입력 없음. 과거 데이터 조회만 노출.
+  ※ ordered_by=판매·상담 담당자.
 sales_order_items: id, sales_order_id, product_id, quantity, unit_price, discount_amount, total_price, order_option
   ※ order_option=품목별 부가 옵션(보자기 포장/쇼핑백/색상/서비스 지급 + 같은 전표 내 배송 방식 상이 시 기록).
 sales_order_payments: id, sales_order_id, payment_method, amount, approval_no, card_info, memo, paid_at, created_by

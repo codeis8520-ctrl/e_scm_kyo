@@ -181,7 +181,6 @@ function POSPageInner() {
   const [receiptStatus, setReceiptStatus] = useState<ReceiptStatus>('RECEIVED');
   const [receiptDate, setReceiptDate] = useState<string>(todayStr);
   const [approvalStatus, setApprovalStatus] = useState<ApprovalStatus>('COMPLETED');
-  const [paymentInfo, setPaymentInfo] = useState<string>('');
   // 매출처 검색형 콤보
   const [branchSearch, setBranchSearch] = useState<string>('');
   const [showBranchDropdown, setShowBranchDropdown] = useState(false);
@@ -406,10 +405,9 @@ function POSPageInner() {
       setReceiptDate(new Date().toISOString().slice(0, 10));
       setSaleDate(new Date().toISOString().slice(0, 10));
       setApprovalStatus('COMPLETED');
-      setPaymentInfo('');
       setMainTab('checkout');
 
-      setCopyBanner(`📋 ${src.order_number} 복사 중 — 수령현황·일자·결제정보는 초기화됨`);
+      setCopyBanner(`📋 ${src.order_number} 복사 중 — 수령현황·일자·승인 상태는 초기화됨`);
       // URL 쿼리 정리 (새로고침 시 중복 적용 방지)
       router.replace('/pos');
     })();
@@ -759,7 +757,6 @@ function POSPageInner() {
         receiptStatus,
         receiptDate: receiptDate || null,
         approvalStatus,
-        paymentInfo: paymentInfo.trim() || undefined,
         cart: cart.map(c => ({
           productId: c.productId,
           name: c.name,
@@ -859,7 +856,6 @@ function POSPageInner() {
       setReceiptDate(new Date().toISOString().slice(0, 10));
       setReceiptStatus('RECEIVED');
       setApprovalStatus('COMPLETED');
-      setPaymentInfo('');
       setCopyBanner(null);
       // 담당자·매출처는 초기화 하지 않음 — 동일 담당자·지점에서 연속 판매하는 경우가 많음
 
@@ -1591,35 +1587,21 @@ function POSPageInner() {
             </div>
           </div>
 
-          {/* 승인 상태 + 결제정보 */}
+          {/* 승인 상태 */}
           <div>
-            <div className="grid grid-cols-2 gap-2 mb-2">
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">승인</label>
-                <select
-                  value={approvalStatus}
-                  onChange={e => setApprovalStatus(e.target.value as ApprovalStatus)}
-                  className="input text-sm py-1.5"
-                >
-                  {(['COMPLETED', 'CARD_PENDING', 'UNSETTLED'] as ApprovalStatus[]).map(s => (
-                    <option key={s} value={s}>{APPROVAL_STATUS_LABEL[s]}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">결제 정보</label>
-                <input
-                  type="text"
-                  value={paymentInfo}
-                  onChange={e => setPaymentInfo(e.target.value)}
-                  placeholder="카드 뒷 4자리 / 계좌 안내 등"
-                  className="input text-sm py-1.5"
-                />
-              </div>
-            </div>
+            <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">승인</label>
+            <select
+              value={approvalStatus}
+              onChange={e => setApprovalStatus(e.target.value as ApprovalStatus)}
+              className="input text-sm py-1.5 w-full"
+            >
+              {(['COMPLETED', 'CARD_PENDING', 'UNSETTLED'] as ApprovalStatus[]).map(s => (
+                <option key={s} value={s}>{APPROVAL_STATUS_LABEL[s]}</option>
+              ))}
+            </select>
             {approvalStatus !== 'COMPLETED' && (
-              <p className={`text-[11px] ${approvalStatus === 'UNSETTLED' ? 'text-amber-600' : 'text-indigo-600'}`}>
-                {approvalStatus === 'UNSETTLED' ? '⚠ 미결 건: 계좌이체 수금 후 결제완료로 변경' : '⚠ 카드 키인 승인 대기 — 승인 후 결제완료로 변경'}
+              <p className={`text-[11px] mt-1 ${approvalStatus === 'UNSETTLED' ? 'text-amber-600' : 'text-indigo-600'}`}>
+                {approvalStatus === 'UNSETTLED' ? '⚠ 미결 건: 수금 후 결제완료로 변경' : '⚠ 카드 키인 승인 대기 — 승인 후 결제완료로 변경'}
               </p>
             )}
           </div>
