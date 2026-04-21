@@ -319,104 +319,106 @@ function POSPageInner() {
     searchRef.current?.focus();
   }, [initialBranchId]);
 
-  // ── 전표 복사 (copy 쿼리) — 초기 로드 완료 후 1회 ───────────────────────
-  useEffect(() => {
-    if (!copyOrderId) return;
-    if (loading) return;             // 기초 데이터(products/branches/customers) 준비 후 적용
-    let aborted = false;
-    (async () => {
-      const sb = createClient() as any;
-      const full = await sb.from('sales_orders')
+  // ── 전표 복사 함수 — 버튼 onClick에서 직접 호출 가능 (URL 경유 없이)
+  const applyCopy = useCallback(async (orderId: string) => {
+    const sb = createClient() as any;
+    const full = await sb.from('sales_orders')
+      .select(`
+        id, order_number, branch_id, customer_id, memo,
+        items:sales_order_items(product_id, quantity, unit_price, discount_amount, order_option, delivery_type),
+        shipment:shipments(
+          branch_id, delivery_type, recipient_name, recipient_phone,
+          recipient_zipcode, recipient_address, recipient_address_detail,
+          delivery_message, sender_name, sender_phone,
+          sender_zipcode, sender_address, sender_address_detail
+        )
+      `)
+      .eq('id', orderId).maybeSingle();
+    let src: any = full.data;
+    if (full.error) {
+      const retry = await sb.from('sales_orders')
         .select(`
           id, order_number, branch_id, customer_id, memo,
-          items:sales_order_items(product_id, quantity, unit_price, discount_amount, order_option),
+          items:sales_order_items(product_id, quantity, unit_price, discount_amount),
           shipment:shipments(
-            branch_id, delivery_type, recipient_name, recipient_phone,
+            branch_id, recipient_name, recipient_phone,
             recipient_zipcode, recipient_address, recipient_address_detail,
-            delivery_message, sender_name, sender_phone,
-            sender_zipcode, sender_address, sender_address_detail
+            delivery_message
           )
         `)
-        .eq('id', copyOrderId).maybeSingle();
-      // 051/046 미적용 폴백
-      let src: any = full.data;
-      if (full.error) {
-        const retry = await sb.from('sales_orders')
-          .select(`
-            id, order_number, branch_id, customer_id, memo,
-            items:sales_order_items(product_id, quantity, unit_price, discount_amount),
-            shipment:shipments(
-              branch_id, recipient_name, recipient_phone,
-              recipient_zipcode, recipient_address, recipient_address_detail,
-              delivery_message
-            )
-          `)
-          .eq('id', copyOrderId).maybeSingle();
-        src = retry.data;
-      }
-      if (aborted || !src) {
-        router.replace('/pos');
-        return;
-      }
+        .eq('id', orderId).maybeSingle();
+      src = retry.data;
+    }
+    if (!src) return;
 
-      // 매출처 (매장)
-      if (src.branch_id) {
-        setSelectedBranch(src.branch_id);
-        setShipFromBranchId(src.branch_id);
-      }
-      // 고객
-      if (src.customer_id) {
-        const cust = customers.find(c => c.id === src.customer_id);
-        if (cust) await selectCustomer(cust);
-      }
-      // 카트
-      const newCart: CartItem[] = ((src.items as any[]) || []).map((it: any) => {
-        const prod = products.find(p => p.id === it.product_id);
-        return {
-          productId: it.product_id,
-          name: prod?.name || '(삭제된 품목)',
-          price: Number(it.unit_price ?? prod?.price ?? 0),
-          quantity: Number(it.quantity || 1),
-          discount: Number(it.discount_amount || 0),
-          barcode: prod?.barcode,
-          orderOption: it.order_option || undefined,
-          deliveryType: (it.delivery_type as ItemDeliveryType) || 'PICKUP',
-        };
-      }).filter((c: CartItem) => !!c.productId);
-      setCart(newCart);
-      // 배송 복사 (있을 때만)
-      const shipRow = Array.isArray(src.shipment) ? src.shipment[0] : src.shipment;
-      if (shipRow && shipRow.recipient_name) {
-        const dtype = (shipRow.delivery_type === 'QUICK') ? 'QUICK' : 'PARCEL';
-        setShipping(prev => ({
-          ...prev,
-          type: dtype,
-          recipient_name: shipRow.recipient_name || '',
-          recipient_phone: shipRow.recipient_phone || '',
-          recipient_zipcode: shipRow.recipient_zipcode || '',
-          recipient_address: shipRow.recipient_address || '',
-          recipient_address_detail: shipRow.recipient_address_detail || '',
-          delivery_message: shipRow.delivery_message || '',
-          senderSameAsBuyer: !(shipRow.sender_name && shipRow.sender_name !== prev.sender_name),
-          sender_name: shipRow.sender_name || prev.sender_name,
-          sender_phone: shipRow.sender_phone || prev.sender_phone,
-          sender_zipcode: shipRow.sender_zipcode || '',
-          sender_address: shipRow.sender_address || '',
-          sender_address_detail: shipRow.sender_address_detail || '',
-        }));
-        if (shipRow.branch_id) setShipFromBranchId(shipRow.branch_id);
-      }
-      // 메모 + 초기화 규칙
-      setOrderMemo(src.memo || '');
-      setReceiptStatus('RECEIVED');
-      setReceiptDate(new Date().toISOString().slice(0, 10));
-      setSaleDate(new Date().toISOString().slice(0, 10));
-      setApprovalStatus('COMPLETED');
-      setMainTab('checkout');
+    // 매출처
+    if (src.branch_id) {
+      setSelectedBranch(src.branch_id);
+      setShipFromBranchId(src.branch_id);
+    }
+    // 고객
+    if (src.customer_id) {
+      const cust = customers.find(c => c.id === src.customer_id);
+      if (cust) await selectCustomer(cust);
+    }
+    // 카트 — 원본의 deliveryType 유지
+    const newCart: CartItem[] = ((src.items as any[]) || []).map((it: any) => {
+      const prod = products.find(p => p.id === it.product_id);
+      return {
+        productId: it.product_id,
+        name: prod?.name || '(삭제된 품목)',
+        price: Number(it.unit_price ?? prod?.price ?? 0),
+        quantity: Number(it.quantity || 1),
+        discount: Number(it.discount_amount || 0),
+        barcode: prod?.barcode,
+        orderOption: it.order_option || undefined,
+        deliveryType: (it.delivery_type as ItemDeliveryType) || 'PICKUP',
+      };
+    }).filter((c: CartItem) => !!c.productId);
+    setCart(newCart);
+    // 배송 복사 — 주소/수령인 유지, type은 cart 집계에 맡김
+    const shipRow = Array.isArray(src.shipment) ? src.shipment[0] : src.shipment;
+    if (shipRow && shipRow.recipient_name) {
+      const dtype: DeliveryType = (shipRow.delivery_type === 'QUICK') ? 'QUICK' : 'PARCEL';
+      setShipping(prev => ({
+        ...prev,
+        type: dtype,
+        recipient_name: shipRow.recipient_name || '',
+        recipient_phone: shipRow.recipient_phone || '',
+        recipient_zipcode: shipRow.recipient_zipcode || '',
+        recipient_address: shipRow.recipient_address || '',
+        recipient_address_detail: shipRow.recipient_address_detail || '',
+        delivery_message: shipRow.delivery_message || '',
+        senderSameAsBuyer: !(shipRow.sender_name && shipRow.sender_name !== prev.sender_name),
+        sender_name: shipRow.sender_name || prev.sender_name,
+        sender_phone: shipRow.sender_phone || prev.sender_phone,
+        sender_zipcode: shipRow.sender_zipcode || '',
+        sender_address: shipRow.sender_address || '',
+        sender_address_detail: shipRow.sender_address_detail || '',
+      }));
+      if (shipRow.branch_id) setShipFromBranchId(shipRow.branch_id);
+    } else {
+      // 배송 정보 없으면 type=NONE으로
+      setShipping(prev => ({ ...prev, type: 'NONE' }));
+    }
+    // 초기화: 날짜·승인. 수령현황은 cart 집계가 계산(effect E).
+    const today = new Date().toISOString().slice(0, 10);
+    setOrderMemo(src.memo || '');
+    setReceiptDate(today);
+    setSaleDate(today);
+    setApprovalStatus('COMPLETED');
+    setMainTab('checkout');
 
-      setCopyBanner(`📋 ${src.order_number} 복사 중 — 수령현황·일자·승인 상태는 초기화됨`);
-      // URL 쿼리 정리 (새로고침 시 중복 적용 방지)
-      router.replace('/pos');
+    setCopyBanner(`📋 ${src.order_number} 복사 중 — 일자·승인은 초기화, 품목 배송방식은 유지됨`);
+  }, [customers, products]);
+
+  // ── URL ?copy=<id>로 진입 시 1회 적용 ───────────────────────────────────
+  useEffect(() => {
+    if (!copyOrderId || loading) return;
+    let aborted = false;
+    (async () => {
+      await applyCopy(copyOrderId);
+      if (!aborted) router.replace('/pos');
     })();
     return () => { aborted = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -429,32 +431,25 @@ function POSPageInner() {
     }
   }, [shipping.type, selectedBranch]);
 
-  // 배송 선택 시 수령현황 자동 추론 (사용자가 이미 임의 변경한 경우엔 유지하지 않음 —
-  //   단순 동기화 규칙: 배송 탭을 바꾸면 수령현황도 따라감. 이후 수동 변경 자유.)
+  // ── cart가 source of truth — shipping.type과 receiptStatus를 자동 집계
+  //   (shipping↔receiptStatus 상호 effect는 깜빡임 유발하여 제거함)
+  //   cart가 빈 상태에서는 탭/콤보 사용자 선택을 보존하기 위해 동기화 생략
   useEffect(() => {
-    if (shipping.type === 'PARCEL') setReceiptStatus('PARCEL_PLANNED');
-    else if (shipping.type === 'QUICK') setReceiptStatus('QUICK_PLANNED');
-    else setReceiptStatus(prev => (prev === 'PARCEL_PLANNED' || prev === 'QUICK_PLANNED') ? 'RECEIVED' : prev);
-  }, [shipping.type]);
-
-  // 수령현황 선택 시 배송 탭 자동 동기화 (idempotent — 같은 값이면 no-op으로 무한 루프 방지)
-  useEffect(() => {
-    const target: DeliveryType =
-      receiptStatus === 'QUICK_PLANNED' ? 'QUICK'
-      : receiptStatus === 'PARCEL_PLANNED' ? 'PARCEL'
-      : 'NONE'; // RECEIVED · PICKUP_PLANNED → 배송 없음
-    setShipping(prev => prev.type === target ? prev : { ...prev, type: target });
-  }, [receiptStatus]);
-
-  // 품목별 배송 방식 변경 시 상단 배송 탭 자동 집계
-  //  - 택배 품목 있으면 탭 PARCEL (우선)
-  //  - 택배 없고 퀵 있으면 QUICK
-  //  - 전부 PICKUP이면 NONE
-  useEffect(() => {
+    if (cart.length === 0) return;
     const hasParcel = cart.some(c => c.deliveryType === 'PARCEL');
     const hasQuick = cart.some(c => c.deliveryType === 'QUICK');
-    const target: DeliveryType = hasParcel ? 'PARCEL' : hasQuick ? 'QUICK' : 'NONE';
-    setShipping(prev => prev.type === target ? prev : { ...prev, type: target });
+    const shipTarget: DeliveryType = hasParcel ? 'PARCEL' : hasQuick ? 'QUICK' : 'NONE';
+    setShipping(prev => prev.type === shipTarget ? prev : { ...prev, type: shipTarget });
+    // receiptStatus 집계: 품목에 배송건이 있으면 해당 *_PLANNED, 아니면 사용자의 RECEIVED/PICKUP_PLANNED 보존
+    if (hasParcel) {
+      setReceiptStatus(prev => prev === 'PARCEL_PLANNED' ? prev : 'PARCEL_PLANNED');
+    } else if (hasQuick) {
+      setReceiptStatus(prev => prev === 'QUICK_PLANNED' ? prev : 'QUICK_PLANNED');
+    } else {
+      // 모두 PICKUP — 이전에 _PLANNED였으면 RECEIVED로 복귀, PICKUP_PLANNED/RECEIVED는 보존
+      setReceiptStatus(prev =>
+        (prev === 'PARCEL_PLANNED' || prev === 'QUICK_PLANNED') ? 'RECEIVED' : prev);
+    }
   }, [cart]);
 
   // 결제수단에 맞춰 승인상태 기본값 추천 (사용자 변경값은 보존)
@@ -1190,7 +1185,7 @@ function POSPageInner() {
                                   const warn = cart.length > 0
                                     ? '현재 장바구니 내용이 복사된 전표로 대체됩니다. 진행할까요?'
                                     : `${o.order_number} 전표를 복사해 새 판매로 등록할까요?`;
-                                  if (confirm(warn)) router.push(`/pos?copy=${o.id}`);
+                                  if (confirm(warn)) applyCopy(o.id);
                                 }}
                                 title="이 전표를 복사해 새 판매 등록"
                                 className="text-[10px] px-1.5 py-0.5 rounded border border-indigo-200 text-indigo-600 hover:bg-indigo-50 opacity-70 group-hover:opacity-100"
@@ -1640,7 +1635,22 @@ function POSPageInner() {
               <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">수령 현황</label>
               <select
                 value={receiptStatus}
-                onChange={e => setReceiptStatus(e.target.value as ReceiptStatus)}
+                onChange={e => {
+                  const newStatus = e.target.value as ReceiptStatus;
+                  setReceiptStatus(newStatus);
+                  // 카트 품목 일괄 배송방식 동기화 (effect는 품목→상태 집계만 하므로 역방향 명시 필요)
+                  const newDType: ItemDeliveryType =
+                    newStatus === 'QUICK_PLANNED' ? 'QUICK'
+                    : newStatus === 'PARCEL_PLANNED' ? 'PARCEL'
+                    : 'PICKUP';
+                  setCart(prev => prev.map(it => it.deliveryType === newDType ? it : { ...it, deliveryType: newDType }));
+                  // 배송 탭도 명시 세팅
+                  const newShipType: DeliveryType =
+                    newDType === 'PARCEL' ? 'PARCEL'
+                    : newDType === 'QUICK' ? 'QUICK'
+                    : 'NONE';
+                  setShipping(prev => prev.type === newShipType ? prev : { ...prev, type: newShipType });
+                }}
                 className="input text-sm py-1.5"
               >
                 {(['RECEIVED', 'PICKUP_PLANNED', 'QUICK_PLANNED', 'PARCEL_PLANNED'] as ReceiptStatus[]).map(s => (
@@ -1703,10 +1713,16 @@ function POSPageInner() {
                   type="button"
                   onClick={() => {
                     setShipping(prev => ({ ...prev, type: opt.v }));
-                    // 탭 전환 시 모든 품목 일괄 적용 (현장수령 override도 덮어씀 — 명시적 bulk 액션)
+                    // 탭 전환 시 모든 품목 일괄 적용
                     const newDType: ItemDeliveryType =
                       opt.v === 'PARCEL' ? 'PARCEL' : opt.v === 'QUICK' ? 'QUICK' : 'PICKUP';
                     setCart(prev => prev.map(it => it.deliveryType === newDType ? it : { ...it, deliveryType: newDType }));
+                    // 빈 카트 대비: 수령현황도 명시 세팅 (cart가 비어있으면 집계 effect가 돌지 않음)
+                    setReceiptStatus(
+                      opt.v === 'PARCEL' ? 'PARCEL_PLANNED'
+                      : opt.v === 'QUICK' ? 'QUICK_PLANNED'
+                      : 'RECEIVED'
+                    );
                   }}
                   className={`flex-1 py-1.5 font-medium transition-colors ${shipping.type === opt.v
                     ? 'bg-white text-blue-600 border-b-2 border-blue-500 -mb-px'
