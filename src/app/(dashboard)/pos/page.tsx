@@ -430,6 +430,15 @@ function POSPageInner() {
     else setReceiptStatus(prev => (prev === 'PARCEL_PLANNED' || prev === 'QUICK_PLANNED') ? 'RECEIVED' : prev);
   }, [shipping.type]);
 
+  // 수령현황 선택 시 배송 탭 자동 동기화 (idempotent — 같은 값이면 no-op으로 무한 루프 방지)
+  useEffect(() => {
+    const target: DeliveryType =
+      receiptStatus === 'QUICK_PLANNED' ? 'QUICK'
+      : receiptStatus === 'PARCEL_PLANNED' ? 'PARCEL'
+      : 'NONE'; // RECEIVED · PICKUP_PLANNED → 배송 없음
+    setShipping(prev => prev.type === target ? prev : { ...prev, type: target });
+  }, [receiptStatus]);
+
   // 결제수단에 맞춰 승인상태 기본값 추천 (사용자 변경값은 보존)
   useEffect(() => {
     setApprovalStatus(prev => {
