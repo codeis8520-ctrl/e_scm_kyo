@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef } from 'react';
+import { fmtDateKST, fmtTimeKST } from '@/lib/date';
 
 interface ReceiptItem {
   name: string;
@@ -77,9 +78,8 @@ export default function ReceiptModal({
     setTimeout(() => { win.print(); win.close(); }, 300);
   };
 
-  const date = new Date(orderedAt);
-  const dateStr = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
-  const timeStr = `${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;
+  const dateStr = fmtDateKST(orderedAt);
+  const timeStr = fmtTimeKST(orderedAt);
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">

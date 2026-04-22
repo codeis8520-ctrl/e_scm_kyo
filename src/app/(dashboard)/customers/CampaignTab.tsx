@@ -12,6 +12,7 @@ import {
   activateCampaign, cancelCampaign, sendCampaign,
   copyCampaignForNextYear, getRecurringSuggestions,
 } from '@/lib/campaign-actions';
+import { fmtDateTimeKST } from '@/lib/date';
 
 export default function CampaignTab() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -56,9 +57,7 @@ export default function CampaignTab() {
 
   const fmtScheduled = (iso: string | null) => {
     if (!iso) return null;
-    const d = new Date(iso);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return fmtDateTimeKST(iso);
   };
   const fmtRecurring = (c: Campaign) => {
     if (!c.is_recurring || !c.recurring_month || !c.recurring_day) return null;

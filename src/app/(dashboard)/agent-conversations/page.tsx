@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { fmtDateTimeKST } from '@/lib/date';
 
 interface Conversation {
   id: string;
@@ -32,11 +33,10 @@ function getCookie(name: string): string | null {
   }, {} as Record<string, string>)[name] || null;
 }
 
+// UI 표시용 (KST). 쿼리 경계에는 아래 fmtDate(Date)를 계속 사용.
 function fmtDateTime(s: string): string {
   if (!s) return '';
-  const d = new Date(s);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return fmtDateTimeKST(s);
 }
 function fmtDate(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');

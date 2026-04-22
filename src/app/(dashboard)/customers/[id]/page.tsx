@@ -6,6 +6,7 @@ import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { formatPhone } from '@/lib/validators';
 import { settleCreditOrder } from '@/lib/accounting-actions';
+import { fmtDateTimeKST, fmtDateKST, fmtKoreanMonthKST } from '@/lib/date';
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -75,11 +76,10 @@ function consultStyle(t?: string | null) {
 }
 
 function fmtDate(date: Date): string { return date.toISOString().slice(0, 10); }
+// 고객 상세 표시용 (KST). 쿼리 경계 계산에는 fmtDate(Date)를 계속 사용.
 function fmtDateTime(iso: string): string {
   if (!iso) return '';
-  const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return fmtDateTimeKST(iso);
 }
 function relativeTime(iso: string | null | undefined): string {
   if (!iso) return '';
@@ -248,8 +248,7 @@ export default function CustomerDetailPage() {
     const result: { type: 'divider' | 'order'; month?: string; order?: any }[] = [];
     let lastMonth = '';
     for (const order of purchaseOrders) {
-      const d = new Date(order.ordered_at);
-      const month = `${d.getFullYear()}년 ${d.getMonth() + 1}월`;
+      const month = fmtKoreanMonthKST(order.ordered_at);
       if (month !== lastMonth) {
         result.push({ type: 'divider', month });
         lastMonth = month;
@@ -473,7 +472,7 @@ export default function CustomerDetailPage() {
               <div className="flex justify-between"><dt className="text-slate-500">적립 포인트</dt><dd className="font-medium text-blue-600">{customer.total_points?.toLocaleString() || 0}P</dd></div>
               <div className="flex justify-between"><dt className="text-slate-500">고객 등급</dt><dd>{GRADE_LABELS[customer.grade] || customer.grade}</dd></div>
               <div className="flex justify-between"><dt className="text-slate-500">자사몰 ID</dt><dd className="font-mono text-xs">{customer.cafe24_member_id || '-'}</dd></div>
-              <div className="flex justify-between"><dt className="text-slate-500">등록일</dt><dd>{new Date(customer.created_at).toLocaleDateString('ko-KR')}</dd></div>
+              <div className="flex justify-between"><dt className="text-slate-500">등록일</dt><dd>{fmtDateKST(customer.created_at)}</dd></div>
               {customer.assigned_to && (
                 <div className="flex justify-between"><dt className="text-slate-500">담당자</dt><dd>{customer.assigned_to.name}</dd></div>
               )}

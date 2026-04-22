@@ -7,6 +7,7 @@ import { validators, formatPhone } from '@/lib/validators';
 import { sendSmsAction, sendKakaoAction, getNotifications, resendFailedNotification, runNotificationBatch } from '@/lib/notification-actions';
 import { getTemplateMappings } from '@/lib/notification-template-mapping-actions';
 import { EVENT_TYPES, type TemplateMapping } from '@/lib/notification-event-types';
+import { fmtDateTimeKST } from '@/lib/date';
 
 const TYPE_LABEL: Record<string, string> = { KAKAO: '알림톡', SMS: 'SMS' };
 const STATUS_LABEL: Record<string, string> = { sent: '발송완료', pending: '대기중', failed: '실패' };
@@ -303,7 +304,7 @@ export default function NotificationsPage() {
               };
               return (
                 <tr key={n.id}>
-                  <td className="text-sm text-slate-500 whitespace-nowrap">{new Date(n.created_at).toLocaleString('ko-KR')}</td>
+                  <td className="text-sm text-slate-500 whitespace-nowrap">{fmtDateTimeKST(n.created_at)}</td>
                   <td>
                     <span className={`inline-block px-2 py-0.5 rounded text-xs ${srcColor[src] || ''}`}>
                       {srcLabel[src] || src}

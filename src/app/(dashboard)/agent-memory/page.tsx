@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { fmtDateKST } from '@/lib/date';
 
 interface Memory {
   id: string;
@@ -167,7 +168,7 @@ export default function AgentMemoryPage() {
                 </td>
                 <td className="text-right font-semibold text-blue-600">{m.usage_count}</td>
                 <td className="text-right text-xs text-slate-400">
-                  {new Date(m.last_used_at).toLocaleDateString('ko-KR')}
+                  {fmtDateKST(m.last_used_at)}
                 </td>
                 <td className="text-center">
                   <button

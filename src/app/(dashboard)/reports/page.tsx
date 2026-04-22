@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { getMonthlyTrend, getProductMargins } from '@/lib/accounting-actions';
+import { fmtDateTimeKST } from '@/lib/date';
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -448,7 +449,7 @@ export default function ReportsPage() {
   const downloadPDF = () => {
     const branchLabel = filterBranch ? branches.find(b => b.id === filterBranch)?.name || '' : '전체 지점';
     const channelLabel = filterChannel ? (CHANNEL_NAMES[filterChannel] || filterChannel) : '전체 채널';
-    const generatedAt = new Date().toLocaleString('ko-KR');
+    const generatedAt = fmtDateTimeKST(new Date());
     const netSalesVal = salesData.totalAmount - salesData.totalDiscount;
 
     const buildTable = (headers: string[], rows: string[][], colAligns?: string[]) => {

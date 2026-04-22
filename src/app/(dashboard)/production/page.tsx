@@ -13,6 +13,7 @@ import {
   type OemFactoryInput,
 } from '@/lib/oem-actions';
 import { createClient } from '@/lib/supabase/client';
+import { fmtDateKST } from '@/lib/date';
 
 type ProductType = 'FINISHED' | 'RAW' | 'SUB';
 const TYPE_BADGE: Record<ProductType, { label: string; cls: string }> = {
@@ -368,9 +369,9 @@ export default function ProductionPage() {
                         {STATUS_LABEL[order.status] || order.status}
                       </span>
                     </td>
-                    <td className="text-sm text-slate-500">{new Date(order.created_at).toLocaleDateString('ko-KR')}</td>
+                    <td className="text-sm text-slate-500">{fmtDateKST(order.created_at)}</td>
                     <td className="text-sm text-slate-500">
-                      {order.produced_at ? new Date(order.produced_at).toLocaleDateString('ko-KR') : '-'}
+                      {fmtDateKST(order.produced_at)}
                     </td>
                     <td>
                       {(() => {

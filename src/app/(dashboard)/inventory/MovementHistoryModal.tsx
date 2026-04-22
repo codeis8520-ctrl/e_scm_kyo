@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { getInventoryMovements } from '@/lib/inventory-actions';
+import { fmtDateTimeKST } from '@/lib/date';
 
 type Movement = {
   id: string;
@@ -39,15 +40,7 @@ const REFERENCE_LABEL: Record<string, string> = {
 };
 
 function fmtDateTime(iso: string): string {
-  try {
-    const d = new Date(iso);
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    const h = String(d.getHours()).padStart(2, '0');
-    const mi = String(d.getMinutes()).padStart(2, '0');
-    return `${y}-${m}-${day} ${h}:${mi}`;
-  } catch { return iso; }
+  return fmtDateTimeKST(iso);
 }
 
 interface Props {

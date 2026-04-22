@@ -4,6 +4,7 @@ import { miniMaxClient, MiniMaxMessage, type TokenUsage } from '@/lib/ai/client'
 import { AGENT_TOOLS, WRITE_TOOLS, executeTool } from '@/lib/ai/tools';
 import { DB_SCHEMA, BUSINESS_RULES } from '@/lib/ai/schema';
 import { loadMemories, bumpMemoryUsage, extractMemory, extractMemoryFromWrite } from '@/lib/ai/memory';
+import { fmtKoreanDayKST } from '@/lib/date';
 
 const SYSTEM_PROMPT = `당신은 경옥채(한약·건강기능식품 전문 기업)의 사내 ERP AI 직원입니다.
 직원이 자연어로 요청하면 도구를 사용해 실제 데이터를 조회·처리합니다.
@@ -110,7 +111,7 @@ export async function POST(req: NextRequest) {
 
     // ── 사용자 컨텍스트 주입 ─────────────────────────────────────────────────
     const now = new Date();
-    const today = now.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' });
+    const today = fmtKoreanDayKST(now);
 
     const roleLabels: Record<string, string> = {
       SUPER_ADMIN: '시스템관리자', HQ_OPERATOR: '본사운영자',
