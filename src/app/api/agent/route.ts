@@ -98,12 +98,35 @@ export async function POST(req: NextRequest) {
       const parsed = JSON.parse(result);
       // 쓰기 결과 메모리 저장 (비동기 fire-and-forget)
       extractMemoryFromWrite(db, pending_action.tool, pending_action.args, parsed).catch(() => {});
-      if (parsed.error) {
-        return NextResponse.json({ type: 'error', message: `❌ ${parsed.error}` });
+
+      const isError = !!parsed.error;
+      let responseText: string;
+      if (isError) {
+        responseText = `❌ ${parsed.error}`;
+      } else {
+        const okMsg = parsed.메시지 || parsed.결과 || '작업이 완료되었습니다.';
+        const detail = buildSuccessDetail(pending_action.tool, parsed);
+        responseText = detail ? `✅ ${okMsg}\n\n${detail}` : `✅ ${okMsg}`;
       }
-      const msg = parsed.메시지 || parsed.결과 || '작업이 완료되었습니다.';
-      const detail = buildSuccessDetail(pending_action.tool, parsed);
-      return NextResponse.json({ type: 'success', message: detail ? `✅ ${msg}\n\n${detail}` : `✅ ${msg}` });
+
+      logConversation(db, {
+        sessionId: body.session_id,
+        userId: context?.userId,
+        userRole: context?.userRole,
+        branchId: context?.branchId,
+        message: message || `[확정 실행] ${pending_action.description}`,
+        response: responseText,
+        toolsUsed: [pending_action.tool],
+        success: !isError,
+        errorNote: isError ? String(parsed.error) : null,
+        rounds: 1,
+      });
+
+      return NextResponse.json(
+        isError
+          ? { type: 'error', message: responseText }
+          : { type: 'success', message: responseText }
+      );
     }
 
     // ── 메모리 로딩 ──────────────────────────────────────────────────────────
@@ -204,6 +227,18 @@ export async function POST(req: NextRequest) {
 
         if (WRITE_TOOLS.has(toolName)) {
           const description = buildConfirmDescription(toolName, args);
+          logConversation(db, {
+            sessionId: body.session_id,
+            userId: context?.userId,
+            userRole: context?.userRole,
+            branchId: context?.branchId,
+            message,
+            response: `[확인 요청] ${description}`,
+            toolsUsed: [...toolsUsed, toolName],
+            success: true,
+            usage: totalUsage,
+            rounds: lastRound + 1,
+          });
           return NextResponse.json({
             type: 'confirm',
             message: description,
@@ -253,23 +288,19 @@ export async function POST(req: NextRequest) {
     if (isSuccess && memoryIds.length) {
       bumpMemoryUsage(db, memoryIds).catch(() => {});
     }
-    db.from('agent_conversations').insert({
-      session_id: body.session_id || null,
-      user_id: context?.userId || null,
-      user_role: context?.userRole || null,
-      branch_id: context?.branchId || null,
-      user_message: message,
-      assistant_response: finalResponse || null,
-      tools_used: toolsUsed,
+    logConversation(db, {
+      sessionId: body.session_id,
+      userId: context?.userId,
+      userRole: context?.userRole,
+      branchId: context?.branchId,
+      message,
+      response: finalResponse || null,
+      toolsUsed,
       success: isSuccess,
-      error_note: isSuccess ? null : (finalResponse || '').substring(0, 500),
-      prompt_tokens: totalUsage.input_tokens,
-      completion_tokens: totalUsage.output_tokens,
-      total_tokens: totalUsage.input_tokens + totalUsage.output_tokens,
-      cached_tokens: totalUsage.cache_read_tokens,
-      model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
+      errorNote: isSuccess ? null : finalResponse || null,
+      usage: totalUsage,
       rounds: lastRound + 1,
-    }).then(() => {}).catch((e: any) => console.error('[Agent] Log error:', e.message));
+    });
 
     return NextResponse.json({
       type: finalResponse ? 'success' : 'error',
@@ -282,6 +313,39 @@ export async function POST(req: NextRequest) {
     console.error('[Agent] Unhandled error:', errMsg, error.stack?.substring(0, 300));
     return NextResponse.json({ type: 'error', message: `오류: ${errMsg.substring(0, 200)}` }, { status: 500 });
   }
+}
+
+/** 대화 로그 저장 (fire-and-forget). 모든 응답 경로에서 호출. */
+function logConversation(db: any, p: {
+  sessionId?: string | null;
+  userId?: string | null;
+  userRole?: string | null;
+  branchId?: string | null;
+  message: string;
+  response: string | null;
+  toolsUsed: string[];
+  success: boolean;
+  errorNote?: string | null;
+  usage?: TokenUsage;
+  rounds?: number;
+}) {
+  db.from('agent_conversations').insert({
+    session_id: p.sessionId || null,
+    user_id: p.userId || null,
+    user_role: p.userRole || null,
+    branch_id: p.branchId || null,
+    user_message: p.message,
+    assistant_response: p.response,
+    tools_used: p.toolsUsed,
+    success: p.success,
+    error_note: p.errorNote ? p.errorNote.substring(0, 500) : null,
+    prompt_tokens: p.usage?.input_tokens ?? 0,
+    completion_tokens: p.usage?.output_tokens ?? 0,
+    total_tokens: (p.usage?.input_tokens ?? 0) + (p.usage?.output_tokens ?? 0),
+    cached_tokens: p.usage?.cache_read_tokens ?? 0,
+    model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
+    rounds: p.rounds ?? 1,
+  }).then(() => {}).catch((e: any) => console.error('[Agent] Log error:', e.message));
 }
 
 /** Llama 모델 tool calling 인자 정제 — "null" 문자열 제거, 숫자 문자열 변환 */
