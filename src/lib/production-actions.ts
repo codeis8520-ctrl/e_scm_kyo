@@ -20,6 +20,34 @@ function genProductionNumber(): string {
   return `WO-${date}-${rand}`;
 }
 
+// 단위(unit) 표시 방어 — 빈 문자열 또는 숫자만이면 '개'로 대체.
+// products.unit 데이터에 "1" 같은 숫자 문자열이 들어있으면
+// "40{unit}" 식으로 붙여 표시할 때 "401"처럼 오인되는 문제 방지.
+function normalizeUnit(raw: any): string {
+  const s = String(raw ?? '').trim();
+  return s && !/^\d+$/.test(s) ? s : '개';
+}
+
+// 본사(is_headquarters=true) 지점 조회.
+// - 마이그 047 미적용이면 컬럼 자체가 없어 에러 → kind='no_column'
+// - 적용됐지만 지정이 안 됐으면 kind='no_hq'
+async function loadHeadquartersBranch(db: any): Promise<
+  | { ok: true; id: string; name: string }
+  | { ok: false; kind: 'no_column' | 'no_hq' | 'error'; message: string }
+> {
+  const res = await db.from('branches').select('id, name').eq('is_headquarters', true).maybeSingle();
+  if (res.error) {
+    if (isMissingColumnError(res.error)) {
+      return { ok: false, kind: 'no_column', message: '마이그레이션 047 미적용 — branches.is_headquarters 컬럼이 없습니다.' };
+    }
+    return { ok: false, kind: 'error', message: res.error.message };
+  }
+  if (!res.data) {
+    return { ok: false, kind: 'no_hq', message: '본사 지점이 지정되지 않았습니다. 지점 관리에서 본사(is_headquarters)를 먼저 지정하세요.' };
+  }
+  return { ok: true, id: res.data.id, name: res.data.name };
+}
+
 // ─── BOM ──────────────────────────────────────────────────────────────────────
 
 export async function getBomList() {
@@ -388,8 +416,10 @@ export async function startProductionOrder(id: string) {
 }
 
 // ─── 생산 완료 (IN_PROGRESS → COMPLETED) ──────────────────────────────────────
-//   OEM 위탁 모델: 완제품을 입고 지점(branch_id)에 증가 + BOM에 등록된 부자재를
-//   입고 지점 재고에서 차감(본사 → OEM 조달). 원재료는 BOM 미등록 원칙(OEM 자체 조달).
+//   OEM 위탁 모델:
+//     - 부자재는 "본사(is_headquarters=true) 재고"에서만 차감 (본사 조달 원칙)
+//     - 완제품은 생산 지시의 "입고 지점(branch_id)"에 증가
+//   원재료는 BOM에 등록하지 않음(OEM 자체 조달).
 
 export async function completeProductionOrder(id: string) {
   const supabase = await createClient();
@@ -397,7 +427,7 @@ export async function completeProductionOrder(id: string) {
 
   const { data: order } = await db
     .from('production_orders')
-    .select('*, branch_id, product_id, quantity, order_number, produced_by')
+    .select('*, branch_id, product_id, quantity, order_number, produced_by, branch:branches!branch_id(id, name)')
     .eq('id', id)
     .single();
 
@@ -405,10 +435,22 @@ export async function completeProductionOrder(id: string) {
     return { error: '진행중 상태의 생산 지시만 완료 처리할 수 있습니다.' };
   }
 
-  const branchId = order.branch_id;
-  if (!branchId) return { error: '입고 지점 정보가 없습니다.' };
+  const receivingBranchId = order.branch_id;
+  if (!receivingBranchId) return { error: '입고 지점 정보가 없습니다.' };
+  const receivingBranchName = order.branch?.name || receivingBranchId;
 
-  // ─ BOM 부자재 소요량 계산 + 재고 사전 체크 ───────────────────────────────
+  // 부자재 차감 지점 = 본사 (정책: 부자재는 본사에서만 관리)
+  const hqRes = await loadHeadquartersBranch(db);
+  if (!hqRes.ok) {
+    if (hqRes.kind === 'no_column') {
+      return { error: `${hqRes.message} 마이그 적용 후 본사 지점을 지정해야 생산 완료가 가능합니다.` };
+    }
+    return { error: hqRes.message };
+  }
+  const hqBranchId = hqRes.id;
+  const hqBranchName = hqRes.name;
+
+  // ─ BOM 부자재 소요량 계산 + 본사 재고 사전 체크 ──────────────────────────
   const { data: bomItems } = await db
     .from('product_bom')
     .select('material_id, quantity, loss_rate, material:products!product_bom_material_id_fkey(name, unit)')
@@ -419,48 +461,48 @@ export async function completeProductionOrder(id: string) {
 
   for (const item of (bomItems as any[] || [])) {
     const lossRate = Number(item.loss_rate || 0);
-    const required = Math.ceil(item.quantity * order.quantity * (1 + lossRate / 100));
+    const required = Math.ceil(Number(item.quantity) * order.quantity * (1 + lossRate / 100));
     if (required <= 0) continue;
 
     const { data: matInv } = await db
       .from('inventories').select('id, quantity')
-      .eq('branch_id', branchId).eq('product_id', item.material_id).maybeSingle();
+      .eq('branch_id', hqBranchId).eq('product_id', item.material_id).maybeSingle();
 
     const curQty = matInv?.quantity ?? 0;
     const name = item.material?.name || '(이름없음)';
-    const unit = item.material?.unit || '개';
+    const unit = normalizeUnit(item.material?.unit);
 
     if (!matInv) {
-      return { error: `부자재 "${name}" 재고 레코드 없음 — 입고 지점에 해당 자재가 등록되지 않았습니다.` };
+      return { error: `부자재 "${name}" 본사(${hqBranchName}) 재고 레코드 없음 — 제품/재고 조정을 먼저 확인하세요.` };
     }
     if (curQty < required) {
-      return { error: `부자재 "${name}" 재고 부족 (현재 ${curQty}${unit}, 필요 ${required}${unit})` };
+      return { error: `부자재 "${name}" 본사(${hqBranchName}) 재고 부족 (현재 ${curQty} ${unit}, 필요 ${required} ${unit})` };
     }
     deductions.push({ invId: matInv.id, materialId: item.material_id, currentQty: curQty, required, name, unit });
   }
 
   try {
-    // ① 부자재 차감 + 이동 기록
+    // ① 부자재 차감 — 본사 재고에서 + 이동 기록도 본사 지점에 기록
     for (const d of deductions) {
       await db.from('inventories')
         .update({ quantity: d.currentQty - d.required })
         .eq('id', d.invId);
       await db.from('inventory_movements').insert({
-        branch_id: branchId,
+        branch_id: hqBranchId,
         product_id: d.materialId,
         movement_type: 'PRODUCTION',
         quantity: d.required,
         reference_id: id,
         reference_type: 'PRODUCTION_ORDER',
-        memo: `부자재 소진: ${order.order_number} (${order.quantity}개 생산 기준)`,
+        memo: `부자재 소진: ${order.order_number} (${order.quantity}개 생산 · 입고 ${receivingBranchName})`,
       });
     }
 
-    // ② 완제품 재고 증가 + 이동 기록
+    // ② 완제품 재고 증가 — 지시에 지정된 입고 지점으로
     const { data: productInv } = await db
       .from('inventories')
       .select('id, quantity')
-      .eq('branch_id', branchId)
+      .eq('branch_id', receivingBranchId)
       .eq('product_id', order.product_id)
       .maybeSingle();
 
@@ -470,7 +512,7 @@ export async function completeProductionOrder(id: string) {
         .eq('id', productInv.id);
     } else {
       await db.from('inventories').insert({
-        branch_id: branchId,
+        branch_id: receivingBranchId,
         product_id: order.product_id,
         quantity: order.quantity,
         safety_stock: 0,
@@ -478,7 +520,7 @@ export async function completeProductionOrder(id: string) {
     }
 
     await db.from('inventory_movements').insert({
-      branch_id: branchId,
+      branch_id: receivingBranchId,
       product_id: order.product_id,
       movement_type: 'IN',
       quantity: order.quantity,
@@ -528,11 +570,12 @@ export async function cancelProductionOrder(id: string) {
   return { success: true };
 }
 
-// ─── 재료 소요량 미리보기 (OEM 원가 참고용) ─────────────────────────────────
-//   재고 차감은 없지만, BOM 기반 예상 원가를 보여주기 위해 유지.
+// ─── 재료 소요량 미리보기 ───────────────────────────────────────────────────
+//   생산 지시 모달에서 BOM 기반 예상 원가 + 본사 재고 대비 부족 여부를 표시.
+//   실제 차감은 completeProductionOrder 가 본사 재고에서 수행.
 
 export async function getProductionPreview(productId: string, _branchId: string, quantity: number) {
-  if (!productId || quantity < 1) return { data: [] };
+  if (!productId || quantity < 1) return { data: [], hq: null };
 
   const supabase = await createClient();
   const db = supabase as any;
@@ -543,23 +586,44 @@ export async function getProductionPreview(productId: string, _branchId: string,
     .eq('product_id', productId)
     .order('sort_order', { ascending: true });
 
-  if (!bomItems) return { data: [] };
+  if (!bomItems || bomItems.length === 0) return { data: [], hq: null };
 
-  const preview = bomItems.map((item: any) => {
+  // 본사 지점 조회 — 컬럼 없거나 미지정이면 hq=null (UI에서 '—' 표시)
+  const hqRes = await loadHeadquartersBranch(db);
+  const hq = hqRes.ok ? { id: hqRes.id, name: hqRes.name } : null;
+
+  // 본사 재고를 한 번의 쿼리로
+  let hqStockByMaterial: Record<string, number> = {};
+  if (hq) {
+    const materialIds = (bomItems as any[]).map((b: any) => b.material_id);
+    const { data: invs } = await db
+      .from('inventories')
+      .select('product_id, quantity')
+      .eq('branch_id', hq.id)
+      .in('product_id', materialIds);
+    for (const row of ((invs || []) as any[])) {
+      hqStockByMaterial[row.product_id] = Number(row.quantity || 0);
+    }
+  }
+
+  const preview = (bomItems as any[]).map((item: any) => {
     const lossRate = Number(item.loss_rate || 0);
-    const base = item.quantity * quantity;
+    const base = Number(item.quantity) * quantity;
     const required = base * (1 + lossRate / 100);
+    const hq_stock = hq ? (hqStockByMaterial[item.material_id] ?? 0) : null;
     return {
       material_id: item.material_id,
       material_name: item.material?.name,
       material_type: item.material?.product_type,
-      unit: item.material?.unit || '개',
+      unit: normalizeUnit(item.material?.unit),
       cost: item.material?.cost || 0,
       base_required: base,
       loss_rate: lossRate,
       required,
+      hq_stock,
+      hq_shortage: hq_stock !== null ? Math.max(0, Math.ceil(required) - hq_stock) : null,
     };
   });
 
-  return { data: preview };
+  return { data: preview, hq };
 }

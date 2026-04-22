@@ -618,19 +618,22 @@ function NewOrderModal({ products, branches, defaultBranchId, factories, onClose
   const [quantity, setQuantity]   = useState(1);
   const [memo, setMemo]           = useState('');
   const [preview, setPreview]     = useState<any[]>([]);
+  const [hqInfo, setHqInfo]       = useState<{ id: string; name: string } | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (!productId || quantity < 1) { setPreview([]); return; }
+    if (!productId || quantity < 1) { setPreview([]); setHqInfo(null); return; }
     setLoadingPreview(true);
     getProductionPreview(productId, branchId, quantity).then(r => {
       setPreview(r.data);
+      setHqInfo((r as any).hq ?? null);
       setLoadingPreview(false);
     });
   }, [productId, quantity, branchId]);
 
   const totalCost = preview.reduce((s, p) => s + p.cost * Math.ceil(p.required), 0);
+  const hasShortage = preview.some((p: any) => (p.hq_shortage ?? 0) > 0);
   const canSubmit = !!productId && !!branchId && quantity >= 1;
 
   const handleSubmit = async () => {
@@ -700,17 +703,27 @@ function NewOrderModal({ products, branches, defaultBranchId, factories, onClose
             <input type="text" value={memo} onChange={e => setMemo(e.target.value)} placeholder="발주서 번호·납기 등" className="input" />
           </div>
 
-          {/* BOM 기반 부자재 소요량·예상 원가 */}
+          {/* BOM 기반 부자재 소요량·본사 재고·예상 원가 */}
           {loadingPreview && <p className="text-sm text-slate-400">계산 중...</p>}
           {preview.length > 0 && (
             <div>
-              <p className="text-sm font-medium mb-2">부자재 소요 <span className="text-xs font-normal text-slate-400">(생산 완료 시 입고 지점에서 차감)</span></p>
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-sm font-medium">
+                  부자재 소요 <span className="text-xs font-normal text-slate-400">
+                    (생산 완료 시 {hqInfo ? `본사(${hqInfo.name})` : '본사'}에서 차감)
+                  </span>
+                </p>
+                {!hqInfo && (
+                  <span className="text-[11px] text-amber-600">⚠ 본사 미지정</span>
+                )}
+              </div>
               <div className="rounded border border-slate-200 overflow-hidden">
                 <table className="w-full text-sm">
                   <thead className="bg-slate-50">
                     <tr>
                       <th className="text-left px-3 py-2 text-xs text-slate-500 font-medium">재료</th>
                       <th className="text-right px-3 py-2 text-xs text-slate-500 font-medium">소요량</th>
+                      <th className="text-right px-3 py-2 text-xs text-slate-500 font-medium">본사 재고</th>
                       <th className="text-right px-3 py-2 text-xs text-slate-500 font-medium">금액</th>
                     </tr>
                   </thead>
@@ -720,14 +733,25 @@ function NewOrderModal({ products, branches, defaultBranchId, factories, onClose
                       const hasLoss = p.loss_rate > 0;
                       const rawUnit = String(p.unit || '').trim();
                       const unit = rawUnit && !/^\d+$/.test(rawUnit) ? rawUnit : '개';
+                      const hqStock = p.hq_stock;
+                      const shortage = p.hq_shortage ?? 0;
+                      const isShort = shortage > 0;
                       return (
-                        <tr key={i}>
+                        <tr key={i} className={isShort ? 'bg-red-50/60' : ''}>
                           <td className="px-3 py-1.5">{p.material_name}</td>
                           <td className="px-3 py-1.5 text-right">
                             <span className="font-medium">{actual.toLocaleString()}</span> {unit}
                             {hasLoss && (
                               <span className="block text-[10px] text-slate-400">
                                 {p.base_required}{unit} × loss {p.loss_rate}% → 올림
+                              </span>
+                            )}
+                          </td>
+                          <td className={`px-3 py-1.5 text-right ${isShort ? 'text-red-600 font-medium' : 'text-slate-600'}`}>
+                            {hqStock === null ? '—' : <>{hqStock.toLocaleString()} {unit}</>}
+                            {isShort && (
+                              <span className="block text-[10px] text-red-500">
+                                부족 {shortage.toLocaleString()} {unit}
                               </span>
                             )}
                           </td>
@@ -738,6 +762,11 @@ function NewOrderModal({ products, branches, defaultBranchId, factories, onClose
                   </tbody>
                 </table>
               </div>
+              {hasShortage && (
+                <p className="text-xs text-red-600 mt-1.5">
+                  ⚠ 본사 부자재 재고가 부족합니다. 지시는 등록 가능하지만, 생산 완료 처리 전 본사 재고를 먼저 보충하세요.
+                </p>
+              )}
               {totalCost > 0 && (
                 <p className="text-xs text-slate-500 mt-1.5 text-right">
                   예상 원가 합계: <span className="font-medium text-slate-700">{Math.round(totalCost).toLocaleString()}원</span>

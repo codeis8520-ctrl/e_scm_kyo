@@ -106,8 +106,11 @@ DRAFT → CONFIRMED → RECEIVED
 PENDING → IN_PROGRESS → COMPLETED
 본사에서만 지시 가능. 각 지시는 OEM 공장에 위탁하고, 완성품은 지정한 입고 지점(기본 본사)으로 직접 입고.
 완료 시:
-  ① BOM에 등록된 부자재(본사 조달품)를 입고 지점 재고에서 차감 — BOM qty × 생산 수량 × (1+loss%), 올림. 재고 부족 시 완료 불가(에러).
-  ② 완제품 재고를 입고 지점에 증가.
+  ① 부자재는 **본사(branches.is_headquarters=true) 재고에서만** 차감 — BOM qty × 생산 수량 × (1+loss%), 올림.
+     ※ 입고 지점이 본사가 아닌 경우에도 부자재 차감 지점은 항상 본사. 본사 재고 부족 시 완료 불가(에러).
+     ※ 본사가 미지정이면 생산 완료 자체가 불가 — 지점 관리에서 본사 지정이 전제.
+  ② 완제품 재고를 "입고 지점(production_orders.branch_id)"에 증가.
+  ③ inventory_movements 기록: 부자재 차감은 본사 branch_id로, 완제품 입고는 입고 지점 branch_id로.
 원재료는 BOM에 등록하지 않음(OEM 자체 조달 원칙). BOM은 부자재 조달 관리 + 원가 산정(cost_source='BOM')에 사용.
 
 [채널]
