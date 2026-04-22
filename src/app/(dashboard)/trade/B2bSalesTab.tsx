@@ -37,16 +37,36 @@ export default function B2bSalesTab() {
   const fetchData = async () => {
     setLoading(true);
     const supabase = createClient() as any;
-    const [ordersRes, partnersRes, productsRes, branchesRes, summaryRes] = await Promise.all([
+
+    // product_type 포함 시도 → 마이그 042 미적용 DB 폴백
+    let productsRes: any = await supabase
+      .from('products')
+      .select('id, name, code, price, product_type')
+      .eq('is_active', true)
+      .order('name');
+    if (productsRes.error) {
+      productsRes = await supabase
+        .from('products')
+        .select('id, name, code, price')
+        .eq('is_active', true)
+        .order('name');
+    }
+
+    const [ordersRes, partnersRes, branchesRes, summaryRes] = await Promise.all([
       getB2bSalesOrders({ partnerId: partnerFilter || undefined, status: statusFilter || undefined, startDate, endDate }),
       getB2bPartners(),
-      supabase.from('products').select('id, name, code, price').eq('is_active', true).order('name'),
       supabase.from('branches').select('id, name').eq('is_active', true).order('name'),
       getB2bPartnerSummary(),
     ]);
+
+    // B2B 납품 대상은 완제품만 — RAW/SUB 제외 (null은 레거시 FINISHED 취급)
+    const productsData = ((productsRes.data || []) as any[]).filter(
+      (p: any) => p.product_type !== 'RAW' && p.product_type !== 'SUB'
+    );
+
     setOrders(ordersRes.data || []);
     setPartners(partnersRes.data || []);
-    setProducts(productsRes.data || []);
+    setProducts(productsData);
     setBranches(branchesRes.data || []);
     setSummary(summaryRes.data || []);
     setLoading(false);

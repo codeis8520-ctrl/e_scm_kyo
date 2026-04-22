@@ -158,6 +158,19 @@ export async function createB2bSalesOrder(params: {
   try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
   const sb = (await createClient()) as any;
 
+  // ⓪ 판매 가능 제품 검증 — RAW/SUB는 B2B 납품 불가 (서버 측 방어)
+  //   폴백: 마이그 042(product_type) 미적용 DB에서는 컬럼 없음 → 검증 스킵
+  const productIds = Array.from(new Set(params.items.map(i => i.productId)));
+  if (productIds.length > 0) {
+    const ptRes: any = await sb.from('products').select('id, product_type').in('id', productIds);
+    if (!ptRes.error && Array.isArray(ptRes.data)) {
+      const blocked = (ptRes.data as any[]).find(
+        (p: any) => p.product_type === 'RAW' || p.product_type === 'SUB'
+      );
+      if (blocked) return { error: '판매 가능한 제품이 아닙니다.' };
+    }
+  }
+
   // 거래처 정보
   const { data: partner } = await sb.from('b2b_partners').select('settlement_cycle, settlement_day, code').eq('id', params.partnerId).single();
   if (!partner) return { error: '거래처를 찾을 수 없습니다.' };

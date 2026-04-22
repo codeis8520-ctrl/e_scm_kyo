@@ -103,7 +103,7 @@
 
 ### Step 4 — POS 판매 등록: 완제품만 노출
 
-**상태**: Bob 빌드 완료, Richard 리뷰 대기 (2026-04-22)
+**상태**: ✅ 배포 완료 (commit `cd75a6d`, 2026-04-22)
 
 **변경 파일 (2개)**:
 - `src/app/(dashboard)/pos/page.tsx` (L274 주변, 초기 데이터 로드) — 제품 로드 쿼리에 `product_type` 추가 + 마이그 042 미적용 폴백. 이후 `p.product_type !== 'RAW' && p.product_type !== 'SUB'` in-memory 필터를 setProducts/productMap 양쪽 앞단에 배치.
@@ -117,7 +117,23 @@
 5. `isMaterialType` 등 헬퍼 재정의 없이 인라인 조건으로 스코프 최소화 (Brief §Flag).
 
 **빌드**: `npm run build` 통과 (46 pages, 0 errors).
+**Richard 리뷰**: ✅ APPROVED (드리프트 없음, 2 파일 한정). Escalate: B2B 경로 → Step 5.
+
+### Step 5 — B2B 납품 등록: 완제품만 노출
+
+**상태**: Bob 빌드 완료, Richard APPROVED (2026-04-22)
+
+**변경 파일 (2개)**:
+- `src/app/(dashboard)/trade/B2bSalesTab.tsx` (L37-64 `fetchData`) — 제품 로드를 `Promise.all`에서 분리, `product_type` 포함 1차 select + 마이그 042 폴백. `productsData = filter(p.product_type !== 'RAW' && !== 'SUB')` 후 `setProducts`. `B2bSalesForm` 드롭다운이 `products` state 기반이라 RAW/SUB 자동 제외.
+- `src/lib/b2b-actions.ts` (L160-172 `createB2bSalesOrder`) — `sb` 생성 직후, partner 조회·총액 계산·전표번호 조립·`b2b_sales_orders` insert·`b2b_sales_order_items` insert·재고 차감·분개 생성 모두 이전에 `⓪` RAW/SUB 서버 방어 블록. cart productId 중복 제거 후 `products.in('id', [...])`로 일괄 조회. 폴백: 쿼리 에러 시 검증 스킵.
+
+**주요 결정**:
+1. Step 4 POS 패턴을 그대로 복사 (구조·주석 넘버링·한글 에러 문구 일치).
+2. 단가표(`getPartnerPrices`, `bulkUpsertPartnerPrices`) 경로는 스코프 외 — BOM 원가 관리용 가능성. 필요 시 후속 Step.
+3. 수금·취소(`settleB2bOrder`, `cancelB2bOrder`)는 이미 존재 주문 기반이라 새 insert 없음 → 스코프 외.
+
+**빌드**: `npm run build` 통과 (46 pages, 5.3s compile, 0 errors).
 
 ## Current Status
 
-Step 4 빌드 완료, Richard 리뷰 대기.
+Step 5 Richard APPROVED, 배포 대기.

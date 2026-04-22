@@ -4,67 +4,54 @@
 
 ---
 
-## Step 4 — POS 판매 등록: 완제품만 노출
+## Step 5 — B2B 납품 등록: 완제품만 노출
 
 ### 배경
 
-POS 판매 등록 화면의 제품 그리드·바코드 검색에 **원자재(RAW)·부자재(SUB)**도 함께 노출됨. Step 2(dee1300)에서 재고 화면의 RAW/SUB 입출고를 본사로 제한했지만, POS 판매 흐름은 미조치 상태. OEM 위탁 생산 모델에서 **판매 대상은 완제품(FINISHED)뿐**이므로 실수로 원자재가 판매 항목으로 찍히는 것을 막아야 함.
+Step 4(commit `cd75a6d`)에서 POS 판매 화면은 RAW/SUB 차단을 완료했지만, **B2B 납품 경로(`/trade` B2B 판매 탭)**는 동일 가드가 없다. Richard가 Step 4 리뷰에서 이를 Escalate:
+
+> B2B 판매 경로(`src/lib/b2b-actions.ts` → `b2b_sales_orders` / `b2b_sales_order_items` insert at L193, L215)는 `processPosCheckout` 가드의 적용 범위 밖이다. OEM 위탁 생산 모델에서 B2B도 완제품 전용이라면 별도 Step으로 RAW/SUB 거부 블록을 추가해야 한다.
+
+OEM 위탁 생산 모델에서 **B2B 납품 대상도 완제품(FINISHED)뿐**이므로 동일 정책을 적용.
 
 ### 목표
 
-POS 판매 등록 화면에서 `product_type ∈ {RAW, SUB}` 제품은 **UI 어디서도 선택 불가**:
-- 제품 그리드(타일 목록)에서 노출 금지
-- 제품명/코드 검색 결과에서 제외
-- 바코드 스캔 시 RAW/SUB 바코드는 "판매 불가 제품" 안내와 함께 장바구니 추가 거부
-- productMap(바코드/코드 hash)에서도 제외하여 Enter 매칭 차단
-
-기존에 이미 등록된 RAW/SUB 제품 데이터는 불변. 필터만 추가.
-
-### 아키텍처 원칙
-
-- 클라이언트(POS page.tsx) 필터링으로 충분. 서버 액션 createSalesOrder 레벨의 방어 검증은 **선택** — 스코프에 포함 (신뢰 경계 원칙)
-- `product_type` 컬럼 null인 레거시 데이터는 완제품으로 간주(`!== 'RAW' && !== 'SUB'`) — 현행 기본값과 부합
+`/trade` B2B 판매 탭의 납품 등록 모달에서 `product_type ∈ {RAW, SUB}` 제품은 **선택 불가**:
+- 제품 드롭다운(`<select>`)에서 노출 금지
+- `createB2bSalesOrder` 서버 액션이 RAW/SUB productId 수신 시 한글 에러 반환 (insert 이전 DB 무변경)
 
 ### 건드릴 파일
 
-- `src/app/(dashboard)/pos/page.tsx` — 제품 로드 직후 필터링 + productMap 구성에서 RAW/SUB 제외 + 바코드 입력 방어(필터링된 products로 productMap 만들면 자동 처리, 추가 체크 불필요)
-- `src/lib/actions.ts` 또는 POS 결제 서버 액션 — **서버 측 방어**: `createSalesOrder`가 RAW/SUB 제품 id를 받으면 거부 (Grep으로 정확한 함수 위치 확인 필요)
-
-### 결정 — UX
-
-- RAW/SUB가 제품 그리드/검색 결과에 **아예 보이지 않음** (별도 배지·토글 없이 숨김)
-- 바코드 스캔으로 RAW/SUB 매칭 시도 시: 제품 grid에 없는 상태이므로 `productMap` 실패 → 이미 존재하는 "제품을 찾을 수 없습니다" 계열 UX가 자연 발동. 별도 메시지 불필요.
-- 서버 거부 시 메시지: "판매 가능한 제품이 아닙니다." (한글, 시스템 용어 노출 금지)
+- `src/app/(dashboard)/trade/B2bSalesTab.tsx` — L43 제품 로드 쿼리에 `product_type` 추가 + 마이그 042 폴백 + setProducts 전 RAW/SUB 필터
+- `src/lib/b2b-actions.ts` — `createB2bSalesOrder` L157 부근(`sb` 생성 직후, partner 조회 이전)에 RAW/SUB 검증 블록 신설
 
 ### Flag (추측 금지)
 
-- `products.product_type` 값은 `'FINISHED' | 'RAW' | 'SUB'` 세 가지 (null은 레거시 → FINISHED 취급)
-- POS 제품 로드 쿼리는 현재 `supabase.from('products').select('id, name, code, barcode, price, unit').eq('is_active', true).order('name')` (pos/page.tsx:274 부근). 여기서 `product_type`을 select에 **추가**하고 in-memory 필터 `p.product_type !== 'RAW' && p.product_type !== 'SUB'` 적용
-- 재고 화면에 쓰는 `isMaterialType` 같은 헬퍼는 **POS 페이지에 재정의하지 말고** 인라인 조건으로 처리 (스코프 최소화)
-- 마이그 042 미적용 DB에서는 `product_type` 컬럼이 없을 수 있음 — select 실패 시 기존 폴백 select로 재시도(컬럼 없이) + 필터 스킵 (기존 패턴 존재 확인)
-- 서버 액션에서 RAW/SUB 거부 검증은 `sales_order_items`에 넣을 제품들의 `product_type`을 한 번에 조회(`SELECT product_type FROM products WHERE id IN (...)`) 후 하나라도 RAW/SUB면 에러 반환
+- Step 4 POS 패턴 그대로 복사 (pos/page.tsx:274-301, actions.ts:1111-1122)
+- 제품 로드: 1차 `select('id, name, code, price, product_type')` → error 시 2차 `select('id, name, code, price')` 폴백
+- 필터: `p.product_type !== 'RAW' && p.product_type !== 'SUB'` (null은 레거시 FINISHED 취급)
+- 서버 방어: `cart productId 중복 제거 → products.in('id', [...])` 한 번에 조회 → RAW/SUB 있으면 `{ error: '판매 가능한 제품이 아닙니다.' }` 반환
+- 마이그 042 미적용 DB: 쿼리 에러 시 검증 스킵(운영 차단 방지)
+
+### 결정 — UX
+
+- 드롭다운에서 RAW/SUB 아예 보이지 않음
+- 서버 거부 메시지: `"판매 가능한 제품이 아닙니다."` (Step 4와 동일 톤)
 
 ### 건드리지 말 것
 
-- 제품 관리 화면(`/products`) — RAW/SUB 제품 등록·조회는 유지 (재고·BOM 관리용)
-- 재고 화면 — Step 2에서 이미 가드 적용
-- 생산·매입·BOM 화면 — RAW/SUB 사용처
-- POS의 담당자/매출처/결제/배송 로직 — 제품 필터에만 집중
+- `getPartnerPrices`, `bulkUpsertPartnerPrices` 등 단가표 경로 — 정산/단가 관리는 RAW/SUB도 사용 가능 (BOM 단가 등)
+- `settleB2bOrder`, `cancelB2bOrder` — 수금·취소는 이미 존재 주문 기반이라 스코프 외
+- 분개 생성 로직(L241-280) — 회계 스코프
+- `CreditTab.tsx`, `B2bPartnersTab.tsx` — 납품 등록 경로 아님
 
 ### Self-review 체크리스트
 
-- [ ] `pos/page.tsx` 제품 로드 쿼리에 `product_type` 포함 (마이그 042 폴백 유지)
-- [ ] RAW/SUB 제품이 그리드 `productList` 렌더링에서 제외되는가?
-- [ ] 검색 결과(`searchResults` 계산)에 RAW/SUB 제외되는가?
-- [ ] `productMap`(바코드/코드 조회)에 RAW/SUB 제외되는가?
-- [ ] 서버 액션(createSalesOrder/POS 주문 생성 경로)에 RAW/SUB 거부 추가되었는가?
-- [ ] 에러 메시지는 한글·시스템 용어 숨김?
-- [ ] 기존 완제품 판매 흐름이 영향 없는지 수동 검증 시나리오 기록
+- [ ] `B2bSalesTab.tsx` 제품 로드 쿼리에 `product_type` 포함 (042 폴백)
+- [ ] 납품 등록 모달의 제품 `<option>` 목록에서 RAW/SUB 제외
+- [ ] `createB2bSalesOrder`에 서버 가드 추가 (insert 이전)
+- [ ] 가드 위치: partner 조회·총액 계산 전에 조기 return
+- [ ] 에러 메시지 한글, 시스템 용어 숨김
 - [ ] `npm run build` 통과
-
-### Out of scope (BUILD-LOG Known Gaps)
-
-- 제품 관리 화면의 RAW/SUB UX 개선 (별도 건)
-- product_type 마이그 042 적용 여부 검증 — 이미 스키마 덤프에서 컬럼 존재 확인됨
 
 ### Ready for Bob: YES
