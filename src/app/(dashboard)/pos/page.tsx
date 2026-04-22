@@ -271,8 +271,21 @@ function POSPageInner() {
     const fetchData = async () => {
       const supabase = createClient();
 
-      const [productsRes, branchesRes, customersRes, gradesRes, invRes, usersRes] = await Promise.all([
-        supabase.from('products').select('id, name, code, barcode, price, unit').eq('is_active', true).order('name'),
+      // product_type 포함 시도 → 마이그 042 미적용 DB 폴백
+      let productsRes: any = await supabase
+        .from('products')
+        .select('id, name, code, barcode, price, unit, product_type')
+        .eq('is_active', true)
+        .order('name');
+      if (productsRes.error) {
+        productsRes = await supabase
+          .from('products')
+          .select('id, name, code, barcode, price, unit')
+          .eq('is_active', true)
+          .order('name');
+      }
+
+      const [branchesRes, customersRes, gradesRes, invRes, usersRes] = await Promise.all([
         supabase.from('branches').select('*').eq('is_active', true).order('created_at'),
         supabase.from('customers').select('id, name, phone, grade').eq('is_active', true).order('name'),
         supabase.from('customer_grades').select('code, point_rate'),
@@ -282,7 +295,10 @@ function POSPageInner() {
 
       const gradesMap = new Map((gradesRes.data || []).map((g: any) => [g.code, parseFloat(g.point_rate) || 1.0]));
       const branchesData = (branchesRes.data || []) as any[];
-      const productsData = (productsRes.data || []) as any[];
+      // POS 판매 대상은 완제품만 — RAW/SUB 제외 (null은 레거시 FINISHED 취급)
+      const productsData = ((productsRes.data || []) as any[]).filter(
+        (p: any) => p.product_type !== 'RAW' && p.product_type !== 'SUB'
+      );
 
       const invMap = new Map<string, number>();
       for (const inv of (invRes.data || []) as any[]) {

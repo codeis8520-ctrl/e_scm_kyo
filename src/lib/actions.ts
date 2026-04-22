@@ -1108,6 +1108,19 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     : 'mixed';
   const firstCard = splits.find(s => s.method === 'card' || s.method === 'card_keyin');
 
+  // ⓪ 판매 가능 제품 검증 — RAW/SUB는 POS 판매 불가 (서버 측 방어)
+  //   폴백: 마이그 042(product_type) 미적용 DB에서는 컬럼 없음 → 검증 스킵
+  const productIds = Array.from(new Set(cart.map(c => c.productId)));
+  if (productIds.length > 0) {
+    const ptRes: any = await db.from('products').select('id, product_type').in('id', productIds);
+    if (!ptRes.error && Array.isArray(ptRes.data)) {
+      const blocked = (ptRes.data as any[]).find(
+        (p: any) => p.product_type === 'RAW' || p.product_type === 'SUB'
+      );
+      if (blocked) return { error: '판매 가능한 제품이 아닙니다.' };
+    }
+  }
+
   // ① 재고 사전 확인 (출고 지점 기준)
   for (const item of cart) {
     const { data: inv } = await supabase

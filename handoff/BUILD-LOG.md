@@ -101,6 +101,23 @@
 
 **배포**: ✅ commit `db58077` (2026-04-22)
 
+### Step 4 — POS 판매 등록: 완제품만 노출
+
+**상태**: Bob 빌드 완료, Richard 리뷰 대기 (2026-04-22)
+
+**변경 파일 (2개)**:
+- `src/app/(dashboard)/pos/page.tsx` (L274 주변, 초기 데이터 로드) — 제품 로드 쿼리에 `product_type` 추가 + 마이그 042 미적용 폴백. 이후 `p.product_type !== 'RAW' && p.product_type !== 'SUB'` in-memory 필터를 setProducts/productMap 양쪽 앞단에 배치.
+- `src/lib/actions.ts` (L1111 주변, `processPosCheckout`) — 재고 확인 직전에 RAW/SUB 서버 방어 블록 신설. cart productId들을 `products.in('id', [...])`로 한 번에 조회 후 RAW/SUB 있으면 한글 에러 반환. 폴백: 쿼리 에러 시 검증 스킵.
+
+**주요 결정**:
+1. 클라이언트 필터링은 `products` state 한 경로에서만 이루어지고, `filteredProducts`·`productMap`은 파생 객체라 자동 반영 — 수정 최소화.
+2. 서버 방어는 `sales_order_items` insert 이전(재고 확인 이전)에 실행하여 DB 어떤 변경도 발생시키지 않고 즉시 중단.
+3. 주석 넘버링은 기존 ①∼⑥을 유지하기 위해 새 가드 블록에 `⓪`을 부여하여 후속 번호 시프트 최소화.
+4. 마이그 042 미적용 DB에서는 필터·서버 검증 모두 스킵(운영 차단 방지). 실제 운영 DB에는 042가 이미 적용되어 있어 차단이 유효.
+5. `isMaterialType` 등 헬퍼 재정의 없이 인라인 조건으로 스코프 최소화 (Brief §Flag).
+
+**빌드**: `npm run build` 통과 (46 pages, 0 errors).
+
 ## Current Status
 
-Step 3 배포 완료. 다음: **Step 4** — POS 판매등록 제품 그리드에서 RAW/SUB 제외 (완제품만 노출)
+Step 4 빌드 완료, Richard 리뷰 대기.
