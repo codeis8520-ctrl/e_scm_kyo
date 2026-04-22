@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { requireSession, writeAuditLog } from '@/lib/session';
+import { kstTodayString } from '@/lib/date';
 
 /**
  * 외상 미수금 주문 취소 (삭제 대신 CANCELLED 처리)
@@ -115,7 +116,7 @@ export async function cancelCreditOrder(params: {
       await createSaleJournal({
         orderId: order.id,
         orderNumber: `CANCEL-${order.order_number}`,
-        orderDate: new Date().toISOString().slice(0, 10),
+        orderDate: kstTodayString(),
         totalAmount: -Number(order.total_amount),
         paymentMethod: 'credit',
         cogs: 0,
@@ -131,7 +132,7 @@ export async function cancelCreditOrder(params: {
     await db.from('sales_orders')
       .update({
         status: 'CANCELLED',
-        memo: (order.memo ? order.memo + '\n' : '') + `[외상 취소] ${params.reason || '관리자 요청'} (${new Date().toISOString().slice(0, 10)})`,
+        memo: (order.memo ? order.memo + '\n' : '') + `[외상 취소] ${params.reason || '관리자 요청'} (${kstTodayString()})`,
       })
       .eq('id', order.id);
 

@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { fireNotificationTrigger } from '@/lib/notification-triggers';
 import { computeBomCost } from '@/lib/production-actions';
+import { kstTodayString } from '@/lib/date';
 
 // ============ Products ============
 
@@ -1119,8 +1120,8 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     }
   }
 
-  // ② 판매 전표 생성
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  // ② 판매 전표 생성 (KST 오늘 기준 주문번호 prefix)
+  const today = kstTodayString().replace(/-/g, '');
   const randomSuffix = Math.random().toString(36).substring(2, 6).toUpperCase();
   const orderNumber = `SA-${branchCode}-${today}-${randomSuffix}`;
 

@@ -14,6 +14,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient as createSbClient } from '@supabase/supabase-js';
 import { triggerEventNotification } from '@/lib/notification-triggers';
+import { kstDaysAgoStart } from '@/lib/date';
 
 function sbAdmin() {
   return createSbClient(
@@ -40,13 +41,9 @@ async function run(req: NextRequest) {
 
   const supabase = sbAdmin() as any;
 
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - days);
-  const cutoffIso = cutoffDate.toISOString();
-
-  const recentBlockDate = new Date();
-  recentBlockDate.setDate(recentBlockDate.getDate() - 30);
-  const recentBlockIso = recentBlockDate.toISOString();
+  // KST 자정 기준 N일 전 / 30일 전
+  const cutoffIso = kstDaysAgoStart(days);
+  const recentBlockIso = kstDaysAgoStart(30);
 
   const { data: logRow } = await supabase
     .from('notification_batch_logs')

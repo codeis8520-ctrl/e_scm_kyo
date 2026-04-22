@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { fmtDateTimeKST } from '@/lib/date';
+import { fmtDateTimeKST, fmtDateKST, kstDayStart, kstDayEnd, kstTodayString } from '@/lib/date';
 
 interface Conversation {
   id: string;
@@ -38,11 +38,11 @@ function fmtDateTime(s: string): string {
   if (!s) return '';
   return fmtDateTimeKST(s);
 }
+// KST 기준 "YYYY-MM-DD". 브라우저 TZ에 의존하지 않도록 fmtDateKST 사용.
 function fmtDate(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return fmtDateKST(d);
 }
-function todayStr(): string { return fmtDate(new Date()); }
+function todayStr(): string { return kstTodayString(); }
 function daysAgo(n: number): string {
   const d = new Date(); d.setDate(d.getDate() - n); return fmtDate(d);
 }
@@ -131,8 +131,8 @@ export default function AgentConversationsPage() {
     const sb = createClient() as any;
     let q = sb.from('agent_conversations')
       .select('id, session_id, user_id, user_role, branch_id, user_message, assistant_response, tools_used, success, error_note, prompt_tokens, completion_tokens, total_tokens, cached_tokens, model, rounds, created_at')
-      .gte('created_at', `${startDate}T00:00:00`)
-      .lte('created_at', `${endDate}T23:59:59`)
+      .gte('created_at', kstDayStart(startDate))
+      .lte('created_at', kstDayEnd(endDate))
       .order('created_at', { ascending: false })
       .limit(limit + 1);
 

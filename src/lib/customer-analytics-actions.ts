@@ -2,6 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server';
 import { SEGMENT_META, type RfmSegment } from '@/lib/customer-analytics-types';
+import { kstDaysAgoStart } from '@/lib/date';
 
 // ─── RFM 스코어링 기준 ─────────────────────────────────────────────────────────
 
@@ -184,9 +185,8 @@ export async function getRepurchaseCycles(branchId?: string) {
 
 export async function getChurnRiskCustomers(branchId?: string) {
   const sb = await createClient() as any;
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - 60);
-  const cutoff = cutoffDate.toISOString();
+  // KST 기준 60일 전 자정
+  const cutoff = kstDaysAgoStart(60);
 
   let q = sb
     .from('sales_orders')

@@ -14,15 +14,17 @@ import {
   reopenPeriod,
   getClosedPeriods,
 } from '@/lib/accounting-actions';
+import { fmtDateKST, kstTodayString } from '@/lib/date';
 
 type Tab = 'pl' | 'journal' | 'ledger' | 'manual' | 'vat' | 'gl_balance';
 
 function getMonth(offset = 0): { start: string; end: string } {
+  // offset 월의 1일~말일 (KST 기준 YYYY-MM-DD). <input type="date">에 그대로 사용.
   const d = new Date();
   d.setMonth(d.getMonth() + offset, 1);
-  const start = d.toISOString().slice(0, 10);
+  const start = fmtDateKST(d);
   d.setMonth(d.getMonth() + 1, 0);
-  const end = d.toISOString().slice(0, 10);
+  const end = fmtDateKST(d);
   return { start, end };
 }
 
@@ -61,7 +63,7 @@ export default function AccountingPage() {
   const [ledgerRows, setLedgerRows] = useState<any[]>([]);
 
   // Manual entry
-  const [manualDate, setManualDate] = useState(new Date().toISOString().slice(0, 10));
+  const [manualDate, setManualDate] = useState(kstTodayString());
   const [manualDesc, setManualDesc] = useState('');
   const [manualLines, setManualLines] = useState([
     { account_id: '', debit: '', credit: '', memo: '' },

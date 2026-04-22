@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { getValidAccessToken, loadTokens } from '@/lib/cafe24/token-store';
+import { kstTodayString } from '@/lib/date';
 
 export async function GET() {
   const mallId = process.env.CAFE24_MALL_ID;
@@ -39,7 +40,7 @@ export async function GET() {
   // 4. 실제 API 호출 테스트
   let apiTest: any = null;
   if (accessToken && mallId) {
-    const today = new Date().toISOString().split('T')[0];
+    const today = kstTodayString();
     const url = `https://${mallId}.cafe24api.com/api/v2/admin/orders?start_date=${today}&end_date=${today}&limit=10&shop_no=${process.env.CAFE24_SHOP_NO ?? '1'}`;
     try {
       const res = await fetch(url, {
@@ -107,7 +108,7 @@ export async function GET() {
   }
 
   // orders 라우트 직접 호출 테스트
-  const today = new Date().toISOString().split('T')[0];
+  const today = kstTodayString();
   let ordersRouteTest: any = null;
   try {
     const host = process.env.CAFE24_REDIRECT_URI?.replace('/api/cafe24/callback', '') ?? 'https://e-scm-kyo.vercel.app';

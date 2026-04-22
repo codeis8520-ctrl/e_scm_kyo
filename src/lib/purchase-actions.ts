@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { cookies } from 'next/headers';
 import { createPurchaseReceiptJournal } from '@/lib/accounting-actions';
 import { writeAuditLog } from '@/lib/session';
+import { kstTodayString } from '@/lib/date';
 
 function getUserId(): string | null {
   try {
@@ -16,7 +17,7 @@ function getUserId(): string | null {
 }
 
 function genPoNumber(): string {
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const date = kstTodayString().replace(/-/g, '');
   const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
   return `PO-${date}-${rand}`;
 }
@@ -264,7 +265,7 @@ async function recordPurchasePrices(
   },
 ) {
   if (!args.supplierId || !args.items?.length) return;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = kstTodayString();
 
   const rows = args.items
     .filter(i => i.product_id && i.unit_price >= 0)
@@ -365,8 +366,8 @@ export async function receivePurchaseOrder(formData: FormData) {
     }
   }
 
-  // 1. 입고 전표 생성
-  const rcDate = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  // 1. 입고 전표 생성 (KST 오늘 기준)
+  const rcDate = kstTodayString().replace(/-/g, '');
   const rcRand = Math.random().toString(36).substring(2, 6).toUpperCase();
   const receiptNumber = `RC-${rcDate}-${rcRand}`;
   const totalReceiptAmount = validItems.reduce((s, i) => {
@@ -479,7 +480,7 @@ export async function receivePurchaseOrder(formData: FormData) {
   createPurchaseReceiptJournal({
     receiptId,
     receiptNumber,
-    receiptDate: new Date().toISOString().slice(0, 10),
+    receiptDate: kstTodayString(),
     totalAmount: totalReceiptAmount,
   }).catch(() => {}); // 분개 실패해도 입고는 성공으로 처리
 
@@ -606,7 +607,7 @@ export async function recordManualSupplierPrice(
       supplier_id: supplierId,
       product_id: productId,
       unit_price: Math.round(unitPrice),
-      effective_from: opts?.effective_from || new Date().toISOString().slice(0, 10),
+      effective_from: opts?.effective_from || kstTodayString(),
       source: 'MANUAL',
       memo: opts?.memo || null,
       created_by: userId,

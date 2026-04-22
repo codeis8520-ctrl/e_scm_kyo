@@ -1,6 +1,7 @@
 import type { MiniMaxTool } from './client';
 import { processRefund, getSalesOrderForRefund } from '@/lib/return-actions';
 import { refreshCafe24Token, syncCafe24PaidOrders } from '@/lib/cafe24-actions';
+import { kstDayStart, kstDayEnd, kstMonthStart, kstTodayString, kstDaysAgoStart } from '@/lib/date';
 
 // ─── Tool Definitions ──────────────────────────────────────────────────────
 
@@ -1242,8 +1243,8 @@ async function execGetOrders(sb: any, args: { branch_name?: string; customer_nam
     .order('ordered_at', { ascending: false });
 
   if (branchId) q = q.eq('branch_id', branchId);
-  if (args.date_from) q = q.gte('ordered_at', `${args.date_from}T00:00:00`);
-  if (args.date_to) q = q.lte('ordered_at', `${args.date_to}T23:59:59`);
+  if (args.date_from) q = q.gte('ordered_at', kstDayStart(args.date_from));
+  if (args.date_to) q = q.lte('ordered_at', kstDayEnd(args.date_to));
   q = q.limit(args.limit || 20);
 
   // customer name filter
@@ -1273,9 +1274,10 @@ async function execGetOrders(sb: any, args: { branch_name?: string; customer_nam
 }
 
 async function execGetSalesSummary(sb: any, args: { date_from?: string; date_to?: string; branch_name?: string }): Promise<string> {
-  const now = new Date();
-  const from = args.date_from || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
-  const to = args.date_to || now.toISOString().slice(0, 10);
+  // 기본: 이번 달 1일 ~ 오늘 (KST)
+  const today = kstTodayString();
+  const from = args.date_from || `${today.slice(0, 7)}-01`;
+  const to = args.date_to || today;
 
   let branchId: string | null = null;
   if (args.branch_name) {
@@ -1287,8 +1289,8 @@ async function execGetSalesSummary(sb: any, args: { date_from?: string; date_to?
   let q = sb.from('sales_orders')
     .select('total_amount, discount_amount, channel, branch_id, branches(name)')
     .eq('status', 'COMPLETED')
-    .gte('ordered_at', `${from}T00:00:00`)
-    .lte('ordered_at', `${to}T23:59:59`);
+    .gte('ordered_at', kstDayStart(from))
+    .lte('ordered_at', kstDayEnd(to));
   if (branchId) q = q.eq('branch_id', branchId);
 
   const { data, error } = await q;
@@ -1776,7 +1778,7 @@ async function execCreatePurchaseOrder(sb: any, args: any, ctx: ToolContext): Pr
   const product = await findProduct(sb, args.product_name);
   if (!product) return JSON.stringify({ error: `제품 "${args.product_name}" 없음` });
 
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const today = kstTodayString().replace(/-/g, '');
   const suffix = Math.random().toString(36).substring(2, 5).toUpperCase();
   const orderNumber = `PO-${today}-${suffix}`;
   const totalAmount = args.quantity * args.unit_price;
@@ -1843,7 +1845,7 @@ async function execReceivePurchaseOrder(sb: any, args: { order_number: string; m
 
   if (!items?.length) return JSON.stringify({ error: '발주 항목이 없습니다.' });
 
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const today = kstTodayString().replace(/-/g, '');
   const suffix = Math.random().toString(36).substring(2, 5).toUpperCase();
   const receiptNumber = `GR-${today}-${suffix}`;
 
@@ -1921,7 +1923,7 @@ async function execCreateProductionOrder(sb: any, args: any, ctx: ToolContext): 
     .eq('product_id', product.id);
   if (!bom?.length) return JSON.stringify({ error: `${product.name}의 BOM(원재료 목록)이 없습니다. 생산 메뉴에서 BOM을 먼저 등록하세요.` });
 
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const today = kstTodayString().replace(/-/g, '');
   const suffix = Math.random().toString(36).substring(2, 5).toUpperCase();
   const orderNumber = `WO-${today}-${suffix}`;
 
@@ -2288,9 +2290,10 @@ async function execReplenishLowStock(sb: any, args: {
 // ── 상위 제품 조회 ────────────────────────────────────────────────────────────
 
 async function execGetTopProducts(sb: any, args: { start_date?: string; end_date?: string; limit?: number; branch_name?: string }): Promise<string> {
-  const now = new Date();
-  const startDate = args.start_date || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
-  const endDate = args.end_date || now.toISOString().slice(0, 10);
+  // 기본: 이번 달 1일 ~ 오늘 (KST)
+  const today = kstTodayString();
+  const startDate = args.start_date || `${today.slice(0, 7)}-01`;
+  const endDate = args.end_date || today;
   const limit = args.limit || 10;
 
   let branchId: string | null = null;
@@ -2302,8 +2305,8 @@ async function execGetTopProducts(sb: any, args: { start_date?: string; end_date
 
   let q = sb.from('sales_order_items')
     .select('quantity, total_price, product_id, products(name, code), sales_orders!inner(ordered_at, branch_id, status)')
-    .gte('sales_orders.ordered_at', `${startDate}T00:00:00`)
-    .lte('sales_orders.ordered_at', `${endDate}T23:59:59`)
+    .gte('sales_orders.ordered_at', kstDayStart(startDate))
+    .lte('sales_orders.ordered_at', kstDayEnd(endDate))
     .eq('sales_orders.status', 'COMPLETED');
 
   if (branchId) q = q.eq('sales_orders.branch_id', branchId);
@@ -2351,8 +2354,8 @@ async function execCompareSales(sb: any, args: {
     let q = sb.from('sales_orders')
       .select('total_amount, discount_amount, points_used')
       .eq('status', 'COMPLETED')
-      .gte('ordered_at', `${start}T00:00:00`)
-      .lte('ordered_at', `${end}T23:59:59`);
+      .gte('ordered_at', kstDayStart(start))
+      .lte('ordered_at', kstDayEnd(end));
     if (branchId) q = q.eq('branch_id', branchId);
     const { data } = await q;
     const orders = (data || []) as any[];
@@ -2619,7 +2622,7 @@ async function execReceivePurchaseOrderPartial(sb: any, args: {
   }
 
   // 입고 전표 생성
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const today = kstTodayString().replace(/-/g, '');
   const suffix = Math.random().toString(36).substring(2, 5).toUpperCase();
   const receiptNumber = `GR-${today}-${suffix}`;
   const totalAmount = toReceive.reduce((s, r) => s + r.item.unit_price * r.qty, 0);
@@ -2787,9 +2790,8 @@ async function execCustomerSegmentAnalysis(sb: any, args: {
 }): Promise<string> {
   const days = args.days || 90;
   const limit = args.limit || 10;
-  const since = new Date();
-  since.setDate(since.getDate() - days);
-  const sinceIso = since.toISOString();
+  // "최근 N일 휴면" — KST 자정 기준 N일 전
+  const sinceIso = kstDaysAgoStart(days);
 
   if (args.mode === 'grade_breakdown') {
     const { data: customers } = await sb.from('customers').select('grade').eq('is_active', true);

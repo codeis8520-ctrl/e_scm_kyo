@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { getSalesOrderForRefund, processRefund, searchSalesOrdersForRefund } from '@/lib/return-actions';
+import { fmtDateKST, kstTodayString } from '@/lib/date';
 
 const REFUND_REASONS = [
   { value: 'DEFECTIVE', label: '불량/하자' },
@@ -24,10 +25,10 @@ interface Props {
   onSuccess: (returnNumber: string) => void;
 }
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
+const todayISO = () => kstTodayString();
 const daysAgoISO = (n: number) => {
   const d = new Date(); d.setDate(d.getDate() - n);
-  return d.toISOString().slice(0, 10);
+  return fmtDateKST(d);
 };
 
 export default function RefundModal({ branchId, initialOrderNumber, onClose, onSuccess }: Props) {

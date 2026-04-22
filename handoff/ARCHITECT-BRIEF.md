@@ -4,94 +4,130 @@
 
 ---
 
-## Step 2 — KST 타임존 Phase A: 표시 레이어 표준화
+## Step 3 — KST 타임존 Phase B: 쿼리 경계 표준화
 
 ### 배경
 
-코드베이스 전체에서 `timeZone: 'Asia/Seoul'` 명시 **0건**. 서버(UTC)에서 렌더/생성되는 날짜가 UTC로 노출됨. 테스트 데이터 환경이라 과거 데이터 정합성은 고려 불필요.
+Step 2(2a8e8a2)에서 표시 레이어는 KST로 맞췄지만, "오늘 매출"·"이번 달 매입"·"최근 7일" 같은 **쿼리 경계 계산**은 여전히 UTC 기준. Node(Vercel) 서버 TZ가 UTC이므로 `new Date().toISOString().slice(0, 10)`은 UTC 날짜를 반환. 예: KST 2026-04-22 08:00 (= UTC 2026-04-21 23:00) 시점에 "오늘"은 서버에서 `'2026-04-21'`로 계산되어 KST 사용자가 보는 "오늘" 대시보드와 어긋남.
+
+테스트 데이터 전제라 과거 수치 정합성 제약은 없음.
 
 ### 목표
 
-모든 UI 표시 날짜·시간을 **한국시간(Asia/Seoul)**으로 일관 표시. DB 저장(`timestamptz`)과 외부 API payload(UTC ISO)는 불변.
+모든 사용자 대면 **날짜 경계 계산**을 KST 기준으로 맞춤. DB `timestamptz`(UTC 저장)와 외부 API(UTC ISO)는 불변. `toISOString()`으로 변환되는 최종 인자 값은 여전히 UTC ISO 문자열이지만, 그 순간이 **KST 자정/월초/월말**을 의미하도록 만든다.
 
-### 아키텍처 원칙 (절대 규칙)
+### 아키텍처 원칙 (불변)
 
-- `process.env.TZ` 전역 변경 **금지** — 크론·엣지 런타임·DB 비교에서 사이드이펙트
-- 변환은 **명시적 `timeZone: 'Asia/Seoul'` 주입**으로만. 공용 유틸 `src/lib/date.ts`에 집중
-- `timestamptz` 컬럼은 그대로 (DB 스키마 불변)
-- 쿼리 경계(`new Date().toISOString().slice(0,10)` 같은 "오늘" 계산)는 **Step 3 스코프** — 이번엔 건드리지 않음
+- `process.env.TZ` 전역 설정 금지
+- 변환은 `src/lib/date.ts`에 집중
+- DB 스키마 불변 (`timestamptz` UTC 저장 유지)
+- 반환 타입: `string`(ISO) 또는 `Date` (callsite 기존 타입에 맞춤)
 
-### 결정 — 공용 유틸 스펙 (`src/lib/date.ts`)
+### 결정 — 추가 유틸 스펙 (`src/lib/date.ts` 확장)
 
 ```ts
-// 전부 Intl.DateTimeFormat(..., { timeZone: 'Asia/Seoul' }) 기반, ko-KR 로케일
-export function fmtDateTimeKST(input: string | Date | null | undefined): string
-// 예: "2026-04-22 14:30" (null/invalid → '-')
+// 날짜 객체/문자열을 KST 기준으로 해석하여 UTC ISO 경계 반환.
+// `date` 생략 시 현재 시각 기준.
 
-export function fmtDateKST(input: string | Date | null | undefined): string
-// 예: "2026-04-22"
+export function kstDayStart(date?: Date | string): string
+// KST 00:00:00.000의 UTC ISO. 예: 2026-04-22 기준 → "2026-04-21T15:00:00.000Z"
 
-export function fmtTimeKST(input: string | Date | null | undefined): string
-// 예: "14:30"
+export function kstDayEnd(date?: Date | string): string
+// KST 23:59:59.999의 UTC ISO. 예: 2026-04-22 기준 → "2026-04-22T14:59:59.999Z"
 
-export function fmtMonthKST(input: string | Date | null | undefined): string
-// 예: "2026-04"
+export function kstMonthStart(date?: Date | string): string
+// 해당 월의 1일 KST 00:00의 UTC ISO
 
-export function fmtDateTimeKSTWithSeconds(input: ...): string
-// 예: "2026-04-22 14:30:42" — 로그/감사 용도
+export function kstMonthEnd(date?: Date | string): string
+// 해당 월 말일 KST 23:59:59.999의 UTC ISO
+
+export function kstTodayString(): string
+// 현재 KST 날짜 "YYYY-MM-DD"
+
+export function kstYearMonth(date?: Date | string): string
+// KST 기준 "YYYY-MM"
+
+export function kstDaysAgoStart(n: number): string
+// n일 전 KST 00:00의 UTC ISO. "최근 N일" 쿼리에 사용.
 ```
 
-- **포맷**: 숫자 기반 (예: "2026-04-22 14:30") 기본. 한글 년월일은 요청 시에만.
-- **Fallback**: null / undefined / 잘못된 문자열 / `Invalid Date` → `'-'` 반환
-- 내부적으로 `Intl.DateTimeFormat` 재사용(모듈 상수로 캐싱)해 성능 유지
+**구현 힌트** (Bob에게):
+- KST는 UTC+9 고정(서머타임 없음). 단순히 offset 덧셈으로 가능.
+- 그러나 정확성 + 가독성을 위해 `Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', ... })`로 KST 날짜/시각 구성 요소 추출 후 `Date.UTC(y, m-1, d, h-9, ...)` 형태로 조립 권장. 하드코딩된 offset 수식(`+9*60*60*1000`)은 실수 유발.
+- 또는 명확히 `new Date(isoLikeString + '+09:00')` 사용. `new Date('2026-04-22T00:00:00+09:00')` → UTC 2026-04-21T15:00:00Z. 이게 가장 간결하고 명료함. **이 방식 권장**.
 
-### 치환 대상 (매핑 가이드)
+### 치환 대상 (전수 조사 필수)
 
-| 기존 패턴 | 치환 |
+**Grep 패턴**
+- `new Date().toISOString()` — 단독 "now" 계산 (대부분 OK, 하지만 문맥상 "KST today" 의도면 치환)
+- `.toISOString().slice(0, 10)` — "오늘"(YYYY-MM-DD) 계산
+- `.toISOString().slice(0, 7)` — "이번 달"(YYYY-MM)
+- `startOfDay` / `endOfDay` / `startOfMonth` / `endOfMonth` (date-fns 등 사용 시)
+- `setHours(0, 0, 0, 0)` — 로컬 자정 계산 (Node가 UTC이면 UTC 자정이 됨 → KST 기준 필요 시 치환)
+- `new Date(year, month, day)` — 로컬 해석 (Node UTC이면 UTC 해석)
+- `firstDayOfMonth` / `lastDayOfMonth` 등 커스텀 헬퍼
+
+**치환 매핑 (예시)**
+| 기존 | 치환 |
 |---|---|
-| `new Date(x).toLocaleDateString('ko-KR')` | `fmtDateKST(x)` |
-| `new Date(x).toLocaleDateString('ko-KR', { hour/min })` | `fmtDateTimeKST(x)` |
-| `new Date(x).toLocaleString('ko-KR', ...)` | `fmtDateTimeKST(x)` (옵션 맞추어 적절 포맷터) |
-| `new Date(x).toLocaleTimeString('ko-KR'|기본)` | `fmtTimeKST(x)` |
-| `new Date(x).getFullYear() + '-' + (month)...` (UI 조합) | 포맷터로 |
+| `new Date().toISOString().slice(0, 10)` (오늘 용도) | `kstTodayString()` |
+| `.gte('ordered_at', today + 'T00:00:00')` | `.gte('ordered_at', kstDayStart(today))` |
+| `.lte('ordered_at', today + 'T23:59:59')` | `.lte('ordered_at', kstDayEnd(today))` |
+| 월초/월말 범위 계산 | `kstMonthStart(...)` / `kstMonthEnd(...)` |
+| "7일 전부터" | `kstDaysAgoStart(7)` |
 
 ### 건드리지 말 것 (Flag — 추측 금지)
 
-1. **DB 저장/비교용 `toISOString()`** — Supabase insert/update, `.gte/.lte` 쿼리 인자, `new Date().toISOString()` DB 씨팅
-2. **외부 API payload** — `src/lib/cafe24/**`, `src/lib/solapi/**`, `src/app/api/cafe24/**`, `sweettracker` 관련 — UTC ISO 그대로 보내야 함
-3. **쿼리 경계 계산** — `.toISOString().slice(0, 10)`, `startOfDay`, `endOfDay` 유사 패턴 — Step 3 영역
-4. **파일명/캐시 키에 쓰는 날짜** — 예: `WO-20260422-XXXX` 같은 주문번호. 원래 한국시간이어야 맞으나 이번 스코프 아님
-5. **백엔드 비교 로직** — `new Date() - created_at > 1000*60*60*24` 같은 경과시간 계산. 의미 불변
-6. **감사 로그에 원본 타임스탬프 기록하는 곳** — 표시 레이어가 아니므로 건드리지 않음
-7. **ICS/iCal 생성 (있다면)** — RFC 표준상 UTC 우선
+1. **세션/토큰 만료 계산** — `session_tokens.expires_at`, `cafe24_tokens.access_token_expires_at`. UTC 고정 비교가 맞음. 건드리면 보안 이슈
+2. **감사 로그 created_at 기록** — `new Date().toISOString()` 그대로 두면 됨. timestamptz는 UTC 저장이 정답
+3. **경과 시간 계산** — `Date.now() - record.created_at` 같은 ms 차이. 어느 TZ 해석이든 동일. 건드리지 않음
+4. **외부 API 호출 payload** — Cafe24(`start_date`, `end_date` 파라미터는 API 스펙 따름), Solapi(발송 스케줄 timestamp)
+5. **`<input type="datetime-local">` 값 생성 로직** — Step 2에서 미해결 처리한 `CampaignTab.toDTLocal` 등. 브라우저 TZ 의존. 이번 스코프 아님
+6. **Cron `scheduled_at` 저장** — DB에 timestamptz로 저장, 사용자 입력받은 값. 이미 `datetime-local` + 브라우저 TZ 경로로 처리됨
+
+### 주요 조사 대상 파일 (전수는 grep으로)
+
+- `src/app/api/dashboard/route.ts` — 대시보드 집계
+- `src/app/api/dashboard/details/route.ts`
+- `src/lib/ai/tools.ts` — 에이전트 날짜 필터 도구
+- `src/lib/b2b-actions.ts` — 정산 기간
+- `src/lib/campaign-actions.ts` / `campaign-send-core.ts` — 캠페인 윈도우
+- `src/lib/accounting-actions.ts` — 월말 마감, 기간 집계
+- `src/app/(dashboard)/pos/SalesListTab.tsx` — 클라이언트 날짜 필터
+- `src/app/(dashboard)/agent-conversations/page.tsx` — 기간 필터
+- `src/app/(dashboard)/customers/[id]/page.tsx` — 타임라인
+- `src/app/(dashboard)/reports/page.tsx` — 보고서 기간
+- `src/app/api/notifications/batch/dormant/route.ts` — 휴면 기준일
+- `src/app/api/notifications/batch/birthday/route.ts` — 생일 크론
+- `src/app/api/cafe24/sync-orders/route.ts` / `members/route.ts` — 동기화 시점 (외부 API payload는 불변, 내부 경계만)
 
 ### 접근 방법
 
-1. `src/lib/date.ts` 작성 (`Intl.DateTimeFormat` 인스턴스 모듈 상수화)
-2. Grep으로 후보 수집:
-   - `toLocaleDateString\('ko-KR'` / `toLocaleDateString\(\)`
-   - `toLocaleString\('ko-KR'`
-   - `toLocaleTimeString`
-   - 필요 시 `new Date(.*).getFullYear()` 조합
-3. 각 callsite를 **한 파일씩** 판단해 치환 — UI 경로이면 치환, 백엔드/외부 API 경로이면 스킵
-4. 의심스러운 경우 주석으로 남기지 말고 그냥 스킵 후 `REVIEW-REQUEST.md`의 "미해결 질문"에 적기
-5. `npm run build` 통과 확인
-6. Self-review — Brief의 치환 대상·제외 대상 전부 체크
-7. `handoff/REVIEW-REQUEST.md` 작성
+1. `src/lib/date.ts`에 새 함수 7종 추가 (`+09:00` suffix 방식으로 구현)
+2. Grep 전수 수집 — 치환 대상 후보 목록화
+3. 파일별 판단:
+   - 사용자 "오늘/이번 달/최근 N일" 의미 → 치환
+   - 세션/감사/외부 API / ms 차이 계산 → 스킵
+   - 애매하면 스킵 + `REVIEW-REQUEST.md` "미해결 질문"
+4. `npm run build` 통과
+5. Self-review (아래 체크리스트)
+6. `handoff/REVIEW-REQUEST.md` 작성
 
-### 건드릴 파일 (예상 — Grep 후 확정)
+### Self-review 체크리스트
 
-- 신규: `src/lib/date.ts`
-- 수정: 대시보드, POS 목록(SalesListTab/RefundModal/ReceiptModal), 고객 상세·상담, 생산 지시 목록, 재고 변동 이력 모달(MovementHistoryModal), 알림 목록, 배송 목록, 회계(journal list), 에이전트 대화 로그, 신용/외상, B2B 탭들 등
-
-### Self-review 체크리스트 (Bob 제출 전 필수)
-
-- [ ] `src/lib/date.ts`가 null/invalid 입력 시 `-` 반환하는가?
-- [ ] DB 쓰기 경로 `toISOString()`을 실수로 치환하지 않았는가?
-- [ ] 외부 API 호출(Cafe24/Solapi) 경로를 건드리지 않았는가?
-- [ ] 쿼리 경계(`.gte/.lte`, `.slice(0,10)`) 계산 로직을 건드리지 않았는가? (Step 3 영역)
-- [ ] 치환 누락된 UI 경로가 없는가? (grep 재실행으로 확인)
+- [ ] `src/lib/date.ts`의 새 함수 7종이 스펙대로 동작? (유닛 테스트 없으므로 예시 주석으로 검증)
+- [ ] 세션/토큰/감사 경로를 실수로 치환하지 않았는가?
+- [ ] 외부 API payload 경로를 건드리지 않았는가?
+- [ ] Step 2 영역(표시 포맷)을 재수정하지 않았는가?
+- [ ] `new Date('...+09:00')` 방식이 타입스크립트에서 `Invalid Date` 발생 여지는 없는가? (입력이 확실한 format인지)
+- [ ] 치환 후 기존 날짜 비교 로직(`>=`, `<=`)의 양 끝이 일관된 KST 경계인가? (start는 `kstDayStart`, end는 `kstDayEnd` 짝)
+- [ ] `.toISOString().slice(0, 7)` 형태 "YYYY-MM" 계산도 확인했는가?
 - [ ] `npm run build` 통과?
-- [ ] 기존에 한글 포맷(YYYY년 MM월 DD일)을 쓰던 곳이 있다면 동일 스타일로 유지했는가, 아니면 통일 사유를 기록했는가?
+
+### Out of scope (BUILD-LOG Known Gaps)
+
+- 과거 데이터 재분류 (테스트 데이터라 불필요)
+- `<input type="datetime-local">` TZ 재설계 (별도 건)
+- 한글 포맷터 2종 유지 여부 결정 (별도 건)
 
 ### Ready for Bob: YES

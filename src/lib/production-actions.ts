@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { cookies } from 'next/headers';
 import { requireSession, requireRole, writeAuditLog } from '@/lib/session';
+import { kstTodayString } from '@/lib/date';
 
 function getUserId(): string | null {
   try {
@@ -15,7 +16,7 @@ function getUserId(): string | null {
 }
 
 function genProductionNumber(): string {
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const date = kstTodayString().replace(/-/g, '');
   const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
   return `WO-${date}-${rand}`;
 }

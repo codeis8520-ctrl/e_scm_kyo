@@ -7,6 +7,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { processPosCheckout, createCustomer } from '@/lib/actions';
 import ReceiptModal from './ReceiptModal';
+import { kstTodayString } from '@/lib/date';
 
 const SalesListTab = dynamic(() => import('./SalesListTab'), {
   ssr: false,
@@ -181,8 +182,8 @@ function POSPageInner() {
   // 주문 메모
   const [orderMemo, setOrderMemo] = useState('');
 
-  // 판매 메타 (PDF 스펙)
-  const todayStr = new Date().toISOString().slice(0, 10);
+  // 판매 메타 (PDF 스펙) — KST 오늘
+  const todayStr = kstTodayString();
   const [saleDate, setSaleDate] = useState<string>(todayStr);
   const [receiptStatus, setReceiptStatus] = useState<ReceiptStatus>('RECEIVED');
   const [receiptDate, setReceiptDate] = useState<string>(todayStr);
@@ -402,7 +403,7 @@ function POSPageInner() {
       setShipping(prev => ({ ...prev, type: 'NONE' }));
     }
     // 초기화: 날짜·승인. 수령현황은 cart 집계가 계산(effect E).
-    const today = new Date().toISOString().slice(0, 10);
+    const today = kstTodayString();
     setOrderMemo(src.memo || '');
     setReceiptDate(today);
     setSaleDate(today);
@@ -884,8 +885,8 @@ function POSPageInner() {
       setDeptCardCompany('');
       setDeptInstallment('0');
       setDeptMemo('');
-      setSaleDate(new Date().toISOString().slice(0, 10));
-      setReceiptDate(new Date().toISOString().slice(0, 10));
+      setSaleDate(kstTodayString());
+      setReceiptDate(kstTodayString());
       setReceiptStatus('RECEIVED');
       setApprovalStatus('COMPLETED');
       setCopyBanner(null);

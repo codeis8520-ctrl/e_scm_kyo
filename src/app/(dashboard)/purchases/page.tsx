@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import { confirmPurchaseOrder, cancelPurchaseOrder } from '@/lib/purchase-actions';
 import PurchaseOrderModal from './PurchaseOrderModal';
+import { fmtDateKST, kstDayStart, kstDayEnd, kstTodayString } from '@/lib/date';
 
 const STATUS_LABELS: Record<string, string> = {
   DRAFT: '초안',
@@ -37,9 +38,9 @@ export default function PurchasesPage() {
   const [statusFilter, setStatusFilter] = useState('');
   const [supplierFilter, setSupplierFilter] = useState('');
   const [startDate, setStartDate] = useState(() => {
-    const d = new Date(); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 10);
+    const d = new Date(); d.setMonth(d.getMonth() - 1); return fmtDateKST(d);
   });
-  const [endDate, setEndDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [endDate, setEndDate] = useState(() => kstTodayString());
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
 
@@ -65,8 +66,8 @@ export default function PurchasesPage() {
     if (isBranchUser && userBranchId) q = q.eq('branch_id', userBranchId);
     if (statusFilter) q = q.eq('status', statusFilter);
     if (supplierFilter) q = q.eq('supplier_id', supplierFilter);
-    if (startDate) q = q.gte('ordered_at', `${startDate}T00:00:00`);
-    if (endDate) q = q.lte('ordered_at', `${endDate}T23:59:59`);
+    if (startDate) q = q.gte('ordered_at', kstDayStart(startDate));
+    if (endDate) q = q.lte('ordered_at', kstDayEnd(endDate));
 
     const [{ data: ordersData }, { data: suppliersData }] = await Promise.all([
       q,

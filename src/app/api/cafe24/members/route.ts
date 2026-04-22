@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { getValidAccessToken, loadTokens, refreshAccessToken } from '@/lib/cafe24/token-store';
+import { kstTodayString, fmtDateKST } from '@/lib/date';
 
 // 카페24 회원 → customers 일괄 동기화
 // 전략: customersprivacy → 실패 시 주문 데이터에서 회원 추출 (mall.read_order만으로 가능)
@@ -10,11 +11,12 @@ export async function POST(request: Request) {
   let body: any = {};
   try { body = await request.json(); } catch { /* 빈 body 허용 */ }
 
+  // KST 기준 "오늘" / "5년 전" 캘린더 date
   const today = new Date();
   const fiveYearsAgo = new Date();
   fiveYearsAgo.setFullYear(today.getFullYear() - 5);
-  const startDate: string = body.startDate || fiveYearsAgo.toISOString().slice(0, 10);
-  const endDate: string = body.endDate || today.toISOString().slice(0, 10);
+  const startDate: string = body.startDate || fmtDateKST(fiveYearsAgo);
+  const endDate: string = body.endDate || kstTodayString();
 
   const mallId = process.env.CAFE24_MALL_ID;
   if (!mallId) {

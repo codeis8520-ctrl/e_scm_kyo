@@ -16,6 +16,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient as createSbClient } from '@supabase/supabase-js';
 import { triggerEventNotification } from '@/lib/notification-triggers';
+import { kstTodayString } from '@/lib/date';
 
 function sbAdmin() {
   return createSbClient(
@@ -37,10 +38,8 @@ async function run(req: NextRequest) {
   }
 
   const supabase = sbAdmin() as any;
-  const today = new Date();
-  const mm = String(today.getMonth() + 1).padStart(2, '0');
-  const dd = String(today.getDate()).padStart(2, '0');
-  const mmdd = `${mm}-${dd}`;
+  // KST 오늘 MM-DD
+  const mmdd = kstTodayString().slice(5);
 
   // 배치 로그 시작
   const { data: logRow } = await supabase

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { fmtDateTimeKST } from '@/lib/date';
+import { fmtDateTimeKST, kstTodayString } from '@/lib/date';
 
 interface ChannelSales {
   channel: string;
@@ -134,9 +134,7 @@ export default function DashboardClient() {
   const [selectedChannel, setSelectedChannel] = useState<string>('ALL');
   const [viewMode, setViewMode] = useState<'hq' | 'branch'>('hq');
   const [period, setPeriod] = useState<string>('monthly');
-  const [selectedDate, setSelectedDate] = useState<string>(
-    new Date().toISOString().split('T')[0]
-  );
+  const [selectedDate, setSelectedDate] = useState<string>(kstTodayString());
 
   // Detail modal state
   const [modalType, setModalType] = useState<ModalType>(null);

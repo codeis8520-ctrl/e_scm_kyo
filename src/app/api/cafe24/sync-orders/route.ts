@@ -16,6 +16,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 import { syncCafe24PaidOrdersCore } from '@/lib/cafe24/sync-orders';
+import { kstTodayString, fmtDateKST } from '@/lib/date';
 
 function getSupabase() {
   return createSupabaseClient(
@@ -66,8 +67,9 @@ export async function GET(req: NextRequest) {
     30
   );
 
-  const endDate = new Date().toISOString().slice(0, 10);
-  const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  // KST 기준 오늘 / N일 전 캘린더 날짜 (Cafe24 API 캘린더 date 포맷과 호환)
+  const endDate = kstTodayString();
+  const startDate = fmtDateKST(new Date(Date.now() - days * 24 * 60 * 60 * 1000));
 
   try {
     const result = await syncCafe24PaidOrdersCore({ startDate, endDate });

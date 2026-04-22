@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { cookies } from 'next/headers';
 import { requireSession, writeAuditLog } from '@/lib/session';
 import { fireNotificationTrigger } from '@/lib/notification-triggers';
+import { kstDayStart, kstDayEnd, kstTodayString } from '@/lib/date';
 
 function getUserId(): string | null {
   try {
@@ -84,7 +85,7 @@ export async function processRefund(params: {
 
   // 4. 환불 번호 생성
   const branchCode = originalOrder.branch?.code || 'HQ';
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const date = kstTodayString().replace(/-/g, '');
   const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
   const returnNumber = `RT-${branchCode}-${date}-${rand}`;
 
@@ -294,8 +295,8 @@ export async function searchSalesOrdersForRefund(params: {
     .limit(params.limit || 30);
 
   if (params.branchId) q = q.eq('branch_id', params.branchId);
-  if (params.startDate) q = q.gte('ordered_at', `${params.startDate}T00:00:00`);
-  if (params.endDate) q = q.lte('ordered_at', `${params.endDate}T23:59:59`);
+  if (params.startDate) q = q.gte('ordered_at', kstDayStart(params.startDate));
+  if (params.endDate) q = q.lte('ordered_at', kstDayEnd(params.endDate));
 
   // 고객명/전화 검색은 customer 조인 필터가 까다로워 customer_id로 1차 필터
   if (params.customerQuery && params.customerQuery.trim()) {

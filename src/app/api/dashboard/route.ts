@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createClient } from '@/lib/supabase/server';
+import { kstDayStart, kstDayEnd, kstTodayString } from '@/lib/date';
 
 interface ChannelSales {
   channel: string;
@@ -73,25 +74,28 @@ export async function GET(request: NextRequest) {
   const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
   const branchId = isBranchUser ? (userBranchId || null) : searchParams.get('branch_id');
 
-  const today = dateParam || new Date().toISOString().split('T')[0];
+  const today = dateParam || kstTodayString();
   const { start: periodStart, end: periodEnd } = getPeriodRange(today, period);
 
   const SALES_STATUSES = ['COMPLETED', 'PARTIALLY_REFUNDED'];
 
-  // 기간 매출 (선택된 기간 전체)
+  // 기간 매출 (선택된 기간 전체) — KST 경계로 해석
+  const periodStartISO = kstDayStart(periodStart);
+  const periodEndISO = kstDayEnd(periodEnd);
+
   let periodSalesQuery = supabase
     .from('sales_orders')
     .select('total_amount, channel, cafe24_order_id, created_at')
     .in('status', SALES_STATUSES)
-    .gte('ordered_at', `${periodStart}T00:00:00`)
-    .lte('ordered_at', `${periodEnd}T23:59:59`);
+    .gte('ordered_at', periodStartISO)
+    .lte('ordered_at', periodEndISO);
 
   let recentOrdersQuery = supabase
     .from('sales_orders')
     .select('id, order_number, channel, total_amount, status, created_at, cafe24_order_id, branch:branches(name), items:sales_order_items(product:products(name), quantity)')
     .not('status', 'eq', 'CANCELLED')
-    .gte('ordered_at', `${periodStart}T00:00:00`)
-    .lte('ordered_at', `${periodEnd}T23:59:59`)
+    .gte('ordered_at', periodStartISO)
+    .lte('ordered_at', periodEndISO)
     .order('created_at', { ascending: false })
     .limit(20);
 
@@ -116,8 +120,8 @@ export async function GET(request: NextRequest) {
     .from('b2b_sales_orders')
     .select('total_amount, delivered_at')
     .in('status', B2B_STATUSES)
-    .gte('delivered_at', `${periodStart}T00:00:00`)
-    .lte('delivered_at', `${periodEnd}T23:59:59`);
+    .gte('delivered_at', periodStartISO)
+    .lte('delivered_at', periodEndISO);
 
   if (branchId && branchId !== 'ALL') {
     b2bPeriodQuery = b2bPeriodQuery.eq('branch_id', branchId);
@@ -141,8 +145,8 @@ export async function GET(request: NextRequest) {
         .from('sales_orders')
         .select('channel, total_amount')
         .in('status', SALES_STATUSES)
-        .gte('ordered_at', `${periodStart}T00:00:00`)
-        .lte('ordered_at', `${periodEnd}T23:59:59`);
+        .gte('ordered_at', periodStartISO)
+        .lte('ordered_at', periodEndISO);
       if (branchId && branchId !== 'ALL') q = q.eq('branch_id', branchId);
       return q;
     })(),
@@ -167,8 +171,8 @@ export async function GET(request: NextRequest) {
         .select('total_amount')
         .eq('channel', 'ONLINE')
         .in('status', SALES_STATUSES)
-        .gte('ordered_at', `${periodStart}T00:00:00`)
-        .lte('ordered_at', `${periodEnd}T23:59:59`);
+        .gte('ordered_at', periodStartISO)
+        .lte('ordered_at', periodEndISO);
       if (branchId && branchId !== 'ALL') q = q.eq('branch_id', branchId);
       return q;
     })(),
@@ -177,8 +181,8 @@ export async function GET(request: NextRequest) {
         .from('purchase_orders')
         .select('total_amount')
         .in('status', ['CONFIRMED', 'PARTIALLY_RECEIVED', 'RECEIVED'])
-        .gte('ordered_at', `${periodStart}T00:00:00`)
-        .lte('ordered_at', `${periodEnd}T23:59:59`);
+        .gte('ordered_at', periodStartISO)
+        .lte('ordered_at', periodEndISO);
       if (branchId && branchId !== 'ALL') q = q.eq('branch_id', branchId);
       return q;
     })(),
@@ -187,8 +191,8 @@ export async function GET(request: NextRequest) {
         .from('return_orders')
         .select('refund_amount')
         .eq('status', 'COMPLETED')
-        .gte('processed_at', `${periodStart}T00:00:00`)
-        .lte('processed_at', `${periodEnd}T23:59:59`);
+        .gte('processed_at', periodStartISO)
+        .lte('processed_at', periodEndISO);
       if (branchId && branchId !== 'ALL') q = q.eq('branch_id', branchId);
       return q;
     })(),

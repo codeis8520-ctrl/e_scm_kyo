@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { getValidAccessToken } from '@/lib/cafe24/token-store';
+import { kstTodayString, fmtDateKST } from '@/lib/date';
 
 interface Cafe24OrderForShipping {
   cafe24_order_id: string;
@@ -62,10 +63,11 @@ const DEMO_ORDERS: Omit<Cafe24OrderForShipping, 'already_added'>[] = [
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
 
-  const endDate = searchParams.get('end_date') ?? new Date().toISOString().split('T')[0];
+  // KST 기준 "오늘" / "7일 전" 캘린더 date (Cafe24 API는 calendar date 수용)
+  const endDate = searchParams.get('end_date') ?? kstTodayString();
   const startDate =
     searchParams.get('start_date') ??
-    new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    fmtDateKST(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
 
   // 기존에 등록된 cafe24_order_id 목록 조회
   const supabase = await createClient();

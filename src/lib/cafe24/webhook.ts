@@ -5,6 +5,7 @@ import { Cafe24Client, generateCafe24OrderCode } from './client';
 import { getValidAccessToken } from './token-store';
 import { createSaleJournal } from '@/lib/accounting-actions';
 import { fireNotificationTrigger } from '@/lib/notification-triggers';
+import { kstTodayString } from '@/lib/date';
 
 let supabase: SupabaseClient | null = null;
 
@@ -455,7 +456,7 @@ async function handleOrderRefunded(
       await createSaleJournal({
         orderId: order.id,
         orderNumber: `REFUND-${order.order_number}`,
-        orderDate: new Date().toISOString().slice(0, 10),
+        orderDate: kstTodayString(),
         totalAmount: -actualRefundAmount, // 음수로 역분개
         paymentMethod: order.payment_method ?? 'card',
         cogs: 0,

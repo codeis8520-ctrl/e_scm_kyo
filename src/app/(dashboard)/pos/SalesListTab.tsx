@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import ReceiptModal from './ReceiptModal';
 import RefundModal from './RefundModal';
+import { fmtDateKST, kstTodayString, kstDayStart, kstDayEnd } from '@/lib/date';
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -98,15 +99,13 @@ const APPROVAL_STATUS_BADGE: Record<string, string> = {
   UNSETTLED: 'bg-amber-50 text-amber-700 border border-amber-200',
 };
 
+// KST "YYYY-MM-DD". 클라이언트 실행이지만 사용자 TZ에 의존하지 않도록 KST 고정.
 function fmtDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${dd}`;
+  return fmtDateKST(d);
 }
-function todayStr(): string { return fmtDate(new Date()); }
+function todayStr(): string { return kstTodayString(); }
 function daysAgo(n: number): string {
-  const d = new Date(); d.setDate(d.getDate() - n); return fmtDate(d);
+  const d = new Date(); d.setDate(d.getDate() - n); return fmtDateKST(d);
 }
 
 type Period = 'today' | '7d' | '30d' | 'custom';
@@ -190,8 +189,8 @@ export default function SalesListTab() {
         items:sales_order_items(id, quantity, unit_price, total_price, product:products(id, name, code))
       `;
       let q = sb.from('sales_orders').select(baseSelect)
-        .gte('ordered_at', `${startDate}T00:00:00`)
-        .lte('ordered_at', `${endDate}T23:59:59`)
+        .gte('ordered_at', kstDayStart(startDate))
+        .lte('ordered_at', kstDayEnd(endDate))
         .order('ordered_at', { ascending: false })
         .limit(500);
       if (branchFilter) q = q.eq('branch_id', branchFilter);
@@ -903,7 +902,7 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
     setMarkingItemId(itemId);
     try {
       const sb = createClient() as any;
-      const today = new Date().toISOString().slice(0, 10);
+      const today = kstTodayString();
       const { error } = await sb
         .from('sales_order_items')
         .update({ receipt_status: 'RECEIVED', receipt_date: today })
@@ -951,7 +950,7 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
     setMarkingReceipt(true);
     try {
       const sb = createClient() as any;
-      const today = new Date().toISOString().slice(0, 10);
+      const today = kstTodayString();
       const { error: orderErr } = await sb
         .from('sales_orders')
         .update({ receipt_status: 'RECEIVED', receipt_date: today })

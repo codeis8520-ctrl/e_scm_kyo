@@ -9,6 +9,7 @@ import {
   getSupplierPricesForProduct,
   recordManualSupplierPrice,
 } from '@/lib/purchase-actions';
+import { kstTodayString } from '@/lib/date';
 
 type ProductType = 'FINISHED' | 'RAW' | 'SUB';
 
@@ -388,7 +389,7 @@ function ManualPriceModal({
   const [selected, setSelected] = useState<any>(null);
   const [unitPrice, setUnitPrice] = useState<number>(0);
   const [memo, setMemo] = useState('');
-  const [effectiveFrom, setEffectiveFrom] = useState(() => new Date().toISOString().slice(0, 10));
+  const [effectiveFrom, setEffectiveFrom] = useState(() => kstTodayString());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 

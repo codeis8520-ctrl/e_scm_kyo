@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { requireSession } from '@/lib/session';
 import { sendCampaignCore } from '@/lib/campaign-send-core';
 import type { Campaign } from '@/lib/campaign-types';
+import { kstTodayString } from '@/lib/date';
 
 // ─── 권한 체크 ─────────────────────────────────────────────────────────────────
 
@@ -359,7 +360,8 @@ export async function getRecurringSuggestions(): Promise<{
   const supabase = await createClient();
   const db = supabase as any;
 
-  const currentYear = new Date().getFullYear();
+  // KST 기준 올해 연도 (UTC 서버에서 KST 연초·연말 경계 오차 방지)
+  const currentYear = kstTodayString().slice(0, 4);
   const yearStart = `${currentYear}-01-01`;
   const yearEnd = `${currentYear}-12-31`;
 

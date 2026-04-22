@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client';
 import { settleCreditOrder } from '@/lib/accounting-actions';
 import { cancelCreditOrder } from '@/lib/credit-actions';
 import Link from 'next/link';
+import { fmtDateKST, kstDayStart, kstDayEnd, kstTodayString } from '@/lib/date';
 
 interface CreditOrder {
   id: string;
@@ -32,8 +33,9 @@ const GRADE_BADGE: Record<string, string> = {
 };
 
 function defaultDateRange() {
-  const end = new Date().toISOString().slice(0, 10);
-  const start = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  // 최근 30일 (KST 기준 "YYYY-MM-DD")
+  const end = kstTodayString();
+  const start = fmtDateKST(new Date(Date.now() - 30 * 86400000));
   return { start, end };
 }
 
@@ -64,8 +66,8 @@ export default function CreditManagementPage() {
       .eq('payment_method', 'credit')
       .order('ordered_at', { ascending: false });
 
-    if (startDate) q = q.gte('ordered_at', `${startDate}T00:00:00`);
-    if (endDate) q = q.lte('ordered_at', `${endDate}T23:59:59`);
+    if (startDate) q = q.gte('ordered_at', kstDayStart(startDate));
+    if (endDate) q = q.lte('ordered_at', kstDayEnd(endDate));
 
     const { data } = await q.limit(500);
     setOrders(data || []);

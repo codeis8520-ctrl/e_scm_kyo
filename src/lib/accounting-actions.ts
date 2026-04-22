@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { cookies } from 'next/headers';
 import { requireSession } from '@/lib/session';
+import { kstDayStart, kstDayEnd, kstMonthStart, kstTodayString, kstYearMonth } from '@/lib/date';
 
 function getUserId(): string | null {
   try {
@@ -66,8 +67,8 @@ export async function getLedger(accountId: string, startDate?: string, endDate?:
     .eq('account_id', accountId)
     .order('created_at', { ascending: true });
 
-  if (startDate) q = q.gte('created_at', `${startDate}T00:00:00`);
-  if (endDate)   q = q.lte('created_at', `${endDate}T23:59:59`);
+  if (startDate) q = q.gte('created_at', kstDayStart(startDate));
+  if (endDate)   q = q.lte('created_at', kstDayEnd(endDate));
 
   const { data, error } = await q;
   if (error) return { data: [], error: error.message };
@@ -86,8 +87,8 @@ export async function getLedger(accountId: string, startDate?: string, endDate?:
 export async function getProfitLoss(startDate: string, endDate: string, branchId?: string) {
   const sb = await createClient() as any;
 
-  const startDT = `${startDate}T00:00:00`;
-  const endDT   = `${endDate}T23:59:59`;
+  const startDT = kstDayStart(startDate);
+  const endDT   = kstDayEnd(endDate);
 
   // 1. 매출 (완료 주문)
   let salesQ = sb
@@ -171,8 +172,9 @@ export async function getMonthlyTrend(months = 12, branchId?: string) {
   const start = new Date(end);
   start.setMonth(start.getMonth() - months + 1);
   start.setDate(1);
-  const startDT = `${start.toISOString().slice(0, 7)}-01T00:00:00`;
-  const endDT   = `${end.toISOString().slice(0, 10)}T23:59:59`;
+  // KST 기준 N개월 범위. start는 해당 월의 1일 KST 00:00, end는 오늘 KST 23:59.
+  const startDT = kstMonthStart(start);
+  const endDT   = kstDayEnd(end);
 
   // 매출 (월별)
   let salesQ = sb
@@ -197,16 +199,17 @@ export async function getMonthlyTrend(months = 12, branchId?: string) {
   // 월별 집계 맵 생성
   const monthMap = new Map<string, { grossRevenue: number; discount: number; refunds: number; cogs: number; orderCount: number }>();
 
-  // 지난 N개월 키 초기화
+  // 지난 N개월 키 초기화 — KST 기준 "YYYY-MM"
   for (let i = 0; i < months; i++) {
     const d = new Date(end);
     d.setMonth(d.getMonth() - (months - 1 - i));
-    const key = d.toISOString().slice(0, 7);
+    const key = kstYearMonth(d);
     monthMap.set(key, { grossRevenue: 0, discount: 0, refunds: 0, cogs: 0, orderCount: 0 });
   }
 
   for (const order of (salesRows || [])) {
-    const key = (order.ordered_at as string).slice(0, 7);
+    // timestamptz(UTC) → KST YYYY-MM 버킷팅
+    const key = kstYearMonth(order.ordered_at as string);
     const m = monthMap.get(key);
     if (!m) continue;
     m.grossRevenue += order.total_amount || 0;
@@ -218,7 +221,7 @@ export async function getMonthlyTrend(months = 12, branchId?: string) {
   }
 
   for (const row of (refundRows || [])) {
-    const key = (row.processed_at as string).slice(0, 7);
+    const key = kstYearMonth(row.processed_at as string);
     const m = monthMap.get(key);
     if (m) m.refunds += row.refund_amount || 0;
   }
@@ -246,8 +249,8 @@ export async function getMonthlyTrend(months = 12, branchId?: string) {
 
 export async function getProductMargins(startDate: string, endDate: string, branchId?: string) {
   const sb = await createClient() as any;
-  const startDT = `${startDate}T00:00:00`;
-  const endDT   = `${endDate}T23:59:59`;
+  const startDT = kstDayStart(startDate);
+  const endDT   = kstDayEnd(endDate);
 
   let q = sb
     .from('sales_orders')
@@ -318,7 +321,7 @@ export async function createJournalEntry(formData: FormData) {
   }
   if (lines.length < 2) return { error: '최소 2개의 분개 라인이 필요합니다.' };
 
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const date = kstTodayString().replace(/-/g, '');
   const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
   const entryNumber = `JE-${date}-${rand}`;
 
@@ -422,7 +425,7 @@ export async function createSaleJournal(params: {
   const vatAmount    = taxableBase - supplyAmount;           // 세액
   const exemptAmount = absTotal - taxableBase;               // 면세 금액
 
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const date = kstTodayString().replace(/-/g, '');
   const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
   const prefix = isRefund ? 'JE-RF' : 'JE-SA';
   const entryNumber = `${prefix}-${date}-${rand}`;
@@ -517,7 +520,7 @@ export async function createPurchaseReceiptJournal(params: {
   const vatAmount = taxableBase - supplyAmount;
   const exemptAmount = absTotal - taxableBase;
 
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const date = kstTodayString().replace(/-/g, '');
   const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
   const entryNumber = `JE-PR-${date}-${rand}`;
 

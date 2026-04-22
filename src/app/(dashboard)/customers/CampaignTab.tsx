@@ -12,7 +12,7 @@ import {
   activateCampaign, cancelCampaign, sendCampaign,
   copyCampaignForNextYear, getRecurringSuggestions,
 } from '@/lib/campaign-actions';
-import { fmtDateTimeKST } from '@/lib/date';
+import { fmtDateTimeKST, kstTodayString } from '@/lib/date';
 
 export default function CampaignTab() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -47,7 +47,7 @@ export default function CampaignTab() {
 
   useEffect(() => { fetchData(); }, [statusFilter, eventFilter]);
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = kstTodayString();
   const stats = {
     active: campaigns.filter(c => c.status === 'ACTIVE').length,
     draft: campaigns.filter(c => c.status === 'DRAFT').length,

@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 import { requireSession } from '@/lib/session';
 import { sendMessages, sendKakaoMessages } from '@/lib/solapi/client';
 import { resolveAllVariables, type VariableContext } from '@/lib/solapi/variable-resolver';
+import { kstTodayString, kstDaysAgoStart } from '@/lib/date';
 
 export interface SendTarget {
   customerId: string | null;
@@ -195,10 +196,8 @@ export async function runNotificationBatch(batchType: 'BIRTHDAY' | 'DORMANT', op
 
   try {
     if (batchType === 'BIRTHDAY') {
-      const today = new Date();
-      const mm = String(today.getMonth() + 1).padStart(2, '0');
-      const dd = String(today.getDate()).padStart(2, '0');
-      const mmdd = `${mm}-${dd}`;
+      // KST 오늘 기준 MM-DD
+      const mmdd = kstTodayString().slice(5);
 
       const { data: customers } = await db
         .from('customers')
@@ -233,13 +232,13 @@ export async function runNotificationBatch(batchType: 'BIRTHDAY' | 'DORMANT', op
       const days = options?.days ?? 90;
       const limit = options?.limit ?? 100;
 
-      const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - days);
+      // "최근 N일 구매 고객" — KST 자정 기준 N일 전
+      const cutoffIso = kstDaysAgoStart(days);
 
       const { data: recentOrders } = await db
         .from('sales_orders')
         .select('customer_id')
-        .gte('ordered_at', cutoff.toISOString())
+        .gte('ordered_at', cutoffIso)
         .eq('status', 'COMPLETED')
         .not('customer_id', 'is', null);
       const activeIds = new Set(((recentOrders || []) as any[]).map(r => r.customer_id));
@@ -253,9 +252,8 @@ export async function runNotificationBatch(batchType: 'BIRTHDAY' | 'DORMANT', op
         .filter(c => !activeIds.has(c.id) && c.name && c.phone)
         .slice(0, limit);
 
-      // 최근 30일 내 DORMANT 알림 받은 고객 제외
-      const recentBlock = new Date();
-      recentBlock.setDate(recentBlock.getDate() - 30);
+      // 최근 30일 내 DORMANT 알림 받은 고객 제외 (KST 기준 30일)
+      const recentBlockIso = kstDaysAgoStart(30);
       const candidateIds = candidates.map(c => c.id);
       if (candidateIds.length > 0) {
         const { data: recentNotif } = await db
@@ -264,7 +262,7 @@ export async function runNotificationBatch(batchType: 'BIRTHDAY' | 'DORMANT', op
           .in('customer_id', candidateIds)
           .eq('notification_type', 'KAKAO')
           .eq('status', 'sent')
-          .gte('sent_at', recentBlock.toISOString());
+          .gte('sent_at', recentBlockIso);
         const already = new Set(((recentNotif || []) as any[]).map(n => n.customer_id));
         for (let i = candidates.length - 1; i >= 0; i--) {
           if (already.has(candidates[i].id)) { candidates.splice(i, 1); skipped++; }

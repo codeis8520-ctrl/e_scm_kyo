@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { getB2bSalesOrders, getB2bPartners, createB2bSalesOrder, settleB2bOrder, cancelB2bOrder, getB2bPartnerSummary, getPartnerPrices } from '@/lib/b2b-actions';
+import { fmtDateKST, kstTodayString } from '@/lib/date';
 
 const STATUS_LABEL: Record<string, string> = { DELIVERED: '납품완료', PARTIALLY_SETTLED: '부분수금', SETTLED: '정산완료', CANCELLED: '취소' };
 const STATUS_BADGE: Record<string, string> = {
@@ -13,9 +14,10 @@ const STATUS_BADGE: Record<string, string> = {
 };
 
 function defaultRange() {
-  const end = new Date().toISOString().slice(0, 10);
+  // 지난 1개월 (KST)
+  const end = kstTodayString();
   const d = new Date(); d.setMonth(d.getMonth() - 1);
-  return { start: d.toISOString().slice(0, 10), end };
+  return { start: fmtDateKST(d), end };
 }
 
 export default function B2bSalesTab() {

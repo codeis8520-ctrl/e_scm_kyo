@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { getMonthlyTrend, getProductMargins } from '@/lib/accounting-actions';
-import { fmtDateTimeKST } from '@/lib/date';
+import { fmtDateTimeKST, fmtDateKST, kstDayStart, kstDayEnd, kstTodayString } from '@/lib/date';
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -112,9 +112,9 @@ export default function ReportsPage() {
   const [startDate, setStartDate] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - 30);
-    return d.toISOString().slice(0, 10);
+    return fmtDateKST(d);
   });
-  const [endDate, setEndDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [endDate, setEndDate] = useState(() => kstTodayString());
   const [branches, setBranches] = useState<Branch[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -181,8 +181,8 @@ export default function ReportsPage() {
         ordered_at
       `)
       .eq('status', 'COMPLETED')
-      .gte('ordered_at', `${startDate}T00:00:00`)
-      .lte('ordered_at', `${endDate}T23:59:59`);
+      .gte('ordered_at', kstDayStart(startDate))
+      .lte('ordered_at', kstDayEnd(endDate));
 
     const { data: orders } = await query;
 
@@ -196,8 +196,8 @@ export default function ReportsPage() {
         total_price,
         created_at
       `)
-      .gte('created_at', `${startDate}T00:00:00`)
-      .lte('created_at', `${endDate}T23:59:59`);
+      .gte('created_at', kstDayStart(startDate))
+      .lte('created_at', kstDayEnd(endDate));
 
     if (!orders) {
       setLoading(false);
@@ -349,8 +349,8 @@ export default function ReportsPage() {
       .from('purchase_orders')
       .select('id, po_number, total_amount, status, ordered_at, branch:branches(name), supplier:suppliers(name)')
       .in('status', ['CONFIRMED', 'PARTIALLY_RECEIVED', 'RECEIVED'])
-      .gte('ordered_at', `${startDate}T00:00:00`)
-      .lte('ordered_at', `${endDate}T23:59:59`)
+      .gte('ordered_at', kstDayStart(startDate))
+      .lte('ordered_at', kstDayEnd(endDate))
       .order('ordered_at', { ascending: false }) as any;
     setPurchaseData((purchaseRows || []) as any[]);
 
@@ -359,8 +359,8 @@ export default function ReportsPage() {
       .from('return_orders')
       .select('id, return_number, refund_amount, reason, refund_method, processed_at, branch:branches(name)')
       .eq('status', 'COMPLETED')
-      .gte('processed_at', `${startDate}T00:00:00`)
-      .lte('processed_at', `${endDate}T23:59:59`)
+      .gte('processed_at', kstDayStart(startDate))
+      .lte('processed_at', kstDayEnd(endDate))
       .order('processed_at', { ascending: false }) as any;
     setReturnData((returnRows || []) as any[]);
 
@@ -378,8 +378,8 @@ export default function ReportsPage() {
     } else {
       start.setMonth(end.getMonth() - 12);
     }
-    setStartDate(start.toISOString().slice(0, 10));
-    setEndDate(end.toISOString().slice(0, 10));
+    setStartDate(fmtDateKST(start));
+    setEndDate(fmtDateKST(end));
   };
 
   const exportCSV = (filename: string, headers: string[], rows: (string | number)[]) => {

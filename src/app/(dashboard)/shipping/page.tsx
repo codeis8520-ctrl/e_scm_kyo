@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client';
 import { getShipments, createShipment, updateShipment, deleteShipment } from '@/lib/shipping-actions';
 import { refreshCafe24Token, syncCafe24PaidOrders } from '@/lib/cafe24-actions';
 import * as XLSX from 'xlsx';
+import { fmtDateKST, kstTodayString } from '@/lib/date';
 
 interface Shipment {
   id: string;
@@ -81,7 +82,8 @@ export default function ShippingPage() {
   const today = new Date();
   const oneWeekAgo = new Date(today);
   oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  // KST 기준 YYYY-MM-DD. Cafe24 API는 calendar date만 받으므로 그대로 전달 가능.
+  const fmt = (d: Date) => fmtDateKST(d);
   const [startDate, setStartDate] = useState(fmt(oneWeekAgo));
   const [endDate, setEndDate] = useState(fmt(today));
   const [cafe24Orders, setCafe24Orders] = useState<Cafe24OrderForShipping[]>([]);
@@ -283,7 +285,7 @@ export default function ShippingPage() {
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'sheet1');
-    XLSX.writeFile(wb, `CJ대한통운_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.xlsx`);
+    XLSX.writeFile(wb, `CJ대한통운_${kstTodayString().replace(/-/g, '')}.xlsx`);
   };
 
   // ── 엑셀 임포트 (송장번호) ────────────────────────────────────────────────
@@ -575,7 +577,7 @@ export default function ShippingPage() {
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, '배송목록');
-    XLSX.writeFile(wb, `배송목록_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    XLSX.writeFile(wb, `배송목록_${kstTodayString()}.xlsx`);
   };
 
   const handleEditOpen = (s: Shipment) => { setEditShipment(s); setEditForm({ ...s }); setEditError(''); };

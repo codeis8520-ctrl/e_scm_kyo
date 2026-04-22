@@ -7,7 +7,7 @@ import { validators, formatPhone } from '@/lib/validators';
 import { sendSmsAction, sendKakaoAction, getNotifications, resendFailedNotification, runNotificationBatch } from '@/lib/notification-actions';
 import { getTemplateMappings } from '@/lib/notification-template-mapping-actions';
 import { EVENT_TYPES, type TemplateMapping } from '@/lib/notification-event-types';
-import { fmtDateTimeKST } from '@/lib/date';
+import { fmtDateTimeKST, fmtDateKST, kstDayStart, kstDayEnd, kstTodayString } from '@/lib/date';
 
 const TYPE_LABEL: Record<string, string> = { KAKAO: '알림톡', SMS: 'SMS' };
 const STATUS_LABEL: Record<string, string> = { sent: '발송완료', pending: '대기중', failed: '실패' };
@@ -36,9 +36,9 @@ export default function NotificationsPage() {
   const [searchKeyword, setSearchKeyword] = useState('');
   const [startDate, setStartDate]         = useState(() => {
     const d = new Date(); d.setMonth(d.getMonth() - 1);
-    return d.toISOString().slice(0, 10);
+    return fmtDateKST(d);
   });
-  const [endDate, setEndDate]             = useState(() => new Date().toISOString().slice(0, 10));
+  const [endDate, setEndDate]             = useState(() => kstTodayString());
   const [sourceFilter, setSourceFilter]   = useState(''); // MANUAL | AUTO_EVENT | SCHEDULED
   const [resendingId, setResendingId]     = useState<string | null>(null);
   const [batchRunning, setBatchRunning]   = useState<string | null>(null);
@@ -81,8 +81,8 @@ export default function NotificationsPage() {
     setSearchKeyword('');
     setStatusFilter('');
     const d = new Date(); d.setMonth(d.getMonth() - 1);
-    setStartDate(d.toISOString().slice(0, 10));
-    setEndDate(new Date().toISOString().slice(0, 10));
+    setStartDate(fmtDateKST(d));
+    setEndDate(kstTodayString());
     setSourceFilter('');
   };
 
@@ -126,11 +126,11 @@ export default function NotificationsPage() {
     }
     if (startDate) {
       const d = new Date(n.created_at).getTime();
-      if (d < new Date(`${startDate}T00:00:00`).getTime()) return false;
+      if (d < new Date(kstDayStart(startDate)).getTime()) return false;
     }
     if (endDate) {
       const d = new Date(n.created_at).getTime();
-      if (d > new Date(`${endDate}T23:59:59`).getTime()) return false;
+      if (d > new Date(kstDayEnd(endDate)).getTime()) return false;
     }
     return true;
   });

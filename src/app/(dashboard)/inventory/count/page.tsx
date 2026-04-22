@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
+import { kstTodayString } from '@/lib/date';
 
 interface CountRow {
   inventoryId: string;
@@ -118,7 +119,7 @@ export default function InventoryCountPage() {
 
     setSaving(true);
     const sb = createClient() as any;
-    const countDate = new Date().toISOString().slice(0, 10);
+    const countDate = kstTodayString();
     let errors = 0;
 
     // 차이가 있는 항목: 재고 업데이트 + 이동 기록

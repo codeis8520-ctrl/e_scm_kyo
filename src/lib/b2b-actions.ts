@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { requireSession } from '@/lib/session';
+import { fmtDateKST, kstDayStart, kstDayEnd, kstTodayString } from '@/lib/date';
 
 // ─── 거래처별 단가표 ──────────────────────────────────────────────────
 
@@ -37,7 +38,7 @@ export async function upsertPartnerPrice(params: {
     unit_price: params.unitPrice,
     discount_rate: discountRate,
     memo: params.memo || null,
-    effective_from: new Date().toISOString().slice(0, 10),
+    effective_from: kstTodayString(),
   }, { onConflict: 'partner_id,product_id' });
 
   if (error) return { error: error.message };
@@ -61,7 +62,7 @@ export async function bulkUpsertPartnerPrices(partnerId: string, prices: Array<{
       product_id: p.productId,
       unit_price: p.unitPrice,
       discount_rate: retail > 0 ? Math.round((1 - p.unitPrice / retail) * 10000) / 100 : 0,
-      effective_from: new Date().toISOString().slice(0, 10),
+      effective_from: kstTodayString(),
     };
   });
 
@@ -138,8 +139,8 @@ export async function getB2bSalesOrders(filters?: { partnerId?: string; status?:
 
   if (filters?.partnerId) q = q.eq('partner_id', filters.partnerId);
   if (filters?.status) q = q.eq('status', filters.status);
-  if (filters?.startDate) q = q.gte('delivered_at', `${filters.startDate}T00:00:00`);
-  if (filters?.endDate) q = q.lte('delivered_at', `${filters.endDate}T23:59:59`);
+  if (filters?.startDate) q = q.gte('delivered_at', kstDayStart(filters.startDate));
+  if (filters?.endDate) q = q.lte('delivered_at', kstDayEnd(filters.endDate));
 
   const { data, error } = await q;
   if (error) return { data: [], error: error.message };
@@ -161,26 +162,32 @@ export async function createB2bSalesOrder(params: {
   const { data: partner } = await sb.from('b2b_partners').select('settlement_cycle, settlement_day, code').eq('id', params.partnerId).single();
   if (!partner) return { error: '거래처를 찾을 수 없습니다.' };
 
-  // 전표번호
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  // 전표번호 (KST 오늘 기준 prefix)
+  const date = kstTodayString().replace(/-/g, '');
   const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
   const orderNumber = `B2B-${date}-${rand}`;
 
   // 총액
   const totalAmount = params.items.reduce((s, i) => s + i.quantity * i.unitPrice, 0);
 
-  // 정산 예정일 계산
+  // 정산 예정일 계산 (KST 기준 "YYYY-MM-DD")
   const now = new Date();
   let dueDate: string | null = null;
   if (partner.settlement_cycle === 'MONTHLY' && partner.settlement_day) {
-    const d = new Date(now.getFullYear(), now.getMonth() + 1, partner.settlement_day);
-    dueDate = d.toISOString().slice(0, 10);
+    // KST 기준 연/월을 kstTodayString()에서 파싱 → 다음 달 settlement_day로 조립.
+    // 서버 TZ=UTC에서 getFullYear/getMonth 를 쓰면 KST 월초 새벽 구간에 전월로 잡힐 수 있어 금지.
+    const [yStr, mStr] = kstTodayString().split('-');
+    const y = Number(yStr);
+    const m = Number(mStr); // 1~12
+    const nextYear = m === 12 ? y + 1 : y;
+    const nextMonth = m === 12 ? 1 : m + 1;
+    dueDate = `${nextYear}-${String(nextMonth).padStart(2, '0')}-${String(partner.settlement_day).padStart(2, '0')}`;
   } else if (partner.settlement_cycle === 'BIWEEKLY') {
     const d = new Date(now.getTime() + 14 * 86400000);
-    dueDate = d.toISOString().slice(0, 10);
+    dueDate = fmtDateKST(d);
   } else if (partner.settlement_cycle === 'WEEKLY') {
     const d = new Date(now.getTime() + 7 * 86400000);
-    dueDate = d.toISOString().slice(0, 10);
+    dueDate = fmtDateKST(d);
   }
 
   const { data: order, error: orderErr } = await sb.from('b2b_sales_orders').insert({
@@ -378,7 +385,7 @@ export async function cancelB2bOrder(orderId: string, reason?: string) {
 
   await sb.from('b2b_sales_orders').update({
     status: 'CANCELLED',
-    memo: (order.memo ? order.memo + '\n' : '') + `[취소] ${reason || ''} (${new Date().toISOString().slice(0, 10)})`,
+    memo: (order.memo ? order.memo + '\n' : '') + `[취소] ${reason || ''} (${kstTodayString()})`,
   }).eq('id', orderId);
 
   revalidatePath('/trade');

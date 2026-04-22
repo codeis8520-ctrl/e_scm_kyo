@@ -6,7 +6,7 @@ import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { formatPhone } from '@/lib/validators';
 import { settleCreditOrder } from '@/lib/accounting-actions';
-import { fmtDateTimeKST, fmtDateKST, fmtKoreanMonthKST } from '@/lib/date';
+import { fmtDateTimeKST, fmtDateKST, fmtKoreanMonthKST, kstDayStart, kstDayEnd } from '@/lib/date';
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -75,7 +75,7 @@ function consultStyle(t?: string | null) {
   return CONSULT_STYLE[t] || CONSULT_STYLE['기타'];
 }
 
-function fmtDate(date: Date): string { return date.toISOString().slice(0, 10); }
+function fmtDate(date: Date): string { return fmtDateKST(date); }
 // 고객 상세 표시용 (KST). 쿼리 경계 계산에는 fmtDate(Date)를 계속 사용.
 function fmtDateTime(iso: string): string {
   if (!iso) return '';
@@ -171,15 +171,15 @@ export default function CustomerDetailPage() {
         .from('sales_orders')
         .select(`id, order_number, ordered_at, status, total_amount, payment_method, credit_settled, credit_settled_method, points_earned, points_used, branch_id, branch:branches(name, id), items:sales_order_items(id, quantity, unit_price, total_price, product:products(name))`)
         .eq('customer_id', customerId)
-        .gte('ordered_at', `${purchaseDateRange.start}T00:00:00`)
-        .lte('ordered_at', `${purchaseDateRange.end}T23:59:59`)
+        .gte('ordered_at', kstDayStart(purchaseDateRange.start))
+        .lte('ordered_at', kstDayEnd(purchaseDateRange.end))
         .order('ordered_at', { ascending: false }),
       supabase
         .from('customer_consultations')
         .select('*, consulted_by:users(name)')
         .eq('customer_id', customerId)
-        .gte('created_at', `${consultDateRange.start}T00:00:00`)
-        .lte('created_at', `${consultDateRange.end}T23:59:59`)
+        .gte('created_at', kstDayStart(consultDateRange.start))
+        .lte('created_at', kstDayEnd(consultDateRange.end))
         .order('created_at', { ascending: false }),
       supabase.from('customer_tags').select('*').order('name'),
       supabase.from('branches').select('id, name').eq('is_active', true),

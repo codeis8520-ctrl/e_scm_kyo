@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { publicRegisterCustomer } from '@/lib/public-registration-actions';
+import { kstTodayString } from '@/lib/date';
 
 interface Props {
   branchId: string;
@@ -135,7 +136,7 @@ export default function JoinForm({ branchId, branchName }: Props) {
           value={birthday}
           onChange={e => setBirthday(e.target.value)}
           className="input text-base"
-          max={new Date().toISOString().slice(0, 10)}
+          max={kstTodayString()}
         />
         <p className="text-xs text-slate-400 mt-1">생일 축하 메시지와 혜택을 받을 수 있습니다</p>
       </div>

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createClient } from '@/lib/supabase/server';
+import { kstDayStart, kstDayEnd } from '@/lib/date';
 
 // 이전 버전에서 자동 생성된 더미 고객명(고객_xxx@n, 고객_xxx@k 등) 필터
 function cleanCustomerName(name: string | null | undefined): string {
@@ -41,8 +42,8 @@ export async function GET(request: NextRequest) {
         .in('status', ['DELIVERED', 'PARTIALLY_SETTLED', 'SETTLED'])
         .order('delivered_at', { ascending: false })
         .limit(100);
-      if (periodStart) q = q.gte('delivered_at', `${periodStart}T00:00:00`);
-      if (periodEnd) q = q.lte('delivered_at', `${periodEnd}T23:59:59`);
+      if (periodStart) q = q.gte('delivered_at', kstDayStart(periodStart));
+      if (periodEnd) q = q.lte('delivered_at', kstDayEnd(periodEnd));
       if (effectiveBranchId && effectiveBranchId !== 'ALL') q = q.eq('branch_id', effectiveBranchId);
 
       const { data, error } = await q;
@@ -74,8 +75,8 @@ export async function GET(request: NextRequest) {
       .limit(100);
 
     if (channel && channel !== 'ALL') q = q.eq('channel', channel);
-    if (periodStart) q = q.gte('ordered_at', `${periodStart}T00:00:00`);
-    if (periodEnd) q = q.lte('ordered_at', `${periodEnd}T23:59:59`);
+    if (periodStart) q = q.gte('ordered_at', kstDayStart(periodStart));
+    if (periodEnd) q = q.lte('ordered_at', kstDayEnd(periodEnd));
     if (effectiveBranchId && effectiveBranchId !== 'ALL') q = q.eq('branch_id', effectiveBranchId);
 
     const { data, error } = await q;
@@ -146,8 +147,8 @@ export async function GET(request: NextRequest) {
       .order('ordered_at', { ascending: false })
       .limit(50);
 
-    if (periodStart) q = q.gte('ordered_at', `${periodStart}T00:00:00`);
-    if (periodEnd) q = q.lte('ordered_at', `${periodEnd}T23:59:59`);
+    if (periodStart) q = q.gte('ordered_at', kstDayStart(periodStart));
+    if (periodEnd) q = q.lte('ordered_at', kstDayEnd(periodEnd));
     if (effectiveBranchId && effectiveBranchId !== 'ALL') q = q.eq('branch_id', effectiveBranchId);
 
     const { data, error } = await q;
