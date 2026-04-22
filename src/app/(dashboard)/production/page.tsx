@@ -135,6 +135,16 @@ export default function ProductionPage() {
   const [selectedFinishedId, setSelectedFinishedId] = useState<string>('');
   const hqBranch = branches.find((b: any) => b.is_headquarters) || null;
 
+  // 페이지네이션
+  const PAGE_SIZE = 30;
+  const [page, setPage] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+  const [stats, setStats] = useState({ pending: 0, inProgress: 0, completed: 0 });
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+
+  // 상태 전환 중인 row id — 버튼 중복 클릭 방지
+  const [processingId, setProcessingId] = useState<string | null>(null);
+
   // ── 초기 데이터 ──────────────────────────────────────────────────────────────
   useEffect(() => {
     const supabase = createClient();
@@ -188,44 +198,50 @@ export default function ProductionPage() {
       getProductionOrders({
         branchId: selectedBranch || undefined,
         status: filterStatus || undefined,
+        page,
+        pageSize: PAGE_SIZE,
       }),
       listFactories({ includeInactive: true }),
     ]);
     if ((bomRes as any).error) console.error('[ProductionPage] getBomList error:', (bomRes as any).error);
     setBomList(bomRes.data || []);
     setOrders(orderRes.data || []);
+    setTotalCount((orderRes as any).count ?? 0);
+    setStats((orderRes as any).stats ?? { pending: 0, inProgress: 0, completed: 0 });
     setFactories(factRes.data || []);
     setLoading(false);
-  }, [selectedBranch, filterStatus]);
+  }, [selectedBranch, filterStatus, page]);
 
   useEffect(() => {
     // branches 로드가 끝난 뒤부터 호출 (selectedBranch=''는 '전체' 의미이므로 guard 제외)
     if (branches.length > 0) loadData();
   }, [loadData, branches.length]);
 
+  // 필터 변경 시 1페이지로 리셋
+  useEffect(() => { setPage(1); }, [selectedBranch, filterStatus]);
+
   // ── 상태 전환 액션 ───────────────────────────────────────────────────────────
-  const handleStart = async (id: string) => {
-    const r = await startProductionOrder(id);
-    if (r.error) alert(r.error); else loadData();
+  //   processingId로 in-flight 관리 — 같은 row의 버튼 중복 클릭을 UI에서 차단.
+  const runWithGuard = async (id: string, fn: () => Promise<any>) => {
+    if (processingId) return; // 이미 다른 작업 진행 중
+    setProcessingId(id);
+    try {
+      const r = await fn();
+      if (r?.error) alert(r.error);
+      else await loadData();
+    } finally {
+      setProcessingId(null);
+    }
   };
 
-  const handleComplete = async (id: string) => {
+  const handleStart = (id: string) => runWithGuard(id, () => startProductionOrder(id));
+  const handleComplete = (id: string) => {
     if (!confirm('생산 완료 처리하시겠습니까? 완제품이 입고 지점 재고로 반영됩니다.')) return;
-    const r = await completeProductionOrder(id);
-    if (r.error) alert(r.error); else loadData();
+    runWithGuard(id, () => completeProductionOrder(id));
   };
-
-  const handleCancel = async (id: string) => {
+  const handleCancel = (id: string) => {
     if (!confirm('생산을 취소하시겠습니까?')) return;
-    const r = await cancelProductionOrder(id);
-    if (r.error) alert(r.error); else loadData();
-  };
-
-  // ── 집계 ─────────────────────────────────────────────────────────────────────
-  const stats = {
-    pending:    orders.filter(o => o.status === 'PENDING').length,
-    inProgress: orders.filter(o => o.status === 'IN_PROGRESS').length,
-    completed:  orders.filter(o => o.status === 'COMPLETED').length,
+    runWithGuard(id, () => cancelProductionOrder(id));
   };
 
   return (
@@ -314,6 +330,12 @@ export default function ProductionPage() {
 
           {/* 목록 */}
           <div className="card">
+            <div className="flex items-center justify-between px-4 py-2 text-xs text-slate-500 border-b border-slate-100">
+              <span>총 <b className="text-slate-700">{totalCount.toLocaleString()}</b>건</span>
+              {totalCount > 0 && (
+                <span>페이지 {page} / {totalPages}</span>
+              )}
+            </div>
             <div className="overflow-x-auto">
             <table className="table min-w-[780px]">
               <thead>
@@ -351,26 +373,76 @@ export default function ProductionPage() {
                       {order.produced_at ? new Date(order.produced_at).toLocaleDateString('ko-KR') : '-'}
                     </td>
                     <td>
-                      <div className="flex gap-1">
-                        {order.status === 'PENDING' && (
-                          <>
-                            <button onClick={() => handleStart(order.id)} className="text-xs px-2 py-1 bg-blue-50 text-blue-700 rounded hover:bg-blue-100">착수</button>
-                            <button onClick={() => handleCancel(order.id)} className="text-xs px-2 py-1 bg-slate-50 text-slate-600 rounded hover:bg-slate-100">취소</button>
-                          </>
-                        )}
-                        {order.status === 'IN_PROGRESS' && (
-                          <>
-                            <button onClick={() => handleComplete(order.id)} className="text-xs px-2 py-1 bg-green-50 text-green-700 rounded hover:bg-green-100">완료</button>
-                            <button onClick={() => handleCancel(order.id)} className="text-xs px-2 py-1 bg-slate-50 text-slate-600 rounded hover:bg-slate-100">취소</button>
-                          </>
-                        )}
-                      </div>
+                      {(() => {
+                        const isRowBusy = processingId === order.id;
+                        const otherBusy = !!processingId && !isRowBusy;
+                        const disabledCls = 'opacity-50 cursor-not-allowed';
+                        return (
+                          <div className="flex gap-1">
+                            {order.status === 'PENDING' && (
+                              <>
+                                <button
+                                  onClick={() => handleStart(order.id)}
+                                  disabled={isRowBusy || otherBusy}
+                                  className={`text-xs px-2 py-1 bg-blue-50 text-blue-700 rounded hover:bg-blue-100 ${(isRowBusy || otherBusy) ? disabledCls : ''}`}
+                                >
+                                  {isRowBusy ? '처리중…' : '착수'}
+                                </button>
+                                <button
+                                  onClick={() => handleCancel(order.id)}
+                                  disabled={isRowBusy || otherBusy}
+                                  className={`text-xs px-2 py-1 bg-slate-50 text-slate-600 rounded hover:bg-slate-100 ${(isRowBusy || otherBusy) ? disabledCls : ''}`}
+                                >
+                                  취소
+                                </button>
+                              </>
+                            )}
+                            {order.status === 'IN_PROGRESS' && (
+                              <>
+                                <button
+                                  onClick={() => handleComplete(order.id)}
+                                  disabled={isRowBusy || otherBusy}
+                                  className={`text-xs px-2 py-1 bg-green-50 text-green-700 rounded hover:bg-green-100 ${(isRowBusy || otherBusy) ? disabledCls : ''}`}
+                                >
+                                  {isRowBusy ? '처리중…' : '완료'}
+                                </button>
+                                <button
+                                  onClick={() => handleCancel(order.id)}
+                                  disabled={isRowBusy || otherBusy}
+                                  className={`text-xs px-2 py-1 bg-slate-50 text-slate-600 rounded hover:bg-slate-100 ${(isRowBusy || otherBusy) ? disabledCls : ''}`}
+                                >
+                                  취소
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
             </div>
+            {totalPages > 1 && (
+              <div className="flex items-center justify-center gap-2 px-4 py-3 border-t border-slate-100 text-sm">
+                <button
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                  disabled={page <= 1 || loading}
+                  className="px-3 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  이전
+                </button>
+                <span className="text-slate-500 text-xs tabular-nums">{page} / {totalPages}</span>
+                <button
+                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                  disabled={page >= totalPages || loading}
+                  className="px-3 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  다음
+                </button>
+              </div>
+            )}
           </div>
         </>
       )}
@@ -418,21 +490,32 @@ function FactoriesPanel({ factories, canEdit, onChanged }: {
   const [showEditor, setShowEditor] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const [showInactive, setShowInactive] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const visible = factories.filter((f: any) => showInactive ? true : f.is_active);
 
   const handleToggle = async (f: any) => {
-    if (!canEdit) return;
-    const r = f.is_active ? await deactivateFactory(f.id) : await activateFactory(f.id);
-    if (r.error) alert(r.error); else onChanged();
+    if (!canEdit || busyId) return;
+    setBusyId(f.id);
+    try {
+      const r = f.is_active ? await deactivateFactory(f.id) : await activateFactory(f.id);
+      if (r.error) alert(r.error); else await onChanged();
+    } finally {
+      setBusyId(null);
+    }
   };
 
   const handleDelete = async (f: any) => {
-    if (!canEdit) return;
+    if (!canEdit || busyId) return;
     if (!confirm(`"${f.name}" 공장을 완전 삭제할까요? (연결된 생산 지시가 있으면 실패합니다)`)) return;
-    const r = await deleteFactory(f.id);
-    if (r.error) { alert(r.error); return; }
-    onChanged();
+    setBusyId(f.id);
+    try {
+      const r = await deleteFactory(f.id);
+      if (r.error) { alert(r.error); return; }
+      await onChanged();
+    } finally {
+      setBusyId(null);
+    }
   };
 
   return (
@@ -484,11 +567,27 @@ function FactoriesPanel({ factories, canEdit, onChanged }: {
                 {canEdit && (
                   <td className="text-right">
                     <div className="flex gap-1 justify-end">
-                      <button onClick={() => { setEditing(f); setShowEditor(true); }} className="text-xs px-2 py-1 rounded bg-slate-50 hover:bg-slate-100">수정</button>
-                      <button onClick={() => handleToggle(f)} className="text-xs px-2 py-1 rounded bg-slate-50 hover:bg-slate-100">
-                        {f.is_active ? '비활성' : '활성'}
+                      <button
+                        onClick={() => { setEditing(f); setShowEditor(true); }}
+                        disabled={!!busyId}
+                        className="text-xs px-2 py-1 rounded bg-slate-50 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        수정
                       </button>
-                      <button onClick={() => handleDelete(f)} className="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">삭제</button>
+                      <button
+                        onClick={() => handleToggle(f)}
+                        disabled={!!busyId}
+                        className="text-xs px-2 py-1 rounded bg-slate-50 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {busyId === f.id ? '처리중…' : (f.is_active ? '비활성' : '활성')}
+                      </button>
+                      <button
+                        onClick={() => handleDelete(f)}
+                        disabled={!!busyId}
+                        className="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        삭제
+                      </button>
                     </div>
                   </td>
                 )}

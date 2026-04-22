@@ -313,30 +313,74 @@ export async function getWhereUsed(materialId: string) {
 
 // ─── 생산 지시 조회 ────────────────────────────────────────────────────────────
 
-export async function getProductionOrders(filters?: { branchId?: string; status?: string; factoryId?: string }) {
+// 상태별 카운트 — 상단 통계 카드용. 상태 필터는 무시하고 지점·공장 필터만 적용.
+async function loadProductionStatusStats(
+  db: any,
+  branchId?: string,
+  factoryId?: string,
+): Promise<{ pending: number; inProgress: number; completed: number }> {
+  const statuses: Array<'PENDING' | 'IN_PROGRESS' | 'COMPLETED'> = ['PENDING', 'IN_PROGRESS', 'COMPLETED'];
+  const counts = await Promise.all(statuses.map(async (s) => {
+    let q = db.from('production_orders').select('id', { count: 'exact', head: true }).eq('status', s);
+    if (branchId)  q = q.eq('branch_id', branchId);
+    if (factoryId) q = q.eq('oem_factory_id', factoryId);
+    let res = await q;
+    // 마이그 047 미적용 시 oem_factory_id 컬럼이 없어 실패 → factory 필터 생략 재시도
+    if (res.error && factoryId && isMissingColumnError(res.error)) {
+      let q2 = db.from('production_orders').select('id', { count: 'exact', head: true }).eq('status', s);
+      if (branchId) q2 = q2.eq('branch_id', branchId);
+      res = await q2;
+    }
+    if (res.error) return 0;
+    return res.count ?? 0;
+  }));
+  return { pending: counts[0], inProgress: counts[1], completed: counts[2] };
+}
+
+export async function getProductionOrders(filters?: {
+  branchId?: string;
+  status?: string;
+  factoryId?: string;
+  page?: number;
+  pageSize?: number;
+}) {
   const supabase = await createClient();
   const db = supabase as any;
+
+  const page = Math.max(1, filters?.page ?? 1);
+  const pageSize = Math.max(1, Math.min(200, filters?.pageSize ?? 30));
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
 
   // oem_factory join 시도 → 컬럼이 없으면(마이그 047 미적용) 폴백
   const baseCols = '*, product:products(id, name, code), branch:branches(id, name), produced_by_user:users!production_orders_produced_by_fkey(name)';
   let sel = `${baseCols}, factory:oem_factories(id, name, code)`;
 
-  let q = db.from('production_orders').select(sel).order('created_at', { ascending: false }).limit(100);
+  let q = db
+    .from('production_orders')
+    .select(sel, { count: 'exact' })
+    .order('created_at', { ascending: false })
+    .range(from, to);
   if (filters?.branchId)  q = q.eq('branch_id', filters.branchId);
   if (filters?.factoryId) q = q.eq('oem_factory_id', filters.factoryId);
   if (filters?.status)    q = q.eq('status', filters.status);
 
-  let { data, error } = await q;
+  let { data, error, count } = await q;
   if (error && isMissingColumnError(error)) {
-    let q2 = db.from('production_orders').select(baseCols).order('created_at', { ascending: false }).limit(100);
+    let q2 = db
+      .from('production_orders')
+      .select(baseCols, { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(from, to);
     if (filters?.branchId) q2 = q2.eq('branch_id', filters.branchId);
     if (filters?.status)   q2 = q2.eq('status', filters.status);
     const r = await q2;
-    data = r.data; error = r.error;
+    data = r.data; error = r.error; count = r.count;
   }
 
-  if (error) return { data: [], error: error.message };
-  return { data: data || [] };
+  const stats = await loadProductionStatusStats(db, filters?.branchId, filters?.factoryId);
+  if (error) return { data: [], count: 0, stats, error: error.message };
+  return { data: data || [], count: count ?? 0, stats };
 }
 
 // ─── 생산 지시 생성 (PENDING) ──────────────────────────────────────────────────
