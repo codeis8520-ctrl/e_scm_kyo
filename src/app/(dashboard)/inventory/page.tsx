@@ -8,19 +8,22 @@ import TransferModal from './TransferModal';
 import MovementHistoryModal from './MovementHistoryModal';
 import { updateSafetyStock } from '@/lib/inventory-actions';
 
+type ProductType = 'FINISHED' | 'RAW' | 'SUB';
+
 interface Inventory {
   id: string;
   branch_id: string;
   product_id: string;
   quantity: number;
   safety_stock: number;
-  branch?: { id: string; name: string };
-  product?: { id: string; name: string; code: string; barcode?: string };
+  branch?: { id: string; name: string; is_headquarters?: boolean };
+  product?: { id: string; name: string; code: string; barcode?: string; product_type?: ProductType | null };
 }
 
 interface Branch {
   id: string;
   name: string;
+  is_headquarters?: boolean;
 }
 
 // 제품별 피벗 행: 제품 정보 + 지점별 재고 맵
@@ -28,9 +31,19 @@ interface ProductRow {
   productId: string;
   productName: string;
   productCode: string;
+  productType?: ProductType | null;
   barcode?: string;
   byBranch: Record<string, Inventory>; // branch_id → Inventory
 }
+
+// 원자재·부자재는 본사에서만 입출고·조정 가능 (OEM 위탁 생산 모델)
+function isMaterialType(t?: ProductType | null): boolean {
+  return t === 'RAW' || t === 'SUB';
+}
+const TYPE_BADGE: Record<'RAW' | 'SUB', { label: string; cls: string }> = {
+  RAW: { label: '원자재', cls: 'bg-emerald-100 text-emerald-700' },
+  SUB: { label: '부자재', cls: 'bg-amber-100 text-amber-700' },
+};
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -71,18 +84,33 @@ export default function InventoryPage() {
 
   const fetchBranches = async () => {
     const supabase = createClient();
-    const { data } = await supabase.from('branches').select('id, name').eq('is_active', true).order('name');
-    setBranches(data || []);
+    // is_headquarters 포함 시도 → 마이그 047 미적용 DB 폴백
+    let res: any = await supabase
+      .from('branches')
+      .select('id, name, is_headquarters')
+      .eq('is_active', true)
+      .order('name');
+    if (res.error) {
+      res = await supabase.from('branches').select('id, name').eq('is_active', true).order('name');
+    }
+    setBranches(res.data || []);
   };
 
   const fetchInventory = async () => {
     setLoading(true);
     const supabase = createClient();
-    const { data } = await supabase
+    // product_type · is_headquarters 포함 시도 → 마이그 042/047 미적용 폴백
+    let res: any = await supabase
       .from('inventories')
-      .select('*, branch:branches(id, name), product:products(id, name, code, barcode)')
+      .select('*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type)')
       .order('product_id');
-    setInventories(data || []);
+    if (res.error) {
+      res = await supabase
+        .from('inventories')
+        .select('*, branch:branches(id, name), product:products(id, name, code, barcode)')
+        .order('product_id');
+    }
+    setInventories(res.data || []);
     setLoading(false);
   };
 
@@ -111,6 +139,7 @@ export default function InventoryPage() {
           productId: inv.product_id,
           productName: inv.product.name,
           productCode: inv.product.code,
+          productType: (inv.product.product_type ?? null) as ProductType | null,
           barcode: inv.product.barcode,
           byBranch: {},
         });
@@ -119,6 +148,9 @@ export default function InventoryPage() {
     }
     return Array.from(map.values()).sort((a, b) => a.productName.localeCompare(b.productName, 'ko'));
   })();
+
+  // 본사 지점 id — 원자재·부자재 조정 가능 여부 판정용
+  const hqBranchId = branches.find(b => b.is_headquarters)?.id || null;
 
   // ── 검색 필터 ─────────────────────────────────────────────────────────
   const searchLower = search.toLowerCase();
@@ -261,6 +293,11 @@ export default function InventoryPage() {
                       >
                         {row.productName}
                       </button>
+                      {row.productType === 'RAW' || row.productType === 'SUB' ? (
+                        <span className={`ml-2 inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${TYPE_BADGE[row.productType].cls}`}>
+                          {TYPE_BADGE[row.productType].label}
+                        </span>
+                      ) : null}
                       {row.barcode && (
                         <span className="ml-2 text-xs text-slate-400 font-mono">{row.barcode}</span>
                       )}
@@ -275,25 +312,36 @@ export default function InventoryPage() {
                         quantity: 0,
                         safety_stock: 0,
                         branch: b,
-                        product: { id: row.productId, name: row.productName, code: row.productCode, barcode: row.barcode },
+                        product: { id: row.productId, name: row.productName, code: row.productCode, barcode: row.barcode, product_type: row.productType },
                       };
                       const isLow = effective.quantity < effective.safety_stock;
                       const isMissing = !inv;
+                      // 원자재·부자재는 본사에서만 입출고·조정 가능. 본사 지정이 없으면 제한 생략.
+                      const materialBlocked = isMaterialType(row.productType) && !!hqBranchId && b.id !== hqBranchId;
                       return (
                         <td key={b.id} className="text-center p-0">
                           <button
-                            onClick={() => handleAdjust(effective)}
-                            title={isMissing ? '재고 없음 · 클릭하여 입고' : `입출고 · 안전재고 ${effective.safety_stock}`}
-                            className={`w-full h-full px-3 py-2 font-semibold transition-colors rounded hover:ring-2 hover:ring-blue-300 hover:ring-inset ${
-                              isMissing
-                                ? 'text-slate-300 hover:bg-blue-50 hover:text-slate-600'
-                                : isLow
-                                  ? 'text-red-600 bg-red-50 hover:bg-red-100'
-                                  : 'text-slate-800 hover:bg-blue-50'
+                            onClick={() => { if (!materialBlocked) handleAdjust(effective); }}
+                            disabled={materialBlocked}
+                            title={
+                              materialBlocked
+                                ? '원자재·부자재는 본사에서만 입출고·조정 가능'
+                                : isMissing ? '재고 없음 · 클릭하여 입고' : `입출고 · 안전재고 ${effective.safety_stock}`
+                            }
+                            className={`w-full h-full px-3 py-2 font-semibold transition-colors rounded ${
+                              materialBlocked
+                                ? 'text-slate-300 cursor-not-allowed'
+                                : `hover:ring-2 hover:ring-blue-300 hover:ring-inset ${
+                                    isMissing
+                                      ? 'text-slate-300 hover:bg-blue-50 hover:text-slate-600'
+                                      : isLow
+                                        ? 'text-red-600 bg-red-50 hover:bg-red-100'
+                                        : 'text-slate-800 hover:bg-blue-50'
+                                  }`
                             }`}
                           >
                             {effective.quantity}
-                            {isLow && !isMissing && <span className="ml-1 text-xs font-normal">↓{effective.safety_stock}</span>}
+                            {isLow && !isMissing && !materialBlocked && <span className="ml-1 text-xs font-normal">↓{effective.safety_stock}</span>}
                           </button>
                         </td>
                       );
@@ -304,7 +352,7 @@ export default function InventoryPage() {
             </tbody>
           </table>
           <p className="text-xs text-slate-400 mt-3">
-            숫자 클릭 → 입출고 처리 · 제품명 클릭 → 변동 이력 · 빨간 숫자 = 안전재고 미달 (↓기준값)
+            숫자 클릭 → 입출고 처리 · 제품명 클릭 → 변동 이력 · 빨간 숫자 = 안전재고 미달 (↓기준값) · 원자재·부자재는 본사만 입출고 가능
           </p>
         </div>
       ) : (
@@ -332,11 +380,20 @@ export default function InventoryPage() {
               </tr>
             ) : filteredFlat.map((item) => {
               const isLow = item.quantity < item.safety_stock;
+              const pt = item.product?.product_type ?? null;
+              const materialBlocked = isMaterialType(pt) && !!hqBranchId && item.branch_id !== hqBranchId;
               return (
                 <tr key={item.id}>
                   <td>{item.branch?.name}</td>
                   <td className="font-mono text-xs">{item.product?.code}</td>
-                  <td>{item.product?.name}</td>
+                  <td>
+                    {item.product?.name}
+                    {pt === 'RAW' || pt === 'SUB' ? (
+                      <span className={`ml-2 inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${TYPE_BADGE[pt].cls}`}>
+                        {TYPE_BADGE[pt].label}
+                      </span>
+                    ) : null}
+                  </td>
                   <td className="font-mono text-xs text-slate-500">{item.product?.barcode || '-'}</td>
                   <td className={isLow ? 'text-red-600 font-semibold' : ''}>
                     {item.quantity}
@@ -359,7 +416,9 @@ export default function InventoryPage() {
                   <td>
                     <button
                       onClick={() => handleAdjust(item)}
-                      className="text-blue-600 hover:underline mr-2"
+                      disabled={materialBlocked}
+                      title={materialBlocked ? '원자재·부자재는 본사에서만 입출고·조정 가능' : undefined}
+                      className={`mr-2 ${materialBlocked ? 'text-slate-300 cursor-not-allowed' : 'text-blue-600 hover:underline'}`}
                     >
                       입출고
                     </button>

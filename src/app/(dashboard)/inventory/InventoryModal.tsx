@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { adjustInventory, getBranches } from '@/lib/actions';
+import { adjustInventory } from '@/lib/actions';
 
 interface Props {
   inventory?: any;
@@ -13,11 +13,18 @@ interface Product {
   id: string;
   name: string;
   code: string;
+  product_type?: 'FINISHED' | 'RAW' | 'SUB' | null;
 }
 
 interface Branch {
   id: string;
   name: string;
+  is_headquarters?: boolean;
+}
+
+// 원자재·부자재는 본사에서만 입출고·조정 가능 (OEM 위탁 생산 모델)
+function isMaterialType(t?: string | null): boolean {
+  return t === 'RAW' || t === 'SUB';
 }
 
 export default function InventoryModal({ inventory, onClose, onSuccess }: Props) {
@@ -25,8 +32,13 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
   const [products, setProducts] = useState<Product[]>([]);
   const [searchProduct, setSearchProduct] = useState('');
   const [filteredProducts, setFilteredProducts] = useState<Product[]>([]);
-  const [selectedProduct, setSelectedProduct] = useState<{ id: string; name: string; code: string } | null>(
-    inventory?.product ? { id: inventory.product_id, name: inventory.product?.name, code: inventory.product?.code } : null
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(
+    inventory?.product ? {
+      id: inventory.product_id,
+      name: inventory.product?.name,
+      code: inventory.product?.code,
+      product_type: inventory.product?.product_type ?? null,
+    } : null
   );
   const [formData, setFormData] = useState({
     branch_id: inventory?.branch_id || '',
@@ -39,17 +51,45 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    getBranches().then(res => setBranches(res.data || []));
+    loadBranches();
     loadProducts();
   }, []);
+
+  const loadBranches = async () => {
+    const { createClient } = await import('@/lib/supabase/client');
+    const client = createClient();
+    // is_headquarters 포함 시도 → 마이그 047 미적용 폴백
+    let res: any = await client.from('branches').select('id, name, is_headquarters').eq('is_active', true).order('name');
+    if (res.error) {
+      res = await client.from('branches').select('id, name').eq('is_active', true).order('name');
+    }
+    setBranches((res.data || []) as Branch[]);
+  };
 
   const loadProducts = async () => {
     const { createClient } = await import('@/lib/supabase/client');
     const client = createClient();
-    const { data } = await client.from('products').select('id, name, code').eq('is_active', true).order('name');
-    setProducts((data || []) as Product[]);
-    setFilteredProducts((data || []) as Product[]);
+    // product_type 포함 시도 → 마이그 042 미적용 폴백
+    let res: any = await client.from('products').select('id, name, code, product_type').eq('is_active', true).order('name');
+    if (res.error) {
+      res = await client.from('products').select('id, name, code').eq('is_active', true).order('name');
+    }
+    setProducts((res.data || []) as Product[]);
+    setFilteredProducts((res.data || []) as Product[]);
   };
+
+  const hqBranch = branches.find(b => b.is_headquarters) || null;
+  const selectedIsMaterial = isMaterialType(selectedProduct?.product_type);
+  // RAW/SUB 제품 선택 + 본사 지정 존재 + 수정 모드(지점 고정) 아닐 때만 지점 드롭다운 제한
+  const branchesForSelect = (selectedIsMaterial && hqBranch && !inventory) ? [hqBranch] : branches;
+
+  // 제품 선택이 RAW/SUB로 바뀌면 지점을 본사로 자동 설정 (신규 입력 모드)
+  useEffect(() => {
+    if (inventory) return;
+    if (selectedIsMaterial && hqBranch) {
+      setFormData(prev => ({ ...prev, branch_id: hqBranch.id }));
+    }
+  }, [selectedProduct?.id, selectedIsMaterial, hqBranch?.id, inventory]);
 
   const handleProductSearch = (query: string) => {
     setSearchProduct(query);
@@ -93,7 +133,12 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
     form.append('memo', formData.memo);
 
     try {
-      await adjustInventory(form);
+      const res: any = await adjustInventory(form);
+      if (res?.error) {
+        setError(res.error);
+        setLoading(false);
+        return;
+      }
       onSuccess();
     } catch (err: any) {
       setError(err?.message || '재고 조정 중 오류가 발생했습니다.');
@@ -164,6 +209,9 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
                 {selectedProduct && (
                   <p className="mt-1 text-xs text-green-600">
                     ✓ 선택됨: {selectedProduct.name} ({selectedProduct.code})
+                    {selectedIsMaterial && (
+                      <span className="ml-2 text-amber-600">· 원자재·부자재는 본사에서만 관리</span>
+                    )}
                   </p>
                 )}
               </div>
@@ -174,13 +222,19 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
                   value={formData.branch_id}
                   onChange={(e) => setFormData({ ...formData, branch_id: e.target.value })}
                   required
-                  className="mt-1 input"
+                  disabled={selectedIsMaterial && !!hqBranch}
+                  className="mt-1 input disabled:bg-slate-100"
                 >
                   <option value="">선택하세요</option>
-                  {branches.map(branch => (
-                    <option key={branch.id} value={branch.id}>{branch.name}</option>
+                  {branchesForSelect.map(branch => (
+                    <option key={branch.id} value={branch.id}>
+                      {branch.name}{branch.is_headquarters ? ' (본사)' : ''}
+                    </option>
                   ))}
                 </select>
+                {selectedIsMaterial && hqBranch && (
+                  <p className="mt-1 text-xs text-slate-500">지점은 본사로 고정됩니다.</p>
+                )}
               </div>
             </>
           )}

@@ -309,6 +309,7 @@ export async function getInventory(branchId?: string, search?: string) {
 
 export async function adjustInventory(formData: FormData) {
   const supabase = await createClient();
+  const db = supabase as any;
 
   const branchId = formData.get('branch_id') as string;
   const productId = formData.get('product_id') as string;
@@ -316,6 +317,23 @@ export async function adjustInventory(formData: FormData) {
   const quantity = parseInt(formData.get('quantity') as string);
   const safetyStock = parseInt(formData.get('safety_stock') as string) || 0;
   const memo = formData.get('memo') as string;
+
+  // ── 원자재·부자재는 본사(is_headquarters=true)에서만 입출고·조정 허용 ──
+  //   OEM 위탁 생산 모델에서 RAW/SUB는 본사 관리 원칙(CLAUDE.md 생산관리 섹션).
+  //   폴백: 마이그 042(product_type) 또는 047(is_headquarters) 미적용 시 제한 생략.
+  try {
+    const prodRes = await db.from('products').select('product_type').eq('id', productId).maybeSingle();
+    const pt: string | null = prodRes?.data?.product_type ?? null;
+    if (pt === 'RAW' || pt === 'SUB') {
+      const hqRes = await db.from('branches').select('id').eq('is_headquarters', true).maybeSingle();
+      const hqId: string | null = hqRes?.data?.id ?? null;
+      if (hqId && branchId !== hqId) {
+        return { error: '원자재·부자재 재고는 본사에서만 입출고·조정할 수 있습니다.' };
+      }
+    }
+  } catch {
+    // 폴백 — 컬럼 부재 등으로 확인 실패 시 제한 생략
+  }
 
   const { data: currentArr } = await supabase
     .from('inventories')
