@@ -21,6 +21,13 @@ const TYPE_BADGE: Record<ProductType, { label: string; cls: string }> = {
   SUB:      { label: '부자재', cls: 'bg-amber-100 text-amber-700' },
 };
 
+// products.unit 값이 비어있거나 "1" 같은 숫자 문자열이면 '개'로 치환.
+// (예전 레거시 데이터에 숫자 단위가 섞여 있어 "2{unit}"을 "21"로 오인하는 문제 방지)
+function safeUnit(raw: any, fallback: string = '개'): string {
+  const s = String(raw ?? '').trim();
+  return s && !/^\d+$/.test(s) ? s : fallback;
+}
+
 interface Category { id: string; name: string; }
 
 interface Material {
@@ -144,13 +151,12 @@ export default function ProductionPage() {
       const rows = (res.data || []) as any[];
       setBranches(rows);
       const cookieBranch = getCookie('user_branch_id');
-      const hq = rows.find((b: any) => b.is_headquarters);
       if (isBranchUser && cookieBranch) {
         setSelectedBranch(cookieBranch);
-      } else if (hq) {
-        setSelectedBranch(hq.id);
-      } else if (rows.length > 0) {
-        setSelectedBranch(rows[0].id);
+      } else {
+        // HQ/SUPER_ADMIN/EXECUTIVE: 기본값 = 전체 지점
+        // (본사 필터 고정 시 타 지점 입고 생산 지시가 목록에서 누락되는 문제 방지)
+        setSelectedBranch('');
       }
     })();
     (async () => {
@@ -193,8 +199,9 @@ export default function ProductionPage() {
   }, [selectedBranch, filterStatus]);
 
   useEffect(() => {
-    if (selectedBranch) loadData();
-  }, [loadData, selectedBranch]);
+    // branches 로드가 끝난 뒤부터 호출 (selectedBranch=''는 '전체' 의미이므로 guard 제외)
+    if (branches.length > 0) loadData();
+  }, [loadData, branches.length]);
 
   // ── 상태 전환 액션 ───────────────────────────────────────────────────────────
   const handleStart = async (id: string) => {
@@ -237,6 +244,7 @@ export default function ProductionPage() {
               className="input text-sm py-1.5"
               title="입고 지점 필터"
             >
+              <option value="">전체 지점</option>
               {branches.map((b: any) => (
                 <option key={b.id} value={b.id}>
                   {b.name}{b.is_headquarters ? ' (본사)' : ''}
@@ -731,8 +739,7 @@ function NewOrderModal({ products, branches, defaultBranchId, factories, onClose
                     {preview.map((p, i) => {
                       const actual = Math.ceil(p.required);
                       const hasLoss = p.loss_rate > 0;
-                      const rawUnit = String(p.unit || '').trim();
-                      const unit = rawUnit && !/^\d+$/.test(rawUnit) ? rawUnit : '개';
+                      const unit = safeUnit(p.unit);
                       const hqStock = p.hq_stock;
                       const shortage = p.hq_shortage ?? 0;
                       const isShort = shortage > 0;
@@ -1281,7 +1288,7 @@ function BomComposer({
                                 )}
                               </div>
                               <p className="text-[11px] text-slate-400 font-mono mt-0.5">
-                                {c.code} · {c.unit || '개'} · 단가 {Number(c.cost || 0).toLocaleString()}원
+                                {c.code} · {safeUnit(c.unit)} · 단가 {Number(c.cost || 0).toLocaleString()}원
                               </p>
                             </div>
                           </div>
@@ -1365,7 +1372,7 @@ function BomComposer({
                           onFocus={e => e.target.select()}
                           className="input text-right py-1 w-20"
                         />
-                        <span className="text-xs text-slate-400 w-8">{mat?.unit || '개'}</span>
+                        <span className="text-xs text-slate-400 w-8">{safeUnit(mat?.unit)}</span>
                       </div>
                     </td>
                     <td className="py-2">
@@ -1393,7 +1400,7 @@ function BomComposer({
                       <span className={line.loss_rate > 0 ? 'text-amber-600 font-medium' : ''}>
                         {actual.toFixed(3).replace(/\.?0+$/, '')}
                       </span>
-                      <span className="text-slate-400 ml-0.5">{mat?.unit || ''}</span>
+                      <span className="text-slate-400 ml-0.5">{safeUnit(mat?.unit, '')}</span>
                     </td>
                     <td className="py-2 text-right">
                       <button
