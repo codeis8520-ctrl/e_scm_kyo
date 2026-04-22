@@ -97,6 +97,10 @@
 - `src/lib/b2b-actions.ts:173-189` (MONTHLY 정산예정일) — `getFullYear/getMonth` 제거, `kstTodayString()` 파싱 기반 다음 달 조립 (12월→1월 wrap 포함)
 - `npm run build` ✅ 재통과 (46 pages, 0 errors).
 
+**Round 2 Richard 리뷰**: ✅ APPROVED (드리프트 없음, 3 파일 한정)
+
+**배포**: ✅ commit `db58077` (2026-04-22)
+
 ## Current Status
 
-Step 3 Round 2 수정 완료 → Richard 재리뷰 대기
+Step 3 배포 완료. 다음: **Step 4** — POS 판매등록 제품 그리드에서 RAW/SUB 제외 (완제품만 노출)
