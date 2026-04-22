@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import InventoryModal from './InventoryModal';
 import TransferModal from './TransferModal';
+import MovementHistoryModal from './MovementHistoryModal';
 import { updateSafetyStock } from '@/lib/inventory-actions';
 
 interface Inventory {
@@ -51,6 +52,9 @@ export default function InventoryPage() {
   const [transferInventory, setTransferInventory] = useState<Inventory | null>(null);
   const [viewMode, setViewMode] = useState<'pivot' | 'flat'>('pivot');
   const [flatBranchFilter, setFlatBranchFilter] = useState('');
+  // 재고 변동 이력 모달
+  const [historyProduct, setHistoryProduct] = useState<{ id: string; name: string; code: string } | null>(null);
+  const [historyInitialBranchId, setHistoryInitialBranchId] = useState<string | undefined>(undefined);
 
   const userRole = getCookie('user_role');
   const userBranchId = getCookie('user_branch_id');
@@ -247,7 +251,16 @@ export default function InventoryPage() {
                   <tr key={row.productId} className={hasAnyLow ? 'bg-red-50/30' : ''}>
                     <td className="font-mono text-xs text-slate-500">{row.productCode}</td>
                     <td>
-                      <span className="font-medium">{row.productName}</span>
+                      <button
+                        onClick={() => {
+                          setHistoryProduct({ id: row.productId, name: row.productName, code: row.productCode });
+                          setHistoryInitialBranchId(undefined);
+                        }}
+                        title="클릭하여 재고 변동 이력 보기"
+                        className="font-medium text-left hover:text-blue-600 hover:underline"
+                      >
+                        {row.productName}
+                      </button>
                       {row.barcode && (
                         <span className="ml-2 text-xs text-slate-400 font-mono">{row.barcode}</span>
                       )}
@@ -291,7 +304,7 @@ export default function InventoryPage() {
             </tbody>
           </table>
           <p className="text-xs text-slate-400 mt-3">
-            숫자 클릭 → 입출고 처리 · 빨간 숫자 = 안전재고 미달 (↓기준값)
+            숫자 클릭 → 입출고 처리 · 제품명 클릭 → 변동 이력 · 빨간 숫자 = 안전재고 미달 (↓기준값)
           </p>
         </div>
       ) : (
@@ -352,9 +365,19 @@ export default function InventoryPage() {
                     </button>
                     <button
                       onClick={() => { setTransferInventory(item); setShowTransferModal(true); }}
-                      className="text-green-600 hover:underline"
+                      className="text-green-600 hover:underline mr-2"
                     >
                       이동
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (!item.product) return;
+                        setHistoryProduct({ id: item.product.id, name: item.product.name, code: item.product.code });
+                        setHistoryInitialBranchId(item.branch_id);
+                      }}
+                      className="text-purple-600 hover:underline"
+                    >
+                      이력
                     </button>
                   </td>
                 </tr>
@@ -379,6 +402,16 @@ export default function InventoryPage() {
           branches={branches}
           onClose={() => { setShowTransferModal(false); setTransferInventory(null); }}
           onSuccess={() => { setShowTransferModal(false); setTransferInventory(null); fetchInventory(); }}
+        />
+      )}
+
+      {historyProduct && (
+        <MovementHistoryModal
+          product={historyProduct}
+          // BRANCH 사용자는 자기 지점만 보이도록 제한
+          branches={isBranchUser && userBranchId ? branches.filter(b => b.id === userBranchId) : branches}
+          initialBranchId={isBranchUser && userBranchId ? userBranchId : historyInitialBranchId}
+          onClose={() => { setHistoryProduct(null); setHistoryInitialBranchId(undefined); }}
         />
       )}
     </div>
