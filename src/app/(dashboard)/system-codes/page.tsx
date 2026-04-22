@@ -11,7 +11,18 @@ import {
   createUser, updateUser, deleteUser,
   createChannel, updateChannel, deleteChannel,
 } from '@/lib/actions';
+import { setHeadquarters, unsetHeadquarters } from '@/lib/oem-actions';
 import { validators } from '@/lib/validators';
+
+function getCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const map = document.cookie.split(';').reduce((acc, c) => {
+    const [k, v] = c.trim().split('=');
+    acc[k] = decodeURIComponent(v || '');
+    return acc;
+  }, {} as Record<string, string>);
+  return map[name] || null;
+}
 
 interface Channel {
   id: string;
@@ -30,6 +41,7 @@ interface Branch {
   address: string | null;
   phone: string | null;
   is_active: boolean;
+  is_headquarters?: boolean;
 }
 
 interface User {
@@ -134,6 +146,8 @@ interface ScreenPermission {
 
 export default function SystemCodesPage() {
   const [activeTab, setActiveTab] = useState<'channels' | 'branches' | 'grades' | 'tags' | 'categories' | 'staff' | 'templates' | 'permissions' | 'campaign_types'>('channels');
+  const [role] = useState<string | null>(() => getCookie('user_role'));
+  const canConfigureHq = role === 'SUPER_ADMIN' || role === 'HQ_OPERATOR';
   const [channels, setChannels] = useState<Channel[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [grades, setGrades] = useState<CustomerGrade[]>([]);
@@ -224,6 +238,24 @@ export default function SystemCodesPage() {
   const handleDeleteBranch = async (id: string) => {
     if (!confirm('정말 삭제하시겠습니까?')) return;
     await deleteBranch(id);
+    fetchData();
+  };
+
+  const handleToggleHq = async (b: Branch) => {
+    if (!canConfigureHq) return;
+    if (b.is_headquarters) {
+      if (!confirm(`"${b.name}"을(를) 본사에서 해제하시겠습니까? 해제 시 생산 지시 기본 입고 지점이 비워집니다.`)) return;
+      const r = await unsetHeadquarters(b.id);
+      if (r.error) { alert(r.error); return; }
+    } else {
+      const current = branches.find(x => x.is_headquarters);
+      const msg = current
+        ? `현재 본사 "${current.name}"이 해제되고 "${b.name}"이 본사로 지정됩니다. 계속할까요?`
+        : `"${b.name}"을(를) 본사로 지정할까요?`;
+      if (!confirm(msg)) return;
+      const r = await setHeadquarters(b.id);
+      if (r.error) { alert(r.error); return; }
+    }
     fetchData();
   };
 
@@ -464,6 +496,7 @@ export default function SystemCodesPage() {
                 <th>연락처</th>
                 <th>주소</th>
                 <th>상태</th>
+                <th>본사</th>
                 <th>관리</th>
               </tr>
             </thead>
@@ -471,7 +504,10 @@ export default function SystemCodesPage() {
               {branches.map((branch) => (
                 <tr key={branch.id}>
                   <td className="font-mono">{branch.code}</td>
-                  <td className="font-medium">{branch.name}</td>
+                  <td className="font-medium">
+                    {branch.name}
+                    {branch.is_headquarters && <span className="ml-2 inline-block px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700">본사</span>}
+                  </td>
                   <td>
                     <span className="badge bg-slate-100">
                       {channels.find(c => c.code === branch.channel)?.name || branch.channel}
@@ -483,6 +519,23 @@ export default function SystemCodesPage() {
                     <span className={`badge ${branch.is_active ? 'badge-success' : 'badge-error'}`}>
                       {branch.is_active ? '활성' : '비활성'}
                     </span>
+                  </td>
+                  <td>
+                    {canConfigureHq ? (
+                      <button
+                        onClick={() => handleToggleHq(branch)}
+                        className={`text-xs px-2 py-1 rounded font-medium ${
+                          branch.is_headquarters
+                            ? 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200'
+                            : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                        }`}
+                        title={branch.is_headquarters ? '본사 해제' : '본사로 지정'}
+                      >
+                        {branch.is_headquarters ? '본사 ✓' : '지정'}
+                      </button>
+                    ) : (
+                      <span className="text-xs text-slate-400">{branch.is_headquarters ? '본사' : '-'}</span>
+                    )}
                   </td>
                   <td>
                     <button
@@ -517,7 +570,7 @@ export default function SystemCodesPage() {
               ))}
               {branches.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="text-center text-slate-400 py-8">
+                  <td colSpan={8} className="text-center text-slate-400 py-8">
                     등록된 지점이 없습니다
                   </td>
                 </tr>
