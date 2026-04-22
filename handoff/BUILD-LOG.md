@@ -8,7 +8,7 @@
 
 ### Step 2 — KST 타임존 Phase A (표시 레이어 표준화)
 
-**상태**: 빌드 통과, Richard 리뷰 대기 (`handoff/REVIEW-REQUEST.md`)
+**상태**: ✅ 배포 완료 (commit `2a8e8a2`, 2026-04-22)
 
 **변경 파일 (12개)**:
 - 신규: `src/lib/date.ts` — `Intl.DateTimeFormat({ timeZone: 'Asia/Seoul' })` 기반 포맷터 7종 (Brief 스펙 5종 + 한글 스타일 2종)
@@ -55,4 +55,4 @@
 
 ## Current Status
 
-Step 2 완료 (빌드 통과) — Richard 리뷰 대기
+Step 2 배포 완료 (commit `2a8e8a2`) — 다음: Step 3(쿼리 경계) 또는 Step 1 재개 대기
