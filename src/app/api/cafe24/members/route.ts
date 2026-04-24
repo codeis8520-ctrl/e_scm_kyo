@@ -190,6 +190,8 @@ async function tryCustomersPrivacy(
 }
 
 // 주문 데이터에서 고유 회원 추출 (mall.read_order 스코프만 필요)
+// 목록 API 응답에는 주문자 전화번호가 없어, 신규 member_id를 만날 때만
+// 상세 API(embed=buyer) + receivers 엔드포인트로 보강 조회한다.
 async function extractMembersFromOrders(
   base: string, shopNo: string, startDate: string, endDate: string,
   headers: Record<string, string>
@@ -218,10 +220,47 @@ async function extractMembersFromOrders(
         const memberId = order.member_id;
         if (!memberId || members.has(memberId)) continue;
 
-        // 주문자 정보에서 회원 데이터 추출
-        const name = order.buyer_name || order.billing_name || '';
-        const phone = order.buyer_cellphone || order.buyer_phone || '';
-        const email = order.buyer_email || null;
+        const orderId = String(order.order_id ?? '');
+        if (!orderId) continue;
+
+        // 이름 1차: 목록 응답의 billing_name (결제자명)
+        let name: string = order.billing_name || '';
+        let phone = '';
+        let email: string | null = null;
+
+        // 상세 API로 buyer 객체 + billing_* 보강
+        try {
+          const detailRes = await fetch(
+            `${base}/admin/orders/${orderId}?shop_no=${shopNo}&embed=buyer`,
+            { headers, cache: 'no-store' }
+          );
+          if (detailRes.ok) {
+            const detailJson = await detailRes.json();
+            const d = detailJson?.order;
+            const buyer = d?.buyer;
+            name = buyer?.name || d?.billing_name || d?.orderer_name || name;
+            phone = buyer?.cellphone || buyer?.phone
+              || d?.billing_cellphone || d?.billing_phone
+              || d?.orderer_cellphone || d?.orderer_phone || '';
+            email = buyer?.email || d?.billing_email || d?.orderer_email || null;
+          }
+        } catch { /* 상세 조회 실패는 무시 — receivers 폴백으로 진행 */ }
+
+        // 전화번호 폴백: 수령인(receivers) cellphone (주문자 ≈ 수령인인 경우가 많음)
+        if (!phone) {
+          try {
+            const recvRes = await fetch(
+              `${base}/admin/orders/${orderId}/receivers?shop_no=${shopNo}`,
+              { headers, cache: 'no-store' }
+            );
+            if (recvRes.ok) {
+              const recvJson = await recvRes.json();
+              const recv = recvJson?.receivers?.[0];
+              phone = recv?.cellphone || recv?.phone || '';
+              if (!name) name = recv?.name || '';
+            }
+          } catch { /* 무시 */ }
+        }
 
         if (name && phone) {
           members.set(memberId, { member_id: memberId, name, phone, email });
