@@ -771,7 +771,7 @@ export default function SalesListTab() {
                       <span className={`badge text-[10px] mt-0.5 ${APPROVAL_STATUS_BADGE[approvalKey] || ''}`}>
                         {APPROVAL_STATUS_LABEL[approvalKey] || '-'}
                       </span>
-                      {o.credit_settled === false && (
+                      {o.payment_method === 'credit' && o.credit_settled === false && (
                         <span className="ml-1 badge text-[10px] bg-orange-100 text-orange-700">외상 미정산</span>
                       )}
                     </td>
@@ -1382,7 +1382,7 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
               {order.approval_no && payments.length === 0 && (
                 <p className="mt-1 text-[11px] text-slate-500 font-mono">승인 {order.approval_no} · {order.card_info || ''}</p>
               )}
-              {order.credit_settled === false && (
+              {order.payment_method === 'credit' && order.credit_settled === false && (
                 <p className="mt-1 text-xs text-orange-600 font-medium">⚠ 외상 정산 대기</p>
               )}
             </div>
