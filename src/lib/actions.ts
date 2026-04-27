@@ -364,8 +364,9 @@ export async function adjustInventory(formData: FormData) {
     await supabase
       .from('inventories')
       // @ts-ignore
-      .update({ 
-        quantity: Math.max(0, newQuantity),
+      .update({
+        // 음수 허용 — 가차감/마이너스 재고 누적 반영
+        quantity: newQuantity,
         safety_stock: safetyStock
       })
       .eq('branch_id', branchId)
@@ -1122,16 +1123,8 @@ export async function processPosCheckout(payload: CheckoutPayload) {
   }
 
   // ① 재고 사전 확인 (출고 지점 기준)
-  for (const item of cart) {
-    const { data: inv } = await supabase
-      .from('inventories').select('id, quantity')
-      .eq('branch_id', stockBranchId).eq('product_id', item.productId).single();
-    const qty = (inv as any)?.quantity ?? 0;
-    if (!inv || qty < item.quantity) {
-      const where = stockBranchId === branchId ? '' : ' (출고 지점)';
-      return { error: `"${item.name}" 재고 부족${where} (현재: ${qty}개, 요청: ${item.quantity}개)` };
-    }
-  }
+  //   ※ 음수 재고 허용 — 부족해도 차단하지 않고 마이너스로 반영, 누적 시 자동 복원.
+  //     레코드가 아예 없는 경우만 ④ 단계에서 음수로 자동 생성.
 
   // ② 판매 전표 생성 (KST 오늘 기준 주문번호 prefix)
   const today = kstTodayString().replace(/-/g, '');
@@ -1340,9 +1333,21 @@ export async function processPosCheckout(payload: CheckoutPayload) {
   for (const item of cart) {
     const { data: inv } = await supabase
       .from('inventories').select('id, quantity')
-      .eq('branch_id', stockBranchId).eq('product_id', item.productId).single();
+      .eq('branch_id', stockBranchId).eq('product_id', item.productId).maybeSingle();
     const inv_ = inv as any;
-    await db.from('inventories').update({ quantity: inv_.quantity - item.quantity }).eq('id', inv_.id);
+    const before = inv_?.quantity ?? 0;
+    const after = before - item.quantity;
+    if (inv_) {
+      await db.from('inventories').update({ quantity: after }).eq('id', inv_.id);
+    } else {
+      // 레코드가 없으면 음수로 신규 생성 — 추후 입고 시 누적 복원
+      await db.from('inventories').insert({
+        branch_id: stockBranchId,
+        product_id: item.productId,
+        quantity: after,
+        safety_stock: 0,
+      });
+    }
     await db.from('inventory_movements').insert({
       branch_id: stockBranchId,
       product_id: item.productId,
@@ -1352,7 +1357,7 @@ export async function processPosCheckout(payload: CheckoutPayload) {
       reference_type: 'POS_SALE',
       memo: movementMemo,
     });
-    stockUpdates[item.productId] = inv_.quantity - item.quantity;
+    stockUpdates[item.productId] = after;
   }
 
   // ⑤ 포인트 처리

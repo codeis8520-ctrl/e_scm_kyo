@@ -228,6 +228,7 @@ export async function createB2bSalesOrder(params: {
   await sb.from('b2b_sales_order_items').insert(itemRows);
 
   // 재고 차감 (출고 지점이 지정된 경우)
+  //   ※ 음수 허용 — 부족해도 마이너스로 반영, 추후 입고 시 누적 복원.
   if (params.branchId) {
     for (const item of params.items) {
       const { data: inv } = await sb.from('inventories')
@@ -235,18 +236,27 @@ export async function createB2bSalesOrder(params: {
         .eq('branch_id', params.branchId)
         .eq('product_id', item.productId)
         .maybeSingle();
+      const before = inv?.quantity ?? 0;
+      const after = before - item.quantity;
       if (inv) {
-        await sb.from('inventories').update({ quantity: Math.max(0, inv.quantity - item.quantity) }).eq('id', inv.id);
-        await sb.from('inventory_movements').insert({
+        await sb.from('inventories').update({ quantity: after }).eq('id', inv.id);
+      } else {
+        await sb.from('inventories').insert({
           branch_id: params.branchId,
           product_id: item.productId,
-          movement_type: 'OUT',
-          quantity: item.quantity,
-          reference_id: order.id,
-          reference_type: 'B2B_SALE',
-          memo: `거래처 납품 ${orderNumber}`,
+          quantity: after,
+          safety_stock: 0,
         });
       }
+      await sb.from('inventory_movements').insert({
+        branch_id: params.branchId,
+        product_id: item.productId,
+        movement_type: 'OUT',
+        quantity: item.quantity,
+        reference_id: order.id,
+        reference_type: 'B2B_SALE',
+        memo: `거래처 납품 ${orderNumber}`,
+      });
     }
   }
 

@@ -493,17 +493,17 @@ export async function completeProductionOrder(id: string) {
     return { error: hqRes.message };
   }
   const hqBranchId = hqRes.id;
-  const hqBranchName = hqRes.name;
 
-  // ─ BOM 부자재 소요량 계산 + 본사 재고 사전 체크 ──────────────────────────
+  // ─ BOM 부자재 소요량 계산 (음수 재고 허용 — 사전 차단 없음) ──────────────
   const { data: bomItems } = await db
     .from('product_bom')
     .select('material_id, quantity, loss_rate, material:products!product_bom_material_id_fkey(name, unit)')
     .eq('product_id', order.product_id);
 
-  type Deduction = { invId: string; materialId: string; currentQty: number; required: number; name: string; unit: string };
+  type Deduction = { invId: string | null; materialId: string; currentQty: number; required: number; name: string; unit: string };
   const deductions: Deduction[] = [];
 
+  // 음수 재고 허용 — 부자재 부족해도 마이너스로 차감하고 진행 (추후 입고 시 누적 복원)
   for (const item of (bomItems as any[] || [])) {
     const lossRate = Number(item.loss_rate || 0);
     const required = Math.ceil(Number(item.quantity) * order.quantity * (1 + lossRate / 100));
@@ -517,21 +517,29 @@ export async function completeProductionOrder(id: string) {
     const name = item.material?.name || '(이름없음)';
     const unit = normalizeUnit(item.material?.unit);
 
-    if (!matInv) {
-      return { error: `부자재 "${name}" 본사(${hqBranchName}) 재고 레코드 없음 — 제품/재고 조정을 먼저 확인하세요.` };
-    }
-    if (curQty < required) {
-      return { error: `부자재 "${name}" 본사(${hqBranchName}) 재고 부족 (현재 ${curQty} ${unit}, 필요 ${required} ${unit})` };
-    }
-    deductions.push({ invId: matInv.id, materialId: item.material_id, currentQty: curQty, required, name, unit });
+    deductions.push({
+      invId: matInv?.id ?? null,
+      materialId: item.material_id,
+      currentQty: curQty,
+      required, name, unit,
+    });
   }
 
   try {
     // ① 부자재 차감 — 본사 재고에서 + 이동 기록도 본사 지점에 기록
+    //    레코드가 없으면 음수로 신규 생성, 부족 시 마이너스 누적
     for (const d of deductions) {
-      await db.from('inventories')
-        .update({ quantity: d.currentQty - d.required })
-        .eq('id', d.invId);
+      const after = d.currentQty - d.required;
+      if (d.invId) {
+        await db.from('inventories').update({ quantity: after }).eq('id', d.invId);
+      } else {
+        await db.from('inventories').insert({
+          branch_id: hqBranchId,
+          product_id: d.materialId,
+          quantity: after,
+          safety_stock: 0,
+        });
+      }
       await db.from('inventory_movements').insert({
         branch_id: hqBranchId,
         product_id: d.materialId,

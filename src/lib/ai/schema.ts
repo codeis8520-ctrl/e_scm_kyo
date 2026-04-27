@@ -8,6 +8,7 @@ products: id, name, code, barcode, unit, price(판매가), cost(원가), cost_so
   ※ cost_source=BOM이면 완제품 cost는 BOM 합계에서 자동 산정(서버 액션). RAW/SUB는 판매가 미사용(price=cost로 동기화).
 product_files: id, product_id, file_url, file_name, file_type(image/document), sort_order
 inventories: id, branch_id, product_id, quantity, safety_stock  [UNIQUE(branch_id, product_id)]
+  ※ quantity 음수 허용 (CHECK 제약 없음). 판매·생산 시 부족해도 차단하지 않고 마이너스로 차감, 입고/반품 시 누적 복원.
 inventory_movements: id, branch_id, product_id, movement_type(IN/OUT/ADJUST/TRANSFER/PRODUCTION), quantity, memo, created_at
 
 --- 고객·CRM ---
@@ -108,7 +109,9 @@ PENDING → IN_PROGRESS → COMPLETED
 본사에서만 지시 가능. 각 지시는 OEM 공장에 위탁하고, 완성품은 지정한 입고 지점(기본 본사)으로 직접 입고.
 완료 시:
   ① 부자재는 **본사(branches.is_headquarters=true) 재고에서만** 차감 — BOM qty × 생산 수량 × (1+loss%), 올림.
-     ※ 입고 지점이 본사가 아닌 경우에도 부자재 차감 지점은 항상 본사. 본사 재고 부족 시 완료 불가(에러).
+     ※ 입고 지점이 본사가 아닌 경우에도 부자재 차감 지점은 항상 본사.
+     ※ 음수 재고 허용 — 본사 재고 부족해도 차단하지 않고 마이너스로 차감, 추후 입고 시 누적 복원.
+       레코드 자체가 없으면 음수로 신규 생성.
      ※ 본사가 미지정이면 생산 완료 자체가 불가 — 지점 관리에서 본사 지정이 전제.
   ② 완제품 재고를 "입고 지점(production_orders.branch_id)"에 증가.
   ③ inventory_movements 기록: 부자재 차감은 본사 branch_id로, 완제품 입고는 입고 지점 branch_id로.
