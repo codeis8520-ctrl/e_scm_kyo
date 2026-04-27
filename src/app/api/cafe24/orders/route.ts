@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { getValidAccessToken } from '@/lib/cafe24/token-store';
+import { getValidAccessToken, forceRefreshAccessToken } from '@/lib/cafe24/token-store';
 import { kstTodayString, fmtDateKST } from '@/lib/date';
 
 // Cafe24 주문 품목의 선택사항(option_value / additional_option_value / options[]) 추출.
@@ -125,7 +125,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ orders, is_demo: true, demo_reason: 'CAFE24_MALL_ID 환경변수 없음' });
   }
 
-  const accessToken = await getValidAccessToken();
+  let accessToken = await getValidAccessToken();
 
   if (!accessToken) {
     // 토큰 만료 시 더미 대신 명확한 에러 반환
@@ -139,25 +139,39 @@ export async function GET(request: NextRequest) {
 
   const shopNo = process.env.CAFE24_SHOP_NO ?? '1';
   const base = `https://${mallId}.cafe24api.com/api/v2`;
-  const headers = {
-    Authorization: `Bearer ${accessToken}`,
+  const makeHeaders = (token: string) => ({
+    Authorization: `Bearer ${token}`,
     'X-Cafe24-Api-Version': '2026-03-01',
-  };
+  });
+  let headers = makeHeaders(accessToken);
 
   try {
-    // 1. 주문 목록
-    const listRes = await fetch(
+    // 1. 주문 목록 — 401이면 강제 재발급 후 1회 재시도 (장시간 idle 후 진입 시 발생)
+    const fetchList = () => fetch(
       `${base}/admin/orders?start_date=${startDate}&end_date=${endDate}&limit=100&shop_no=${shopNo}`,
       { headers }
     );
+    let listRes = await fetchList();
+    if (listRes.status === 401) {
+      console.warn('[cafe24 orders] 401 — 토큰 강제 재발급 후 재시도');
+      const refreshed = await forceRefreshAccessToken();
+      if (refreshed) {
+        accessToken = refreshed;
+        headers = makeHeaders(accessToken);
+        listRes = await fetchList();
+      }
+    }
     if (!listRes.ok) {
       const errBody = await listRes.text().catch(() => '');
       console.error(`Cafe24 Orders 목록 오류: ${listRes.status}`, errBody);
+      const reason = listRes.status === 401
+        ? '카페24 토큰 만료 — refresh도 실패했습니다. 토큰 갱신 버튼 또는 /api/cafe24/auth에서 재인증하세요.'
+        : `카페24 API 오류 (${listRes.status}) — 토큰 갱신 버튼을 눌러주세요.`;
       return NextResponse.json({
         orders: [],
         is_demo: false,
         error: true,
-        demo_reason: `카페24 API 오류 (${listRes.status}) — 토큰 갱신 버튼을 눌러주세요.`,
+        demo_reason: reason,
       });
     }
 

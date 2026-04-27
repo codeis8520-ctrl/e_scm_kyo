@@ -122,6 +122,19 @@ async function upsertTokens(data: any) {
   }
 }
 
+/** DB의 refresh_token으로 access_token을 강제 재발급 — 401 응답 시 사용 */
+export async function forceRefreshAccessToken(): Promise<string | null> {
+  const row = await loadTokens();
+  if (!row) return null;
+  try {
+    const refreshed = await refreshAccessToken(row.refresh_token);
+    return refreshed.access_token;
+  } catch (err) {
+    console.error('[cafe24 forceRefreshAccessToken] failed:', err);
+    return null;
+  }
+}
+
 /** 유효한 access_token 반환 (만료 시 자동 갱신) */
 export async function getValidAccessToken(): Promise<string | null> {
   const row = await loadTokens();
