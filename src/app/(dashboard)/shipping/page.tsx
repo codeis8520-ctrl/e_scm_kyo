@@ -75,6 +75,34 @@ const SOURCE_BADGE: Record<string, string> = {
 
 const normalPhone = (p: string) => p.replace(/\D/g, '');
 
+// 그리드 셀 잘림 텍스트 — 클릭하면 펼쳐지고(줄바꿈), 다시 클릭하면 접힘. 호버 시 title로 미리보기.
+function TruncatedCell({
+  text, className = '', maxWidth = '', empty = '-',
+}: {
+  text: string | null | undefined;
+  className?: string;
+  maxWidth?: string;
+  empty?: React.ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const t = (text ?? '').trim();
+  if (!t) return <span className="text-slate-300 text-sm">{empty}</span>;
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => setExpanded(v => !v)}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(v => !v); } }}
+      title={expanded ? '클릭하여 접기' : t}
+      className={`text-sm cursor-pointer hover:text-blue-600 transition-colors ${
+        expanded ? 'whitespace-pre-wrap break-words' : `truncate ${maxWidth}`
+      } ${className}`}
+    >
+      {t}
+    </div>
+  );
+}
+
 export default function ShippingPage() {
   const [activeTab, setActiveTab] = useState<TabType>('cafe24');
 
@@ -691,22 +719,24 @@ export default function ShippingPage() {
               </div>
               <div className="overflow-x-auto">
                 <table className="table w-full">
-                  <thead><tr><th className="w-10"></th><th>주문일</th><th>주문자</th><th>수령자</th><th>주소</th><th>품목</th><th>금액</th><th>카페24 상태</th><th></th></tr></thead>
+                  <thead><tr><th className="w-10"></th><th>주문일</th><th>주문자</th><th>수령자</th><th>주소</th><th>배송메모</th><th>품목</th><th>금액</th><th>카페24 상태</th><th></th></tr></thead>
                   <tbody>
                     {filteredCafe24Orders.map(order => (
-                      <tr key={order.cafe24_order_id} className={order.already_added ? 'opacity-40' : ''}>
+                      <tr key={order.cafe24_order_id} className={`align-top ${order.already_added ? 'opacity-40' : ''}`}>
                         <td><input type="checkbox" checked={selectedOrders.has(order.cafe24_order_id)} onChange={() => toggleOrderSelect(order.cafe24_order_id)} disabled={order.already_added} className="w-4 h-4" /></td>
-                        <td className="text-sm text-slate-600">{order.order_date?.slice(0, 10)}</td>
+                        <td className="text-sm text-slate-600 whitespace-nowrap">{order.order_date?.slice(0, 10)}</td>
                         <td className="text-sm"><div>{order.orderer_name}</div><div className="text-slate-400 text-xs">{order.orderer_phone}</div></td>
                         <td className="text-sm"><div>{order.recipient_name}</div><div className="text-slate-400 text-xs">{order.recipient_phone}</div></td>
                         <td className="text-sm text-slate-600 max-w-[220px]">
-                          <div className="truncate cursor-pointer hover:text-blue-600 transition-colors" title={order.recipient_address}
-                            onClick={() => { navigator.clipboard.writeText(order.recipient_address || ''); }}>
-                            {order.recipient_address}
-                          </div>
+                          <TruncatedCell text={order.recipient_address} className="text-slate-600" />
                         </td>
-                        <td className="text-sm text-slate-600 max-w-[140px] truncate">{order.items_summary}</td>
-                        <td className="text-sm text-slate-700">{order.total_price.toLocaleString()}원</td>
+                        <td className="text-sm text-slate-600 max-w-[180px]">
+                          <TruncatedCell text={order.delivery_message} className="text-amber-700" />
+                        </td>
+                        <td className="text-sm text-slate-600 max-w-[200px]">
+                          <TruncatedCell text={order.items_summary} className="text-slate-600" />
+                        </td>
+                        <td className="text-sm text-slate-700 whitespace-nowrap">{order.total_price.toLocaleString()}원</td>
                         <td><span className={`${CAFE24_STATUS_BADGE[order.cafe24_status] ?? 'badge'} text-xs`}>{CAFE24_STATUS_LABEL[order.cafe24_status] ?? order.cafe24_status}</span></td>
                         <td>{order.already_added && <span className="badge badge-info text-xs">추가됨</span>}</td>
                       </tr>
@@ -934,6 +964,7 @@ export default function ShippingPage() {
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">수령자</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">발송자</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">배송지 주소</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">배송메모</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">품목</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-20">출처</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-24">상태</th>
@@ -959,21 +990,17 @@ export default function ShippingPage() {
                           <div className="text-sm text-slate-700">{s.sender_name}</div>
                           <div className="text-xs text-slate-400 mt-0.5">{s.sender_phone}</div>
                         </td>
-                        <td className="px-3 py-3 max-w-[260px]">
-                          <div className="text-sm text-slate-700 truncate cursor-pointer hover:text-blue-600 transition-colors"
-                            title={[s.recipient_address, s.recipient_address_detail].filter(Boolean).join(' ')}
-                            onClick={() => { navigator.clipboard.writeText([s.recipient_address, s.recipient_address_detail].filter(Boolean).join(' ')); }}>
-                            {s.recipient_address}
-                          </div>
-                          {s.recipient_address_detail && (
-                            <div className="text-xs text-slate-400 mt-0.5 truncate" title={s.recipient_address_detail}>{s.recipient_address_detail}</div>
-                          )}
-                          {s.delivery_message && (
-                            <div className="text-xs text-amber-600 mt-0.5 truncate" title={s.delivery_message}>💬 {s.delivery_message}</div>
-                          )}
+                        <td className="px-3 py-3 max-w-[260px] align-top">
+                          <TruncatedCell
+                            text={[s.recipient_address, s.recipient_address_detail].filter(Boolean).join(' ')}
+                            className="text-slate-700"
+                          />
                         </td>
-                        <td className="px-3 py-3 max-w-[160px]">
-                          <div className="text-sm text-slate-600 truncate">{s.items_summary || <span className="text-slate-300">-</span>}</div>
+                        <td className="px-3 py-3 max-w-[200px] align-top">
+                          <TruncatedCell text={s.delivery_message} className="text-amber-700" />
+                        </td>
+                        <td className="px-3 py-3 max-w-[180px] align-top">
+                          <TruncatedCell text={s.items_summary} className="text-slate-600" />
                         </td>
                         <td className="px-3 py-3">
                           <span className={`${SOURCE_BADGE[s.source]} text-xs`}>{s.source === 'CAFE24' ? '카페24' : '직접'}</span>

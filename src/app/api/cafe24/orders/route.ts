@@ -222,7 +222,15 @@ export async function GET(request: NextRequest) {
           recipient_name: receiver?.name ?? '',
           recipient_phone: receiver?.cellphone ?? receiver?.phone ?? '',
           recipient_address: address,
-          delivery_message: receiver?.shipping_message ?? '',
+          // 배송메모: 1순위=배송지(receivers).shipping_message,
+          //          2순위=상세 주문의 동일 필드(폴백),
+          //          3순위=주문 레벨 user_id_message(구버전 메모 필드)
+          delivery_message:
+            receiver?.shipping_message
+            || detailOrder?.shipping_message
+            || detailOrder?.user_id_message
+            || o?.user_id_message
+            || '',
           items_summary: itemsSummary,
           total_price: Number(o.payment_amount ?? detailOrder?.payment_amount ?? 0),
           already_added: existingIds.has(orderId),
