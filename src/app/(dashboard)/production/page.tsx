@@ -1614,12 +1614,21 @@ function CopyBomModal({
   onPick: (sourceId: string, sourceName: string) => void;
 }) {
   const [search, setSearch] = useState('');
+  const q = search.trim();
+  const ql = q.toLowerCase();
   const candidates = finishedProducts
-    .filter(p => p.id !== excludeId && (bomCountByProduct[p.id] || 0) > 0)
-    .filter(p => !search ||
-      p.name.toLowerCase().includes(search.toLowerCase()) ||
-      (p.code || '').toLowerCase().includes(search.toLowerCase()) ||
-      (isAllInitials(search) && extractInitials(p.name).includes(search)))
+    .filter(p => p.id !== excludeId)
+    .filter(p => !q ||
+      p.name.toLowerCase().includes(ql) ||
+      (p.code || '').toLowerCase().includes(ql) ||
+      (isAllInitials(q) && extractInitials(p.name).includes(q)))
+    // BOM 보유 우선 + 자재 종수 많은 순으로 정렬
+    .sort((a, b) => {
+      const ca = bomCountByProduct[a.id] || 0;
+      const cb = bomCountByProduct[b.id] || 0;
+      if (ca !== cb) return cb - ca;
+      return a.name.localeCompare(b.name);
+    })
     .slice(0, 50);
 
   return (
@@ -1645,23 +1654,34 @@ function CopyBomModal({
         <div className="flex-1 overflow-y-auto">
           {candidates.length === 0 ? (
             <p className="text-center text-slate-400 text-sm py-8">
-              {finishedProducts.length === 0 ? '등록된 완제품이 없습니다.' : 'BOM이 등록된 다른 완제품이 없습니다.'}
+              {finishedProducts.length === 0
+                ? '등록된 완제품이 없습니다.'
+                : q ? `"${q}"에 해당하는 완제품이 없습니다.` : '복사할 완제품이 없습니다.'}
             </p>
           ) : (
             <ul className="divide-y divide-slate-100">
               {candidates.map(p => {
                 const count = bomCountByProduct[p.id] || 0;
+                const disabled = count === 0;
                 return (
                   <li key={p.id}>
                     <button
-                      onClick={() => onPick(p.id, p.name)}
-                      className="w-full text-left px-4 py-3 hover:bg-blue-50 flex items-center justify-between gap-2"
+                      onClick={() => !disabled && onPick(p.id, p.name)}
+                      disabled={disabled}
+                      title={disabled ? 'BOM이 등록되지 않은 완제품입니다.' : ''}
+                      className={`w-full text-left px-4 py-3 flex items-center justify-between gap-2 ${
+                        disabled ? 'cursor-not-allowed opacity-50' : 'hover:bg-blue-50'
+                      }`}
                     >
                       <div className="min-w-0">
                         <p className="font-medium text-sm text-slate-800 truncate">{p.name}</p>
                         <p className="text-[11px] text-slate-400 font-mono mt-0.5">{p.code}</p>
                       </div>
-                      <span className="text-xs text-blue-700 bg-blue-100 rounded-full px-2 py-0.5 whitespace-nowrap">자재 {count}종</span>
+                      {count > 0 ? (
+                        <span className="text-xs text-blue-700 bg-blue-100 rounded-full px-2 py-0.5 whitespace-nowrap">자재 {count}종</span>
+                      ) : (
+                        <span className="text-xs text-slate-400 bg-slate-100 rounded-full px-2 py-0.5 whitespace-nowrap">미구성</span>
+                      )}
                     </button>
                   </li>
                 );
