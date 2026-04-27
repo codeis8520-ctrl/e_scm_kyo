@@ -1198,10 +1198,23 @@ function BomComposer({
 
   // 다른 완제품 BOM을 가져와 현재 composer에 로드 (id 제거 → 저장 시 INSERT)
   const handleCopyFrom = async (sourceProductId: string, sourceProductName: string) => {
-    if (lines.length > 0 && !confirm(`현재 구성된 자재 ${lines.length}종이 "${sourceProductName}"의 BOM으로 교체됩니다. 계속할까요?`)) return;
     const res = await getBomByProduct(sourceProductId);
     if ((res as any).error) { setSaveError((res as any).error); setShowCopyModal(false); return; }
     const src = (res.data as any[]) || [];
+
+    // 소스 제품에 BOM이 없으면 빈 복사 — 현재 구성을 비우는 결과가 되므로 별도 확인
+    if (src.length === 0) {
+      const ok = confirm(
+        `"${sourceProductName}"에 등록된 BOM이 없습니다.\n` +
+        (lines.length > 0
+          ? `진행하면 현재 구성된 자재 ${lines.length}종이 모두 비워집니다. 계속할까요?`
+          : `복사할 자재가 없습니다. 그래도 계속할까요?`)
+      );
+      if (!ok) return;
+    } else if (lines.length > 0 && !confirm(`현재 구성된 자재 ${lines.length}종이 "${sourceProductName}"의 BOM(자재 ${src.length}종)으로 교체됩니다. 계속할까요?`)) {
+      return;
+    }
+
     const newLines: BomLine[] = src.map((row: any, i: number) => ({
       // id 제거 — 저장 시 현재 completed product로 새 INSERT
       material_id: row.material_id,
@@ -1662,16 +1675,12 @@ function CopyBomModal({
             <ul className="divide-y divide-slate-100">
               {candidates.map(p => {
                 const count = bomCountByProduct[p.id] || 0;
-                const disabled = count === 0;
                 return (
                   <li key={p.id}>
                     <button
-                      onClick={() => !disabled && onPick(p.id, p.name)}
-                      disabled={disabled}
-                      title={disabled ? 'BOM이 등록되지 않은 완제품입니다.' : ''}
-                      className={`w-full text-left px-4 py-3 flex items-center justify-between gap-2 ${
-                        disabled ? 'cursor-not-allowed opacity-50' : 'hover:bg-blue-50'
-                      }`}
+                      onClick={() => onPick(p.id, p.name)}
+                      title={count === 0 ? 'BOM이 비어 있는 완제품입니다. 복사 시 현재 BOM이 비워집니다.' : ''}
+                      className="w-full text-left px-4 py-3 flex items-center justify-between gap-2 hover:bg-blue-50"
                     >
                       <div className="min-w-0">
                         <p className="font-medium text-sm text-slate-800 truncate">{p.name}</p>
