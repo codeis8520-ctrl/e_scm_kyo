@@ -3,6 +3,44 @@ import { createClient } from '@/lib/supabase/server';
 import { getValidAccessToken } from '@/lib/cafe24/token-store';
 import { kstTodayString, fmtDateKST } from '@/lib/date';
 
+// Cafe24 주문 품목의 선택사항(option_value / additional_option_value / options[]) 추출.
+// 일반 형식: "색상=레드&사이즈=L" 또는 [{option_name, option_value}] 배열.
+function safeDecode(s: string): string {
+  try { return decodeURIComponent(s); } catch { return s; }
+}
+function parseOptionPairs(raw: any): string {
+  if (!raw) return '';
+  if (Array.isArray(raw)) {
+    return raw
+      .map((o: any) => {
+        const k = (o?.option_name ?? o?.name ?? '').toString().trim();
+        const v = (o?.option_value ?? o?.value ?? '').toString().trim();
+        return v ? (k ? `${k}: ${v}` : v) : '';
+      })
+      .filter(Boolean).join(', ');
+  }
+  if (typeof raw !== 'string') return '';
+  return raw.split('&')
+    .map(pair => {
+      const eq = pair.indexOf('=');
+      if (eq < 0) return safeDecode(pair).trim();
+      const k = safeDecode(pair.slice(0, eq)).trim();
+      const v = safeDecode(pair.slice(eq + 1)).trim();
+      return v ? `${k}: ${v}` : k;
+    })
+    .filter(Boolean).join(', ');
+}
+function extractItemOptions(item: any): string {
+  // 1순위: option_value (단일 옵션 그룹)
+  // 2순위: options 배열 (Cafe24 응답에 따라 존재)
+  // 3순위: additional_option_value (추가 옵션)
+  const main = parseOptionPairs(item?.option_value)
+            || parseOptionPairs(item?.options);
+  const add = parseOptionPairs(item?.additional_option_value)
+            || parseOptionPairs(item?.additional_options);
+  return [main, add].filter(Boolean).join(' / ');
+}
+
 interface Cafe24OrderForShipping {
   cafe24_order_id: string;
   order_date: string;
@@ -132,7 +170,7 @@ export async function GET(request: NextRequest) {
         const orderId = String(o.order_id ?? '');
 
         const [detailRes, recvRes] = await Promise.all([
-          fetch(`${base}/admin/orders/${orderId}?shop_no=${shopNo}&embed=items`, { headers }),
+          fetch(`${base}/admin/orders/${orderId}?shop_no=${shopNo}&embed=items,buyer,receivers`, { headers }),
           fetch(`${base}/admin/orders/${orderId}/receivers?shop_no=${shopNo}`, { headers }),
         ]);
 
@@ -144,7 +182,12 @@ export async function GET(request: NextRequest) {
         const items: any[] = detailOrder?.items ?? [];
 
         const itemsSummary = items.length > 0
-          ? items.map((i: any) => `${i.product_name ?? ''} x${i.quantity ?? 1}`).join(', ')
+          ? items.map((i: any) => {
+              const name = i.product_name ?? '';
+              const qty = i.quantity ?? 1;
+              const opt = extractItemOptions(i);
+              return opt ? `${name} [${opt}] x${qty}` : `${name} x${qty}`;
+            }).join(', ')
           : '';
 
         const address = receiver?.address_full
