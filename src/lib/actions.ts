@@ -551,6 +551,14 @@ export async function getBranchesAll() {
   return { data: data || [] };
 }
 
+// 채널 기본 시드 — schema.sql의 INSERT가 누락된 환경에서 FK 위반 방지용 폴백
+const CHANNEL_SEED: Array<{ id: string; name: string; color: string; sort_order: number }> = [
+  { id: 'STORE',      name: '한약국', color: '#10b981', sort_order: 1 },
+  { id: 'DEPT_STORE', name: '백화점', color: '#8b5cf6', sort_order: 2 },
+  { id: 'ONLINE',     name: '자사몰', color: '#3b82f6', sort_order: 3 },
+  { id: 'EVENT',      name: '이벤트', color: '#f59e0b', sort_order: 4 },
+];
+
 export async function createBranch(formData: FormData) {
   const supabase = await createClient();
 
@@ -562,11 +570,26 @@ export async function createBranch(formData: FormData) {
     phone: formData.get('phone') as string || null,
   };
 
+  // 채널 행이 누락된 환경에서 FK 위반이 나는 경우 자동 복구
+  const seedRow = CHANNEL_SEED.find(c => c.id === branchData.channel);
+  if (seedRow) {
+    // @ts-ignore
+    await supabase.from('channels').upsert(seedRow, { onConflict: 'id', ignoreDuplicates: true });
+  }
+
   // @ts-ignore
   const { data: newBranch, error } = await supabase.from('branches').insert(branchData).select().single() as any;
-  
+
   if (error) {
-    return { error: error.message };
+    // 잔여 FK 위반에 대해 사용자 친화적 메시지 제공
+    const msg = String(error.message || '');
+    if (msg.includes('branches_channel_fkey')) {
+      return {
+        error: `채널 "${branchData.channel}"이 channels 테이블에 없습니다. ` +
+               `Supabase에 migration 056을 적용해 주세요.`,
+      };
+    }
+    return { error: msg };
   }
 
   // 지점 생성 시 모든 제품에 재고 레코드 자동 생성
@@ -602,11 +625,25 @@ export async function updateBranch(id: string, formData: FormData) {
     is_active: formData.get('is_active') === 'true',
   };
 
+  // createBranch와 동일하게 채널 시드 폴백
+  const seedRow = CHANNEL_SEED.find(c => c.id === branchData.channel);
+  if (seedRow) {
+    // @ts-ignore
+    await supabase.from('channels').upsert(seedRow, { onConflict: 'id', ignoreDuplicates: true });
+  }
+
   // @ts-ignore
   const { error } = await supabase.from('branches').update(branchData).eq('id', id);
-  
+
   if (error) {
-    return { error: error.message };
+    const msg = String(error.message || '');
+    if (msg.includes('branches_channel_fkey')) {
+      return {
+        error: `채널 "${branchData.channel}"이 channels 테이블에 없습니다. ` +
+               `Supabase에 migration 056을 적용해 주세요.`,
+      };
+    }
+    return { error: msg };
   }
   
   revalidatePath('/branches');

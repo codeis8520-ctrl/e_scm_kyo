@@ -1,9 +1,14 @@
 export const validators = {
   phone: (value: string): string | null => {
     if (!value) return null;
-    const phoneRegex = /^01[016789]-?\d{3,4}-?\d{4}$/;
-    if (!phoneRegex.test(value.replace(/-/g, ''))) {
-      return '올바른 전화번호 형식이 아닙니다 (010-0000-0000)';
+    // 휴대폰(010~019), 일반 유선(02, 031~064), 대표번호(15XX·16XX·18XX·070·080) 모두 허용
+    // 하이픈·공백 제거 후 숫자 8~12자리 + 0/1로 시작 패턴
+    const cleaned = value.replace(/[\s-]/g, '');
+    if (!/^\d+$/.test(cleaned)) {
+      return '전화번호에는 숫자, 하이픈, 공백만 입력할 수 있습니다';
+    }
+    if (!/^(0\d{7,10}|1\d{7,8})$/.test(cleaned)) {
+      return '올바른 전화번호 형식이 아닙니다 (예: 02-3013-1075, 010-0000-0000, 1588-0000)';
     }
     return null;
   },
