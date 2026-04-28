@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { getInventoryMovements } from '@/lib/inventory-actions';
-import { fmtDateTimeKST } from '@/lib/date';
+import { fmtDateTimeKST, fmtDateKST, kstTodayString } from '@/lib/date';
 
 type Movement = {
   id: string;
@@ -54,11 +54,20 @@ interface Props {
 
 const PAGE_SIZE = 30;
 
+// 기본 조회 기간: 오늘 기준 1개월 전 ~ 오늘 (KST 캘린더 date)
+function defaultDateRange(): { from: string; to: string } {
+  const today = new Date();
+  const oneMonthAgo = new Date(today);
+  oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+  return { from: fmtDateKST(oneMonthAgo), to: kstTodayString() };
+}
+
 export default function MovementHistoryModal({ product, branches, initialBranchId, onClose }: Props) {
   const [branchId, setBranchId] = useState<string>(initialBranchId || '');
   const [movementType, setMovementType] = useState<string>('');
-  const [dateFrom, setDateFrom] = useState<string>(''); // YYYY-MM-DD
-  const [dateTo, setDateTo] = useState<string>('');
+  // YYYY-MM-DD — 기본값 오늘 기준 1개월
+  const [dateFrom, setDateFrom] = useState<string>(() => defaultDateRange().from);
+  const [dateTo, setDateTo] = useState<string>(() => defaultDateRange().to);
   const [page, setPage] = useState(1);
   const [items, setItems] = useState<Movement[]>([]);
   const [total, setTotal] = useState(0);
