@@ -991,6 +991,110 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
     }
   };
 
+  // 주문 레벨 수령상태 되돌리기 — RECEIVED → 예정 상태(PARCEL/QUICK/PICKUP)
+  // 배송 정보에서 적절한 예정 상태를 추론하고, receipt_date를 비우며, 배송 레코드도 SHIPPED로 되돌림.
+  const revertReceiptStatus = async () => {
+    if (markingReceipt) return;
+    // 추론: shipment.delivery_type이 있으면 그 값 기준, 없으면 PICKUP_PLANNED
+    let target: 'PARCEL_PLANNED' | 'QUICK_PLANNED' | 'PICKUP_PLANNED' = 'PICKUP_PLANNED';
+    if (shipment?.delivery_type === 'PARCEL') target = 'PARCEL_PLANNED';
+    else if (shipment?.delivery_type === 'QUICK') target = 'QUICK_PLANNED';
+    else if (shipment) target = 'PARCEL_PLANNED'; // 배송 레코드는 있는데 type 미지정 → 택배로 가정
+
+    const targetLabel = target === 'PARCEL_PLANNED' ? '택배예정'
+      : target === 'QUICK_PLANNED' ? '퀵예정' : '방문예정';
+    if (!confirm(`수령 완료를 취소하고 "${targetLabel}"으로 되돌릴까요?\n수령일자가 비워지며, 배송 상태도 발송 단계로 복구됩니다.`)) return;
+    setMarkingReceipt(true);
+    try {
+      const sb = createClient() as any;
+      const { error: orderErr } = await sb
+        .from('sales_orders')
+        .update({ receipt_status: target, receipt_date: null })
+        .eq('id', orderId);
+      if (orderErr) {
+        alert('수령 상태 되돌리기 실패: ' + orderErr.message);
+        return;
+      }
+      // 품목 수령상태도 일괄 되돌림 — 각 품목의 delivery_type 기반으로 결정
+      // (052 미적용 환경이면 컬럼 부재로 실패 → 무시)
+      const itemUpdates = items
+        .filter(it => it.receipt_status === 'RECEIVED')
+        .map(it => {
+          const dt = it.delivery_type || (target === 'PARCEL_PLANNED' ? 'PARCEL'
+            : target === 'QUICK_PLANNED' ? 'QUICK' : 'PICKUP');
+          const itemTarget = dt === 'PARCEL' ? 'PARCEL_PLANNED'
+            : dt === 'QUICK' ? 'QUICK_PLANNED' : 'PICKUP_PLANNED';
+          return sb.from('sales_order_items')
+            .update({ receipt_status: itemTarget, receipt_date: null })
+            .eq('id', it.id);
+        });
+      await Promise.all(itemUpdates).catch(() => {});
+
+      // 배송 레코드: DELIVERED → SHIPPED(송장 있음) / PRINTED(송장 없는 발송완료) / PENDING으로 안전 복구
+      if (shipment?.id && shipment.status === 'DELIVERED') {
+        const nextShipStatus = shipment.tracking_number ? 'SHIPPED' : 'PENDING';
+        await sb.from('shipments').update({ status: nextShipStatus }).eq('id', shipment.id);
+        setShipment((prev: any) => prev ? { ...prev, status: nextShipStatus } : prev);
+      }
+
+      // 로컬 상태 반영
+      setOrder((prev: any) => prev ? { ...prev, receipt_status: target, receipt_date: null } : prev);
+      setItems(prevItems => prevItems.map(it => {
+        if (it.receipt_status !== 'RECEIVED') return it;
+        const dt = it.delivery_type || (target === 'PARCEL_PLANNED' ? 'PARCEL'
+          : target === 'QUICK_PLANNED' ? 'QUICK' : 'PICKUP');
+        const itemTarget = dt === 'PARCEL' ? 'PARCEL_PLANNED'
+          : dt === 'QUICK' ? 'QUICK_PLANNED' : 'PICKUP_PLANNED';
+        return { ...it, receipt_status: itemTarget, receipt_date: null };
+      }));
+      onChanged();
+    } finally {
+      setMarkingReceipt(false);
+    }
+  };
+
+  // 품목 단건 수령상태 되돌리기 — RECEIVED → 해당 품목 delivery_type 기반 예정상태
+  const revertItemReceived = async (itemId: string) => {
+    if (markingItemId) return;
+    const item = items.find(it => it.id === itemId);
+    if (!item) return;
+    const dt = item.delivery_type || 'PICKUP';
+    const target: 'PARCEL_PLANNED' | 'QUICK_PLANNED' | 'PICKUP_PLANNED' =
+      dt === 'PARCEL' ? 'PARCEL_PLANNED'
+      : dt === 'QUICK' ? 'QUICK_PLANNED'
+      : 'PICKUP_PLANNED';
+    setMarkingItemId(itemId);
+    try {
+      const sb = createClient() as any;
+      const { error } = await sb.from('sales_order_items')
+        .update({ receipt_status: target, receipt_date: null })
+        .eq('id', itemId);
+      if (error) { alert('품목 수령 취소 실패: ' + error.message); return; }
+      const nextItems = items.map(it => it.id === itemId
+        ? { ...it, receipt_status: target, receipt_date: null }
+        : it);
+      setItems(nextItems);
+      // 한 품목이라도 RECEIVED가 아니면 주문 레벨도 RECEIVED 해제
+      if (order?.receipt_status === 'RECEIVED') {
+        const orderTarget = (shipment?.delivery_type === 'QUICK') ? 'QUICK_PLANNED'
+          : (shipment?.delivery_type === 'PARCEL') ? 'PARCEL_PLANNED'
+          : target;
+        await sb.from('sales_orders')
+          .update({ receipt_status: orderTarget, receipt_date: null })
+          .eq('id', orderId);
+        setOrder((prev: any) => prev ? { ...prev, receipt_status: orderTarget, receipt_date: null } : prev);
+        if (shipment?.id && shipment.status === 'DELIVERED') {
+          const nextShipStatus = shipment.tracking_number ? 'SHIPPED' : 'PENDING';
+          await sb.from('shipments').update({ status: nextShipStatus }).eq('id', shipment.id);
+          setShipment((prev: any) => prev ? { ...prev, status: nextShipStatus } : prev);
+        }
+      }
+      onChanged();
+    } finally {
+      setMarkingItemId(null);
+    }
+  };
+
   // 배송 유형(택배 ↔ 퀵) 수동 변경 — 레거시/오분류 보정
   const changeDeliveryType = async (next: 'PARCEL' | 'QUICK') => {
     if (!shipment?.id || changingDeliveryType) return;
@@ -1286,7 +1390,7 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
                             </span>
                           </td>
                           <td className="px-3 py-1.5">
-                            <div className="flex items-center gap-1">
+                            <div className="flex items-center gap-1 flex-wrap">
                               <span className={`text-[10px] px-1.5 py-0.5 rounded ${rColor}`}>
                                 {rLabel}
                               </span>
@@ -1298,6 +1402,16 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
                                   title={`${rLabel} 품목 수령 완료`}
                                 >
                                   {markingItemId === it.id ? '...' : '✓ 완료'}
+                                </button>
+                              )}
+                              {itemRStatus === 'RECEIVED' && order.status === 'COMPLETED' && (
+                                <button
+                                  onClick={() => revertItemReceived(it.id)}
+                                  disabled={markingItemId === it.id}
+                                  className="text-[10px] px-1.5 py-0.5 rounded border border-amber-300 text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+                                  title="이 품목의 수령 완료를 취소하고 예정 상태로 되돌립니다"
+                                >
+                                  {markingItemId === it.id ? '...' : '↩ 취소'}
                                 </button>
                               )}
                             </div>
@@ -1492,6 +1606,17 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
                 >
                   {markingReceipt ? '처리 중...'
                     : `✓ ${order.receipt_status === 'QUICK_PLANNED' ? '퀵' : order.receipt_status === 'PARCEL_PLANNED' ? '택배' : '방문'} 수령 완료`}
+                </button>
+              )}
+              {/* 수령 취소 — RECEIVED 상태에서 예정 단계로 되돌림 */}
+              {order.receipt_status === 'RECEIVED' && order.status === 'COMPLETED' && (
+                <button
+                  onClick={revertReceiptStatus}
+                  disabled={markingReceipt}
+                  className="flex-1 min-w-[140px] py-2 text-sm rounded-md border border-amber-300 text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+                  title="수령 완료를 취소하고 예정 상태로 되돌립니다"
+                >
+                  {markingReceipt ? '처리 중...' : '↩ 수령 취소 (예정으로 되돌리기)'}
                 </button>
               )}
               <button onClick={handleReprint}
