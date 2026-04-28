@@ -76,7 +76,10 @@ export async function POST(request: Request) {
       base, shopNo, startDate, endDate, headers, tryRefreshToken
     );
 
-    if (privacyResult.success) {
+    // 1차가 "성공 + 회원 ≥ 1명"이어야 신뢰. 200 OK + 빈 배열은 권한 부족이
+    // 명시적 403이 아니라 silent empty로 응답되는 경우가 잦아, 폴백 미트리거의
+    // 원인이었음. 여기선 성공·실패와 무관하게 결과가 비면 주문 폴백으로 진행.
+    if (privacyResult.success && privacyResult.members.length > 0) {
       syncMethod = 'customersprivacy';
       // customersprivacy 성공 → 회원 데이터 처리
       for (const m of privacyResult.members) {
@@ -102,7 +105,10 @@ export async function POST(request: Request) {
       }
     } else {
       // ─── 2차: 주문 데이터에서 회원 추출 (mall.read_order만 필요) ───
-      syncMethod = 'orders';
+      // privacyResult.success=true 인데 members.length=0인 경우도 여기로 떨어짐.
+      syncMethod = privacyResult.success
+        ? 'orders (privacy 빈 응답 폴백)'
+        : 'orders (privacy 실패 폴백)';
       const members = await extractMembersFromOrders(
         base, shopNo, startDate, endDate, headers
       );
