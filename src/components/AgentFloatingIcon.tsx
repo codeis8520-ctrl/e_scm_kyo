@@ -8,11 +8,43 @@ interface PendingAction {
   description: string;
 }
 
+// 클라이언트가 보유하는 첨부 (전송 시 base64로 인코딩)
+interface Attachment {
+  id: string;             // UI key
+  kind: 'image' | 'pdf';
+  media_type: string;     // image/png, application/pdf, ...
+  name: string;
+  size: number;           // bytes
+  previewUrl?: string;    // object URL (이미지만)
+  data: string;           // base64 (헤더 제외)
+}
+
 interface Message {
   role: 'user' | 'assistant';
   content: string;
   type?: 'info' | 'confirm' | 'error' | 'success';
   pending_action?: PendingAction;
+  attachmentSummary?: string;   // "[첨부: 이미지 2장]" 같은 표기 (UI용)
+}
+
+const MAX_IMAGES = 5;
+const MAX_PDFS = 2;
+const MAX_FILE_BYTES = 8 * 1024 * 1024; // 8MB
+const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const ALLOWED_PDF_TYPES = new Set(['application/pdf']);
+
+// File → base64 (헤더 제외)
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
 }
 
 const QUICK_ACTIONS = [
@@ -60,8 +92,64 @@ export default function AgentFloatingIcon() {
   const [messages, setMessages] = useState<Message[]>([WELCOME_MSG]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [attachError, setAttachError] = useState<string>('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 첨부 카운트
+  const imageCount = attachments.filter(a => a.kind === 'image').length;
+  const pdfCount = attachments.filter(a => a.kind === 'pdf').length;
+
+  // 파일 추가 (드롭, 선택, paste 모두 이걸 호출)
+  const addFiles = async (files: FileList | File[]) => {
+    setAttachError('');
+    const next: Attachment[] = [];
+    for (const file of Array.from(files)) {
+      let kind: 'image' | 'pdf' | null = null;
+      if (ALLOWED_IMAGE_TYPES.has(file.type)) kind = 'image';
+      else if (ALLOWED_PDF_TYPES.has(file.type)) kind = 'pdf';
+      else { setAttachError(`지원하지 않는 형식: ${file.name} (${file.type || 'unknown'})`); continue; }
+      if (file.size > MAX_FILE_BYTES) {
+        setAttachError(`${file.name}: 8MB 초과 (실제 ${(file.size / 1024 / 1024).toFixed(1)}MB)`);
+        continue;
+      }
+      // 카운트 가드 (현재 + 새로 추가될 것까지)
+      const willImg = imageCount + next.filter(a => a.kind === 'image').length + (kind === 'image' ? 1 : 0);
+      const willPdf = pdfCount + next.filter(a => a.kind === 'pdf').length + (kind === 'pdf' ? 1 : 0);
+      if (willImg > MAX_IMAGES) { setAttachError(`이미지는 최대 ${MAX_IMAGES}장까지 첨부할 수 있습니다.`); continue; }
+      if (willPdf > MAX_PDFS) { setAttachError(`PDF는 최대 ${MAX_PDFS}건까지 첨부할 수 있습니다.`); continue; }
+
+      try {
+        const data = await fileToBase64(file);
+        next.push({
+          id: crypto.randomUUID(),
+          kind, media_type: file.type, name: file.name || (kind === 'image' ? 'image.png' : 'document.pdf'),
+          size: file.size,
+          previewUrl: kind === 'image' ? URL.createObjectURL(file) : undefined,
+          data,
+        });
+      } catch (err: any) {
+        setAttachError(`${file.name}: 인코딩 실패 (${err?.message || '알 수 없음'})`);
+      }
+    }
+    if (next.length > 0) setAttachments(prev => [...prev, ...next]);
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachments(prev => {
+      const target = prev.find(a => a.id === id);
+      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter(a => a.id !== id);
+    });
+  };
+
+  // 언마운트 시 object URL 해제
+  useEffect(() => () => {
+    attachments.forEach(a => a.previewUrl && URL.revokeObjectURL(a.previewUrl));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── 세션 ID (브라우저 세션 유지, 새로고침해도 대화 복원) ─────────────────
   const [sessionId] = useState(() => {
@@ -102,8 +190,21 @@ export default function AgentFloatingIcon() {
   const sendMessage = async (userMessage: string, confirmAction?: { confirm: boolean; pending_action: PendingAction }) => {
     setLoading(true);
 
+    // 첨부 스냅샷(전송 후 입력창은 비움)
+    const attsToSend = confirmAction ? [] : attachments;
+    const attachmentSummary = attsToSend.length > 0
+      ? ` [첨부: ${[
+          imageCount > 0 ? `이미지 ${imageCount}장` : '',
+          pdfCount > 0 ? `PDF ${pdfCount}건` : '',
+        ].filter(Boolean).join(', ')}]`
+      : '';
+
     if (!confirmAction) {
-      setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
+      setMessages(prev => [...prev, {
+        role: 'user',
+        content: userMessage,
+        attachmentSummary: attachmentSummary || undefined,
+      }]);
     }
 
     try {
@@ -122,6 +223,12 @@ export default function AgentFloatingIcon() {
           branchId: getCookie('user_branch_id'),
         },
       };
+
+      if (attsToSend.length > 0) {
+        body.attachments = attsToSend.map(a => ({
+          kind: a.kind, media_type: a.media_type, data: a.data, name: a.name,
+        }));
+      }
 
       if (confirmAction) {
         body.confirm = confirmAction.confirm;
@@ -159,12 +266,43 @@ export default function AgentFloatingIcon() {
     setLoading(false);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || loading) return;
+  const handleSubmit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (loading) return;
     const msg = input.trim();
+    if (!msg && attachments.length === 0) return;
+    const sentAtts = attachments;
     setInput('');
+    setAttachments([]);
+    setAttachError('');
     await sendMessage(msg);
+    // 전송 후 첨부 미리보기 URL 정리
+    sentAtts.forEach(a => a.previewUrl && URL.revokeObjectURL(a.previewUrl));
+  };
+
+  // Enter: 전송, Shift+Enter: 줄바꿈
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      handleSubmit();
+    }
+  };
+
+  // 클립보드 paste — 이미지가 있으면 첨부에 추가
+  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const files: File[] = [];
+    for (const it of Array.from(items)) {
+      if (it.kind === 'file') {
+        const f = it.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length > 0) {
+      e.preventDefault();
+      await addFiles(files);
+    }
   };
 
   const handleConfirm = async (msg: Message) => {
@@ -229,6 +367,11 @@ export default function AgentFloatingIcon() {
                       : 'bg-slate-100 text-slate-700 rounded-bl-sm'
                   }`}>
                     {renderContent(msg.content)}
+                    {msg.attachmentSummary && (
+                      <div className={`mt-1 text-[10px] ${msg.role === 'user' ? 'text-blue-100' : 'text-slate-400'}`}>
+                        {msg.attachmentSummary}
+                      </div>
+                    )}
                   </div>
 
                   {msg.type === 'confirm' && msg.pending_action && (
@@ -280,23 +423,84 @@ export default function AgentFloatingIcon() {
           </div>
 
           {/* 입력 영역 */}
-          <form onSubmit={handleSubmit} className="border-t p-3 flex gap-2">
-            <input
-              ref={inputRef}
-              type="text"
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              placeholder="무엇을 도와드릴까요?"
-              className="flex-1 input text-sm"
-              disabled={loading}
-            />
-            <button
-              type="submit"
-              disabled={loading || !input.trim()}
-              className="btn-primary px-4 text-sm disabled:opacity-50"
-            >
-              전송
-            </button>
+          <form onSubmit={handleSubmit} className="border-t p-2 space-y-2">
+            {/* 첨부 미리보기 */}
+            {attachments.length > 0 && (
+              <div className="flex gap-1.5 flex-wrap">
+                {attachments.map(a => (
+                  <div key={a.id} className="relative group">
+                    {a.kind === 'image' && a.previewUrl ? (
+                      <img
+                        src={a.previewUrl}
+                        alt={a.name}
+                        className="w-12 h-12 object-cover rounded border border-slate-200"
+                        title={`${a.name} (${(a.size / 1024).toFixed(0)}KB)`}
+                      />
+                    ) : (
+                      <div
+                        className="w-12 h-12 flex flex-col items-center justify-center rounded border border-slate-200 bg-red-50 text-red-700 text-[10px] font-medium"
+                        title={`${a.name} (${(a.size / 1024).toFixed(0)}KB)`}
+                      >
+                        <span>📄</span>
+                        <span className="truncate w-full text-center px-0.5">PDF</span>
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(a.id)}
+                      className="absolute -top-1 -right-1 w-4 h-4 bg-slate-700 text-white rounded-full text-[10px] leading-none opacity-90 hover:opacity-100"
+                      title="제거"
+                    >×</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {attachError && (
+              <p className="text-[11px] text-red-600">⚠ {attachError}</p>
+            )}
+            <div className="flex gap-2 items-end">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={loading}
+                className="shrink-0 w-9 h-9 flex items-center justify-center rounded border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-50"
+                title="이미지·PDF 첨부 (또는 클립보드에서 붙여넣기 가능)"
+              >
+                📎
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif,application/pdf"
+                multiple
+                hidden
+                onChange={async e => {
+                  if (e.target.files && e.target.files.length > 0) {
+                    await addFiles(e.target.files);
+                    e.target.value = '';
+                  }
+                }}
+              />
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
+                placeholder={loading ? '처리 중...' : '무엇을 도와드릴까요? (Shift+Enter 줄바꿈, 이미지 붙여넣기 가능)'}
+                rows={1}
+                className="flex-1 input text-sm resize-none min-h-[36px] max-h-32 py-1.5"
+                style={{ overflow: 'auto' }}
+                disabled={loading}
+              />
+              <button
+                type="submit"
+                disabled={loading || (!input.trim() && attachments.length === 0)}
+                className="btn-primary px-4 text-sm disabled:opacity-50 shrink-0"
+              >
+                전송
+              </button>
+            </div>
           </form>
         </div>
       )}

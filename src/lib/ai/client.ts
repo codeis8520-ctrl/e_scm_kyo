@@ -1,8 +1,14 @@
 // ─── 기존 인터페이스 유지 (route.ts 호환) ────────────────────────────────────
 
+// 멀티모달 입력 블록 — user 메시지에서만 사용. assistant/tool은 string 유지.
+export type UserContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'; data: string } }
+  | { type: 'document'; source: { type: 'base64'; media_type: 'application/pdf'; data: string } };
+
 export interface MiniMaxMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
-  content: string;
+  content: string | UserContentBlock[];
   tool_calls?: MiniMaxToolCall[];
   tool_call_id?: string;
   name?: string;
@@ -40,13 +46,14 @@ export interface TokenUsage {
 // ─── Claude API 내부 타입 ─────────────────────────────────────────────────────
 
 interface ClaudeContentBlock {
-  type: 'text' | 'tool_use' | 'tool_result';
+  type: 'text' | 'tool_use' | 'tool_result' | 'image' | 'document';
   text?: string;
   id?: string;
   name?: string;
   input?: Record<string, any>;
   tool_use_id?: string;
   content?: string;
+  source?: { type: 'base64'; media_type: string; data: string };
 }
 
 interface ClaudeResponse {
@@ -94,13 +101,15 @@ function toClaudeMessages(messages: MiniMaxMessage[]): {
 
   for (const m of messages) {
     if (m.role === 'system') {
-      systemParts.push(m.content);
+      // system은 항상 string
+      systemParts.push(typeof m.content === 'string' ? m.content : '');
       continue;
     }
 
     if (m.role === 'assistant') {
       const content: ClaudeContentBlock[] = [];
-      if (m.content) content.push({ type: 'text', text: m.content });
+      const text = typeof m.content === 'string' ? m.content : '';
+      if (text) content.push({ type: 'text', text });
       if (m.tool_calls) {
         for (const tc of m.tool_calls) {
           let input: Record<string, any> = {};
@@ -123,7 +132,7 @@ function toClaudeMessages(messages: MiniMaxMessage[]): {
       const toolResult: ClaudeContentBlock = {
         type: 'tool_result',
         tool_use_id: m.tool_call_id || '',
-        content: m.content || '',
+        content: typeof m.content === 'string' ? m.content : '',
       };
       const last = claudeMsgs[claudeMsgs.length - 1];
       if (last && last.role === 'user' && Array.isArray(last.content)) {
@@ -134,8 +143,12 @@ function toClaudeMessages(messages: MiniMaxMessage[]): {
       continue;
     }
 
-    // user
-    claudeMsgs.push({ role: 'user', content: m.content || '' });
+    // user — string은 그대로, 배열(멀티모달)은 그대로 전달
+    if (Array.isArray(m.content)) {
+      claudeMsgs.push({ role: 'user', content: m.content });
+    } else {
+      claudeMsgs.push({ role: 'user', content: m.content || '' });
+    }
   }
 
   return { systemParts, messages: claudeMsgs };
@@ -280,7 +293,8 @@ export class MiniMaxClient {
 
   async chat(messages: MiniMaxMessage[]): Promise<string> {
     const result = await this.chatWithTools(messages);
-    return result.message.content;
+    // assistant 응답은 항상 string content
+    return typeof result.message.content === 'string' ? result.message.content : '';
   }
 }
 

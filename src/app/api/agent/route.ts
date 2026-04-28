@@ -54,13 +54,55 @@ analyze_data 도구로 SELECT SQL을 직접 작성하여 실행한다.
 ${DB_SCHEMA}
 ${BUSINESS_RULES}`;
 
+// 첨부 파일 — 클라이언트가 base64로 인코딩해서 전송. 파일 자체는 저장하지 않고
+// agent_conversations에는 [첨부: img×2, pdf×1] 형태로 메타만 표기.
+interface AgentAttachment {
+  kind: 'image' | 'pdf';
+  media_type: string;   // image/png, image/jpeg, image/webp, image/gif, application/pdf
+  data: string;         // base64
+  name?: string;        // 원본 파일명(로깅용)
+}
+
 interface AgentRequest {
   message: string;
+  attachments?: AgentAttachment[];
   history?: { role: 'user' | 'assistant'; content: string }[];
   context?: { userId?: string; userRole?: string; branchId?: string };
   confirm?: boolean;
   pending_action?: { tool: string; args: Record<string, any>; description: string };
   session_id?: string;
+}
+
+// 첨부 메타 요약 — agent_conversations.user_message 끝에 표기 (파일 자체는 미저장)
+function summarizeAttachments(atts: AgentAttachment[] | undefined): string {
+  if (!atts || atts.length === 0) return '';
+  const counts: Record<string, number> = {};
+  for (const a of atts) counts[a.kind] = (counts[a.kind] || 0) + 1;
+  const parts: string[] = [];
+  if (counts.image) parts.push(`이미지 ${counts.image}장`);
+  if (counts.pdf) parts.push(`PDF ${counts.pdf}건`);
+  return parts.length > 0 ? ` [첨부: ${parts.join(', ')}]` : '';
+}
+
+// 멀티모달 user content blocks 조립
+function buildUserContent(message: string, atts: AgentAttachment[] | undefined): any {
+  if (!atts || atts.length === 0) return message;
+  const blocks: any[] = [];
+  for (const a of atts) {
+    if (a.kind === 'image') {
+      blocks.push({
+        type: 'image',
+        source: { type: 'base64', media_type: a.media_type, data: a.data },
+      });
+    } else if (a.kind === 'pdf') {
+      blocks.push({
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data: a.data },
+      });
+    }
+  }
+  if (message) blocks.push({ type: 'text', text: message });
+  return blocks;
 }
 
 // ── 대화 이력 조회 API ────────────────────────────────────────────────────────
@@ -82,10 +124,27 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body: AgentRequest = await req.json();
-    const { message, history, context, confirm, pending_action } = body;
+    const { message, history, context, confirm, pending_action, attachments } = body;
 
-    if (!message && !confirm) {
-      return NextResponse.json({ error: '메시지가 필요합니다.' }, { status: 400 });
+    if (!message && !confirm && (!attachments || attachments.length === 0)) {
+      return NextResponse.json({ error: '메시지 또는 첨부가 필요합니다.' }, { status: 400 });
+    }
+
+    // 첨부 가드: 이미지 5장 / PDF 2건 / 각 8MB(base64 후 ~11MB) 상한
+    if (attachments && attachments.length > 0) {
+      const imgCount = attachments.filter(a => a.kind === 'image').length;
+      const pdfCount = attachments.filter(a => a.kind === 'pdf').length;
+      if (imgCount > 5) {
+        return NextResponse.json({ type: 'error', message: '이미지는 한 번에 최대 5장까지 첨부할 수 있습니다.' }, { status: 400 });
+      }
+      if (pdfCount > 2) {
+        return NextResponse.json({ type: 'error', message: 'PDF는 한 번에 최대 2건까지 첨부할 수 있습니다.' }, { status: 400 });
+      }
+      const MAX_B64 = 11 * 1024 * 1024; // 약 8MB 원본
+      const oversize = attachments.find(a => (a.data?.length || 0) > MAX_B64);
+      if (oversize) {
+        return NextResponse.json({ type: 'error', message: `첨부 파일이 너무 큽니다 (${oversize.name || oversize.kind}). 8MB 이하로 줄여주세요.` }, { status: 400 });
+      }
     }
 
     const supabase = await createClient();
@@ -152,11 +211,14 @@ export async function POST(req: NextRequest) {
       memoriesText ? `\n${memoriesText}` : '',
     ].filter(Boolean).join('');
 
+    const userContent = buildUserContent(message, attachments);
+    const attachSummary = summarizeAttachments(attachments);
+    const loggedUserMessage = (message || '').trim() + attachSummary;
     const messages: MiniMaxMessage[] = [
       { role: 'system', content: SYSTEM_PROMPT },           // static → 캐싱 대상
       ...(dynamicContext ? [{ role: 'system' as const, content: dynamicContext }] : []),  // dynamic
       ...(history || []).slice(-6).map(h => ({ role: h.role, content: h.content })),
-      { role: 'user', content: message },
+      { role: 'user', content: userContent },
     ];
 
     // ── Agentic loop (최대 8회) ───────────────────────────────────────────────
@@ -232,7 +294,7 @@ export async function POST(req: NextRequest) {
             userId: context?.userId,
             userRole: context?.userRole,
             branchId: context?.branchId,
-            message,
+            message: loggedUserMessage,
             response: `[확인 요청] ${description}`,
             toolsUsed: [...toolsUsed, toolName],
             success: true,
@@ -293,7 +355,7 @@ export async function POST(req: NextRequest) {
       userId: context?.userId,
       userRole: context?.userRole,
       branchId: context?.branchId,
-      message,
+      message: loggedUserMessage,
       response: finalResponse || null,
       toolsUsed,
       success: isSuccess,
