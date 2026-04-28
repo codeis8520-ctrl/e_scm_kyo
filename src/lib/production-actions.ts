@@ -344,6 +344,8 @@ export async function getProductionOrders(filters?: {
   factoryId?: string;
   page?: number;
   pageSize?: number;
+  dateFrom?: string; // YYYY-MM-DD (KST 캘린더 date)
+  dateTo?: string;   // YYYY-MM-DD
 }) {
   const supabase = await createClient();
   const db = supabase as any;
@@ -352,6 +354,10 @@ export async function getProductionOrders(filters?: {
   const pageSize = Math.max(1, Math.min(200, filters?.pageSize ?? 30));
   const from = (page - 1) * pageSize;
   const to = from + pageSize - 1;
+
+  // YYYY-MM-DD → ISO 경계. KST 자정 기준으로 +09:00 오프셋 명시.
+  const fromIso = filters?.dateFrom ? `${filters.dateFrom}T00:00:00+09:00` : undefined;
+  const toIso   = filters?.dateTo   ? `${filters.dateTo}T23:59:59+09:00`   : undefined;
 
   // oem_factory join 시도 → 컬럼이 없으면(마이그 047 미적용) 폴백
   const baseCols = '*, product:products(id, name, code), branch:branches(id, name), produced_by_user:users!production_orders_produced_by_fkey(name)';
@@ -365,6 +371,8 @@ export async function getProductionOrders(filters?: {
   if (filters?.branchId)  q = q.eq('branch_id', filters.branchId);
   if (filters?.factoryId) q = q.eq('oem_factory_id', filters.factoryId);
   if (filters?.status)    q = q.eq('status', filters.status);
+  if (fromIso) q = q.gte('created_at', fromIso);
+  if (toIso)   q = q.lte('created_at', toIso);
 
   let { data, error, count } = await q;
   if (error && isMissingColumnError(error)) {
@@ -375,6 +383,8 @@ export async function getProductionOrders(filters?: {
       .range(from, to);
     if (filters?.branchId) q2 = q2.eq('branch_id', filters.branchId);
     if (filters?.status)   q2 = q2.eq('status', filters.status);
+    if (fromIso) q2 = q2.gte('created_at', fromIso);
+    if (toIso)   q2 = q2.lte('created_at', toIso);
     const r = await q2;
     data = r.data; error = r.error; count = r.count;
   }

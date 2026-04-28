@@ -127,6 +127,17 @@ export default function ProductionPage() {
 
   const [selectedBranch, setSelectedBranch] = useState<string>('');
   const [filterStatus, setFilterStatus]     = useState<string>('');
+  // 날짜 범위 — 기본 1개월(오늘 - 1m ~ 오늘) KST 기준
+  const _today = new Date();
+  const _oneMonthAgo = new Date(_today);
+  _oneMonthAgo.setMonth(_oneMonthAgo.getMonth() - 1);
+  const _fmtKstDate = (d: Date) => {
+    const offset = 9 * 60;
+    const k = new Date(d.getTime() + (offset - d.getTimezoneOffset()) * 60000);
+    return k.toISOString().slice(0, 10);
+  };
+  const [dateFrom, setDateFrom] = useState<string>(() => _fmtKstDate(_oneMonthAgo));
+  const [dateTo, setDateTo] = useState<string>(() => _fmtKstDate(_today));
   const [userRole]  = useState<string | null>(() => getCookie('user_role'));
   const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
   const canIssueOrder = userRole === 'SUPER_ADMIN' || userRole === 'HQ_OPERATOR';
@@ -199,6 +210,8 @@ export default function ProductionPage() {
       getProductionOrders({
         branchId: selectedBranch || undefined,
         status: filterStatus || undefined,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
         page,
         pageSize: PAGE_SIZE,
       }),
@@ -211,7 +224,7 @@ export default function ProductionPage() {
     setStats((orderRes as any).stats ?? { pending: 0, inProgress: 0, completed: 0 });
     setFactories(factRes.data || []);
     setLoading(false);
-  }, [selectedBranch, filterStatus, page]);
+  }, [selectedBranch, filterStatus, page, dateFrom, dateTo]);
 
   useEffect(() => {
     // branches 로드가 끝난 뒤부터 호출 (selectedBranch=''는 '전체' 의미이므로 guard 제외)
@@ -219,7 +232,7 @@ export default function ProductionPage() {
   }, [loadData, branches.length]);
 
   // 필터 변경 시 1페이지로 리셋
-  useEffect(() => { setPage(1); }, [selectedBranch, filterStatus]);
+  useEffect(() => { setPage(1); }, [selectedBranch, filterStatus, dateFrom, dateTo]);
 
   // ── 상태 전환 액션 ───────────────────────────────────────────────────────────
   //   processingId로 in-flight 관리 — 같은 row의 버튼 중복 클릭을 UI에서 차단.
@@ -313,7 +326,7 @@ export default function ProductionPage() {
           </div>
 
           {/* 필터 */}
-          <div className="flex gap-2 flex-wrap">
+          <div className="flex gap-2 flex-wrap items-center">
             {['', 'PENDING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'].map(s => (
               <button
                 key={s}
@@ -327,6 +340,53 @@ export default function ProductionPage() {
                 {s === '' ? '전체' : STATUS_LABEL[s]}
               </button>
             ))}
+            <div className="ml-auto flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-slate-400">기간</span>
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={e => setDateFrom(e.target.value)}
+                className="input text-xs py-1"
+                title="조회 시작일"
+              />
+              <span className="text-slate-400 text-xs">~</span>
+              <input
+                type="date"
+                value={dateTo}
+                onChange={e => setDateTo(e.target.value)}
+                className="input text-xs py-1"
+                title="조회 종료일"
+              />
+              <div className="flex gap-1">
+                {([
+                  { label: '1주', months: 0, days: 7 },
+                  { label: '1개월', months: 1, days: 0 },
+                  { label: '3개월', months: 3, days: 0 },
+                  { label: '전체', months: -1, days: 0 },
+                ] as const).map(p => (
+                  <button
+                    key={p.label}
+                    type="button"
+                    onClick={() => {
+                      if (p.months === -1) {
+                        setDateFrom('');
+                        setDateTo('');
+                        return;
+                      }
+                      const today = new Date();
+                      const fromD = new Date(today);
+                      if (p.months > 0) fromD.setMonth(fromD.getMonth() - p.months);
+                      if (p.days > 0) fromD.setDate(fromD.getDate() - p.days);
+                      setDateFrom(_fmtKstDate(fromD));
+                      setDateTo(_fmtKstDate(today));
+                    }}
+                    className="px-2 py-1 text-[11px] rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           {/* 목록 */}
