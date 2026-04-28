@@ -321,13 +321,19 @@ function POSPageInner() {
       });
       setProductMap(pMap);
 
-      // 판매 지점 확정: 쿠키 branch_id → 첫 번째 지점
+      // 판매 지점 확정: 쿠키 branch_id → 본사 → STORE(한약국) 채널 → 첫 번째 지점
+      //   ※ 담당지점 미지정 관리자(SUPER_ADMIN/HQ_OPERATOR)는 created_at 첫 행이
+      //     자사몰(ONLINE)일 수 있어 의외의 매출처가 기본 선택되는 문제가 있었음.
+      //     본사 → 한약국 채널 → 그래도 없으면 첫 번째 순으로 폴백.
       if (initialBranchId) {
         setSelectedBranch(initialBranchId);
         setShipFromBranchId(initialBranchId);
       } else if (branchesData.length > 0) {
-        setSelectedBranch(branchesData[0].id);
-        setShipFromBranchId(branchesData[0].id);
+        const hq = branchesData.find((b: any) => b.is_headquarters);
+        const storeBranch = branchesData.find((b: any) => b.channel === 'STORE');
+        const defaultBranch = hq || storeBranch || branchesData[0];
+        setSelectedBranch(defaultBranch.id);
+        setShipFromBranchId(defaultBranch.id);
       }
 
       setLoading(false);
