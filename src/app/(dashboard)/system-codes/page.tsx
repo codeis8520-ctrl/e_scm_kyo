@@ -1852,10 +1852,16 @@ function UserModal({
     const errors: Record<string, string> = {};
     const loginIdError = validators.required(formData.login_id, '아이디');
     if (loginIdError) errors.login_id = loginIdError;
-    
+
     const nameError = validators.required(formData.name, '이름');
     if (nameError) errors.name = nameError;
-    
+
+    // 담당 지점 필수 — 본사도 별도 지점(is_headquarters=true)으로 등록되어 있어야 함.
+    //   기존에 branch_id=null로 두던 관리자는 본사 지점을 선택하도록 유도.
+    if (!formData.branch_id) {
+      errors.branch_id = '담당 지점을 선택하세요 (본사 직원은 본사 지점을 선택)';
+    }
+
     if (!user) {
       const passwordError = validators.required(formData.password, '비밀번호');
       if (passwordError) errors.password = passwordError;
@@ -1878,7 +1884,7 @@ function UserModal({
           name: formData.name,
           phone: formData.phone || null,
           role: formData.role,
-          branch_id: formData.branch_id || null,
+          branch_id: formData.branch_id,
           is_active: formData.is_active,
         }).eq('id', user.id);
 
@@ -1898,7 +1904,7 @@ function UserModal({
           name: formData.name,
           phone: formData.phone || null,
           role: formData.role,
-          branch_id: formData.branch_id || null,
+          branch_id: formData.branch_id,
           is_active: formData.is_active,
         });
 
@@ -1992,17 +1998,23 @@ function UserModal({
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700">담당 지점</label>
+            <label className="block text-sm font-medium text-gray-700">담당 지점 *</label>
             <select
               value={formData.branch_id}
-              onChange={(e) => setFormData({ ...formData, branch_id: e.target.value })}
-              className="mt-1 input"
+              onChange={(e) => { setFormData({ ...formData, branch_id: e.target.value }); setFieldErrors({ ...fieldErrors, branch_id: '' }); }}
+              className={`mt-1 input ${fieldErrors.branch_id ? 'border-red-500' : ''}`}
             >
-              <option value="">없음 (본사)</option>
+              <option value="" disabled>지점을 선택하세요</option>
               {branches.map((branch) => (
-                <option key={branch.id} value={branch.id}>{branch.name}</option>
+                <option key={branch.id} value={branch.id}>
+                  {branch.name}{(branch as any).is_headquarters ? ' (본사)' : ''}
+                </option>
               ))}
             </select>
+            {fieldErrors.branch_id && <p className="mt-1 text-xs text-red-500">{fieldErrors.branch_id}</p>}
+            <p className="mt-1 text-[11px] text-slate-400">
+              본사 소속 직원도 반드시 본사 지점을 선택해야 합니다.
+            </p>
           </div>
 
           {user && (
