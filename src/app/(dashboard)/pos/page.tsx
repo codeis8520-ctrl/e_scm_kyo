@@ -1291,7 +1291,7 @@ function POSPageInner() {
             ) : filteredProducts.length === 0 && search ? (
               <p className="text-center text-slate-400 py-8">검색 결과가 없습니다</p>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-3 xl:grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3 gap-2">
                 {filteredProducts.map(product => {
                   const stock = getStock(product.id);
                   const inCart = cart.find(i => i.productId === product.id)?.quantity ?? 0;
@@ -1354,7 +1354,7 @@ function POSPageInner() {
 
       {/* 오른쪽: 장바구니 + 결제 */}
       <div className={`
-        lg:w-[440px] lg:static lg:flex lg:flex-col lg:shrink-0
+        lg:w-[480px] lg:static lg:flex lg:flex-col lg:shrink-0
         fixed bottom-0 left-0 right-0 z-50 flex flex-col
         bg-white rounded-t-2xl lg:rounded-lg shadow
         transition-transform duration-300 ease-in-out
@@ -1372,7 +1372,7 @@ function POSPageInner() {
         </div>
 
         {/* 장바구니 목록 */}
-        <div className="flex-1 overflow-auto p-3 space-y-2 min-h-[160px]">
+        <div className="flex-1 overflow-auto p-3 space-y-2 min-h-[140px] lg:min-h-[120px]">
           {cart.map(item => (
             <div key={item.productId} className="p-2.5 bg-slate-50 rounded-lg space-y-1.5">
               <div className="flex items-center gap-2">
@@ -1535,8 +1535,8 @@ function POSPageInner() {
           )}
         </div>
 
-        {/* 결제 영역 */}
-        <div className="p-4 border-t space-y-3 overflow-y-auto max-h-[60vh] lg:max-h-[60%]">
+        {/* 결제 옵션 영역 — 필요 시 스크롤. 결제 버튼은 별도 푸터로 분리(아래) */}
+        <div className="p-4 border-t space-y-3 overflow-y-auto flex-shrink-0 max-h-[55vh] lg:max-h-[55%]">
           {/* 담당자 */}
           <div className="flex items-center gap-2">
             <label className="text-xs text-slate-500 whitespace-nowrap">담당자</label>
@@ -2107,7 +2107,16 @@ function POSPageInner() {
             </div>
           )}
 
-          {/* 결제 버튼 + 비활성 사유 안내 */}
+        </div>
+
+        {/* 하단 고정 결제 푸터 — 결제 금액 한 줄 + 결제 버튼. 우측 칼럼 최하단에 항상 노출. */}
+        <div className="border-t bg-white px-4 py-3 flex-shrink-0 space-y-2 lg:rounded-b-lg">
+          <div className="flex justify-between items-baseline">
+            <span className="text-xs text-slate-500">결제 금액</span>
+            <span className={`text-lg font-bold ${(discountAmount > 0 || (usePoints && pointsToUse > 0)) ? 'text-red-600' : 'text-blue-700'}`}>
+              {finalAmount.toLocaleString()}원
+            </span>
+          </div>
           {(() => {
             const disabledReason =
               cart.length === 0 ? '장바구니에 품목을 추가하세요'
@@ -2126,7 +2135,7 @@ function POSPageInner() {
                   {processing ? '처리 중...' : `결제 (${finalAmount.toLocaleString()}원) · ${handlerName}`}
                 </button>
                 {disabledReason && (
-                  <p className="text-xs text-amber-600 text-center mt-1">⚠ {disabledReason}</p>
+                  <p className="text-xs text-amber-600 text-center mt-0.5">⚠ {disabledReason}</p>
                 )}
               </>
             );
