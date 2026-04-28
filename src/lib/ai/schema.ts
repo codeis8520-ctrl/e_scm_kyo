@@ -19,11 +19,14 @@ point_history: id, customer_id, sales_order_id, type(earn/use/adjust/expire), po
   ※ 고객 현재 포인트 = point_history에서 해당 고객의 최신 balance 값
 
 --- 판매(POS) ---
-sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, ordered_by(담당자), total_amount, discount_amount, points_used, points_earned, payment_method(cash/card/card_keyin/kakao/credit/cod/mixed), credit_settled(bool), credit_settled_at, credit_settled_method, memo, status(COMPLETED/CANCELLED/REFUNDED/PARTIALLY_REFUNDED), ordered_at, receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date, approval_status(COMPLETED/CARD_PENDING/UNSETTLED), payment_info
+sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, ordered_by(담당자), total_amount, discount_amount, points_used, points_earned, payment_method(cash/card/card_keyin/kakao/credit/cod/mixed), credit_settled(bool), credit_settled_at, credit_settled_method, memo, status(COMPLETED/CANCELLED/REFUNDED/PARTIALLY_REFUNDED), ordered_at, receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date, approval_status(COMPLETED/CARD_PENDING/UNSETTLED), payment_info, taxable_amount, exempt_amount, vat_amount
   ※ receipt_status=수령현황(수령완료/방문예정/퀵예정/택배예정). 기본 RECEIVED. 배송 활성 시 PARCEL_PLANNED/QUICK_PLANNED 자동 지정.
   ※ approval_status=결제 승인 라이프사이클(status와 직교). card_keyin→CARD_PENDING, credit→UNSETTLED 자동 추론 가능.
   ※ payment_info=레거시 자유기입 컬럼(2026-04 UI 제거). 신규 입력 없음. 과거 데이터 조회만 노출.
   ※ ordered_by=판매·상담 담당자.
+  ※ taxable_amount/exempt_amount/vat_amount=거래 시점 스냅샷(마이그 058). 카트 내 products.is_taxable
+    기준으로 라인별 분리 → finalAmount(고객 실수령)에 비례 배분. vat=round(taxable×10/110).
+    세 값 합 ≒ finalAmount(반올림 1원 이내). 058 미적용 주문은 0/NULL → reports는 사후 집계로 폴백.
 sales_order_items: id, sales_order_id, product_id, quantity, unit_price, discount_amount, total_price, order_option, delivery_type(PICKUP/PARCEL/QUICK), receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date
   ※ order_option=품목별 부가 옵션(보자기 포장/쇼핑백/색상/서비스 지급 등).
   ※ delivery_type=품목별 배송 방식 — 같은 전표에서 품목별로 다를 수 있음(예: 3품목 중 1품목만 택배, 2품목 현장수령). 단 shipments는 주문당 1건 유지(수령지 1곳만 전제; 2곳 이상은 새 전표 분리).

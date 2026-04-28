@@ -166,9 +166,8 @@ export default function ReportsPage() {
     setLoading(true);
     const supabase = createClient();
 
-    let query = supabase
-      .from('sales_orders')
-      .select(`
+    // 058 과세/면세 스냅샷 우선 조회. 컬럼 부재(58 미적용) 시 미선택 폴백.
+    const baseSelect = `
         id,
         total_amount,
         discount_amount,
@@ -178,13 +177,28 @@ export default function ReportsPage() {
         branch_id,
         payment_method,
         branch:branches(name),
-        ordered_at
-      `)
+        ordered_at`;
+    const fullSelect = baseSelect + `,
+        taxable_amount,
+        exempt_amount,
+        vat_amount`;
+
+    let resp = await supabase
+      .from('sales_orders')
+      .select(fullSelect)
       .eq('status', 'COMPLETED')
       .gte('ordered_at', kstDayStart(startDate))
       .lte('ordered_at', kstDayEnd(endDate));
-
-    const { data: orders } = await query;
+    if (resp.error) {
+      // 058 미적용 환경: 스냅샷 없이 폴백
+      resp = await supabase
+        .from('sales_orders')
+        .select(baseSelect)
+        .eq('status', 'COMPLETED')
+        .gte('ordered_at', kstDayStart(startDate))
+        .lte('ordered_at', kstDayEnd(endDate));
+    }
+    const orders = resp.data;
 
     let { data: orderItems } = await supabase
       .from('sales_order_items')
@@ -244,18 +258,36 @@ export default function ReportsPage() {
     });
     setPaymentSales(paymentArr.sort((a, b) => b.amount - a.amount));
 
-    // ── 과세/면세 집계 (필터된 주문에 속한 항목만)
-    const filteredItems = (orderItems || []).filter((item: any) => filteredOrderIds.has(item.order_id));
+    // ── 과세/면세 집계
+    //   058 스냅샷이 있는 주문은 그 값을 사용, 없는 주문(=과거 데이터)은 사후 집계로 폴백.
     let taxableAmt = 0;
     let exemptAmt = 0;
-    filteredItems.forEach((item: any) => {
-      if ((item.product as any)?.is_taxable !== false) {
-        taxableAmt += item.total_price || 0;
+    let vatAmt = 0;
+    const ordersWithoutSnapshot: string[] = [];
+    ordersData.forEach((o: any) => {
+      const hasSnapshot =
+        o.taxable_amount != null || o.exempt_amount != null || o.vat_amount != null;
+      if (hasSnapshot && (Number(o.taxable_amount) || Number(o.exempt_amount))) {
+        taxableAmt += Number(o.taxable_amount || 0);
+        exemptAmt += Number(o.exempt_amount || 0);
+        vatAmt += Number(o.vat_amount || 0);
       } else {
-        exemptAmt += item.total_price || 0;
+        ordersWithoutSnapshot.push(o.id);
       }
     });
-    const vatAmt = Math.round(taxableAmt * 10 / 110);
+    if (ordersWithoutSnapshot.length > 0) {
+      const fallbackSet = new Set(ordersWithoutSnapshot);
+      const filteredItems = (orderItems || []).filter((item: any) => fallbackSet.has(item.order_id));
+      let legacyTaxable = 0;
+      let legacyExempt = 0;
+      filteredItems.forEach((item: any) => {
+        if ((item.product as any)?.is_taxable !== false) legacyTaxable += item.total_price || 0;
+        else legacyExempt += item.total_price || 0;
+      });
+      taxableAmt += legacyTaxable;
+      exemptAmt += legacyExempt;
+      vatAmt += Math.round((legacyTaxable * 10) / 110);
+    }
     setTaxSales({
       taxableAmount: taxableAmt,
       taxableSupply: taxableAmt - vatAmt,

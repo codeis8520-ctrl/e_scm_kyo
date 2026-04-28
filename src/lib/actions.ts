@@ -1172,6 +1172,47 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     ? Math.floor(finalAmount * (gradePointRate || 1.0) / 100)
     : 0;
 
+  // 과세/면세 스냅샷 — 카트 항목별 is_taxable 조회 후 finalAmount를 비례 배분
+  //   • 라인 순액 = price × qty − itemDiscount  (주문 할인 전)
+  //   • 합계(cartNet) = totalAmount − itemDiscountTotal
+  //   • finalAmount(고객 실수령액)을 taxableNet/exemptNet 비율로 배분
+  //   • vat = round(taxable_amount × 10 / 110)  — 면세분에는 VAT 미산정
+  // 대상 마이그: 058. 컬럼 누락 환경(58 미적용)에서는 optionalKeys로 자동 폴백.
+  let taxableAmount = 0;
+  let exemptAmount = 0;
+  let vatAmount = 0;
+  if (cart.length > 0) {
+    const productIds = Array.from(new Set(cart.map(c => c.productId)));
+    const { data: taxRows, error: taxErr } = await db
+      .from('products').select('id, is_taxable').in('id', productIds);
+    if (!taxErr) {
+      const isTaxable = new Map<string, boolean>();
+      for (const r of (taxRows as any[]) || []) {
+        // is_taxable 컬럼이 없으면(006 미적용) undefined → 기본 true(과세)
+        isTaxable.set(r.id, r.is_taxable !== false);
+      }
+      let taxableNet = 0;
+      let exemptNet = 0;
+      for (const item of cart) {
+        const lineNet = item.price * item.quantity - (item.discount || 0);
+        if (isTaxable.get(item.productId) === false) exemptNet += lineNet;
+        else taxableNet += lineNet;
+      }
+      const cartNet = taxableNet + exemptNet;
+      if (cartNet > 0) {
+        // finalAmount를 비율로 분배. 반올림 차이는 면세 쪽에 흡수해 합계 = finalAmount 보장.
+        taxableAmount = Math.round((finalAmount * taxableNet) / cartNet);
+        exemptAmount = finalAmount - taxableAmount;
+        vatAmount = Math.round((taxableAmount * 10) / 110);
+      } else {
+        // 모든 라인이 0원(이론상 도달 안 함). 안전 폴백.
+        taxableAmount = finalAmount;
+        exemptAmount = 0;
+        vatAmount = Math.round((taxableAmount * 10) / 110);
+      }
+    }
+  }
+
   // 품목별 배송 방식으로부터 주문 레벨 수령 상태 집계
   //  - 모두 PICKUP → RECEIVED
   //  - 하나라도 PARCEL → PARCEL_PLANNED (우선순위 최상)
@@ -1221,12 +1262,17 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     receipt_date: payload.receiptDate || null,
     approval_status: inferredApprovalStatus,
     payment_info: payload.paymentInfo || null,
+    // 058 과세/면세 스냅샷
+    taxable_amount: taxableAmount,
+    exempt_amount: exemptAmount,
+    vat_amount: vatAmount,
   };
 
   // 컬럼 누락 방어: 단계적으로 optional 필드를 제거하며 재시도
   const optionalKeys: string[] = [
     'receipt_status', 'receipt_date', 'approval_status', 'payment_info',
     'customer_grade_at_order', 'point_rate_applied',
+    'taxable_amount', 'exempt_amount', 'vat_amount',
   ];
   let saleOrder: any = null;
   let saleError: any = null;
