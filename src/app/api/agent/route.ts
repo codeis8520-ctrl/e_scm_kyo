@@ -315,7 +315,10 @@ export async function POST(req: NextRequest) {
   }
 }
 
-/** 대화 로그 저장 (fire-and-forget). 모든 응답 경로에서 호출. */
+/** 대화 로그 저장 (fire-and-forget). 모든 응답 경로에서 호출.
+ *  ※ RLS 위반·미적용 마이그레이션 등으로 실패할 경우 서버 로그에
+ *    자세한 원인을 출력해 운영자가 빠르게 진단할 수 있게 한다.
+ */
 function logConversation(db: any, p: {
   sessionId?: string | null;
   userId?: string | null;
@@ -345,7 +348,17 @@ function logConversation(db: any, p: {
     cached_tokens: p.usage?.cache_read_tokens ?? 0,
     model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
     rounds: p.rounds ?? 1,
-  }).then(() => {}).catch((e: any) => console.error('[Agent] Log error:', e.message));
+  })
+    .then((res: any) => {
+      if (res?.error) {
+        // Supabase 클라이언트는 에러를 throw하지 않고 res.error에 담아준다.
+        // 마이그 057 미적용 시 RLS 위반이 여기로 떨어지므로 명시적으로 노출.
+        console.error('[Agent] Log insert error:',
+          res.error.code, res.error.message,
+          res.error.hint ? `hint=${res.error.hint}` : '');
+      }
+    })
+    .catch((e: any) => console.error('[Agent] Log error:', e?.message || e));
 }
 
 /** Llama 모델 tool calling 인자 정제 — "null" 문자열 제거, 숫자 문자열 변환 */
