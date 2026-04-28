@@ -123,17 +123,26 @@ const ROLE_COLORS: Record<string, string> = {
   EXECUTIVE: 'bg-amber-100 text-amber-700',
 };
 
+// 좌측 네비게이션(layout.tsx ALL_NAV_ITEMS)과 동일 순서로 유지.
+//   변경 시 layout.tsx 와 함께 갱신할 것.
 const SCREENS = [
   { path: '/', name: '대시보드' },
-  { path: '/pos', name: 'POS' },
+  { path: '/pos', name: '판매관리' },
   { path: '/products', name: '제품' },
   { path: '/production', name: '생산' },
   { path: '/inventory', name: '재고' },
-  { path: '/customers', name: '고객' },
+  { path: '/purchases', name: '매입' },
+  { path: '/shipping', name: '배송' },
+  { path: '/accounting', name: '회계' },
+  { path: '/trade', name: '거래 관리' },
+  { path: '/customers', name: '고객 관리' },
   { path: '/notifications', name: '알림' },
-  { path: '/system-codes', name: '코드 관리' },
-  { path: '/branches', name: '지점' },
+  { path: '/system-codes', name: '코드' },
   { path: '/reports', name: '보고서' },
+  { path: '/agent-memory', name: 'AI 메모리' },
+  { path: '/agent-conversations', name: 'AI 대화 기록' },
+  // 좌측 nav에 직접 노출되지 않지만 라우트가 살아 있는 보조 화면
+  { path: '/branches', name: '지점 (직접 URL)' },
 ];
 
 interface ScreenPermission {
