@@ -1,4 +1,26 @@
 import { defineConfig, devices } from '@playwright/test';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
+// .env.test.local 자동 로드 — dotenv 의존성 없이 간단 파싱.
+//   key=value 형식 한 줄 단위. 따옴표·이스케이프는 지원하지 않음(단순용).
+//   이미 설정된 환경변수는 덮어쓰지 않음 (CI에서 secrets가 우선).
+function loadEnvFile(filePath: string) {
+  if (!fs.existsSync(filePath)) return;
+  const content = fs.readFileSync(filePath, 'utf-8');
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq < 0) continue;
+    const key = line.slice(0, eq).trim();
+    const value = line.slice(eq + 1).trim();
+    if (key && process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+loadEnvFile(path.resolve(__dirname, '.env.test.local'));
 
 // 환경변수
 //   E2E_BASE_URL  - 테스트 대상 URL (기본: http://localhost:3000)
@@ -22,18 +44,21 @@ export default defineConfig({
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
-    storageState: 'tests/e2e/.auth/state.json',
+    // storageState는 smoke 프로젝트에만 적용 — setup이 이 파일을 생성하므로 setup엔 없어야 함
   },
 
   projects: [
     {
       name: 'setup',
       testMatch: /.*\.setup\.ts$/,
-      use: { ...devices['Desktop Chrome'], storageState: undefined },
+      use: { ...devices['Desktop Chrome'] },
     },
     {
       name: 'smoke',
-      use: { ...devices['Desktop Chrome'] },
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: 'tests/e2e/.auth/state.json',
+      },
       dependencies: ['setup'],
       testMatch: /.*\.spec\.ts$/,
     },
