@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import CustomerModal from './CustomerModal';
+import CustomerImportModal from './CustomerImportModal';
 import { autoUpgradeCustomerGrades } from '@/lib/actions';
 
 const GRADE_LABELS: Record<string, string> = { VVIP: 'VVIP', VIP: 'VIP', NORMAL: '일반' };
@@ -100,6 +101,7 @@ export default function CustomersPage() {
   const [loading, setLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [showModal, setShowModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
   const [editCustomer, setEditCustomer] = useState<Customer | null>(null);
   const [upgrading, setUpgrading] = useState(false);
   const [syncingMembers, setSyncingMembers] = useState(false);
@@ -247,6 +249,13 @@ export default function CustomersPage() {
             className="btn-secondary py-2 px-4 text-sm"
           >
             {syncingMembers ? '동기화 중...' : '카페24 회원 동기화'}
+          </button>
+          <button
+            onClick={() => setShowImportModal(true)}
+            className="btn-secondary py-2 px-4 text-sm"
+            title="엑셀로 고객 일괄 등록"
+          >
+            📥 엑셀 일괄 등록
           </button>
           <button onClick={() => setShowModal(true)} className="btn-primary">
             + 고객 추가
@@ -489,6 +498,13 @@ export default function CustomersPage() {
           customer={editCustomer}
           onClose={handleClose}
           onSuccess={handleSuccess}
+        />
+      )}
+
+      {showImportModal && (
+        <CustomerImportModal
+          onClose={() => setShowImportModal(false)}
+          onSuccess={() => fetchCustomers(search, gradeFilter, page, hasConsult, sortKey)}
         />
       )}
     </div>

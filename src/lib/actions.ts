@@ -273,12 +273,140 @@ export async function updateCustomer(id: string, formData: FormData) {
   return { success: true };
 }
 
+// ─── 고객 일괄 등록 (엑셀 임포트) ─────────────────────────────────────────────
+//   매칭 키: phone (UNIQUE). 기존 고객은 빈 칸이 아닌 항목만 업데이트 — 덮어쓰기 X.
+//   primary_branch_name(지점명)은 서버에서 branches.id로 변환 후 저장.
+export type CustomerImportRow = {
+  name: string;
+  phone: string;
+  email?: string;
+  address?: string;
+  grade?: string;
+  health_note?: string;
+  primary_branch_name?: string;
+};
+
+const NORMALIZE_PHONE_RE = /[\s\-]/g;
+function normalizeImportPhone(p: string): string {
+  return (p || '').replace(NORMALIZE_PHONE_RE, '');
+}
+function isValidImportPhone(p: string): boolean {
+  const c = normalizeImportPhone(p);
+  return /^(0\d{7,10}|1\d{7,8})$/.test(c);
+}
+
+export async function bulkImportCustomers(rows: CustomerImportRow[]) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { error: '등록할 행이 없습니다.', created: 0, updated: 0, skipped: [] };
+  }
+  if (rows.length > 1000) {
+    return { error: '한 번에 최대 1000행까지 처리할 수 있습니다.', created: 0, updated: 0, skipped: [] };
+  }
+
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  // 지점 매핑 (이름 → id)
+  const { data: branches } = await db.from('branches').select('id, name').eq('is_active', true);
+  const branchByName = new Map<string, string>();
+  for (const b of (branches || []) as any[]) branchByName.set(String(b.name).trim(), b.id);
+
+  // 기존 고객 phone → id 매핑 (배치 조회)
+  const phones = Array.from(new Set(
+    rows.map(r => normalizeImportPhone(r.phone || '')).filter(Boolean)
+  ));
+  const existingByPhone = new Map<string, string>();
+  if (phones.length > 0) {
+    // chunk 200씩
+    for (let i = 0; i < phones.length; i += 200) {
+      const chunk = phones.slice(i, i + 200);
+      const { data: existing } = await db
+        .from('customers').select('id, phone').in('phone', chunk);
+      for (const c of (existing || []) as any[]) {
+        existingByPhone.set(normalizeImportPhone(c.phone), c.id);
+      }
+    }
+  }
+
+  let created = 0;
+  let updated = 0;
+  const skipped: { row: number; reason: string }[] = [];
+  const newCustomers: { name: string; phone: string; grade: string }[] = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const rowNo = i + 1;
+    const name = (r.name || '').trim();
+    const phone = (r.phone || '').trim();
+    if (!name) { skipped.push({ row: rowNo, reason: '이름 누락' }); continue; }
+    if (!phone) { skipped.push({ row: rowNo, reason: '연락처 누락' }); continue; }
+    if (!isValidImportPhone(phone)) { skipped.push({ row: rowNo, reason: `연락처 형식 오류 (${phone})` }); continue; }
+
+    const grade = ['NORMAL', 'VIP', 'VVIP'].includes((r.grade || '').toUpperCase().trim())
+      ? (r.grade || 'NORMAL').toUpperCase().trim()
+      : 'NORMAL';
+
+    const branchId = r.primary_branch_name
+      ? (branchByName.get(String(r.primary_branch_name).trim()) || null)
+      : null;
+
+    const phoneNorm = normalizeImportPhone(phone);
+    const existingId = existingByPhone.get(phoneNorm);
+
+    const baseRow: any = {
+      name,
+      phone,
+      email: (r.email || '').trim() || null,
+      address: (r.address || '').trim() || null,
+      grade,
+      health_note: (r.health_note || '').trim() || null,
+      primary_branch_id: branchId,
+    };
+
+    if (existingId) {
+      // 빈 칸이 아닌 항목만 업데이트 — 기존 데이터 보존
+      const patch: any = { name };
+      if (baseRow.email)         patch.email = baseRow.email;
+      if (baseRow.address)       patch.address = baseRow.address;
+      if (baseRow.grade)         patch.grade = baseRow.grade;
+      if (baseRow.health_note)   patch.health_note = baseRow.health_note;
+      if (baseRow.primary_branch_id) patch.primary_branch_id = baseRow.primary_branch_id;
+
+      const { error } = await db.from('customers').update(patch).eq('id', existingId);
+      if (error) skipped.push({ row: rowNo, reason: `업데이트 실패: ${error.message}` });
+      else updated++;
+    } else {
+      const { error } = await db.from('customers').insert(baseRow);
+      if (error) {
+        // 23505 = unique_violation (다른 행에서 같은 phone이 먼저 들어간 경우)
+        skipped.push({ row: rowNo, reason: `등록 실패: ${error.message}` });
+      } else {
+        created++;
+        existingByPhone.set(phoneNorm, '_new'); // 같은 batch에서 중복 등록 방지
+        newCustomers.push({ name, phone, grade });
+      }
+    }
+  }
+
+  // WELCOME 알림톡 fire-and-forget (실패해도 결과에 영향 X)
+  for (const c of newCustomers) {
+    fireNotificationTrigger({
+      eventType: 'WELCOME',
+      customer: { name: c.name, phone: c.phone },
+      context: { customerGrade: c.grade },
+    }).catch(() => {});
+  }
+
+  revalidatePath('/customers');
+  return { created, updated, skipped };
+}
+
 export async function deleteCustomer(id: string) {
   const supabase = await createClient();
-  
+
 
   const { error } = await supabase.from('customers').delete().eq('id', id);
-  
+
   if (error) {
     return { error: error.message };
   }
