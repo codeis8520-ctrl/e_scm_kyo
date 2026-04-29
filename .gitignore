@@ -43,3 +43,9 @@ next-env.d.ts
 # Claude Code local settings (machine-specific permissions)
 .claude/settings.local.json
 .claude/worktrees/
+
+# Playwright e2e
+/tests/e2e/.auth
+/test-results/
+/playwright-report/
+/playwright/.cache/
