@@ -131,17 +131,23 @@ export default function ProductionPage() {
   // 카테고리 필터 — 자기·자손 카테고리에 속한 제품의 지시만 표시
   const [orderCategoryFilter, setOrderCategoryFilter] = useState<string>('');
   const [orderCategories, setOrderCategories] = useState<any[]>([]);
-  // 날짜 범위 — 기본 1개월(오늘 - 1m ~ 오늘) KST 기준
-  const _today = new Date();
-  const _oneMonthAgo = new Date(_today);
-  _oneMonthAgo.setMonth(_oneMonthAgo.getMonth() - 1);
+  // 날짜 범위 — KST 기준 1개월. 서버·클라이언트 날짜가 미세하게 달라
+  // hydration mismatch가 나는 것을 막기 위해 마운트 후 useEffect로 세팅.
   const _fmtKstDate = (d: Date) => {
     const offset = 9 * 60;
     const k = new Date(d.getTime() + (offset - d.getTimezoneOffset()) * 60000);
     return k.toISOString().slice(0, 10);
   };
-  const [dateFrom, setDateFrom] = useState<string>(() => _fmtKstDate(_oneMonthAgo));
-  const [dateTo, setDateTo] = useState<string>(() => _fmtKstDate(_today));
+  const [dateFrom, setDateFrom] = useState<string>('');
+  const [dateTo, setDateTo] = useState<string>('');
+  useEffect(() => {
+    const today = new Date();
+    const oneMonthAgo = new Date(today);
+    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+    setDateFrom(_fmtKstDate(oneMonthAgo));
+    setDateTo(_fmtKstDate(today));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [userRole]  = useState<string | null>(() => getCookie('user_role'));
   const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
   const canIssueOrder = userRole === 'SUPER_ADMIN' || userRole === 'HQ_OPERATOR';

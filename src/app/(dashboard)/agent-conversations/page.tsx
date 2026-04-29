@@ -72,10 +72,16 @@ export default function AgentConversationsPage() {
   const [limit, setLimit] = useState(PAGE_SIZE);
 
   // 날짜 · 도구 필터 (Phase 2)
+  // 서버·클라이언트 날짜 차이로 인한 hydration mismatch 방지 — 마운트 후 채움.
   const [datePreset, setDatePreset] = useState<DatePreset>('30d');
-  const [startDate, setStartDate] = useState(daysAgo(29));
-  const [endDate, setEndDate] = useState(todayStr());
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [toolFilter, setToolFilter] = useState<string>('');
+  useEffect(() => {
+    setStartDate(daysAgo(29));
+    setEndDate(todayStr());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const userId = getCookie('user_id');
   const userRole = getCookie('user_role');

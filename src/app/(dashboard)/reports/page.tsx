@@ -109,12 +109,16 @@ const PAYMENT_LABELS_KO: Record<string, string> = {
 export default function ReportsPage() {
   const [reportTab, setReportTab] = useState<ReportTab>('sales');
   const [period, setPeriod] = useState<'daily' | 'weekly' | 'monthly'>('daily');
-  const [startDate, setStartDate] = useState(() => {
+  // 서버·클라이언트 날짜 차이로 인한 hydration mismatch 방지 — 마운트 후 세팅.
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  useEffect(() => {
     const d = new Date();
     d.setDate(d.getDate() - 30);
-    return fmtDateKST(d);
-  });
-  const [endDate, setEndDate] = useState(() => kstTodayString());
+    setStartDate(fmtDateKST(d));
+    setEndDate(kstTodayString());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -159,6 +163,9 @@ export default function ReportsPage() {
   }, []);
 
   useEffect(() => {
+    // 마운트 직후 startDate/endDate가 비어 있을 때(hydration 회피용) 쿼리 스킵.
+    // useEffect로 날짜가 채워지면 다시 트리거되어 정상 fetch.
+    if (!startDate || !endDate) return;
     fetchReportData();
   }, [startDate, endDate, filterBranch, filterChannel]);
 
