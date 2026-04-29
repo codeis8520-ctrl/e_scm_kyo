@@ -148,7 +148,10 @@ export default function ProductionPage() {
     setDateTo(_fmtKstDate(today));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const [userRole]  = useState<string | null>(() => getCookie('user_role'));
+  // userRole: 서버 SSR에선 cookie 접근 불가(null), 클라이언트에선 값 → hydration mismatch.
+  // 마운트 후 useEffect로 채움.
+  const [userRole, setUserRole] = useState<string | null>(null);
+  useEffect(() => { setUserRole(getCookie('user_role')); }, []);
   const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
   const canIssueOrder = userRole === 'SUPER_ADMIN' || userRole === 'HQ_OPERATOR';
 

@@ -83,9 +83,16 @@ export default function AgentConversationsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const userId = getCookie('user_id');
-  const userRole = getCookie('user_role');
-  const userName = getCookie('user_name') || '';
+  // 서버 SSR에선 cookie 접근 불가(null), 클라이언트에선 값 존재 → hydration mismatch.
+  // useEffect로 채움.
+  const [userId, setUserId] = useState<string | null>(null);
+  const [userRole, setUserRole] = useState<string | null>(null);
+  const [userName, setUserName] = useState<string>('');
+  useEffect(() => {
+    setUserId(getCookie('user_id'));
+    setUserRole(getCookie('user_role'));
+    setUserName(getCookie('user_name') || '');
+  }, []);
   // 전체 조회는 본부대표(SUPER_ADMIN)만. 그 외(HQ_OPERATOR 포함)는 본인 대화만.
   const isSuperAdmin = userRole === 'SUPER_ADMIN';
   const [scope, setScope] = useState<'mine' | 'all'>('mine');

@@ -146,8 +146,13 @@ export default function ReportsPage() {
   const [trendLoading, setTrendLoading]   = useState(false);
   const [marginLoading, setMarginLoading] = useState(false);
 
-  const userRole = getCookie('user_role');
-  const userBranchId = getCookie('user_branch_id');
+  // 서버 SSR에선 cookie 접근 불가(null) → hydration mismatch 방지차 useEffect로 세팅
+  const [userRole, setUserRole] = useState<string | null>(null);
+  const [userBranchId, setUserBranchId] = useState<string | null>(null);
+  useEffect(() => {
+    setUserRole(getCookie('user_role'));
+    setUserBranchId(getCookie('user_branch_id'));
+  }, []);
   const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
 
   useEffect(() => {
