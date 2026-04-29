@@ -6,6 +6,7 @@ import { createProduct, updateProduct, deleteProduct, getCategories, addProductF
 import { getWhereUsed } from '@/lib/production-actions';
 import { createClient } from '@/lib/supabase/client';
 import { validators } from '@/lib/validators';
+import { buildCategoryInfo, sortedCategoryOptions, categoryOptionLabel, type CategoryRow } from '@/lib/category-tree';
 
 type ProductType = 'FINISHED' | 'RAW' | 'SUB' | 'SERVICE';
 type CostSource = 'MANUAL' | 'BOM';
@@ -442,16 +443,35 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
 
           <div>
             <label className="block text-sm font-medium text-gray-700">카테고리</label>
-            <select
-              value={formData.category_id || ''}
-              onChange={(e) => setFormData({ ...formData, category_id: e.target.value || null })}
-              className="mt-1 input"
-            >
-              <option value="">선택하세요</option>
-              {categories.map(cat => (
-                <option key={cat.id} value={cat.id}>{cat.name}</option>
-              ))}
-            </select>
+            {(() => {
+              const info = buildCategoryInfo(categories as CategoryRow[]);
+              const options = sortedCategoryOptions(info);
+              const selectedInfo = formData.category_id ? info.get(formData.category_id) : null;
+              return (
+                <>
+                  <select
+                    value={formData.category_id || ''}
+                    onChange={(e) => setFormData({ ...formData, category_id: e.target.value || null })}
+                    className="mt-1 input"
+                  >
+                    <option value="">선택하세요</option>
+                    {options.map(c => (
+                      <option key={c.id} value={c.id}>{categoryOptionLabel(c)}</option>
+                    ))}
+                  </select>
+                  {/* 선택된 카테고리의 전체 경로 — 상·하위 관계 직관적으로 노출 */}
+                  {selectedInfo && (
+                    <p className="mt-1 text-xs text-blue-600">
+                      <span className="font-mono text-slate-400 mr-1">[{selectedInfo.pathCode}]</span>
+                      {selectedInfo.pathName}
+                    </p>
+                  )}
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    카테고리는 시스템 코드 → 카테고리 탭에서 트리 구조로 관리합니다.
+                  </p>
+                </>
+              );
+            })()}
           </div>
 
           {/* 가격 섹션 — 타입별 분기 */}

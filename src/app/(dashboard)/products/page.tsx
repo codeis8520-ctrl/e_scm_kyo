@@ -253,27 +253,78 @@ export default function ProductsPage() {
               <tr><td colSpan={13} className="text-center text-slate-400 py-8">
                 {search ? `"${search}" 검색 결과 없음` : '등록된 제품이 없습니다'}
               </td></tr>
-            ) : filtered.flatMap((product, idx) => {
-              const m = marginPct(product);
-              const prev = idx > 0 ? filtered[idx - 1] : null;
-              const showGroupHeader = !prev || prev.category_id !== product.category_id;
-              const headerRow = showGroupHeader ? (
-                <tr key={`hdr-${product.category_id || 'none'}-${idx}`} className="bg-slate-50">
-                  <td colSpan={13} className="px-3 py-1.5 text-xs font-semibold text-slate-600">
-                    {product.category_id
-                      ? (() => {
-                          const info = categoryInfo.get(product.category_id);
-                          return info
-                            ? <span><span className="font-mono text-slate-400 mr-1">[{info.pathCode}]</span>{info.pathName}</span>
-                            : <span className="text-slate-400">미분류</span>;
-                        })()
-                      : <span className="text-slate-400">미분류</span>}
-                  </td>
-                </tr>
-              ) : null;
-              const dataRow = (
-                <tr key={product.id} className={!product.is_active ? 'opacity-50' : ''}>
-                  <td>
+            ) : (() => {
+              // 카테고리 트리 구조 시각화 — 처음 등장하는 모든 조상 헤더를 자동 노출
+              const out: React.ReactElement[] = [];
+              const shown = new Set<string>();
+              // 카테고리별 제품 카운트(현재 필터 기준) — 부모는 자손 카운트 합
+              const directCount = new Map<string, number>(); // category_id → 직접 자식 제품 수
+              for (const p of filtered) {
+                if (p.category_id) directCount.set(p.category_id, (directCount.get(p.category_id) || 0) + 1);
+              }
+              // 부모로 누적 — 자손 합계
+              const subtreeCount = new Map<string, number>(directCount);
+              for (const [cid, n] of directCount) {
+                const info = categoryInfo.get(cid);
+                if (!info) continue;
+                for (const aid of info.ancestorIds) {
+                  if (aid !== cid) subtreeCount.set(aid, (subtreeCount.get(aid) || 0) + n);
+                }
+              }
+
+              const emitCategoryHeader = (cid: string) => {
+                const info = categoryInfo.get(cid);
+                if (!info) return;
+                const total = subtreeCount.get(cid) || 0;
+                out.push(
+                  <tr key={`hdr-${cid}`} className="bg-slate-50">
+                    <td colSpan={13} className="px-3 py-1.5 text-xs font-semibold text-slate-700"
+                        style={{ paddingLeft: `${12 + info.depth * 18}px` }}>
+                      <span className="font-mono text-slate-400 mr-1.5">[{info.pathCode}]</span>
+                      {info.name}
+                      <span className="text-slate-400 font-normal ml-2">({total}개)</span>
+                    </td>
+                  </tr>
+                );
+              };
+
+              for (const product of filtered) {
+                const cid = product.category_id;
+                if (cid) {
+                  const info = categoryInfo.get(cid);
+                  if (info) {
+                    // 자기 + 모든 조상을 트리 위에서 아래로 정렬해 emit
+                    const chain: string[] = [];
+                    let cur: typeof info | undefined = info;
+                    while (cur) {
+                      chain.unshift(cur.id);
+                      cur = cur.parent_id ? categoryInfo.get(cur.parent_id) : undefined;
+                    }
+                    for (const aid of chain) {
+                      if (!shown.has(aid)) {
+                        shown.add(aid);
+                        emitCategoryHeader(aid);
+                      }
+                    }
+                  }
+                } else {
+                  if (!shown.has('__unassigned__')) {
+                    shown.add('__unassigned__');
+                    out.push(
+                      <tr key="hdr-unassigned" className="bg-slate-50">
+                        <td colSpan={13} className="px-3 py-1.5 text-xs font-semibold text-slate-400">
+                          미분류
+                        </td>
+                      </tr>
+                    );
+                  }
+                }
+
+                const m = marginPct(product);
+                const indent = cid ? (categoryInfo.get(cid)?.depth ?? 0) + 1 : 1;
+                out.push(
+                  <tr key={product.id} className={!product.is_active ? 'opacity-50' : ''}>
+                  <td style={{ paddingLeft: `${12 + indent * 18}px` }}>
                     {product.image_url
                       ? <img
                           src={product.image_url}
@@ -341,9 +392,10 @@ export default function ProductsPage() {
                     </button>
                   </td>
                 </tr>
-              );
-              return [headerRow, dataRow].filter(Boolean) as React.ReactElement[];
-            })}
+                );
+              }
+              return out;
+            })()}
           </tbody>
         </table>
       </div>
