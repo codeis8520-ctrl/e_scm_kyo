@@ -1,10 +1,56 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import ProductModal from './ProductModal';
 
 type ProductType = 'FINISHED' | 'RAW' | 'SUB' | 'SERVICE';
+
+interface CategoryRow {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  sort_order: number;
+}
+
+interface CategoryInfo {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  pathCode: string;
+  pathName: string;
+  sortKey: string;
+  ancestorIds: Set<string>;
+  depth: number;
+}
+
+function buildCategoryInfo(categories: CategoryRow[]): Map<string, CategoryInfo> {
+  const byParent = new Map<string | null, CategoryRow[]>();
+  for (const c of categories) {
+    const list = byParent.get(c.parent_id ?? null) || [];
+    list.push(c);
+    byParent.set(c.parent_id ?? null, list);
+  }
+  for (const list of byParent.values()) {
+    list.sort((a, b) => (a.sort_order - b.sort_order) || a.name.localeCompare(b.name, 'ko'));
+  }
+  const out = new Map<string, CategoryInfo>();
+  const walk = (parentId: string | null, parentCode: string, parentName: string, parentSortKey: string, parentAncestors: Set<string>, depth: number) => {
+    const list = byParent.get(parentId) || [];
+    list.forEach((c, i) => {
+      const pos = i + 1;
+      const pathCode = parentCode ? `${parentCode}-${pos}` : String(pos);
+      const pathName = parentName ? `${parentName} / ${c.name}` : c.name;
+      const sortKey = parentSortKey + String(pos).padStart(3, '0') + '/';
+      const ancestors = new Set(parentAncestors);
+      ancestors.add(c.id);
+      out.set(c.id, { id: c.id, name: c.name, parent_id: c.parent_id, pathCode, pathName, sortKey, ancestorIds: ancestors, depth });
+      walk(c.id, pathCode, pathName, sortKey, ancestors, depth + 1);
+    });
+  };
+  walk(null, '', '', '', new Set(), 0);
+  return out;
+}
 
 interface Product {
   id: string;
@@ -33,6 +79,8 @@ const TYPE_BADGE: Record<ProductType, { label: string; cls: string }> = {
 
 export default function ProductsPage() {
   const [products, setProducts] = useState<Product[]>([]);
+  const [categories, setCategories] = useState<CategoryRow[]>([]);
+  const [categoryFilter, setCategoryFilter] = useState<string>('');
   const [search, setSearch] = useState('');
   const [activeFilter, setActiveFilter] = useState<'' | 'true' | 'false'>('');
   const [typeFilter, setTypeFilter] = useState<'' | ProductType>('');
@@ -59,14 +107,47 @@ export default function ProductsPage() {
 
   useEffect(() => { fetchProducts(); }, [fetchProducts]);
 
-  // 클라이언트 사이드 실시간 검색
-  const filtered = search
-    ? products.filter(p =>
-        p.name.toLowerCase().includes(search.toLowerCase()) ||
-        p.code.toLowerCase().includes(search.toLowerCase()) ||
-        (p.barcode || '').toLowerCase().includes(search.toLowerCase())
-      )
-    : products;
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.from('categories').select('id, name, parent_id, sort_order').order('sort_order')
+      .then(res => setCategories((res.data as CategoryRow[]) || []));
+  }, []);
+
+  const categoryInfo = useMemo(() => buildCategoryInfo(categories), [categories]);
+  const categoryOptions = useMemo(() => {
+    return Array.from(categoryInfo.values()).sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+  }, [categoryInfo]);
+
+  const allowedCategoryIds = useMemo(() => {
+    if (!categoryFilter) return null;
+    const result = new Set<string>([categoryFilter]);
+    for (const info of categoryInfo.values()) {
+      if (info.ancestorIds.has(categoryFilter)) result.add(info.id);
+    }
+    return result;
+  }, [categoryFilter, categoryInfo]);
+
+  // 클라이언트 사이드 실시간 검색 + 카테고리 필터 + 트리 순서 정렬
+  const filtered = useMemo(() => {
+    const arr = products.filter(p => {
+      if (allowedCategoryIds && !(p.category_id && allowedCategoryIds.has(p.category_id))) return false;
+      if (!search) return true;
+      const q = search.toLowerCase();
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.code.toLowerCase().includes(q) ||
+        (p.barcode || '').toLowerCase().includes(q)
+      );
+    });
+    arr.sort((a, b) => {
+      const aKey = a.category_id ? (categoryInfo.get(a.category_id)?.sortKey || 'zzz') : 'zzz';
+      const bKey = b.category_id ? (categoryInfo.get(b.category_id)?.sortKey || 'zzz') : 'zzz';
+      const cmp = aKey.localeCompare(bKey);
+      if (cmp !== 0) return cmp;
+      return a.name.localeCompare(b.name, 'ko');
+    });
+    return arr;
+  }, [products, search, allowedCategoryIds, categoryInfo]);
 
   const marginPct = (p: Product) => {
     if (!p.cost || !p.price) return null;
@@ -107,7 +188,7 @@ export default function ProductsPage() {
           ))}
         </div>
         <div className="flex rounded-lg border border-slate-200 overflow-hidden text-sm">
-          {([['', '모든 유형'], ['FINISHED', '완제품'], ['RAW', '원자재'], ['SUB', '부자재']] as [string, string][]).map(([v, label]) => (
+          {([['', '모든 유형'], ['FINISHED', '완제품'], ['RAW', '원자재'], ['SUB', '부자재'], ['SERVICE', '무형상품']] as [string, string][]).map(([v, label]) => (
             <button
               key={v}
               onClick={() => setTypeFilter(v as '' | ProductType)}
@@ -119,6 +200,20 @@ export default function ProductsPage() {
             </button>
           ))}
         </div>
+        {/* 품목 계층 필터 — 자기와 모든 하위 포함 */}
+        <select
+          value={categoryFilter}
+          onChange={e => setCategoryFilter(e.target.value)}
+          className="input text-sm w-full sm:w-64"
+          title="선택한 카테고리 + 모든 하위 카테고리만 표시"
+        >
+          <option value="">전체 카테고리</option>
+          {categoryOptions.map(c => (
+            <option key={c.id} value={c.id}>
+              {`${'  '.repeat(c.depth)}[${c.pathCode}] ${c.name}`}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div className="overflow-x-auto">
@@ -147,9 +242,25 @@ export default function ProductsPage() {
               <tr><td colSpan={13} className="text-center text-slate-400 py-8">
                 {search ? `"${search}" 검색 결과 없음` : '등록된 제품이 없습니다'}
               </td></tr>
-            ) : filtered.map(product => {
+            ) : filtered.flatMap((product, idx) => {
               const m = marginPct(product);
-              return (
+              const prev = idx > 0 ? filtered[idx - 1] : null;
+              const showGroupHeader = !prev || prev.category_id !== product.category_id;
+              const headerRow = showGroupHeader ? (
+                <tr key={`hdr-${product.category_id || 'none'}-${idx}`} className="bg-slate-50">
+                  <td colSpan={13} className="px-3 py-1.5 text-xs font-semibold text-slate-600">
+                    {product.category_id
+                      ? (() => {
+                          const info = categoryInfo.get(product.category_id);
+                          return info
+                            ? <span><span className="font-mono text-slate-400 mr-1">[{info.pathCode}]</span>{info.pathName}</span>
+                            : <span className="text-slate-400">미분류</span>;
+                        })()
+                      : <span className="text-slate-400">미분류</span>}
+                  </td>
+                </tr>
+              ) : null;
+              const dataRow = (
                 <tr key={product.id} className={!product.is_active ? 'opacity-50' : ''}>
                   <td>
                     {product.image_url
@@ -220,6 +331,7 @@ export default function ProductsPage() {
                   </td>
                 </tr>
               );
+              return [headerRow, dataRow].filter(Boolean) as React.ReactElement[];
             })}
           </tbody>
         </table>
