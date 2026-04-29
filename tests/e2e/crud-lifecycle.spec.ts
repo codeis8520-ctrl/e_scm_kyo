@@ -96,11 +96,19 @@ test.describe('제품 라이프사이클', () => {
     if (await numbers.count() > 0) await numbers.nth(0).fill('1');
 
     await modal.locator('button[type="submit"]').first().click();
-    await page.waitForTimeout(1500);
 
-    // 모달이 닫혔는지 확인 (성공 시 닫힘)
+    // 모달이 닫힐 때까지 기다림 (성공 시) 또는 에러 메시지가 보일 때까지 (실패 시)
+    // Vercel 콜드 스타트·재고 row 일괄 INSERT 등으로 5~10초까지 걸릴 수 있음
+    await Promise.race([
+      modal.waitFor({ state: 'hidden', timeout: 15_000 }).then(() => 'closed'),
+      page.locator('.bg-red-100, [class*="text-red"]').first().waitFor({ state: 'visible', timeout: 15_000 }).then(() => 'error'),
+    ]);
+
     const stillOpen = await modal.isVisible().catch(() => false);
-    expect(stillOpen, '제품 등록 후 모달 열림 — 등록 실패 가능성').toBeFalsy();
+    if (stillOpen) {
+      const errText = await page.locator('.bg-red-100').first().textContent().catch(() => '');
+      throw new Error(`제품 등록 후 모달 열림 — 에러 메시지: ${errText || '(없음)'}`);
+    }
 
     // 2) 제품 페이지에서 노출 확인
     const productRow = await searchAndFindRow(page, '/products', name);
