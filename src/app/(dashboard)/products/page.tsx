@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import ProductModal from './ProductModal';
+import ProductImportModal from './ProductImportModal';
 
 type ProductType = 'FINISHED' | 'RAW' | 'SUB' | 'SERVICE';
 
@@ -86,6 +87,7 @@ export default function ProductsPage() {
   const [typeFilter, setTypeFilter] = useState<'' | ProductType>('');
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
   const [editProduct, setEditProduct] = useState<Product | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
@@ -161,9 +163,18 @@ export default function ProductsPage() {
           <h3 className="font-semibold text-lg">제품 목록</h3>
           <p className="text-sm text-slate-400 mt-0.5">{filtered.length}개</p>
         </div>
-        <button onClick={() => { setEditProduct(null); setShowModal(true); }} className="btn-primary">
-          + 제품 추가
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setShowImportModal(true)}
+            className="btn-secondary py-2 px-4 text-sm"
+            title="엑셀로 제품 일괄 등록"
+          >
+            📥 엑셀 일괄 등록
+          </button>
+          <button onClick={() => { setEditProduct(null); setShowModal(true); }} className="btn-primary">
+            + 제품 추가
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-col sm:flex-row gap-3 flex-wrap items-start sm:items-center mb-4">
@@ -362,6 +373,13 @@ export default function ProductsPage() {
           product={editProduct}
           onClose={() => { setShowModal(false); setEditProduct(null); }}
           onSuccess={() => { setShowModal(false); setEditProduct(null); fetchProducts(); }}
+        />
+      )}
+
+      {showImportModal && (
+        <ProductImportModal
+          onClose={() => setShowImportModal(false)}
+          onSuccess={() => fetchProducts()}
         />
       )}
     </div>

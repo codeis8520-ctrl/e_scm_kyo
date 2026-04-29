@@ -212,16 +212,259 @@ export async function updateProduct(id: string, formData: FormData) {
   return { success: true };
 }
 
+// ─── 제품 일괄 등록 (엑셀 임포트) ─────────────────────────────────────────
+//   매칭 키: code (UNIQUE). 빈 코드는 자동 생성하여 새로 등록.
+//   카테고리는 pathName / pathCode / leafName 순으로 매칭.
+export type ProductImportRow = {
+  name: string;
+  code?: string;
+  product_type?: string;        // FINISHED | RAW | SUB | SERVICE
+  unit?: string;
+  price?: number | string;
+  cost?: number | string;
+  barcode?: string;
+  is_taxable?: string;          // 과세 | 면세
+  track_inventory?: string;     // 예 | 아니오
+  category?: string;            // 경로명 / [코드] / 잎 이름
+  description?: string;
+};
+
+function normalizeIntInput(v: any): number | null {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? Math.round(v) : null;
+  const s = String(v).replace(/[^0-9.-]/g, '');
+  if (!s) return null;
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? Math.round(n) : null;
+}
+
+// 카테고리 트리 빌드 + 매칭 헬퍼 (서버 사이드)
+function buildServerCategoryMap(categories: any[]): {
+  byPathName: Map<string, string>;
+  byPathCode: Map<string, string>;
+  byLeafName: Map<string, string>; // 첫 번째 매칭만
+} {
+  const byParent = new Map<string | null, any[]>();
+  for (const c of categories) {
+    const list = byParent.get(c.parent_id ?? null) || [];
+    list.push(c);
+    byParent.set(c.parent_id ?? null, list);
+  }
+  for (const list of byParent.values()) {
+    list.sort((a: any, b: any) => (a.sort_order - b.sort_order) || String(a.name).localeCompare(b.name, 'ko'));
+  }
+  const byPathName = new Map<string, string>();
+  const byPathCode = new Map<string, string>();
+  const byLeafName = new Map<string, string>();
+  const walk = (pid: string | null, parentCode: string, parentName: string) => {
+    const list = byParent.get(pid) || [];
+    list.forEach((c: any, i: number) => {
+      const pos = i + 1;
+      const pathCode = parentCode ? `${parentCode}-${pos}` : String(pos);
+      const pathName = parentName ? `${parentName} / ${c.name}` : c.name;
+      byPathCode.set(pathCode, c.id);
+      byPathName.set(pathName, c.id);
+      if (!byLeafName.has(c.name)) byLeafName.set(c.name, c.id);
+      walk(c.id, pathCode, pathName);
+    });
+  };
+  walk(null, '', '');
+  return { byPathName, byPathCode, byLeafName };
+}
+
+function resolveCategoryId(
+  raw: string | undefined,
+  maps: ReturnType<typeof buildServerCategoryMap>,
+): string | null {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  // [1-1-1] 또는 1-1-1 형식
+  const codeMatch = s.match(/^\[?\s*([\d-]+)\s*\]?$/);
+  if (codeMatch) {
+    const code = codeMatch[1];
+    if (maps.byPathCode.has(code)) return maps.byPathCode.get(code)!;
+  }
+  // 경로명: "A / B / C"
+  if (s.includes('/')) {
+    const normalized = s.split('/').map(p => p.trim()).filter(Boolean).join(' / ');
+    if (maps.byPathName.has(normalized)) return maps.byPathName.get(normalized)!;
+  }
+  // 잎 이름 매칭
+  if (maps.byLeafName.has(s)) return maps.byLeafName.get(s)!;
+  return null;
+}
+
+export async function bulkImportProducts(rows: ProductImportRow[]) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { error: '등록할 행이 없습니다.', created: 0, updated: 0, skipped: [] };
+  }
+  if (rows.length > 1000) {
+    return { error: '한 번에 최대 1000행까지 처리할 수 있습니다.', created: 0, updated: 0, skipped: [] };
+  }
+
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  // 카테고리 + 활성 지점 사전 조회
+  const { data: categories } = await db
+    .from('categories').select('id, name, parent_id, sort_order');
+  const catMaps = buildServerCategoryMap((categories || []) as any[]);
+
+  const { data: branchRows } = await db
+    .from('branches').select('id').eq('is_active', true);
+  const activeBranchIds = ((branchRows || []) as any[]).map(b => b.id);
+
+  // 기존 제품 code → id 매핑
+  const codes = Array.from(new Set(rows.map(r => (r.code || '').trim()).filter(Boolean)));
+  const existingByCode = new Map<string, string>();
+  if (codes.length > 0) {
+    for (let i = 0; i < codes.length; i += 200) {
+      const chunk = codes.slice(i, i + 200);
+      const { data } = await db.from('products').select('id, code').in('code', chunk);
+      for (const p of (data || []) as any[]) existingByCode.set(p.code, p.id);
+    }
+  }
+
+  let created = 0;
+  let updated = 0;
+  const skipped: { row: number; reason: string }[] = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const rowNo = i + 1;
+    const name = (r.name || '').trim();
+    if (!name) { skipped.push({ row: rowNo, reason: '제품명 누락' }); continue; }
+
+    const productType = (() => {
+      const v = (r.product_type || '').toUpperCase().trim();
+      return ['FINISHED', 'RAW', 'SUB', 'SERVICE'].includes(v) ? v : 'FINISHED';
+    })();
+
+    const unit = (r.unit || '개').trim() || '개';
+
+    // RAW/SUB는 판매가가 의미 없음 → cost로 동기화 (NOT NULL 회피)
+    const priceRaw = normalizeIntInput(r.price);
+    const costRaw = normalizeIntInput(r.cost);
+    const finalPrice = (productType === 'RAW' || productType === 'SUB')
+      ? (costRaw ?? 0)
+      : (priceRaw ?? 0);
+
+    // 부가세
+    const isTaxable = (() => {
+      const v = (r.is_taxable || '').trim();
+      if (!v) return true;
+      if (['면세', 'EXEMPT', 'FALSE', '아니오', 'X'].includes(v.toUpperCase())) return false;
+      return true;
+    })();
+
+    // 재고 관리 — 명시값 > SERVICE 기본 false > 그 외 true
+    const trackInventory = (() => {
+      const v = (r.track_inventory || '').trim();
+      if (v) {
+        if (['아니오', 'NO', 'FALSE', 'N', 'X'].includes(v.toUpperCase())) return false;
+        return true;
+      }
+      return productType !== 'SERVICE';
+    })();
+
+    const categoryId = resolveCategoryId(r.category, catMaps);
+    const inputCode = (r.code || '').trim();
+    const existingId = inputCode ? existingByCode.get(inputCode) : undefined;
+
+    // 코드 자동 생성 (신규 + 입력 없을 때)
+    let codeToUse = inputCode;
+    if (!existingId && !codeToUse) {
+      const nameCode = name.replace(/[^a-zA-Z0-9가-힣]/g, '').substring(0, 4).toUpperCase().padEnd(4, 'X');
+      const rand = Math.random().toString(36).substring(2, 8).toUpperCase();
+      codeToUse = `KYO-${nameCode}-${rand}`;
+    }
+
+    const baseData: any = {
+      name,
+      product_type: productType,
+      unit,
+      price: finalPrice,
+      cost: costRaw,
+      // 바코드는 FINISHED만 의미
+      barcode: (productType === 'FINISHED' && r.barcode) ? String(r.barcode).trim() || null : null,
+      is_taxable: isTaxable,
+      track_inventory: trackInventory,
+      category_id: categoryId,
+      description: (r.description || '').trim() || null,
+    };
+
+    if (existingId) {
+      // 업데이트 — 빈 칸이 아닌 항목만
+      const patch: any = { name };
+      if (r.product_type) patch.product_type = baseData.product_type;
+      if (r.unit) patch.unit = baseData.unit;
+      if (priceRaw != null || productType === 'RAW' || productType === 'SUB') patch.price = baseData.price;
+      if (costRaw != null) patch.cost = baseData.cost;
+      if (r.barcode) patch.barcode = baseData.barcode;
+      if (r.is_taxable) patch.is_taxable = baseData.is_taxable;
+      if (r.track_inventory) patch.track_inventory = baseData.track_inventory;
+      if (categoryId) patch.category_id = categoryId;
+      if (r.description) patch.description = baseData.description;
+
+      let res = await db.from('products').update(patch).eq('id', existingId);
+      if (res.error && /track_inventory|product_type_check/i.test(String(res.error.message))) {
+        delete patch.track_inventory;
+        if (/product_type_check/i.test(String(res.error.message))) {
+          skipped.push({ row: rowNo, reason: 'product_type SERVICE 미적용 — migration 059 필요' });
+          continue;
+        }
+        res = await db.from('products').update(patch).eq('id', existingId);
+      }
+      if (res.error) skipped.push({ row: rowNo, reason: `업데이트 실패: ${res.error.message}` });
+      else updated++;
+    } else {
+      // 신규 등록
+      const insertData: any = { ...baseData, code: codeToUse, cost_source: 'MANUAL' };
+      let res = await db.from('products').insert(insertData).select('id').single();
+      if (res.error && /track_inventory/i.test(String(res.error.message))) {
+        delete insertData.track_inventory;
+        res = await db.from('products').insert(insertData).select('id').single();
+      }
+      if (res.error && /product_type_check/i.test(String(res.error.message))) {
+        skipped.push({ row: rowNo, reason: 'product_type SERVICE 미적용 — migration 059 필요' });
+        continue;
+      }
+      if (res.error) {
+        skipped.push({ row: rowNo, reason: `등록 실패: ${res.error.message}` });
+        continue;
+      }
+      created++;
+      existingByCode.set(codeToUse, res.data.id); // 같은 batch 중복 방지
+
+      // 재고 레코드 자동 생성 — track_inventory=true일 때만
+      if (trackInventory && activeBranchIds.length > 0) {
+        const invRows = activeBranchIds.map(bid => ({
+          product_id: res.data.id,
+          branch_id: bid,
+          quantity: 0,
+          safety_stock: 0,
+        }));
+        await db.from('inventories').insert(invRows);
+      }
+    }
+  }
+
+  revalidatePath('/products');
+  revalidatePath('/inventory');
+  return { created, updated, skipped };
+}
+
 export async function deleteProduct(id: string) {
   const supabase = await createClient();
-  
+
 
   const { error } = await supabase.from('products').delete().eq('id', id);
-  
+
   if (error) {
     return { error: error.message };
   }
-  
+
   revalidatePath('/products');
   return { success: true };
 }
