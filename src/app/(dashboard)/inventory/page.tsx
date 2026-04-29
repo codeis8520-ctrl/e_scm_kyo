@@ -89,10 +89,19 @@ function buildCategoryInfo(categories: CategoryRow[]): Map<string, CategoryInfo>
 function isMaterialType(t?: ProductType | null): boolean {
   return t === 'RAW' || t === 'SUB';
 }
-const TYPE_BADGE: Record<'RAW' | 'SUB', { label: string; cls: string }> = {
-  RAW: { label: '원자재', cls: 'bg-emerald-100 text-emerald-700' },
-  SUB: { label: '부자재', cls: 'bg-amber-100 text-amber-700' },
+const TYPE_BADGE: Record<ProductType, { label: string; cls: string }> = {
+  FINISHED: { label: '완제품', cls: 'bg-blue-100 text-blue-700' },
+  RAW:      { label: '원자재', cls: 'bg-emerald-100 text-emerald-700' },
+  SUB:      { label: '부자재', cls: 'bg-amber-100 text-amber-700' },
+  SERVICE:  { label: '무형상품', cls: 'bg-purple-100 text-purple-700' },
 };
+const TYPE_FILTER_OPTIONS: Array<{ value: '' | ProductType; label: string }> = [
+  { value: '',         label: '전체' },
+  { value: 'FINISHED', label: '완제품' },
+  { value: 'RAW',      label: '원자재' },
+  { value: 'SUB',      label: '부자재' },
+  { value: 'SERVICE',  label: '무형상품' },
+];
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -108,6 +117,7 @@ export default function InventoryPage() {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [categoryFilter, setCategoryFilter] = useState<string>(''); // 선택 카테고리 id (자기+자손 포함)
+  const [typeFilter, setTypeFilter] = useState<'' | ProductType>('');
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -248,6 +258,7 @@ export default function InventoryPage() {
 
   const filteredPivot = productRows.filter(r => {
     if (allowedCategoryIds && !(r.categoryId && allowedCategoryIds.has(r.categoryId))) return false;
+    if (typeFilter && (r.productType || 'FINISHED') !== typeFilter) return false;
     if (!searchLower) return true;
     return (
       r.productName.toLowerCase().includes(searchLower) ||
@@ -261,11 +272,13 @@ export default function InventoryPage() {
       const matchBranch = !flatBranchFilter || item.branch_id === flatBranchFilter;
       const cid = item.product?.category_id ?? null;
       const matchCategory = !allowedCategoryIds || (cid != null && allowedCategoryIds.has(cid));
+      const pt = item.product?.product_type ?? 'FINISHED';
+      const matchType = !typeFilter || pt === typeFilter;
       const matchSearch = !searchLower ||
         item.product?.name?.toLowerCase().includes(searchLower) ||
         item.product?.code?.toLowerCase().includes(searchLower) ||
         (item.product?.barcode || '').toLowerCase().includes(searchLower);
-      return matchBranch && matchCategory && matchSearch;
+      return matchBranch && matchCategory && matchType && matchSearch;
     })
     .sort((a, b) => {
       // 카테고리 트리 순 → 지점명 → 제품명. 미분류는 끝.
@@ -359,6 +372,24 @@ export default function InventoryPage() {
             </option>
           ))}
         </select>
+
+        {/* 제품 유형 필터 — 완제품/원자재/부자재/무형상품 */}
+        <div className="flex rounded-lg border border-slate-200 overflow-hidden text-sm">
+          {TYPE_FILTER_OPTIONS.map(opt => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setTypeFilter(opt.value)}
+              className={`px-3 py-1.5 font-medium transition-colors ${
+                typeFilter === opt.value
+                  ? 'bg-slate-800 text-white'
+                  : 'bg-white text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
 
         {/* 뷰 모드 토글 — 지점 고정 사용자는 지점별만 */}
         {!isBranchUser && (

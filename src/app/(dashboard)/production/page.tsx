@@ -14,6 +14,7 @@ import {
 } from '@/lib/oem-actions';
 import { createClient } from '@/lib/supabase/client';
 import { fmtDateKST } from '@/lib/date';
+import { buildCategoryInfo as buildCategoryInfoForOrders, sortedCategoryOptions as sortedCategoryOptionsForOrders, type CategoryRow as _CategoryRowOrders } from '@/lib/category-tree';
 
 type ProductType = 'FINISHED' | 'RAW' | 'SUB';
 const TYPE_BADGE: Record<ProductType, { label: string; cls: string }> = {
@@ -127,6 +128,9 @@ export default function ProductionPage() {
 
   const [selectedBranch, setSelectedBranch] = useState<string>('');
   const [filterStatus, setFilterStatus]     = useState<string>('');
+  // 카테고리 필터 — 자기·자손 카테고리에 속한 제품의 지시만 표시
+  const [orderCategoryFilter, setOrderCategoryFilter] = useState<string>('');
+  const [orderCategories, setOrderCategories] = useState<any[]>([]);
   // 날짜 범위 — 기본 1개월(오늘 - 1m ~ 오늘) KST 기준
   const _today = new Date();
   const _oneMonthAgo = new Date(_today);
@@ -201,7 +205,38 @@ export default function ProductionPage() {
     supabase.from('categories').select('id, name').order('name').then(({ data }) => {
       setCategories((data as any) || []);
     });
+    // 트리 구조 카테고리 — 지시 목록 탭 필터용
+    supabase.from('categories').select('id, name, parent_id, sort_order').order('sort_order').then(({ data }) => {
+      setOrderCategories((data as any) || []);
+    });
   }, [isBranchUser]);
+
+  // 카테고리 필터 → 해당 카테고리(+자손)에 속한 제품 id 목록 계산
+  const allowedProductIds = (() => {
+    if (!orderCategoryFilter) return undefined;
+    // 카테고리 트리에서 자기·자손 id 셋 만들기
+    const allowedCategorySet = new Set<string>([orderCategoryFilter]);
+    const childMap = new Map<string, string[]>();
+    for (const c of orderCategories) {
+      const arr = childMap.get(c.parent_id) || [];
+      arr.push(c.id);
+      childMap.set(c.parent_id, arr);
+    }
+    const stack = [orderCategoryFilter];
+    while (stack.length) {
+      const id = stack.pop()!;
+      const children = childMap.get(id) || [];
+      for (const cid of children) {
+        if (!allowedCategorySet.has(cid)) {
+          allowedCategorySet.add(cid);
+          stack.push(cid);
+        }
+      }
+    }
+    return products
+      .filter((p: any) => p.category_id && allowedCategorySet.has(p.category_id))
+      .map((p: any) => p.id);
+  })();
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -212,6 +247,7 @@ export default function ProductionPage() {
         status: filterStatus || undefined,
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
+        productIds: allowedProductIds && allowedProductIds.length > 0 ? allowedProductIds : undefined,
         page,
         pageSize: PAGE_SIZE,
       }),
@@ -224,7 +260,7 @@ export default function ProductionPage() {
     setStats((orderRes as any).stats ?? { pending: 0, inProgress: 0, completed: 0 });
     setFactories(factRes.data || []);
     setLoading(false);
-  }, [selectedBranch, filterStatus, page, dateFrom, dateTo]);
+  }, [selectedBranch, filterStatus, page, dateFrom, dateTo, orderCategoryFilter, products]);
 
   useEffect(() => {
     // branches 로드가 끝난 뒤부터 호출 (selectedBranch=''는 '전체' 의미이므로 guard 제외)
@@ -232,7 +268,7 @@ export default function ProductionPage() {
   }, [loadData, branches.length]);
 
   // 필터 변경 시 1페이지로 리셋
-  useEffect(() => { setPage(1); }, [selectedBranch, filterStatus, dateFrom, dateTo]);
+  useEffect(() => { setPage(1); }, [selectedBranch, filterStatus, dateFrom, dateTo, orderCategoryFilter]);
 
   // ── 상태 전환 액션 ───────────────────────────────────────────────────────────
   //   processingId로 in-flight 관리 — 같은 row의 버튼 중복 클릭을 UI에서 차단.
@@ -340,6 +376,26 @@ export default function ProductionPage() {
                 {s === '' ? '전체' : STATUS_LABEL[s]}
               </button>
             ))}
+            {/* 카테고리 필터 — 자기·자손 카테고리에 속한 제품의 지시만 */}
+            {(() => {
+              const info = buildCategoryInfoForOrders(orderCategories);
+              const opts = sortedCategoryOptionsForOrders(info);
+              return (
+                <select
+                  value={orderCategoryFilter}
+                  onChange={e => setOrderCategoryFilter(e.target.value)}
+                  className="input text-xs py-1 w-44"
+                  title="선택한 카테고리(+하위)에 속한 제품의 지시만 표시"
+                >
+                  <option value="">전체 카테고리</option>
+                  {opts.map(c => (
+                    <option key={c.id} value={c.id}>
+                      {`${'  '.repeat(c.depth)}[${c.pathCode}] ${c.name}`}
+                    </option>
+                  ))}
+                </select>
+              );
+            })()}
             <div className="ml-auto flex items-center gap-2 flex-wrap">
               <span className="text-xs text-slate-400">기간</span>
               <input

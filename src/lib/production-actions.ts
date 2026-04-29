@@ -342,6 +342,7 @@ export async function getProductionOrders(filters?: {
   branchId?: string;
   status?: string;
   factoryId?: string;
+  productIds?: string[]; // 카테고리·유형 필터로 미리 좁힌 제품 id 목록
   page?: number;
   pageSize?: number;
   dateFrom?: string; // YYYY-MM-DD (KST 캘린더 date)
@@ -360,7 +361,7 @@ export async function getProductionOrders(filters?: {
   const toIso   = filters?.dateTo   ? `${filters.dateTo}T23:59:59+09:00`   : undefined;
 
   // oem_factory join 시도 → 컬럼이 없으면(마이그 047 미적용) 폴백
-  const baseCols = '*, product:products(id, name, code), branch:branches(id, name), produced_by_user:users!production_orders_produced_by_fkey(name)';
+  const baseCols = '*, product:products(id, name, code, product_type, category_id), branch:branches(id, name), produced_by_user:users!production_orders_produced_by_fkey(name)';
   let sel = `${baseCols}, factory:oem_factories(id, name, code)`;
 
   let q = db
@@ -373,6 +374,9 @@ export async function getProductionOrders(filters?: {
   if (filters?.status)    q = q.eq('status', filters.status);
   if (fromIso) q = q.gte('created_at', fromIso);
   if (toIso)   q = q.lte('created_at', toIso);
+  if (filters?.productIds && filters.productIds.length > 0) {
+    q = q.in('product_id', filters.productIds);
+  }
 
   let { data, error, count } = await q;
   if (error && isMissingColumnError(error)) {
@@ -385,6 +389,9 @@ export async function getProductionOrders(filters?: {
     if (filters?.status)   q2 = q2.eq('status', filters.status);
     if (fromIso) q2 = q2.gte('created_at', fromIso);
     if (toIso)   q2 = q2.lte('created_at', toIso);
+    if (filters?.productIds && filters.productIds.length > 0) {
+      q2 = q2.in('product_id', filters.productIds);
+    }
     const r = await q2;
     data = r.data; error = r.error; count = r.count;
   }
