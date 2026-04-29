@@ -176,6 +176,8 @@ export default function SystemCodesPage() {
   const [showGradeModal, setShowGradeModal] = useState(false);
   const [showTagModal, setShowTagModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [categoryParentPreset, setCategoryParentPreset] = useState<string | null>(null);
+  const [collapsedCategoryIds, setCollapsedCategoryIds] = useState<Set<string>>(new Set());
   const [showUserModal, setShowUserModal] = useState(false);
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
@@ -820,62 +822,134 @@ export default function SystemCodesPage() {
         </div>
       )}
 
-      {activeTab === 'categories' && (
-        <div className="card">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="font-semibold">카테고리 목록</h3>
-            <button
-              onClick={() => { setEditingCategory(null); setShowCategoryModal(true); }}
-              className="btn-primary text-sm"
-            >
-              + 카테고리 추가
-            </button>
-          </div>
+      {activeTab === 'categories' && (() => {
+        // ── 트리 빌드: parent_id로 그룹화 후 sort_order, name으로 정렬 ─────────
+        type TreeNode = Category & { children: TreeNode[] };
+        const byParent = new Map<string | null, TreeNode[]>();
+        for (const c of categories) {
+          const node: TreeNode = { ...c, children: [] };
+          const key = c.parent_id || null;
+          const list = byParent.get(key) || [];
+          list.push(node);
+          byParent.set(key, list);
+        }
+        const sortNodes = (arr: TreeNode[]) => {
+          arr.sort((a, b) => (a.sort_order - b.sort_order) || a.name.localeCompare(b.name));
+          for (const n of arr) {
+            n.children = byParent.get(n.id) || [];
+            sortNodes(n.children);
+          }
+        };
+        const roots = byParent.get(null) || [];
+        sortNodes(roots);
 
-          <div className="overflow-x-auto -mx-4 sm:mx-0">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>카테고리명</th>
-                <th>상위 카테고리</th>
-                <th>정렬순서</th>
-                <th>관리</th>
-              </tr>
-            </thead>
-            <tbody>
-              {categories.map((cat) => (
-                <tr key={cat.id}>
-                  <td className="font-medium">{cat.name}</td>
-                  <td className="text-slate-500">{cat.parent?.name || '-'}</td>
-                  <td>{cat.sort_order}</td>
-                  <td>
-                    <button
-                      onClick={() => { setEditingCategory(cat); setShowCategoryModal(true); }}
-                      className="text-blue-600 hover:underline mr-2"
-                    >
-                      수정
-                    </button>
-                    <button
-                      onClick={() => handleDeleteCategory(cat.id)}
-                      className="text-red-600 hover:underline"
-                    >
-                      삭제
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              {categories.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="text-center text-slate-400 py-8">
-                    등록된 카테고리가 없습니다
-                  </td>
-                </tr>
+        const toggleCollapse = (id: string) => {
+          setCollapsedCategoryIds(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id); else next.add(id);
+            return next;
+          });
+        };
+
+        // 재귀 렌더 — pathCode = [1-1-1] 형태로 위치 기반 자동 생성
+        const renderRow = (node: TreeNode, parentCode: string, indexInSiblings: number, depth: number): React.ReactNode => {
+          const code = parentCode ? `${parentCode}-${indexInSiblings + 1}` : String(indexInSiblings + 1);
+          const hasChildren = node.children.length > 0;
+          const isCollapsed = collapsedCategoryIds.has(node.id);
+          return (
+            <div key={node.id}>
+              <div
+                className="flex items-center gap-2 px-3 py-2 border-b border-slate-100 hover:bg-slate-50 transition-colors"
+                style={{ paddingLeft: `${12 + depth * 22}px` }}
+              >
+                {hasChildren ? (
+                  <button
+                    type="button"
+                    onClick={() => toggleCollapse(node.id)}
+                    className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-slate-700"
+                    title={isCollapsed ? '펼치기' : '접기'}
+                  >
+                    <span className={`inline-block transition-transform ${isCollapsed ? '' : 'rotate-90'}`}>▶</span>
+                  </button>
+                ) : (
+                  <span className="w-5 h-5 inline-block" />
+                )}
+                <span className="text-[11px] font-mono text-slate-400 min-w-[60px]">[{code}]</span>
+                <span className="text-sm font-medium text-slate-800 flex-1 truncate">{node.name}</span>
+                <span className="text-[11px] text-slate-400">정렬 {node.sort_order}</span>
+                <div className="flex gap-1.5 ml-2">
+                  <button
+                    onClick={() => {
+                      setCategoryParentPreset(node.id);
+                      setEditingCategory(null);
+                      setShowCategoryModal(true);
+                    }}
+                    className="text-[11px] text-emerald-600 hover:underline"
+                    title="이 카테고리 아래에 하위 카테고리 추가"
+                  >+ 하위</button>
+                  <button
+                    onClick={() => { setCategoryParentPreset(null); setEditingCategory(node); setShowCategoryModal(true); }}
+                    className="text-[11px] text-blue-600 hover:underline"
+                  >수정</button>
+                  <button
+                    onClick={() => {
+                      if (hasChildren) {
+                        alert('하위 카테고리가 있어 삭제할 수 없습니다. 하위 항목을 먼저 정리해 주세요.');
+                        return;
+                      }
+                      handleDeleteCategory(node.id);
+                    }}
+                    className="text-[11px] text-red-500 hover:underline"
+                  >삭제</button>
+                </div>
+              </div>
+              {!isCollapsed && hasChildren && (
+                <div>
+                  {node.children.map((child, i) => renderRow(child, code, i, depth + 1))}
+                </div>
               )}
-            </tbody>
-          </table>
+            </div>
+          );
+        };
+
+        return (
+          <div className="card">
+            <div className="flex justify-between items-center mb-3">
+              <div>
+                <h3 className="font-semibold">품목 계층</h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  대분류 → 중분류 → 소분류 형태로 트리 구성. 코드는 위치 기반으로 자동 표시됩니다 (예: [1-1-1]).
+                </p>
+              </div>
+              <button
+                onClick={() => { setCategoryParentPreset(null); setEditingCategory(null); setShowCategoryModal(true); }}
+                className="btn-primary text-sm"
+              >
+                + 최상위 추가
+              </button>
+            </div>
+
+            {/* 트리 본문 */}
+            <div className="border border-slate-200 rounded-lg overflow-hidden">
+              {roots.length === 0 ? (
+                <div className="text-center text-slate-400 py-12 text-sm">
+                  등록된 카테고리가 없습니다. <span className="text-slate-300">"+ 최상위 추가"로 시작하세요.</span>
+                </div>
+              ) : (
+                <div className="bg-white">
+                  {roots.map((root, i) => renderRow(root, '', i, 0))}
+                </div>
+              )}
+            </div>
+
+            {roots.length > 0 && (
+              <p className="mt-3 text-[11px] text-slate-400">
+                ※ 같은 단계에서는 "정렬" 값이 작은 항목이 위에 오고, 같으면 이름 가나다순. 정렬 변경은 수정 버튼에서.
+              </p>
+            )}
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {activeTab === 'staff' && (
         <div className="card">
@@ -1109,8 +1183,9 @@ export default function SystemCodesPage() {
         <CategoryModal
           category={editingCategory}
           categories={categories}
-          onClose={() => setShowCategoryModal(false)}
-          onSuccess={() => { setShowCategoryModal(false); fetchData(); }}
+          presetParentId={categoryParentPreset}
+          onClose={() => { setShowCategoryModal(false); setCategoryParentPreset(null); }}
+          onSuccess={() => { setShowCategoryModal(false); setCategoryParentPreset(null); fetchData(); }}
         />
       )}
 
@@ -1712,17 +1787,19 @@ function TagModal({ tag, onClose, onSuccess }: { tag: CustomerTag | null; onClos
 function CategoryModal({
   category,
   categories,
+  presetParentId,
   onClose,
   onSuccess,
 }: {
   category: Category | null;
   categories: Category[];
+  presetParentId?: string | null;
   onClose: () => void;
   onSuccess: () => void;
 }) {
   const [formData, setFormData] = useState({
     name: category?.name || '',
-    parent_id: category?.parent_id || '',
+    parent_id: category?.parent_id || presetParentId || '',
     sort_order: category?.sort_order || 0,
   });
   const [error, setError] = useState('');
