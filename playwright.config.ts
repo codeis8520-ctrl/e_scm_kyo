@@ -61,6 +61,16 @@ export default defineConfig({
       },
       dependencies: ['setup'],
       testMatch: /.*\.spec\.ts$/,
+      teardown: 'teardown',
+    },
+    {
+      // smoke 종료 후 자동 실행 — _E2E_* 데이터 안전망 cleanup
+      name: 'teardown',
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: 'tests/e2e/.auth/state.json',
+      },
+      testMatch: /global\.teardown\.ts$/,
     },
   ],
 

@@ -243,15 +243,21 @@ function BranchModal({ branch, onClose, onSuccess }: { branch: Branch | null; on
       form.append(key, String(value));
     });
 
-    const result = branch
-      ? await updateBranch(branch.id, form)
-      : await createBranch(form);
+    try {
+      const result = branch
+        ? await updateBranch(branch.id, form)
+        : await createBranch(form);
 
-    if (result?.error) {
-      setError(result.error);
+      if (result?.error) {
+        setError(result.error);
+        setLoading(false);
+      } else {
+        onSuccess();
+      }
+    } catch (err: any) {
+      console.error('[BranchModal] submit error:', err);
+      setError(err?.message || '저장 중 오류가 발생했습니다.');
       setLoading(false);
-    } else {
-      onSuccess();
     }
   };
 

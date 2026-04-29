@@ -283,15 +283,22 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
     form.append('spec', JSON.stringify(specObj));
     form.append('description', description);
 
-    const result = product?.id
-      ? await updateProduct(product.id, form)
-      : await createProduct(form);
+    try {
+      const result = product?.id
+        ? await updateProduct(product.id, form)
+        : await createProduct(form);
 
-    if (result?.error) {
-      setError(result.error);
+      if (result?.error) {
+        setError(result.error);
+        setLoading(false);
+      } else {
+        onSuccess();
+      }
+    } catch (err: any) {
+      // 액션이 throw한 경우(네트워크·서버 오류 등) loading 상태 유지 방지
+      console.error('[ProductModal] submit error:', err);
+      setError(err?.message || '저장 중 오류가 발생했습니다.');
       setLoading(false);
-    } else {
-      onSuccess();
     }
   };
 

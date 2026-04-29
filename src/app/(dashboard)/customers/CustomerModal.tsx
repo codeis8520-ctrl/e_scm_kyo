@@ -127,15 +127,21 @@ export default function CustomerModal({ customer, onClose, onSuccess }: Props) {
     form.append('is_active', String(formData.is_active));
     if (combinedAddress) form.append('address', combinedAddress);
 
-    const result = customer?.id
-      ? await updateCustomer(customer.id, form)
-      : await createCustomer(form);
+    try {
+      const result = customer?.id
+        ? await updateCustomer(customer.id, form)
+        : await createCustomer(form);
 
-    if (result?.error) {
-      setError(result.error);
+      if (result?.error) {
+        setError(result.error);
+        setLoading(false);
+      } else {
+        onSuccess();
+      }
+    } catch (err: any) {
+      console.error('[CustomerModal] submit error:', err);
+      setError(err?.message || '저장 중 오류가 발생했습니다.');
       setLoading(false);
-    } else {
-      onSuccess();
     }
   };
 
@@ -143,8 +149,14 @@ export default function CustomerModal({ customer, onClose, onSuccess }: Props) {
     if (!customer?.id) return;
     if (!confirm('정말 삭제하시겠습니까?')) return;
     setLoading(true);
-    await deleteCustomer(customer.id);
-    onSuccess();
+    try {
+      await deleteCustomer(customer.id);
+      onSuccess();
+    } catch (err: any) {
+      console.error('[CustomerModal] delete error:', err);
+      setError(err?.message || '삭제 중 오류가 발생했습니다.');
+      setLoading(false);
+    }
   };
 
   return (
