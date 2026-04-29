@@ -85,30 +85,23 @@ test.describe('제품 라이프사이클', () => {
   test('등록 → 제품/재고 페이지 노출 → 삭제 (재고 row cascade)', async ({ page }) => {
     const name = `${E2E_PREFIX}제품${Date.now() % 10000}`;
 
-    // 1) 제품 등록
+    // 1) 제품 등록 — 모달은 fixed inset-0 backdrop으로 식별 (form 선택자 충돌 방지)
     await page.goto('/products');
     await page.getByRole('button', { name: /\+\s*제품 추가/ }).click();
-    const modal = page.locator('form').last();
-    await expect(modal).toBeVisible({ timeout: 5_000 });
+    const modalBackdrop = page.locator('div.fixed.inset-0.z-50').first();
+    await expect(modalBackdrop).toBeVisible({ timeout: 5_000 });
+    const modalForm = modalBackdrop.locator('form');
 
-    await modal.locator('input[type="text"]').first().fill(name);
-    const numbers = modal.locator('input[type="number"]');
+    await modalForm.locator('input[type="text"]').first().fill(name);
+    const numbers = modalForm.locator('input[type="number"]');
     if (await numbers.count() > 0) await numbers.nth(0).fill('1');
 
-    await modal.locator('button[type="submit"]').first().click();
+    await modalForm.locator('button[type="submit"]').first().click();
 
-    // 모달이 닫힐 때까지 기다림 (성공 시) 또는 에러 메시지가 보일 때까지 (실패 시)
-    // Vercel 콜드 스타트·재고 row 일괄 INSERT 등으로 5~10초까지 걸릴 수 있음
-    await Promise.race([
-      modal.waitFor({ state: 'hidden', timeout: 15_000 }).then(() => 'closed'),
-      page.locator('.bg-red-100, [class*="text-red"]').first().waitFor({ state: 'visible', timeout: 15_000 }).then(() => 'error'),
-    ]);
-
-    const stillOpen = await modal.isVisible().catch(() => false);
-    if (stillOpen) {
-      const errText = await page.locator('.bg-red-100').first().textContent().catch(() => '');
-      throw new Error(`제품 등록 후 모달 열림 — 에러 메시지: ${errText || '(없음)'}`);
-    }
+    // 모달 backdrop이 사라지거나 모달 안에 에러 메시지가 보일 때까지 대기
+    await modalBackdrop.waitFor({ state: 'hidden', timeout: 15_000 });
+    // 추가 안전장치 — 닫혔어도 잠시 대기 (state 동기화)
+    await page.waitForTimeout(500);
 
     // 2) 제품 페이지에서 노출 확인
     const productRow = await searchAndFindRow(page, '/products', name);
