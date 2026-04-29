@@ -54,8 +54,10 @@ async function visitAndAssert(page: Page, menu: typeof MENUS[number]) {
   page.on('response', res => {
     const url = res.url();
     const status = res.status();
-    // 우리 도메인의 5xx만 캐치 (외부 API/광고 추적 무시)
-    if (status >= 500 && url.includes(new URL(page.url() || 'http://localhost').host)) {
+    // 우리 도메인의 4xx/5xx 캐치 (Supabase REST의 경우 별도 도메인 — 그것도 포함)
+    const isOurApi = url.includes(new URL(page.url() || 'http://localhost').host)
+      || /supabase\.co/.test(url);
+    if (status >= 400 && isOurApi) {
       networkFailures.push(`${status} ${url}`);
     }
   });

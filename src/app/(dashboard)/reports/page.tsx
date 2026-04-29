@@ -215,7 +215,7 @@ export default function ReportsPage() {
     let { data: orderItems } = await supabase
       .from('sales_order_items')
       .select(`
-        order_id,
+        sales_order_id,
         product_id,
         product:products(name, is_taxable),
         quantity,
@@ -289,7 +289,7 @@ export default function ReportsPage() {
     });
     if (ordersWithoutSnapshot.length > 0) {
       const fallbackSet = new Set(ordersWithoutSnapshot);
-      const filteredItems = (orderItems || []).filter((item: any) => fallbackSet.has(item.order_id));
+      const filteredItems = (orderItems || []).filter((item: any) => fallbackSet.has(item.sales_order_id));
       let legacyTaxable = 0;
       let legacyExempt = 0;
       filteredItems.forEach((item: any) => {
