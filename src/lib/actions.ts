@@ -337,8 +337,19 @@ export async function bulkImportProducts(rows: ProductImportRow[]) {
     if (!name) { skipped.push({ row: rowNo, reason: '제품명 누락' }); continue; }
 
     const productType = (() => {
-      const v = (r.product_type || '').toUpperCase().trim();
-      return ['FINISHED', 'RAW', 'SUB', 'SERVICE'].includes(v) ? v : 'FINISHED';
+      const v = (r.product_type || '').trim();
+      if (!v) return 'FINISHED';
+      // 화면과 동일한 한국어 라벨 우선, 영문 enum도 허용
+      const map: Record<string, string> = {
+        '완제품': 'FINISHED',
+        '원자재': 'RAW',
+        '부자재': 'SUB',
+        '무형상품': 'SERVICE',
+        '서비스': 'SERVICE',
+      };
+      if (map[v]) return map[v];
+      const upper = v.toUpperCase();
+      return ['FINISHED', 'RAW', 'SUB', 'SERVICE'].includes(upper) ? upper : 'FINISHED';
     })();
 
     const unit = (r.unit || '개').trim() || '개';

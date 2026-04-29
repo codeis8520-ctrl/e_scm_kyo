@@ -25,7 +25,23 @@ const HEADER_MAP: Record<string, keyof ProductImportRow> = {
   '설명': 'description',
 };
 
-const VALID_TYPES = new Set(['FINISHED', 'RAW', 'SUB', 'SERVICE', '']);
+// 화면 라벨(한국어) + 영문 enum 둘 다 허용
+const VALID_TYPE_LABELS = new Set(['완제품', '원자재', '부자재', '무형상품', '서비스', '']);
+const VALID_TYPE_ENUMS = new Set(['FINISHED', 'RAW', 'SUB', 'SERVICE', '']);
+function isValidType(v: string): boolean {
+  if (VALID_TYPE_LABELS.has(v)) return true;
+  return VALID_TYPE_ENUMS.has(v.toUpperCase());
+}
+function displayType(v?: string): string {
+  if (!v) return '완제품';
+  // 영문이면 한국어로 변환해 표시
+  const upper = v.toUpperCase();
+  if (upper === 'FINISHED') return '완제품';
+  if (upper === 'RAW') return '원자재';
+  if (upper === 'SUB') return '부자재';
+  if (upper === 'SERVICE') return '무형상품';
+  return v;
+}
 
 interface PreviewRow extends ProductImportRow {
   _row: number;
@@ -90,8 +106,8 @@ export default function ProductImportModal({
 
         // 검증
         if (!obj.name) obj._error = '제품명 누락';
-        else if (obj.product_type && !VALID_TYPES.has(obj.product_type.toUpperCase())) {
-          obj._error = `유형 값 오류 (${obj.product_type})`;
+        else if (obj.product_type && !isValidType(obj.product_type)) {
+          obj._error = `유형 값 오류 (${obj.product_type}) — 완제품/원자재/부자재/무형상품 중 하나`;
         }
 
         parsed.push(obj);
@@ -150,11 +166,12 @@ export default function ProductImportModal({
             <p className="text-blue-900 font-medium">📌 사용 안내</p>
             <ul className="text-blue-800 list-disc pl-4 space-y-0.5">
               <li>필수: <b>제품명</b>. 코드는 비우면 자동 생성(KYO-XXXX-XXXXXX).</li>
-              <li>유형: <b>FINISHED / RAW / SUB / SERVICE</b> (비우면 FINISHED).</li>
-              <li>부가세: "과세" / "면세". 재고관리: "예" / "아니오" (SERVICE 기본값 "아니오").</li>
-              <li>카테고리는 경로명("제품 / 더경옥 제품 / 단지"), 코드("[1-1-1]"), 잎 이름 중 하나.</li>
+              <li>유형: <b>완제품 / 원자재 / 부자재 / 무형상품</b> (비우면 완제품).</li>
+              <li>부가세: "과세" / "면세". 재고관리: "예" / "아니오" (무형상품 기본값 "아니오").</li>
+              <li>카테고리는 <b>시스템 코드 → 카테고리 탭</b>에서 등록한 항목을 다음 중 하나로:
+                전체 경로명("제품 / 더경옥 제품 / 단지") · 위치 코드("[1-1-1]") · 잎 이름.</li>
               <li>동일 코드가 이미 있으면 빈 칸이 아닌 항목만 업데이트.</li>
-              <li>신규 + 재고관리=예 → 모든 활성 지점에 재고 0 자동 생성.</li>
+              <li>신규 + 재고관리="예" → 모든 활성 지점에 재고 0 자동 생성.</li>
               <li>한 번에 최대 1,000행.</li>
             </ul>
             <a
@@ -226,7 +243,7 @@ export default function ProductImportModal({
                           </td>
                           <td className="px-2 py-1 truncate max-w-[140px]" title={r.name}>{r.name}</td>
                           <td className="px-2 py-1 truncate max-w-[120px] text-slate-500 font-mono" title={r.code}>{r.code || <span className="text-slate-300">자동</span>}</td>
-                          <td className="px-2 py-1">{r.product_type || 'FINISHED'}</td>
+                          <td className="px-2 py-1">{displayType(r.product_type)}</td>
                           <td className="px-2 py-1 text-right">{r.price ?? <span className="text-slate-300">-</span>}</td>
                           <td className="px-2 py-1 text-right">{r.cost ?? <span className="text-slate-300">-</span>}</td>
                           <td className="px-2 py-1 truncate max-w-[160px]" title={r.category || ''}>{r.category || <span className="text-slate-300">-</span>}</td>
