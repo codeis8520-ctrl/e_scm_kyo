@@ -38,20 +38,27 @@ export async function createProduct(formData: FormData) {
   const rawImageUrl = formData.get('image_url') as string;
   const rawSpec = formData.get('spec') as string;
   const rawType = formData.get('product_type') as string;
-  const productType = (rawType === 'RAW' || rawType === 'SUB' || rawType === 'FINISHED') ? rawType : 'FINISHED';
+  const productType = ['RAW', 'SUB', 'FINISHED', 'SERVICE'].includes(rawType) ? rawType : 'FINISHED';
   const rawCostSource = formData.get('cost_source') as string;
   let costSource: 'MANUAL' | 'BOM' = (rawCostSource === 'BOM' ? 'BOM' : 'MANUAL');
-  if (productType !== 'FINISHED') costSource = 'MANUAL'; // RAW/SUB는 항상 수동
+  if (productType !== 'FINISHED') costSource = 'MANUAL'; // RAW/SUB/SERVICE는 항상 수동
 
   const priceInput = parseInt(formData.get('price') as string);
   const costInput = parseInt(formData.get('cost') as string) || null;
 
   // RAW/SUB는 판매가 UI가 숨겨지므로 price = cost로 동기화 (schema NOT NULL 회피)
-  const finalPrice = productType === 'FINISHED'
-    ? (Number.isFinite(priceInput) ? priceInput : 0)
-    : (costInput || 0);
+  // SERVICE는 판매가 그대로 사용
+  const finalPrice = (productType === 'RAW' || productType === 'SUB')
+    ? (costInput || 0)
+    : (Number.isFinite(priceInput) ? priceInput : 0);
 
-  const productData = {
+  // 재고 관리 여부 — 폼에서 명시. SERVICE 기본값 false, 그 외 true.
+  const rawTrack = formData.get('track_inventory');
+  const trackInventory = rawTrack == null
+    ? (productType === 'SERVICE' ? false : true)
+    : rawTrack !== 'false';
+
+  const productData: any = {
     name,
     code,
     category_id: (rawCategoryId && rawCategoryId !== 'null') ? rawCategoryId : null,
@@ -60,37 +67,49 @@ export async function createProduct(formData: FormData) {
     unit: formData.get('unit') as string || '개',
     price: finalPrice,
     cost: costInput,
-    barcode: (rawBarcode && rawBarcode !== 'null') ? rawBarcode : null,
+    barcode: (rawBarcode && rawBarcode !== 'null' && productType === 'FINISHED') ? rawBarcode : null,
     is_taxable: formData.get('is_taxable') !== 'false',
     image_url: rawImageUrl || null,
     spec: rawSpec ? JSON.parse(rawSpec) : {},
     description: (formData.get('description') as string) || null,
+    track_inventory: trackInventory,
   };
 
-  // @ts-ignore
-  const { data: newProduct, error } = await supabase.from('products').insert(productData).select().single() as any;
-  
+  // 마이그 059 미적용 환경 폴백 — track_inventory 컬럼 부재 시 제거하고 재시도
+  let { data: newProduct, error } = await (supabase as any)
+    .from('products').insert(productData).select().single();
+  if (error && /column.*track_inventory|track_inventory.*does not exist/i.test(String(error.message))) {
+    delete productData.track_inventory;
+    const retry = await (supabase as any).from('products').insert(productData).select().single();
+    newProduct = retry.data; error = retry.error;
+  }
+  if (error && /violates check constraint.*products_product_type_check/i.test(String(error.message))) {
+    return { error: '제품 유형(SERVICE)이 DB에 반영되지 않았습니다. Supabase에 migration 059를 적용해 주세요.' };
+  }
+
   if (error) {
     return { error: error.message };
   }
 
-  // 제품 생성 시 모든 활성 지점에 재고 레코드 자동 생성
-  const { data: branches } = await supabase
-    .from('branches')
-    .select('id')
-    .eq('is_active', true);
+  // 제품 생성 시 활성 지점에 재고 레코드 자동 생성 — track_inventory=true일 때만
+  if (trackInventory) {
+    const { data: branches } = await supabase
+      .from('branches')
+      .select('id')
+      .eq('is_active', true);
 
-  if (branches && branches.length > 0) {
-    const inventoryRecords = branches.map((branch: any) => ({
-      product_id: newProduct.id,
-      branch_id: branch.id,
-      quantity: 0,
-      safety_stock: 0,
-    }));
+    if (branches && branches.length > 0) {
+      const inventoryRecords = branches.map((branch: any) => ({
+        product_id: newProduct.id,
+        branch_id: branch.id,
+        quantity: 0,
+        safety_stock: 0,
+      }));
 
-    await supabase.from('inventories').insert(inventoryRecords as any);
+      await supabase.from('inventories').insert(inventoryRecords as any);
+    }
   }
-  
+
   revalidatePath('/products');
   revalidatePath('/inventory');
   return { success: true };
@@ -106,11 +125,12 @@ export async function updateProduct(id: string, formData: FormData) {
   const rawCode = (formData.get('code') as string)?.trim().toUpperCase();
   const rawSpec = formData.get('spec') as string;
   const rawType = formData.get('product_type') as string;
-  const productType = (rawType === 'RAW' || rawType === 'SUB' || rawType === 'FINISHED') ? rawType : undefined;
+  const productType = ['RAW', 'SUB', 'FINISHED', 'SERVICE'].includes(rawType) ? rawType : undefined;
   const rawCostSource = formData.get('cost_source') as string;
   const costSource: 'MANUAL' | 'BOM' | undefined =
     rawCostSource === 'BOM' ? 'BOM' : rawCostSource === 'MANUAL' ? 'MANUAL' : undefined;
-  const finalCostSource = (productType === 'RAW' || productType === 'SUB') ? 'MANUAL' : costSource;
+  const finalCostSource = (productType === 'RAW' || productType === 'SUB' || productType === 'SERVICE')
+    ? 'MANUAL' : costSource;
 
   const priceInput = parseInt(formData.get('price') as string);
   const costInput = parseInt(formData.get('cost') as string) || null;
@@ -121,6 +141,9 @@ export async function updateProduct(id: string, formData: FormData) {
     ? (costInput || 0)
     : (Number.isFinite(priceInput) ? priceInput : 0);
 
+  const rawTrack = formData.get('track_inventory');
+  const trackInventory = rawTrack == null ? undefined : rawTrack !== 'false';
+
   const productData: any = {
     name: formData.get('name') as string,
     ...(rawCode ? { code: rawCode } : {}),
@@ -130,16 +153,24 @@ export async function updateProduct(id: string, formData: FormData) {
     unit: formData.get('unit') as string || '개',
     price: finalPrice,
     cost: costInput,
-    barcode: (rawBarcode && rawBarcode !== 'null') ? rawBarcode : null,
+    // 완제품 외 유형은 바코드 보유 의미가 없어 비움
+    barcode: (rawBarcode && rawBarcode !== 'null' && productType === 'FINISHED') ? rawBarcode : null,
     is_active: formData.get('is_active') === 'true',
     is_taxable: formData.get('is_taxable') !== 'false',
     image_url: rawImageUrl || null,
     ...(rawSpec ? { spec: JSON.parse(rawSpec) } : {}),
     description: (formData.get('description') as string) || null,
+    ...(trackInventory !== undefined ? { track_inventory: trackInventory } : {}),
   };
 
-  // @ts-ignore
-  const { error } = await supabase.from('products').update(productData).eq('id', id);
+  // 마이그 059 미적용 폴백
+  let res = await (supabase as any).from('products').update(productData).eq('id', id);
+  let error = res.error;
+  if (error && /column.*track_inventory|track_inventory.*does not exist/i.test(String(error.message))) {
+    delete productData.track_inventory;
+    res = await (supabase as any).from('products').update(productData).eq('id', id);
+    error = res.error;
+  }
 
   if (error) {
     return { error: error.message };
@@ -1274,16 +1305,28 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     : 'mixed';
   const firstCard = splits.find(s => s.method === 'card' || s.method === 'card_keyin');
 
-  // ⓪ 판매 가능 제품 검증 — RAW/SUB는 POS 판매 불가 (서버 측 방어)
-  //   폴백: 마이그 042(product_type) 미적용 DB에서는 컬럼 없음 → 검증 스킵
+  // ⓪ 판매 가능 제품 검증 — RAW/SUB는 POS 판매 불가. SERVICE는 허용(무형상품).
+  //   동시에 product_type별 track_inventory를 미리 가져와 ④에서 재고 차감 분기에 사용.
+  //   폴백: 마이그 042(product_type)/059(track_inventory) 미적용 환경 모두 안전.
   const productIds = Array.from(new Set(cart.map(c => c.productId)));
+  const trackByProduct = new Map<string, boolean>();
   if (productIds.length > 0) {
-    const ptRes: any = await db.from('products').select('id, product_type').in('id', productIds);
+    let ptRes: any = await db.from('products')
+      .select('id, product_type, track_inventory').in('id', productIds);
+    if (ptRes.error && /track_inventory/i.test(String(ptRes.error.message))) {
+      // 059 미적용 — track_inventory 없이 재시도
+      ptRes = await db.from('products').select('id, product_type').in('id', productIds);
+    }
     if (!ptRes.error && Array.isArray(ptRes.data)) {
       const blocked = (ptRes.data as any[]).find(
         (p: any) => p.product_type === 'RAW' || p.product_type === 'SUB'
       );
-      if (blocked) return { error: '판매 가능한 제품이 아닙니다.' };
+      if (blocked) return { error: '판매 가능한 제품이 아닙니다 (원·부자재).' };
+      for (const p of ptRes.data as any[]) {
+        // track_inventory 컬럼 부재 시 SERVICE만 false, 그 외 true 기본
+        const t = p.track_inventory ?? (p.product_type === 'SERVICE' ? false : true);
+        trackByProduct.set(p.id, t);
+      }
     }
   }
 
@@ -1542,6 +1585,9 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     movementMemo = `판매: ${nameOf(branchId)}, 출고: ${nameOf(stockBranchId)}`;
   }
   for (const item of cart) {
+    // 재고 비관리 제품(SERVICE 등)은 차감/이력 모두 skip
+    if (trackByProduct.get(item.productId) === false) continue;
+
     const { data: inv } = await supabase
       .from('inventories').select('id, quantity')
       .eq('branch_id', stockBranchId).eq('product_id', item.productId).maybeSingle();

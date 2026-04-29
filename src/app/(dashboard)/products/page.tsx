@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import ProductModal from './ProductModal';
 
-type ProductType = 'FINISHED' | 'RAW' | 'SUB';
+type ProductType = 'FINISHED' | 'RAW' | 'SUB' | 'SERVICE';
 
 interface Product {
   id: string;
@@ -19,6 +19,7 @@ interface Product {
   barcode: string | null;
   is_active: boolean;
   is_taxable: boolean;
+  track_inventory: boolean;
   image_url: string | null;
   category?: { id: string; name: string };
 }
@@ -27,6 +28,7 @@ const TYPE_BADGE: Record<ProductType, { label: string; cls: string }> = {
   FINISHED: { label: '완제품', cls: 'bg-blue-100 text-blue-700' },
   RAW:      { label: '원자재', cls: 'bg-emerald-100 text-emerald-700' },
   SUB:      { label: '부자재', cls: 'bg-amber-100 text-amber-700' },
+  SERVICE:  { label: '무형상품', cls: 'bg-purple-100 text-purple-700' },
 };
 
 export default function ProductsPage() {

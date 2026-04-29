@@ -7,7 +7,7 @@ import { getWhereUsed } from '@/lib/production-actions';
 import { createClient } from '@/lib/supabase/client';
 import { validators } from '@/lib/validators';
 
-type ProductType = 'FINISHED' | 'RAW' | 'SUB';
+type ProductType = 'FINISHED' | 'RAW' | 'SUB' | 'SERVICE';
 type CostSource = 'MANUAL' | 'BOM';
 
 interface Product {
@@ -23,6 +23,7 @@ interface Product {
   barcode: string | null;
   is_active: boolean;
   is_taxable: boolean;
+  track_inventory: boolean;
   image_url?: string | null;
   spec?: Record<string, string> | null;
   description?: string | null;
@@ -32,6 +33,7 @@ const TYPE_META: Record<ProductType, { label: string; hint: string; color: strin
   FINISHED: { label: '완제품', hint: '판매되는 최종 제품', color: 'border-blue-600 text-blue-700 bg-blue-50' },
   RAW:      { label: '원자재', hint: '제품 제조의 핵심 원료 (예: 홍삼, 대추)', color: 'border-emerald-600 text-emerald-700 bg-emerald-50' },
   SUB:      { label: '부자재', hint: '포장·첨가물·보조재 (예: 병, 캡, 라벨)', color: 'border-amber-600 text-amber-700 bg-amber-50' },
+  SERVICE:  { label: '무형상품', hint: '컨설팅·교육 등 형태 없는 판매 항목 (재고 관리 X)', color: 'border-purple-600 text-purple-700 bg-purple-50' },
 };
 
 interface Props {
@@ -54,6 +56,10 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
     barcode: product?.barcode || null,
     is_active: product?.is_active ?? true,
     is_taxable: product?.is_taxable ?? true,
+    // 무형상품(SERVICE)은 기본 false, 그 외는 기본 true.
+    // 명시값(product?.track_inventory)이 있으면 그 값을 우선 사용.
+    track_inventory: product?.track_inventory
+      ?? ((product?.product_type as ProductType) === 'SERVICE' ? false : true),
     image_url: product?.image_url || null,
   });
   const [bomComputedCost, setBomComputedCost] = useState<number | null>(null);
@@ -336,15 +342,20 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
           {/* 제품 타입 선택 */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">제품 유형 *</label>
-            <div className="grid grid-cols-3 gap-2">
-              {(['FINISHED', 'RAW', 'SUB'] as const).map((t) => {
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {(['FINISHED', 'RAW', 'SUB', 'SERVICE'] as const).map((t) => {
                 const meta = TYPE_META[t];
                 const active = formData.product_type === t;
                 return (
                   <button
                     type="button"
                     key={t}
-                    onClick={() => setFormData({ ...formData, product_type: t })}
+                    onClick={() => setFormData(prev => ({
+                      ...prev,
+                      product_type: t,
+                      // SERVICE 선택 시 자동으로 재고 관리 off, 그 외는 사용자가 따로 끄지 않은 한 on
+                      track_inventory: t === 'SERVICE' ? false : (prev.track_inventory ?? true),
+                    }))}
                     className={`px-3 py-2.5 rounded-md border-2 text-sm font-medium transition-colors ${
                       active ? meta.color : 'border-slate-200 text-slate-500 bg-white hover:bg-slate-50'
                     }`}
@@ -355,6 +366,23 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
               })}
             </div>
             <p className="mt-1 text-xs text-slate-400">{TYPE_META[formData.product_type].hint}</p>
+          </div>
+
+          {/* 재고 관리 여부 */}
+          <div className="flex items-center gap-2 p-3 bg-slate-50 border border-slate-200 rounded-md">
+            <input
+              type="checkbox"
+              id="track_inventory"
+              checked={formData.track_inventory}
+              onChange={e => setFormData({ ...formData, track_inventory: e.target.checked })}
+              className="w-4 h-4"
+            />
+            <label htmlFor="track_inventory" className="text-sm text-slate-700 flex-1 cursor-pointer">
+              재고 관리 대상
+              <span className="text-xs text-slate-400 ml-2">
+                해제 시 inventories/입출고 이력을 만들지 않음 (무형상품, 가상 항목 등에 적합)
+              </span>
+            </label>
           </div>
 
           {/* 이미지 업로드 섹션 */}
@@ -545,23 +573,30 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
                 className="mt-1 input"
               />
             </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700">바코드</label>
-              <input
-                type="text"
-                value={formData.barcode || ''}
-                onChange={(e) => setFormData({ ...formData, barcode: e.target.value || null })}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    document.getElementById('product-submit')?.click();
-                  }
-                }}
-                placeholder="스캐너로 바코드 입력 가능"
-                className="mt-1 input font-mono"
-                autoFocus={!product}
-              />
-            </div>
+            {/* 바코드 — 완제품에만 노출 (RAW/SUB는 통상 별도 바코드가 없음, SERVICE는 무형) */}
+            {formData.product_type === 'FINISHED' ? (
+              <div>
+                <label className="block text-sm font-medium text-gray-700">바코드</label>
+                <input
+                  type="text"
+                  value={formData.barcode || ''}
+                  onChange={(e) => setFormData({ ...formData, barcode: e.target.value || null })}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      document.getElementById('product-submit')?.click();
+                    }
+                  }}
+                  placeholder="스캐너로 바코드 입력 가능"
+                  className="mt-1 input font-mono"
+                  autoFocus={!product}
+                />
+              </div>
+            ) : (
+              <div className="flex items-center text-xs text-slate-400 pt-6">
+                ※ 바코드는 완제품 유형에서만 입력
+              </div>
+            )}
           </div>
 
           <div>
