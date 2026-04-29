@@ -256,16 +256,56 @@ export default function InventoryPage() {
     );
   });
 
-  const filteredFlat = inventories.filter(item => {
-    const matchBranch = !flatBranchFilter || item.branch_id === flatBranchFilter;
-    const cid = item.product?.category_id ?? null;
-    const matchCategory = !allowedCategoryIds || (cid != null && allowedCategoryIds.has(cid));
-    const matchSearch = !searchLower ||
-      item.product?.name?.toLowerCase().includes(searchLower) ||
-      item.product?.code?.toLowerCase().includes(searchLower) ||
-      (item.product?.barcode || '').toLowerCase().includes(searchLower);
-    return matchBranch && matchCategory && matchSearch;
-  });
+  const filteredFlat = inventories
+    .filter(item => {
+      const matchBranch = !flatBranchFilter || item.branch_id === flatBranchFilter;
+      const cid = item.product?.category_id ?? null;
+      const matchCategory = !allowedCategoryIds || (cid != null && allowedCategoryIds.has(cid));
+      const matchSearch = !searchLower ||
+        item.product?.name?.toLowerCase().includes(searchLower) ||
+        item.product?.code?.toLowerCase().includes(searchLower) ||
+        (item.product?.barcode || '').toLowerCase().includes(searchLower);
+      return matchBranch && matchCategory && matchSearch;
+    })
+    .sort((a, b) => {
+      // 카테고리 트리 순 → 지점명 → 제품명. 미분류는 끝.
+      const aCid = a.product?.category_id ?? null;
+      const bCid = b.product?.category_id ?? null;
+      const aKey = aCid ? (categoryInfo.get(aCid)?.sortKey || 'zzz') : 'zzz';
+      const bKey = bCid ? (categoryInfo.get(bCid)?.sortKey || 'zzz') : 'zzz';
+      const c1 = aKey.localeCompare(bKey);
+      if (c1 !== 0) return c1;
+      const c2 = (a.branch?.name || '').localeCompare(b.branch?.name || '', 'ko');
+      if (c2 !== 0) return c2;
+      return (a.product?.name || '').localeCompare(b.product?.name || '', 'ko');
+    });
+
+  // 그룹 빌더 — 연속된 같은 카테고리 행을 묶어 헤더·소계 렌더에 사용
+  type FlatGroup = { categoryId: string | null; rows: typeof filteredFlat };
+  const flatGroups: FlatGroup[] = [];
+  for (const r of filteredFlat) {
+    const cid = r.product?.category_id ?? null;
+    const last = flatGroups[flatGroups.length - 1];
+    if (!last || last.categoryId !== cid) flatGroups.push({ categoryId: cid, rows: [r] });
+    else last.rows.push(r);
+  }
+
+  type PivotGroup = { categoryId: string | null; rows: typeof filteredPivot };
+  const pivotGroups: PivotGroup[] = [];
+  for (const r of filteredPivot) {
+    const cid = r.categoryId;
+    const last = pivotGroups[pivotGroups.length - 1];
+    if (!last || last.categoryId !== cid) pivotGroups.push({ categoryId: cid, rows: [r] });
+    else last.rows.push(r);
+  }
+
+  // 카테고리 헤더 라벨 헬퍼
+  const renderCategoryLabel = (cid: string | null) => {
+    if (!cid) return <span className="text-slate-400">미분류</span>;
+    const info = categoryInfo.get(cid);
+    if (!info) return <span className="text-slate-400">미분류</span>;
+    return <span><span className="font-mono text-slate-400 mr-1">[{info.pathCode}]</span>{info.pathName}</span>;
+  };
 
   // 재고 부족 수 (지점 사용자는 자기 지점만)
   const lowCount = inventories.filter(i =>
@@ -384,31 +424,45 @@ export default function InventoryPage() {
                     검색 결과가 없습니다
                   </td>
                 </tr>
-              ) : filteredPivot.flatMap((row, idx) => {
-                // 카테고리 그룹 헤더 — 이전 행 대비 카테고리가 바뀌면 삽입
-                const prev = idx > 0 ? filteredPivot[idx - 1] : null;
-                const showHeader = !prev || prev.categoryId !== row.categoryId;
-                const headerRow = showHeader ? (
-                  <tr key={`hdr-${row.categoryId || 'none'}-${idx}`} className="bg-slate-50 sticky">
+              ) : pivotGroups.flatMap((group, gIdx) => {
+                // 그룹별: 헤더 → 행들 → 소계
+                const headerRow = (
+                  <tr key={`hdr-${group.categoryId || 'none'}-${gIdx}`} className="bg-slate-50">
                     <td colSpan={2 + branches.length} className="px-3 py-1.5 text-xs font-semibold text-slate-600">
-                      {row.categoryId
-                        ? (() => {
-                            const info = categoryInfo.get(row.categoryId);
-                            return info
-                              ? <span><span className="font-mono text-slate-400 mr-1">[{info.pathCode}]</span>{info.pathName}</span>
-                              : <span className="text-slate-400">미분류</span>;
-                          })()
-                        : <span className="text-slate-400">미분류</span>}
+                      {renderCategoryLabel(group.categoryId)}
+                      <span className="text-slate-400 ml-2">({group.rows.length}품목)</span>
                     </td>
                   </tr>
-                ) : null;
+                );
 
-                const hasAnyLow = branches.some(b => {
-                  const inv = row.byBranch[b.id];
-                  return inv && inv.quantity < inv.safety_stock;
-                });
-                const dataRow = (
-                  <tr key={row.productId} className={hasAnyLow ? 'bg-red-50/30' : ''}>
+                // 카테고리 소계 — 지점별 합계
+                const branchTotals: Record<string, number> = {};
+                for (const r of group.rows) {
+                  for (const b of branches) {
+                    const inv = r.byBranch[b.id];
+                    branchTotals[b.id] = (branchTotals[b.id] || 0) + (inv?.quantity ?? 0);
+                  }
+                }
+                const subtotalRow = (
+                  <tr key={`sub-${group.categoryId || 'none'}-${gIdx}`} className="bg-slate-100/70 border-t border-slate-200">
+                    <td className="px-3 py-1.5 text-xs text-slate-500 font-medium" colSpan={2}>
+                      └ 소계
+                    </td>
+                    {branches.map(b => (
+                      <td key={b.id} className="text-center text-xs font-semibold text-slate-700">
+                        {(branchTotals[b.id] || 0).toLocaleString()}
+                      </td>
+                    ))}
+                  </tr>
+                );
+
+                const dataRows = group.rows.map(row => {
+                  const hasAnyLow = branches.some(b => {
+                    const inv = row.byBranch[b.id];
+                    return inv && inv.quantity < inv.safety_stock;
+                  });
+                  return (
+                    <tr key={row.productId} className={hasAnyLow ? 'bg-red-50/30' : ''}>
                     <td className="font-mono text-xs text-slate-500">{row.productCode}</td>
                     <td>
                       <button
@@ -475,8 +529,9 @@ export default function InventoryPage() {
                       );
                     })}
                   </tr>
-                );
-                return [headerRow, dataRow].filter(Boolean) as React.ReactElement[];
+                  );
+                });
+                return [headerRow, ...dataRows, subtotalRow] as React.ReactElement[];
               })}
             </tbody>
           </table>
@@ -507,11 +562,29 @@ export default function InventoryPage() {
                   재고 데이터가 없습니다
                 </td>
               </tr>
-            ) : filteredFlat.map((item) => {
-              const isLow = item.quantity < item.safety_stock;
-              const pt = item.product?.product_type ?? null;
-              const materialBlocked = isMaterialType(pt) && !!hqBranchId && item.branch_id !== hqBranchId;
-              return (
+            ) : flatGroups.flatMap((group, gIdx) => {
+              const headerRow = (
+                <tr key={`fhdr-${group.categoryId || 'none'}-${gIdx}`} className="bg-slate-50">
+                  <td colSpan={8} className="px-3 py-1.5 text-xs font-semibold text-slate-600">
+                    {renderCategoryLabel(group.categoryId)}
+                    <span className="text-slate-400 ml-2">({group.rows.length}건)</span>
+                  </td>
+                </tr>
+              );
+              // 카테고리 소계 — 수량 합계
+              const totalQty = group.rows.reduce((s, r) => s + (r.quantity || 0), 0);
+              const subtotalRow = (
+                <tr key={`fsub-${group.categoryId || 'none'}-${gIdx}`} className="bg-slate-100/70 border-t border-slate-200">
+                  <td colSpan={4} className="px-3 py-1.5 text-xs text-slate-500 font-medium">└ 소계</td>
+                  <td className="text-xs font-semibold text-slate-700">{totalQty.toLocaleString()}</td>
+                  <td colSpan={3}></td>
+                </tr>
+              );
+              const dataRows = group.rows.map((item) => {
+                const isLow = item.quantity < item.safety_stock;
+                const pt = item.product?.product_type ?? null;
+                const materialBlocked = isMaterialType(pt) && !!hqBranchId && item.branch_id !== hqBranchId;
+                return (
                 <tr key={item.id}>
                   <td>{item.branch?.name}</td>
                   <td className="font-mono text-xs">{item.product?.code}</td>
@@ -569,7 +642,9 @@ export default function InventoryPage() {
                     </button>
                   </td>
                 </tr>
-              );
+                );
+              });
+              return [headerRow, ...dataRows, subtotalRow] as React.ReactElement[];
             })}
           </tbody>
         </table>
