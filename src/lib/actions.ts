@@ -480,6 +480,40 @@ export async function deleteProduct(id: string) {
   return { success: true };
 }
 
+// 제품 일괄 삭제 — 선택된 id들을 한 번에 처리.
+//   FK 위반(BOM·발주·매출 등 참조 중)인 항목은 개별 실패 메시지로 모음.
+//   부분 성공도 허용 — 가능한 항목은 삭제하고 실패한 것만 별도 보고.
+export async function bulkDeleteProducts(ids: string[]) {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return { error: '삭제할 제품이 없습니다.', deleted: 0, failed: [] };
+  }
+  if (ids.length > 200) {
+    return { error: '한 번에 최대 200개까지 삭제할 수 있습니다.', deleted: 0, failed: [] };
+  }
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  // 일괄 시도 — 실패하면 개별로 분리해 어떤 항목이 막혔는지 식별
+  const tryBulk = await db.from('products').delete().in('id', ids);
+  if (!tryBulk.error) {
+    revalidatePath('/products');
+    revalidatePath('/inventory');
+    return { deleted: ids.length, failed: [] as { id: string; reason: string }[] };
+  }
+
+  // 일괄 실패 → 개별 시도
+  let deleted = 0;
+  const failed: { id: string; reason: string }[] = [];
+  for (const id of ids) {
+    const r = await db.from('products').delete().eq('id', id);
+    if (r.error) failed.push({ id, reason: r.error.message });
+    else deleted++;
+  }
+  revalidatePath('/products');
+  revalidatePath('/inventory');
+  return { deleted, failed };
+}
+
 // ============ Customers ============
 
 export async function getCustomers(search?: string, grade?: string) {

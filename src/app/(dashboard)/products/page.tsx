@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { bulkDeleteProducts } from '@/lib/actions';
 import ProductModal from './ProductModal';
 import ProductImportModal from './ProductImportModal';
 
@@ -90,6 +91,9 @@ export default function ProductsPage() {
   const [showImportModal, setShowImportModal] = useState(false);
   const [editProduct, setEditProduct] = useState<Product | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  // 일괄 선택 (체크박스)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   const fetchProducts = useCallback(async () => {
     setLoading(true);
@@ -154,6 +158,61 @@ export default function ProductsPage() {
   const marginPct = (p: Product) => {
     if (!p.cost || !p.price) return null;
     return Math.round((1 - p.cost / p.price) * 100);
+  };
+
+  // 필터 변경 시 선택 상태 정리 — 보이지 않는 제품은 선택 해제
+  useEffect(() => {
+    setSelectedIds(prev => {
+      const visible = new Set(filtered.map(p => p.id));
+      const next = new Set<string>();
+      for (const id of prev) if (visible.has(id)) next.add(id);
+      return next.size === prev.size ? prev : next;
+    });
+  }, [filtered]);
+
+  const allFilteredIds = useMemo(() => filtered.map(p => p.id), [filtered]);
+  const allSelected = allFilteredIds.length > 0 && allFilteredIds.every(id => selectedIds.has(id));
+  const someSelected = !allSelected && allFilteredIds.some(id => selectedIds.has(id));
+
+  const toggleAll = () => {
+    setSelectedIds(prev => {
+      if (allSelected) return new Set();
+      const next = new Set(prev);
+      for (const id of allFilteredIds) next.add(id);
+      return next;
+    });
+  };
+
+  const toggleOne = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const handleBulkDelete = async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    if (!confirm(`선택한 제품 ${ids.length}개를 삭제하시겠습니까?\n관련된 BOM·발주·매출이 있는 제품은 자동으로 제외됩니다.`)) return;
+    setBulkDeleting(true);
+    try {
+      const res = await bulkDeleteProducts(ids);
+      if ((res as any).error) {
+        alert(`실패: ${(res as any).error}`);
+        return;
+      }
+      const failed = res.failed || [];
+      let msg = `✓ ${res.deleted}개 삭제 완료`;
+      if (failed.length > 0) {
+        msg += `\n\n삭제 실패 ${failed.length}건 — 다른 데이터에서 사용 중일 수 있습니다.`;
+      }
+      alert(msg);
+      setSelectedIds(new Set());
+      await fetchProducts();
+    } finally {
+      setBulkDeleting(false);
+    }
   };
 
   return (
@@ -227,10 +286,49 @@ export default function ProductsPage() {
         </select>
       </div>
 
+      {/* 선택 액션바 — 1개 이상 선택된 경우만 노출 */}
+      {selectedIds.size > 0 && (
+        <div className="mb-3 flex items-center justify-between bg-blue-50 border border-blue-200 rounded-lg px-4 py-2">
+          <span className="text-sm text-blue-800">
+            <b>{selectedIds.size}</b>개 제품 선택됨
+            {selectedIds.size > 0 && filtered.length > 0 && (
+              <span className="text-blue-500 ml-2">
+                (현재 화면 {filtered.length}개 중)
+              </span>
+            )}
+          </span>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setSelectedIds(new Set())}
+              className="px-3 py-1.5 text-sm rounded border border-slate-300 text-slate-600 hover:bg-white"
+            >
+              선택 해제
+            </button>
+            <button
+              onClick={handleBulkDelete}
+              disabled={bulkDeleting}
+              className="px-3 py-1.5 text-sm rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+            >
+              {bulkDeleting ? '삭제 중...' : `🗑 선택 ${selectedIds.size}개 삭제`}
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="overflow-x-auto">
-        <table className="table min-w-[750px]">
+        <table className="table min-w-[800px]">
           <thead>
             <tr>
+              <th className="w-10">
+                <input
+                  type="checkbox"
+                  className="w-4 h-4"
+                  checked={allSelected}
+                  ref={(el) => { if (el) el.indeterminate = someSelected; }}
+                  onChange={toggleAll}
+                  title={allSelected ? '전체 해제' : '현재 화면 전체 선택'}
+                />
+              </th>
               <th></th>
               <th>제품코드</th>
               <th>제품명</th>
@@ -248,9 +346,9 @@ export default function ProductsPage() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={13} className="text-center text-slate-400 py-8">로딩 중...</td></tr>
+              <tr><td colSpan={14} className="text-center text-slate-400 py-8">로딩 중...</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={13} className="text-center text-slate-400 py-8">
+              <tr><td colSpan={14} className="text-center text-slate-400 py-8">
                 {search ? `"${search}" 검색 결과 없음` : '등록된 제품이 없습니다'}
               </td></tr>
             ) : (() => {
@@ -278,7 +376,7 @@ export default function ProductsPage() {
                 const total = subtreeCount.get(cid) || 0;
                 out.push(
                   <tr key={`hdr-${cid}`} className="bg-slate-50">
-                    <td colSpan={13} className="px-3 py-1.5 text-xs font-semibold text-slate-700"
+                    <td colSpan={14} className="px-3 py-1.5 text-xs font-semibold text-slate-700"
                         style={{ paddingLeft: `${12 + info.depth * 18}px` }}>
                       <span className="font-mono text-slate-400 mr-1.5">[{info.pathCode}]</span>
                       {info.name}
@@ -312,7 +410,7 @@ export default function ProductsPage() {
                     shown.add('__unassigned__');
                     out.push(
                       <tr key="hdr-unassigned" className="bg-slate-50">
-                        <td colSpan={13} className="px-3 py-1.5 text-xs font-semibold text-slate-400">
+                        <td colSpan={14} className="px-3 py-1.5 text-xs font-semibold text-slate-400">
                           미분류
                         </td>
                       </tr>
@@ -323,7 +421,16 @@ export default function ProductsPage() {
                 const m = marginPct(product);
                 const indent = cid ? (categoryInfo.get(cid)?.depth ?? 0) + 1 : 1;
                 out.push(
-                  <tr key={product.id} className={!product.is_active ? 'opacity-50' : ''}>
+                  <tr key={product.id} className={`${!product.is_active ? 'opacity-50' : ''} ${selectedIds.has(product.id) ? 'bg-blue-50/50' : ''}`}>
+                  <td className="px-3">
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4"
+                      checked={selectedIds.has(product.id)}
+                      onChange={() => toggleOne(product.id)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </td>
                   <td style={{ paddingLeft: `${12 + indent * 18}px` }}>
                     {product.image_url
                       ? <img
