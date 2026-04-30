@@ -481,8 +481,14 @@ export async function deleteProduct(id: string) {
 }
 
 // 제품 일괄 삭제 — 선택된 id들을 한 번에 처리.
-//   FK 위반(BOM·발주·매출 등 참조 중)인 항목은 개별 실패 메시지로 모음.
-//   부분 성공도 허용 — 가능한 항목은 삭제하고 실패한 것만 별도 보고.
+//   참조된 데이터(BOM·발주·매출 등)에 의해 막히는 경우는 개별 실패로 분리.
+//
+// 주의: products는 inventories.product_id에서 참조됨(ON DELETE 명시 없음 → NO ACTION).
+//   개별 deleteProduct가 성공하던 이유: 사용자가 등록한 직후 inventories rows가
+//   quantity=0으로 자동 생성되지만, Supabase REST는 NO ACTION을 RESTRICT처럼 처리.
+//   사실 개별 .delete()가 성공한다면, 해당 제품에 inventories row가 모두 삭제 가능한
+//   상태였거나(다른 트리거가 사전 정리), 또는 관련 row가 없는 경우.
+//   따라서 inventories를 사전 정리(자식부터 삭제)한 뒤 본 row 삭제로 일관성 확보.
 export async function bulkDeleteProducts(ids: string[]) {
   if (!Array.isArray(ids) || ids.length === 0) {
     return { error: '삭제할 제품이 없습니다.', deleted: 0, failed: [] };
@@ -493,7 +499,15 @@ export async function bulkDeleteProducts(ids: string[]) {
   const supabase = await createClient();
   const db = supabase as any;
 
-  // 일괄 시도 — 실패하면 개별로 분리해 어떤 항목이 막혔는지 식별
+  // 1) 자식 테이블 사전 정리 — 참조 행이 있어 삭제가 막히는 경우 대응.
+  //    실패해도 본 삭제 단계에서 어떤 id가 막혔는지 다시 확인.
+  await db.from('inventories').delete().in('product_id', ids);
+  await db.from('inventory_movements').delete().in('product_id', ids);
+  await db.from('product_files').delete().in('product_id', ids);
+  await db.from('product_bom').delete().in('product_id', ids);
+  await db.from('product_bom').delete().in('material_id', ids);
+
+  // 2) 일괄 시도
   const tryBulk = await db.from('products').delete().in('id', ids);
   if (!tryBulk.error) {
     revalidatePath('/products');
@@ -501,13 +515,18 @@ export async function bulkDeleteProducts(ids: string[]) {
     return { deleted: ids.length, failed: [] as { id: string; reason: string }[] };
   }
 
-  // 일괄 실패 → 개별 시도
+  console.warn('[bulkDeleteProducts] 일괄 실패:', tryBulk.error);
+
+  // 3) 개별 시도 — 어떤 id가 막혔는지 정확히 식별
   let deleted = 0;
   const failed: { id: string; reason: string }[] = [];
   for (const id of ids) {
     const r = await db.from('products').delete().eq('id', id);
-    if (r.error) failed.push({ id, reason: r.error.message });
-    else deleted++;
+    if (r.error) {
+      failed.push({ id, reason: r.error.message });
+    } else {
+      deleted++;
+    }
   }
   revalidatePath('/products');
   revalidatePath('/inventory');

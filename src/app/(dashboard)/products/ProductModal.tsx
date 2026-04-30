@@ -304,11 +304,31 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
 
   const handleDelete = async () => {
     if (!product?.id) return;
-    if (!confirm('정말 삭제하시겠습니까?')) return;
+    if (!confirm('정말 삭제하시겠습니까?\n관련 BOM·재고·매출 항목이 있으면 자동 정리 후 삭제됩니다.')) return;
 
     setLoading(true);
-    await deleteProduct(product.id);
-    onSuccess();
+    try {
+      // 자식 행이 있는 경우 직접 DELETE는 FK로 실패 → 사전 정리 후 본 삭제.
+      // 일괄 삭제와 동일한 흐름을 사용해 일관성 유지.
+      const { bulkDeleteProducts } = await import('@/lib/actions');
+      const res = await bulkDeleteProducts([product.id]);
+      if ((res as any).error) {
+        setError((res as any).error);
+        setLoading(false);
+        return;
+      }
+      const failed = res.failed || [];
+      if (failed.length > 0) {
+        setError(`삭제 실패: ${failed[0].reason}`);
+        setLoading(false);
+        return;
+      }
+      onSuccess();
+    } catch (err: any) {
+      console.error('[ProductModal] delete error:', err);
+      setError(err?.message || '삭제 중 오류가 발생했습니다.');
+      setLoading(false);
+    }
   };
 
   return (
