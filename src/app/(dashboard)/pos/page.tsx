@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { processPosCheckout, createCustomer } from '@/lib/actions';
+import { saveDraft, listDrafts, getDraft, deleteDraft, type DraftRow } from '@/lib/sales-draft-actions';
 import ReceiptModal from './ReceiptModal';
 import { kstTodayString } from '@/lib/date';
 
@@ -213,6 +214,15 @@ function POSPageInner() {
 
   const [cartOpen, setCartOpen] = useState(false);
   const [mainTab, setMainTab] = useState<MainTab>('checkout');
+
+  // ── 임시저장 (결제 직전 상태를 통째로 저장 → 나중에 다시 불러오기) ────────
+  const [currentDraftId, setCurrentDraftId] = useState<string | null>(null);
+  const [showDraftModal, setShowDraftModal] = useState(false);
+  const [drafts, setDrafts] = useState<DraftRow[]>([]);
+  const [draftLoading, setDraftLoading] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [draftCount, setDraftCount] = useState(0);
+  const [draftBanner, setDraftBanner] = useState<string | null>(null);
 
   const searchRef = useRef<HTMLInputElement>(null);
   const customerInputRef = useRef<HTMLInputElement>(null);
@@ -881,38 +891,16 @@ function POSPageInner() {
         orderedAt: new Date().toISOString(),
       });
 
-      setCart([]);
-      setSelectedCustomer(null);
-      setCustomerSearch('');
-      setHistory({ loading: false, consultations: [], orders: [], totalLtv: 0 });
-      setConsultText('');
-      setUsePoints(false);
-      setPointsToUse(0);
-      setDiscountInput('');
-      setCashReceived('');
-      setOrderMemo('');
-      setShipping({
-        type: 'NONE',
-        recipient_name: '', recipient_phone: '',
-        recipient_zipcode: '', recipient_address: '', recipient_address_detail: '',
-        delivery_message: '',
-        senderSameAsBuyer: true,
-        sender_name: '', sender_phone: '',
-        sender_zipcode: '', sender_address: '', sender_address_detail: '',
-      });
-      setShipFromBranchId(selectedBranch);
-      setSplitMode(false);
-      setExtraPayments([]);
-      setDeptApprovalNo('');
-      setDeptCardCompany('');
-      setDeptInstallment('0');
-      setDeptMemo('');
-      setSaleDate(kstTodayString());
-      setReceiptDate(kstTodayString());
-      setReceiptStatus('RECEIVED');
-      setApprovalStatus('COMPLETED');
-      setCopyBanner(null);
-      // 담당자·매출처는 초기화 하지 않음 — 동일 담당자·지점에서 연속 판매하는 경우가 많음
+      // 결제 완료 — 진행 중이던 임시저장 슬롯이 있으면 자동 정리
+      if (currentDraftId) {
+        deleteDraft(currentDraftId).then(() => refreshDraftCount()).catch(() => {});
+      }
+      // 폼 전체 초기화 (담당자·매출처는 보존 — 같은 담당자·지점에서 연속 판매하는 경우가 많음)
+      const keepHandler = handlerId;
+      const keepBranch = selectedBranch;
+      resetCheckoutForm();
+      setHandlerId(keepHandler);
+      setSelectedBranch(keepBranch);
 
     } catch (err: any) {
       console.error('결제 오류:', err);
@@ -920,6 +908,206 @@ function POSPageInner() {
     }
 
     setProcessing(false);
+  };
+
+  // ── 임시저장 핸들러 ──────────────────────────────────────────────────────
+  const resetCheckoutForm = () => {
+    setCart([]);
+    setSelectedCustomer(null);
+    setCustomerSearch('');
+    setHistory({ loading: false, consultations: [], orders: [], totalLtv: 0 });
+    setConsultText('');
+    setUsePoints(false);
+    setPointsToUse(0);
+    setDiscountInput('');
+    setCashReceived('');
+    setOrderMemo('');
+    setShipping({
+      type: 'NONE',
+      recipient_name: '', recipient_phone: '',
+      recipient_zipcode: '', recipient_address: '', recipient_address_detail: '',
+      delivery_message: '',
+      senderSameAsBuyer: true,
+      sender_name: '', sender_phone: '',
+      sender_zipcode: '', sender_address: '', sender_address_detail: '',
+    });
+    setShipFromBranchId(selectedBranch);
+    setSplitMode(false);
+    setExtraPayments([]);
+    setDeptApprovalNo('');
+    setDeptCardCompany('');
+    setDeptInstallment('0');
+    setDeptMemo('');
+    setSaleDate(kstTodayString());
+    setReceiptDate(kstTodayString());
+    setReceiptStatus('RECEIVED');
+    setApprovalStatus('COMPLETED');
+    setCurrentDraftId(null);
+    setCopyBanner(null);
+    setDraftBanner(null);
+  };
+
+  const refreshDraftCount = useCallback(async () => {
+    const res = await listDrafts();
+    if (res.data) {
+      setDraftCount(res.data.length);
+      setDrafts(res.data);
+    }
+  }, []);
+
+  // 초기 임시저장 개수 로드
+  useEffect(() => {
+    if (!loading) refreshDraftCount();
+  }, [loading, refreshDraftCount]);
+
+  const handleSaveDraft = async () => {
+    if (cart.length === 0) {
+      alert('장바구니에 품목이 있어야 임시저장할 수 있습니다.');
+      return;
+    }
+    if (!selectedBranch) {
+      alert('판매 지점이 지정되지 않았습니다.');
+      return;
+    }
+
+    setSavingDraft(true);
+    const subTotal = cart.reduce((s, c) => s + c.price * c.quantity, 0);
+    const itemCount = cart.length;
+    const titleHint = selectedCustomer?.name
+      ? `${selectedCustomer.name} · ${cart[0]?.name}${cart.length > 1 ? ` 외 ${cart.length - 1}` : ''}`
+      : `${cart[0]?.name || '비회원'}${cart.length > 1 ? ` 외 ${cart.length - 1}` : ''}`;
+
+    const res = await saveDraft({
+      branch_id: selectedBranch,
+      customer_id: selectedCustomer?.id || null,
+      customer_snapshot: selectedCustomer
+        ? { name: selectedCustomer.name, phone: selectedCustomer.phone, grade: selectedCustomer.grade }
+        : null,
+      cart_items: cart,
+      delivery_info: shipping,
+      payment_info: {
+        paymentMethod, splitMode, extraPayments, cashReceived,
+        usePoints, pointsToUse, discountInput, discountType,
+        deptApprovalNo, deptCardCompany, deptInstallment, deptMemo,
+      },
+      meta_info: {
+        saleDate, receiptStatus, receiptDate, approvalStatus,
+        shipFromBranchId, handlerId,
+      },
+      memo: orderMemo || null,
+      title: titleHint,
+      total_amount: subTotal,
+      item_count: itemCount,
+    }, currentDraftId || undefined);
+
+    setSavingDraft(false);
+    if (res.error) {
+      alert('임시저장 실패: ' + res.error);
+      return;
+    }
+    setCurrentDraftId(res.id || null);
+    setDraftBanner(`💾 임시저장 완료 — 나중에 "불러오기"에서 다시 작성 가능합니다.`);
+    refreshDraftCount();
+    setTimeout(() => setDraftBanner(null), 4000);
+  };
+
+  const handleOpenDraftModal = async () => {
+    setShowDraftModal(true);
+    setDraftLoading(true);
+    const res = await listDrafts();
+    setDraftLoading(false);
+    if (res.error) {
+      alert('임시저장 목록 조회 실패: ' + res.error);
+      return;
+    }
+    setDrafts(res.data || []);
+    setDraftCount((res.data || []).length);
+  };
+
+  const handleLoadDraft = async (draftId: string) => {
+    if (cart.length > 0 && !confirm('현재 작성 중인 전표가 있습니다. 임시저장을 불러오면 현재 내용은 사라집니다. 계속하시겠습니까?')) {
+      return;
+    }
+    const res = await getDraft(draftId);
+    if (res.error || !res.data) {
+      alert('불러오기 실패: ' + (res.error || '데이터 없음'));
+      return;
+    }
+    const d = res.data;
+
+    // 카트 — 현재 products와 매칭해 deliveryType/orderOption 그대로 복원
+    const newCart: CartItem[] = (d.cart_items || []).map((it: any) => ({
+      productId: it.productId,
+      name: it.name,
+      price: Number(it.price || 0),
+      quantity: Number(it.quantity || 1),
+      discount: Number(it.discount || 0),
+      barcode: it.barcode,
+      orderOption: it.orderOption || undefined,
+      deliveryType: (it.deliveryType as ItemDeliveryType) || 'PICKUP',
+    })).filter((c: CartItem) => !!c.productId);
+    setCart(newCart);
+
+    // 매출처
+    if (d.branch_id) setSelectedBranch(d.branch_id);
+
+    // 고객 — DB의 customer 우선, 없으면 snapshot 표시용
+    if (d.customer_id && d.customer) {
+      const cust = customers.find(c => c.id === d.customer_id);
+      if (cust) {
+        await selectCustomer(cust);
+      }
+    } else if (d.customer_snapshot) {
+      // 비회원/스냅샷 — 표시만 복원 (선택 상태 X)
+      setSelectedCustomer(null);
+    }
+
+    // 배송
+    if (d.delivery_info) {
+      setShipping((prev) => ({ ...prev, ...d.delivery_info }));
+    }
+
+    // 결제 진행 상태
+    const p = d.payment_info || {};
+    if (p.paymentMethod) setPaymentMethod(p.paymentMethod);
+    if (typeof p.splitMode === 'boolean') setSplitMode(p.splitMode);
+    if (Array.isArray(p.extraPayments)) setExtraPayments(p.extraPayments);
+    if (typeof p.cashReceived === 'string') setCashReceived(p.cashReceived);
+    if (typeof p.usePoints === 'boolean') setUsePoints(p.usePoints);
+    if (typeof p.pointsToUse === 'number') setPointsToUse(p.pointsToUse);
+    if (typeof p.discountInput === 'string') setDiscountInput(p.discountInput);
+    if (p.discountType === 'amount' || p.discountType === 'percent') setDiscountType(p.discountType);
+    if (typeof p.deptApprovalNo === 'string') setDeptApprovalNo(p.deptApprovalNo);
+    if (typeof p.deptCardCompany === 'string') setDeptCardCompany(p.deptCardCompany);
+    if (typeof p.deptInstallment === 'string') setDeptInstallment(p.deptInstallment);
+    if (typeof p.deptMemo === 'string') setDeptMemo(p.deptMemo);
+
+    // 메타
+    const m = d.meta_info || {};
+    if (m.saleDate) setSaleDate(m.saleDate);
+    if (m.receiptStatus) setReceiptStatus(m.receiptStatus);
+    if (m.receiptDate) setReceiptDate(m.receiptDate);
+    if (m.approvalStatus) setApprovalStatus(m.approvalStatus);
+    if (m.shipFromBranchId) setShipFromBranchId(m.shipFromBranchId);
+    if (m.handlerId) setHandlerId(m.handlerId);
+
+    setOrderMemo(d.memo || '');
+    setCurrentDraftId(d.id);
+    setMainTab('checkout');
+    setShowDraftModal(false);
+    setDraftBanner(`📂 임시저장 불러오기 완료 — 이어서 작성하거나 결제하면 자동 정리됩니다.`);
+    setTimeout(() => setDraftBanner(null), 4500);
+  };
+
+  const handleDeleteDraft = async (draftId: string) => {
+    if (!confirm('이 임시저장 전표를 삭제하시겠습니까? (복구 불가)')) return;
+    const res = await deleteDraft(draftId);
+    if (res.error) {
+      alert('삭제 실패: ' + res.error);
+      return;
+    }
+    if (currentDraftId === draftId) setCurrentDraftId(null);
+    refreshDraftCount();
   };
 
   const commitQtyEdit = (productId: string) => {
@@ -940,8 +1128,16 @@ function POSPageInner() {
         </div>
       )}
 
+      {/* 임시저장 배너 */}
+      {draftBanner && (
+        <div className="p-2 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs flex items-center justify-between">
+          <span>{draftBanner}</span>
+          <button onClick={() => setDraftBanner(null)} className="text-emerald-400 hover:text-emerald-600">✕</button>
+        </div>
+      )}
+
       {/* 판매관리 상단 탭 */}
-      <div className="flex gap-1 border-b border-slate-200 items-center">
+      <div className="flex gap-1 border-b border-slate-200 items-center justify-between">
         <div className="flex gap-1">
           {([
             { key: 'checkout' as MainTab, label: '판매 등록' },
@@ -958,6 +1154,42 @@ function POSPageInner() {
             </button>
           ))}
         </div>
+
+        {/* 임시저장 / 불러오기 — 판매 등록 탭에서만 노출 */}
+        {mainTab === 'checkout' && (
+          <div className="flex gap-1.5 pb-1">
+            {currentDraftId && (
+              <span
+                className="inline-flex items-center px-2 py-1 rounded-md text-[11px] bg-amber-50 text-amber-700 border border-amber-200"
+                title="현재 임시저장 슬롯에서 이어 작성 중. 임시저장을 다시 누르면 덮어씁니다."
+              >
+                ✏️ 임시저장 이어쓰기 중
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={handleSaveDraft}
+              disabled={savingDraft || cart.length === 0}
+              className="px-3 py-1.5 rounded-md text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              title="현재 작성 중인 전표를 임시저장합니다"
+            >
+              {savingDraft ? '저장 중...' : (currentDraftId ? '💾 덮어쓰기' : '💾 임시저장')}
+            </button>
+            <button
+              type="button"
+              onClick={handleOpenDraftModal}
+              className="relative px-3 py-1.5 rounded-md text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100"
+              title="임시저장 목록 열기"
+            >
+              📂 불러오기
+              {draftCount > 0 && (
+                <span className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-blue-600 text-white text-[10px] font-bold">
+                  {draftCount}
+                </span>
+              )}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* 판매 메타 헤더 (일자 · 매출처 · 출고처) */}
@@ -2166,8 +2398,153 @@ function POSPageInner() {
           onCreated={handleCustomerCreated}
         />
       )}
+
+      {showDraftModal && (
+        <DraftListModal
+          drafts={drafts}
+          loading={draftLoading}
+          currentDraftId={currentDraftId}
+          onLoad={handleLoadDraft}
+          onDelete={handleDeleteDraft}
+          onClose={() => setShowDraftModal(false)}
+        />
+      )}
     </div>
       )}
+    </div>
+  );
+}
+
+// ── 임시저장 목록 모달 ────────────────────────────────────────────────────────
+function DraftListModal({ drafts, loading, currentDraftId, onLoad, onDelete, onClose }: {
+  drafts: DraftRow[];
+  loading: boolean;
+  currentDraftId: string | null;
+  onLoad: (id: string) => void;
+  onDelete: (id: string) => void;
+  onClose: () => void;
+}) {
+  const fmtTime = (iso: string) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const now = new Date();
+    const diffMin = Math.floor((now.getTime() - d.getTime()) / 60000);
+    if (diffMin < 1) return '방금 전';
+    if (diffMin < 60) return `${diffMin}분 전`;
+    if (diffMin < 1440) return `${Math.floor(diffMin / 60)}시간 전`;
+    return d.toISOString().slice(5, 16).replace('T', ' ');
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white w-full max-w-2xl mx-auto max-h-[88vh] overflow-y-auto rounded-xl shadow-xl"
+           onClick={e => e.stopPropagation()}>
+        <div className="sticky top-0 bg-white border-b border-slate-200 px-5 py-3 flex items-center justify-between z-10">
+          <div>
+            <h2 className="text-base font-bold text-slate-800">📂 임시저장 전표 불러오기</h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              총 {drafts.length}건 · 카드를 클릭해 이어서 작성하세요. 결제 완료 시 자동 정리됩니다.
+            </p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl">✕</button>
+        </div>
+
+        <div className="p-4">
+          {loading ? (
+            <div className="py-12 text-center text-slate-400 text-sm">로딩 중...</div>
+          ) : drafts.length === 0 ? (
+            <div className="py-12 text-center text-slate-400 text-sm">
+              저장된 임시 전표가 없습니다.
+              <p className="text-xs mt-1.5">판매 등록 화면에서 <span className="font-medium">💾 임시저장</span> 버튼을 눌러 보관할 수 있습니다.</p>
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {drafts.map(d => {
+                const isCurrent = d.id === currentDraftId;
+                const customerLabel = d.customer?.name
+                  || d.customer_snapshot?.name
+                  || '비회원';
+                const phone = d.customer?.phone || d.customer_snapshot?.phone || '';
+                const itemNames = (d.cart_items || []).slice(0, 3).map((c: any) => c.name).filter(Boolean);
+                const moreCount = Math.max(0, (d.cart_items?.length || 0) - itemNames.length);
+                return (
+                  <div key={d.id}
+                       className={`border rounded-lg p-3 transition-colors ${
+                         isCurrent
+                           ? 'border-amber-300 bg-amber-50/60'
+                           : 'border-slate-200 hover:border-blue-300 hover:bg-slate-50'
+                       }`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <button
+                        type="button"
+                        onClick={() => onLoad(d.id)}
+                        className="flex-1 text-left min-w-0"
+                      >
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-medium text-sm text-slate-800 truncate">
+                            {customerLabel}
+                          </span>
+                          {phone && (
+                            <span className="text-[11px] text-slate-400">{phone}</span>
+                          )}
+                          {isCurrent && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-200 text-amber-800 font-medium">
+                              ✏️ 작성 중
+                            </span>
+                          )}
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
+                            {d.branch?.name || ''}
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-600 mt-1 line-clamp-2">
+                          {itemNames.join(' · ')}
+                          {moreCount > 0 && <span className="text-slate-400"> 외 {moreCount}</span>}
+                          <span className="ml-2 text-slate-400">· {d.item_count}종</span>
+                        </div>
+                        <div className="flex items-center gap-2 mt-1.5 text-[11px] text-slate-500">
+                          <span className="font-semibold text-slate-700">
+                            {(d.total_amount || 0).toLocaleString()}원
+                          </span>
+                          <span className="text-slate-300">·</span>
+                          <span title={d.updated_at}>{fmtTime(d.updated_at)}</span>
+                          {d.creator?.name && (
+                            <>
+                              <span className="text-slate-300">·</span>
+                              <span>{d.creator.name}</span>
+                            </>
+                          )}
+                          {d.memo && (
+                            <>
+                              <span className="text-slate-300">·</span>
+                              <span className="truncate text-slate-400" title={d.memo}>📝 {d.memo}</span>
+                            </>
+                          )}
+                        </div>
+                      </button>
+                      <div className="flex flex-col gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => onLoad(d.id)}
+                          className="px-3 py-1 rounded text-xs font-medium bg-blue-600 text-white hover:bg-blue-700"
+                        >
+                          불러오기
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onDelete(d.id)}
+                          className="px-3 py-1 rounded text-xs text-red-500 hover:bg-red-50"
+                        >
+                          삭제
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

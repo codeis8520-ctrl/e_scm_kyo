@@ -37,6 +37,10 @@ sales_order_items: id, sales_order_id, product_id, quantity, unit_price, discoun
   ※ shipments.items_summary는 PICKUP 제외, PARCEL/QUICK 품목만 요약.
 sales_order_payments: id, sales_order_id, payment_method, amount, approval_no, card_info, memo, paid_at, created_by
   ※ 한 주문의 다중 결제(분할). 합계<총액이면 잔액=외상. payment_method='mixed'면 세부는 이 테이블에.
+sales_order_drafts(마이그 060): id, branch_id, customer_id, customer_snapshot(jsonb), cart_items(jsonb), delivery_info(jsonb), payment_info(jsonb), meta_info(jsonb), memo, title, total_amount, item_count, created_by, created_at, updated_at
+  ※ POS 결제 직전 상태 통째 저장 → 나중에 다시 불러와 이어 작성하는 임시 슬롯.
+  ※ 결제 완료(processPosCheckout) 시 currentDraftId가 있으면 자동 삭제.
+  ※ HQ 역할은 전 지점, BRANCH/PHARMACY는 본인 지점만 조회/삭제.
 
 --- 반품 ---
 return_orders: id, return_number, original_order_id, branch_id, customer_id, processed_by, reason, reason_detail, refund_amount, refund_method, points_restored, status, processed_at
