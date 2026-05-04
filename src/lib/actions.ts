@@ -1141,11 +1141,12 @@ export async function createChannel(formData: FormData) {
   const supabase = await createClient();
 
   const name = formData.get('name') as string;
-  const code = name.replace(/\s+/g, '_').toUpperCase();
+  // channels.id는 PRIMARY KEY VARCHAR(20). 한글/공백/소문자 → 안전한 코드로 정규화.
+  // 한글이 포함된 경우 영문 변환 불가하므로 원문 사용 (DB 측 VARCHAR(20) 제약).
+  const id = name.replace(/\s+/g, '_').toUpperCase().slice(0, 20);
 
   const channelData = {
-    id: code,
-    code,
+    id,
     name,
     color: formData.get('color') as string || '#6366f1',
     sort_order: parseInt(formData.get('sort_order') as string) || 0,

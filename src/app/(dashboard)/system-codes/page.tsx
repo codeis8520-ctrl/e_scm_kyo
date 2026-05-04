@@ -26,7 +26,6 @@ function getCookie(name: string): string | null {
 
 interface Channel {
   id: string;
-  code: string;
   name: string;
   color: string;
   sort_order: number;
@@ -448,7 +447,7 @@ export default function SystemCodesPage() {
                       style={{ backgroundColor: channel.color }}
                     />
                   </td>
-                  <td className="font-mono">{channel.code}</td>
+                  <td className="font-mono">{channel.id}</td>
                   <td className="font-medium">{channel.name}</td>
                   <td>{channel.sort_order}</td>
                   <td>
@@ -521,7 +520,7 @@ export default function SystemCodesPage() {
                   </td>
                   <td>
                     <span className="badge bg-slate-100">
-                      {channels.find(c => c.code === branch.channel)?.name || branch.channel}
+                      {channels.find(c => c.id === branch.channel)?.name || branch.channel}
                     </span>
                   </td>
                   <td>{branch.phone || '-'}</td>
@@ -1271,7 +1270,7 @@ function ChannelModal({ channel, onClose, onSuccess }: { channel: Channel | null
           {channel && (
             <div>
               <label className="block text-sm font-medium text-gray-700">코드</label>
-              <input type="text" value={channel.code} disabled className="mt-1 input bg-slate-100 text-slate-500" />
+              <input type="text" value={channel.id} disabled className="mt-1 input bg-slate-100 text-slate-500" />
             </div>
           )}
 
@@ -1433,7 +1432,7 @@ function BranchModal({ branch, channels, onClose, onSuccess }: { branch: Branch 
             >
               <option value="">채널 선택</option>
               {channels.map((ch) => (
-                <option key={ch.code} value={ch.code}>{ch.name}</option>
+                <option key={ch.id} value={ch.id}>{ch.name}</option>
               ))}
             </select>
           </div>
