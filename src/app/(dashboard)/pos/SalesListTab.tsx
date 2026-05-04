@@ -763,8 +763,22 @@ export default function SalesListTab() {
                       ) : <span className="text-slate-300 text-xs">-</span>}
                     </td>
                     <td className="text-center text-xs text-slate-600 align-top">{totalQty || '-'}</td>
-                    <td className={`text-right font-semibold align-top ${isRefunded || isCancelled ? 'line-through text-slate-400' : 'text-slate-800'}`}>
-                      {(o.total_amount || 0).toLocaleString()}원
+                    <td className={`text-right align-top ${isRefunded || isCancelled ? 'line-through text-slate-400' : 'text-slate-800'}`}>
+                      {(o.discount_amount || 0) > 0 ? (
+                        <>
+                          <p className="text-[10px] text-slate-400 line-through leading-tight">
+                            {(o.total_amount || 0).toLocaleString()}원
+                          </p>
+                          <p className="font-semibold leading-tight">
+                            {((o.total_amount || 0) - (o.discount_amount || 0)).toLocaleString()}원
+                          </p>
+                          <p className="text-[10px] text-orange-600 leading-tight">
+                            -{(o.discount_amount || 0).toLocaleString()}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="font-semibold">{(o.total_amount || 0).toLocaleString()}원</p>
+                      )}
                     </td>
                     <td className="align-top whitespace-nowrap">
                       <p className="text-xs">{PAY_LABEL[o.payment_method] || o.payment_method}</p>
