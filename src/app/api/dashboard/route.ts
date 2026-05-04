@@ -154,11 +154,14 @@ export async function GET(request: NextRequest) {
     (async () => {
       let q = supabase
         .from('inventories')
-        .select('id, quantity, safety_stock, product:products(name), branch:branches(id, name)')
+        .select('id, quantity, safety_stock, product:products(name, track_inventory), branch:branches(id, name)')
         .gt('safety_stock', 0);
       if (branchId && branchId !== 'ALL') q = q.eq('branch_id', branchId);
       const { data } = await q;
-      return { data: (data || []).filter((inv: any) => inv.quantity < inv.safety_stock).slice(0, 30) };
+      // track_inventory=false 제품은 부족 알림에서 제외 (컬럼 미적용 환경 호환: undefined !== false)
+      return { data: (data || [])
+        .filter((inv: any) => (inv.product as any)?.track_inventory !== false && inv.quantity < inv.safety_stock)
+        .slice(0, 30) };
     })(),
     (() => {
       let q = supabase.from('branches').select('id, name');

@@ -1088,7 +1088,7 @@ async function execGetInventory(sb: any, args: { branch_name?: string; product_n
     productId = p.id;
   }
 
-  let q = sb.from('inventories').select('quantity, safety_stock, products(name, code), branches(name)');
+  let q = sb.from('inventories').select('quantity, safety_stock, products(name, code, track_inventory), branches(name)');
   if (branchId) q = q.eq('branch_id', branchId);
   if (productId) q = q.eq('product_id', productId);
   if (!args.include_zero) q = q.gt('quantity', 0);
@@ -1096,9 +1096,11 @@ async function execGetInventory(sb: any, args: { branch_name?: string; product_n
 
   const { data, error } = await q;
   if (error) return JSON.stringify({ error: error.message });
-  if (!data?.length) return JSON.stringify({ 결과: '재고 데이터 없음' });
+  // track_inventory=false 제품 제외 (컬럼 미적용 환경 호환: undefined → 표시 유지)
+  const filtered = (data as any[] | null || []).filter((inv: any) => inv.products?.track_inventory !== false);
+  if (!filtered.length) return JSON.stringify({ 결과: '재고 데이터 없음' });
 
-  return JSON.stringify((data as any[]).map(inv => ({
+  return JSON.stringify(filtered.map(inv => ({
     지점: inv.branches?.name,
     제품: inv.products?.name,
     코드: inv.products?.code,
@@ -1116,11 +1118,13 @@ async function execGetLowStock(sb: any, args: { branch_name?: string }): Promise
     branchId = b.id;
   }
 
-  let q = sb.from('inventories').select('quantity, safety_stock, products(name, code), branches(name)');
+  let q = sb.from('inventories').select('quantity, safety_stock, products(name, code, track_inventory), branches(name)');
   if (branchId) q = q.eq('branch_id', branchId);
   const { data } = await q;
 
-  const low = ((data || []) as any[]).filter(i => i.quantity < (i.safety_stock || 0));
+  // track_inventory=false 제품은 부족 알림에서 제외 (컬럼 미적용 환경 호환)
+  const low = ((data || []) as any[]).filter(i =>
+    i.products?.track_inventory !== false && i.quantity < (i.safety_stock || 0));
   if (!low.length) return JSON.stringify({ 결과: '재고 부족 품목 없음 ✅' });
 
   return JSON.stringify({
@@ -2249,11 +2253,13 @@ async function execReplenishLowStock(sb: any, args: {
     branchIds = [b.id];
   }
 
-  let q = sb.from('inventories').select('id, quantity, safety_stock, branch_id, product_id, branches(name), products(name)');
+  let q = sb.from('inventories').select('id, quantity, safety_stock, branch_id, product_id, branches(name), products(name, track_inventory)');
   if (branchIds) q = q.in('branch_id', branchIds);
   const { data: allInv } = await q;
 
-  const lowItems = ((allInv || []) as any[]).filter(i => i.quantity < i.safety_stock);
+  // track_inventory=false 제품은 자동 보충 대상에서 제외 (컬럼 미적용 환경 호환)
+  const lowItems = ((allInv || []) as any[]).filter(i =>
+    i.products?.track_inventory !== false && i.quantity < i.safety_stock);
   if (!lowItems.length) return JSON.stringify({ 결과: '안전재고 미달 품목 없음 — 모든 재고가 정상입니다.' });
 
   const fillToSafety = args.fill_to_safety !== false;

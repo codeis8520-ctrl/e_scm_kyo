@@ -105,7 +105,7 @@ export async function GET(request: NextRequest) {
     // 지점별 재고 상세 — safety_stock 유무와 관계없이 전체 재고 표시
     let q = supabase
       .from('inventories')
-      .select('id, quantity, safety_stock, product:products(name, sku), branch:branches(id, name)')
+      .select('id, quantity, safety_stock, product:products(name, sku, track_inventory), branch:branches(id, name)')
       .gt('quantity', -1); // 모든 재고 (삭제된 것 제외)
 
     if (effectiveBranchId && effectiveBranchId !== 'ALL') {
@@ -117,7 +117,10 @@ export async function GET(request: NextRequest) {
     const { data, error } = await q;
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-    const items = (data || []).map((inv: any) => ({
+    const items = (data || [])
+      // track_inventory=false 제품 제외 (컬럼 미적용 환경 호환)
+      .filter((inv: any) => inv.product?.track_inventory !== false)
+      .map((inv: any) => ({
       id: inv.id,
       product_name: inv.product?.name || '알 수 없음',
       sku: inv.product?.sku || '-',

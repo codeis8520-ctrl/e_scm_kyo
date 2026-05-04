@@ -17,7 +17,7 @@ interface Inventory {
   quantity: number;
   safety_stock: number;
   branch?: { id: string; name: string; is_headquarters?: boolean };
-  product?: { id: string; name: string; code: string; barcode?: string; product_type?: ProductType | null; category_id?: string | null };
+  product?: { id: string; name: string; code: string; barcode?: string; product_type?: ProductType | null; category_id?: string | null; track_inventory?: boolean };
 }
 
 interface Branch {
@@ -173,8 +173,15 @@ export default function InventoryPage() {
     // product_type · category_id · is_headquarters 포함 시도 → 미적용 폴백
     let res: any = await supabase
       .from('inventories')
-      .select('*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id)')
+      .select('*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory)')
       .order('product_id');
+    if (res.error) {
+      // track_inventory 컬럼(마이그 059) 미적용 환경 폴백
+      res = await supabase
+        .from('inventories')
+        .select('*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id)')
+        .order('product_id');
+    }
     if (res.error) {
       res = await supabase
         .from('inventories')
@@ -225,6 +232,8 @@ export default function InventoryPage() {
     const map = new Map<string, ProductRow>();
     for (const inv of inventories) {
       if (!inv.product) continue;
+      // 재고 관리 대상 해제(track_inventory=false) 제품 제외 — 컬럼 미적용 환경에선 undefined → 표시 유지
+      if (inv.product.track_inventory === false) continue;
       if (!map.has(inv.product_id)) {
         map.set(inv.product_id, {
           productId: inv.product_id,

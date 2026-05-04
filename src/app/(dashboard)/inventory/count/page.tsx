@@ -60,13 +60,14 @@ export default function InventoryCountPage() {
     const sb = createClient() as any;
     const { data } = await sb
       .from('inventories')
-      .select('id, quantity, product:products(id, name, code, unit, is_active)')
+      .select('id, quantity, product:products(id, name, code, unit, is_active, track_inventory)')
       .eq('branch_id', selectedBranch)
       .order('product(name)');
 
     setRows(
       (data || [])
-        .filter((inv: any) => inv.product?.is_active)
+        // track_inventory=false 제품은 실사 대상에서 제외 (컬럼 미적용 환경에선 undefined → 표시 유지)
+        .filter((inv: any) => inv.product?.is_active && inv.product?.track_inventory !== false)
         .map((inv: any) => ({
           inventoryId: inv.id,
           productId: inv.product.id,
