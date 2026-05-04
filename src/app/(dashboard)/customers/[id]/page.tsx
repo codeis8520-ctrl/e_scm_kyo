@@ -169,7 +169,7 @@ export default function CustomerDetailPage() {
         .single(),
       supabase
         .from('sales_orders')
-        .select(`id, order_number, ordered_at, status, total_amount, payment_method, credit_settled, credit_settled_method, points_earned, points_used, branch_id, branch:branches(name, id), items:sales_order_items(id, quantity, unit_price, total_price, product:products(name))`)
+        .select(`id, order_number, ordered_at, status, total_amount, payment_method, credit_settled, credit_settled_method, points_earned, points_used, branch_id, branch:branches(name, id), items:sales_order_items(id, quantity, unit_price, total_price, order_option, product:products(name))`)
         .eq('customer_id', customerId)
         .gte('ordered_at', kstDayStart(purchaseDateRange.start))
         .lte('ordered_at', kstDayEnd(purchaseDateRange.end))
@@ -983,7 +983,12 @@ export default function CustomerDetailPage() {
                               <tbody>
                                 {(order.items || []).map((it: any) => (
                                   <tr key={it.id}>
-                                    <td>{it.product?.name || '-'}</td>
+                                    <td>
+                                      <div>{it.product?.name || '-'}</div>
+                                      {it.order_option && (
+                                        <div className="text-xs text-pink-600 mt-0.5">🎀 {it.order_option}</div>
+                                      )}
+                                    </td>
                                     <td className="text-center">{it.quantity}</td>
                                     <td className="text-right">{it.unit_price.toLocaleString()}원</td>
                                     <td className="text-right font-medium">{it.total_price.toLocaleString()}원</td>
