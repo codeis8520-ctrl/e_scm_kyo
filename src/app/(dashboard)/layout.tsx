@@ -162,7 +162,13 @@ export default function DashboardLayout({
             )}
           </nav>
 
-          <div className="p-3 border-t border-slate-700">
+          <div className="p-3 border-t border-slate-700 space-y-2">
+            {userName && (
+              <div className="px-3 py-2 rounded-lg bg-slate-700/50 text-xs">
+                <p className="font-medium text-white truncate">{userName}</p>
+                <p className="text-slate-400">{userRole}</p>
+              </div>
+            )}
             <button
               onClick={() => signOut()}
               className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
@@ -202,7 +208,13 @@ export default function DashboardLayout({
           )}
         </nav>
 
-        <div className="p-3 border-t border-slate-700">
+        <div className="p-3 border-t border-slate-700 space-y-2">
+          {userName && (
+            <div className="px-3 py-2 rounded-lg bg-slate-700/50 text-xs">
+              <p className="font-medium text-white truncate">{userName}</p>
+              <p className="text-slate-400">{userRole}</p>
+            </div>
+          )}
           <button
             onClick={() => signOut()}
             className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
@@ -215,24 +227,11 @@ export default function DashboardLayout({
 
       {/* Main content */}
       <main className="flex-1 lg:ml-64 min-h-screen bg-slate-50">
-        {/* Desktop header */}
-        <header className="hidden lg:block bg-white border-b border-slate-200 px-6 py-4 sticky top-0 z-20">
-          <div className="flex justify-between items-center">
-            <h2 className="text-lg font-semibold text-slate-800">
-              {navItems.find((item) => item.href === '/' ? pathname === '/' : pathname.startsWith(item.href))?.label || '페이지'}
-            </h2>
-            <div className="flex items-center gap-3">
-              <span className="text-sm text-slate-500">
-                {userName} ({userRole})
-              </span>
-            </div>
-          </div>
-        </header>
-
-        {/* Mobile header spacer */}
+        {/* Mobile header spacer (모바일 상단 고정 헤더 보정) */}
         <div className="lg:hidden h-14" />
 
-        <div className="p-4 lg:p-6">
+        {/* 데스크톱 페이지 제목은 사이드바 활성 메뉴로 갈음, 사용자 정보는 사이드바 하단으로 이동 */}
+        <div className="px-4 py-6 lg:px-8 lg:py-8">
           {children}
         </div>
       </main>
