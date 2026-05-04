@@ -3,10 +3,14 @@ export const DB_SCHEMA = `
 
 --- 지점·제품·재고 ---
 branches: id, name, code, channel(STORE/DEPT_STORE/ONLINE/EVENT), address, phone, is_active
-products: id, name, code, barcode, unit, price(판매가), cost(원가), cost_source(MANUAL/BOM), product_type(FINISHED/RAW/SUB/SERVICE), track_inventory(bool), is_active
+products: id, name, code, barcode, unit, price(판매가), cost(원가), cost_source(MANUAL/BOM), product_type(FINISHED/RAW/SUB/SERVICE), track_inventory(bool), is_phantom(bool), is_active
   ※ product_type: FINISHED=완제품(POS 판매), RAW=원자재, SUB=부자재, SERVICE=무형상품(컨설팅·교육 등 POS 판매 가능, 재고 X)
   ※ track_inventory(마이그 059): false면 inventories/inventory_movements 미사용. SERVICE는 기본 false.
     POS·B2B·생산에서 재고 차감 분기에서 skip 대상.
+  ※ is_phantom(마이그 061): true면 "세트 상품(Phantom BOM)" — POS 판매 시 본인 재고는 차감하지 않고
+    product_bom에 등록된 구성품을 분해 차감(inventory_movements.reference_type='PHANTOM_DECOMPOSE').
+    이카운트의 "세트상품/매핑상품" 개념. 옵션 SKU(예: "침향30환 +오)")를 별도 코드로 두면서 본품·옵션품 재고만 관리.
+    is_phantom=true이면 track_inventory는 자동 false (UI에서 강제). BOM이 비어있으면 판매 거부.
   ※ barcode는 완제품에만 입력. RAW/SUB/SERVICE는 항상 NULL로 저장됨.
   ※ cost_source=BOM이면 완제품 cost는 BOM 합계에서 자동 산정(서버 액션). RAW/SUB는 판매가 미사용(price=cost로 동기화).
 product_files: id, product_id, file_url, file_name, file_type(image/document), sort_order
@@ -158,6 +162,12 @@ sales_orders.receipt_status: 품목 receipt_status 집계(우선순위 PARCEL_PL
 - "재고 부족" → get_low_stock
 - "전체 고객 등급 올려줘" → upgrade_customer_grades (확인 필요)
 - "VIP한테 문자" → bulk_send_sms(grade: "VIP", ...)
+
+[Phantom BOM(세트 상품) 운영 규칙]
+- products.is_phantom=true 제품은 옵션 조합 SKU(예: "침향30환 +오)") 운영용.
+- POS 판매 시 본인 재고는 0 유지(차감 X), product_bom의 구성품을 분해 차감.
+- 재고/대시보드/AI 도구의 부족 알림에서 phantom 본인은 의미 없음 — 구성품 재고만 추적.
+- 사용자가 "세트상품 재고 얼마야?" 같은 질문을 하면, phantom의 BOM 구성품 중 가장 부족한 품목 기준으로 답해야 함.
 
 [B2B 거래]
 - b2b_partners: 거래처(법인/도매), b2b_partner_prices: 거래처별 제품 단가표

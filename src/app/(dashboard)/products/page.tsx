@@ -68,6 +68,7 @@ interface Product {
   is_active: boolean;
   is_taxable: boolean;
   track_inventory: boolean;
+  is_phantom?: boolean;
   image_url: string | null;
   category?: { id: string; name: string };
 }
@@ -453,7 +454,16 @@ export default function ProductsPage() {
                   <td>
                     {(() => {
                       const meta = TYPE_BADGE[product.product_type as ProductType] || TYPE_BADGE.FINISHED;
-                      return <span className={`badge ${meta.cls}`}>{meta.label}</span>;
+                      return (
+                        <div className="flex items-center gap-1">
+                          <span className={`badge ${meta.cls}`}>{meta.label}</span>
+                          {product.is_phantom && (
+                            <span className="badge bg-purple-100 text-purple-700" title="Phantom BOM — 판매 시 본인 재고는 차감 안 하고 BOM 구성품 분해 차감">
+                              🧩 세트
+                            </span>
+                          )}
+                        </div>
+                      );
                     })()}
                   </td>
                   <td className="font-mono text-xs text-slate-400">{product.barcode || '-'}</td>

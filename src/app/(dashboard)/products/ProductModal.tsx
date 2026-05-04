@@ -25,6 +25,7 @@ interface Product {
   is_active: boolean;
   is_taxable: boolean;
   track_inventory: boolean;
+  is_phantom?: boolean;
   image_url?: string | null;
   spec?: Record<string, string> | null;
   description?: string | null;
@@ -61,6 +62,7 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
     // 명시값(product?.track_inventory)이 있으면 그 값을 우선 사용.
     track_inventory: product?.track_inventory
       ?? ((product?.product_type as ProductType) === 'SERVICE' ? false : true),
+    is_phantom: product?.is_phantom ?? false,
     image_url: product?.image_url || null,
   });
   const [bomComputedCost, setBomComputedCost] = useState<number | null>(null);
@@ -404,6 +406,7 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
               checked={formData.track_inventory}
               onChange={e => setFormData({ ...formData, track_inventory: e.target.checked })}
               className="w-4 h-4"
+              disabled={formData.is_phantom}
             />
             <label htmlFor="track_inventory" className="text-sm text-slate-700 flex-1 cursor-pointer">
               재고 관리 대상
@@ -412,6 +415,41 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
               </span>
             </label>
           </div>
+
+          {/* 세트 상품(Phantom BOM) — 판매 시 BOM 분해해서 구성품 차감 */}
+          {formData.product_type === 'FINISHED' && (
+            <div className={`flex items-start gap-2 p-3 rounded-md border ${
+              formData.is_phantom ? 'bg-purple-50 border-purple-200' : 'bg-slate-50 border-slate-200'
+            }`}>
+              <input
+                type="checkbox"
+                id="is_phantom"
+                checked={!!formData.is_phantom}
+                onChange={e => {
+                  const next = e.target.checked;
+                  setFormData(prev => ({
+                    ...prev,
+                    is_phantom: next,
+                    // phantom이면 본인 재고 안 잡으므로 track_inventory 자동 해제
+                    track_inventory: next ? false : prev.track_inventory,
+                  }));
+                }}
+                className="w-4 h-4 mt-0.5"
+              />
+              <label htmlFor="is_phantom" className="text-sm text-slate-700 flex-1 cursor-pointer">
+                🧩 세트 상품 (Phantom BOM)
+                <p className="text-xs text-slate-500 mt-0.5">
+                  체크 시 판매되어도 <b>본인 재고는 차감되지 않고</b>, 아래 BOM에 등록된
+                  구성품의 재고가 자동으로 차감됩니다. (예: "침향30환 +오)" → 침향30환 1개 + 오미자 1개)
+                </p>
+                {formData.is_phantom && bomLinesCount === 0 && (
+                  <p className="text-xs text-red-600 mt-1">
+                    ⚠️ BOM이 비어있습니다. 저장 후 BOM 화면에서 구성품을 등록해야 판매 가능합니다.
+                  </p>
+                )}
+              </label>
+            </div>
+          )}
 
           {/* 이미지 업로드 섹션 */}
           <div>

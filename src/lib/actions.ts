@@ -58,6 +58,11 @@ export async function createProduct(formData: FormData) {
     ? (productType === 'SERVICE' ? false : true)
     : rawTrack !== 'false';
 
+  // Phantom BOM 여부 — 완제품에만 의미. true면 본인 재고는 차감 안 함(track_inventory 자동 false).
+  const rawPhantom = formData.get('is_phantom');
+  const isPhantom = rawPhantom == null ? false : rawPhantom === 'true';
+  const finalTrackInventory = isPhantom ? false : trackInventory;
+
   const productData: any = {
     name,
     code,
@@ -72,12 +77,18 @@ export async function createProduct(formData: FormData) {
     image_url: rawImageUrl || null,
     spec: rawSpec ? JSON.parse(rawSpec) : {},
     description: (formData.get('description') as string) || null,
-    track_inventory: trackInventory,
+    track_inventory: finalTrackInventory,
+    is_phantom: isPhantom,
   };
 
-  // 마이그 059 미적용 환경 폴백 — track_inventory 컬럼 부재 시 제거하고 재시도
+  // 마이그 061/059 미적용 폴백 — 컬럼이 없으면 단계적으로 제거 후 재시도
   let { data: newProduct, error } = await (supabase as any)
     .from('products').insert(productData).select().single();
+  if (error && /is_phantom/i.test(String(error.message))) {
+    delete productData.is_phantom;
+    const retry = await (supabase as any).from('products').insert(productData).select().single();
+    newProduct = retry.data; error = retry.error;
+  }
   if (error && /column.*track_inventory|track_inventory.*does not exist/i.test(String(error.message))) {
     delete productData.track_inventory;
     const retry = await (supabase as any).from('products').insert(productData).select().single();
@@ -91,8 +102,9 @@ export async function createProduct(formData: FormData) {
     return { error: error.message };
   }
 
-  // 제품 생성 시 활성 지점에 재고 레코드 자동 생성 — track_inventory=true일 때만
-  if (trackInventory) {
+  // 제품 생성 시 활성 지점에 재고 레코드 자동 생성 — 본인 재고 추적 대상일 때만
+  // (phantom=true이면 finalTrackInventory=false → inventories 행 안 만듦)
+  if (finalTrackInventory) {
     const { data: branches } = await supabase
       .from('branches')
       .select('id')
@@ -144,6 +156,11 @@ export async function updateProduct(id: string, formData: FormData) {
   const rawTrack = formData.get('track_inventory');
   const trackInventory = rawTrack == null ? undefined : rawTrack !== 'false';
 
+  // Phantom BOM — true면 본인 재고 차감 X, BOM 분해 차감. track_inventory 자동 false.
+  const rawPhantom = formData.get('is_phantom');
+  const isPhantom = rawPhantom == null ? undefined : rawPhantom === 'true';
+  const finalTrackInventory = isPhantom === true ? false : trackInventory;
+
   const productData: any = {
     name: formData.get('name') as string,
     ...(rawCode ? { code: rawCode } : {}),
@@ -160,12 +177,18 @@ export async function updateProduct(id: string, formData: FormData) {
     image_url: rawImageUrl || null,
     ...(rawSpec ? { spec: JSON.parse(rawSpec) } : {}),
     description: (formData.get('description') as string) || null,
-    ...(trackInventory !== undefined ? { track_inventory: trackInventory } : {}),
+    ...(finalTrackInventory !== undefined ? { track_inventory: finalTrackInventory } : {}),
+    ...(isPhantom !== undefined ? { is_phantom: isPhantom } : {}),
   };
 
-  // 마이그 059 미적용 폴백
+  // 마이그 061/059 미적용 폴백 — 단계적으로 컬럼 제거 후 재시도
   let res = await (supabase as any).from('products').update(productData).eq('id', id);
   let error = res.error;
+  if (error && /is_phantom/i.test(String(error.message))) {
+    delete productData.is_phantom;
+    res = await (supabase as any).from('products').update(productData).eq('id', id);
+    error = res.error;
+  }
   if (error && /column.*track_inventory|track_inventory.*does not exist/i.test(String(error.message))) {
     delete productData.track_inventory;
     res = await (supabase as any).from('products').update(productData).eq('id', id);
@@ -1614,13 +1637,18 @@ export async function processPosCheckout(payload: CheckoutPayload) {
   const firstCard = splits.find(s => s.method === 'card' || s.method === 'card_keyin');
 
   // ⓪ 판매 가능 제품 검증 — RAW/SUB는 POS 판매 불가. SERVICE는 허용(무형상품).
-  //   동시에 product_type별 track_inventory를 미리 가져와 ④에서 재고 차감 분기에 사용.
-  //   폴백: 마이그 042(product_type)/059(track_inventory) 미적용 환경 모두 안전.
+  //   동시에 product_type별 track_inventory · is_phantom을 미리 가져와 ④ 재고 차감 분기에 사용.
+  //   폴백: 042(product_type) / 059(track_inventory) / 061(is_phantom) 미적용 환경 모두 안전.
   const productIds = Array.from(new Set(cart.map(c => c.productId)));
   const trackByProduct = new Map<string, boolean>();
+  const phantomByProduct = new Map<string, boolean>();
   if (productIds.length > 0) {
     let ptRes: any = await db.from('products')
-      .select('id, product_type, track_inventory').in('id', productIds);
+      .select('id, product_type, track_inventory, is_phantom').in('id', productIds);
+    if (ptRes.error && /is_phantom/i.test(String(ptRes.error.message))) {
+      // 061 미적용 — is_phantom 없이 재시도
+      ptRes = await db.from('products').select('id, product_type, track_inventory').in('id', productIds);
+    }
     if (ptRes.error && /track_inventory/i.test(String(ptRes.error.message))) {
       // 059 미적용 — track_inventory 없이 재시도
       ptRes = await db.from('products').select('id, product_type').in('id', productIds);
@@ -1634,6 +1662,29 @@ export async function processPosCheckout(payload: CheckoutPayload) {
         // track_inventory 컬럼 부재 시 SERVICE만 false, 그 외 true 기본
         const t = p.track_inventory ?? (p.product_type === 'SERVICE' ? false : true);
         trackByProduct.set(p.id, t);
+        phantomByProduct.set(p.id, p.is_phantom === true);
+      }
+    }
+  }
+
+  // Phantom BOM 사전 로드 — 판매된 phantom 제품의 구성품을 한 번에 가져옴
+  //   product_bom.product_id = phantom SKU id, material_id = 차감 대상, quantity = 단위당 수량
+  const phantomIds = productIds.filter(id => phantomByProduct.get(id) === true);
+  const bomByPhantom = new Map<string, Array<{ material_id: string; quantity: number }>>();
+  if (phantomIds.length > 0) {
+    const { data: bomRows } = await db
+      .from('product_bom')
+      .select('product_id, material_id, quantity')
+      .in('product_id', phantomIds);
+    for (const row of (bomRows || []) as any[]) {
+      const list = bomByPhantom.get(row.product_id) || [];
+      list.push({ material_id: row.material_id, quantity: Number(row.quantity || 0) });
+      bomByPhantom.set(row.product_id, list);
+    }
+    // BOM이 비어있는 phantom은 운영 사고 방지 위해 거부
+    for (const pid of phantomIds) {
+      if ((bomByPhantom.get(pid) || []).length === 0) {
+        return { error: '세트 상품(Phantom)에 BOM이 등록되지 않아 판매할 수 없습니다. 제품 화면에서 구성품을 먼저 등록하세요.' };
       }
     }
   }
@@ -1892,36 +1943,62 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     const nameOf = (id: string) => (bns as any[] | null)?.find(b => b.id === id)?.name || id;
     movementMemo = `판매: ${nameOf(branchId)}, 출고: ${nameOf(stockBranchId)}`;
   }
-  for (const item of cart) {
-    // 재고 비관리 제품(SERVICE 등)은 차감/이력 모두 skip
-    if (trackByProduct.get(item.productId) === false) continue;
-
+  // 재고 차감 1건을 처리하는 헬퍼 — phantom 분해 차감과 일반 차감 모두 사용
+  const decrementStock = async (
+    productId: string,
+    qty: number,
+    refType: 'POS_SALE' | 'PHANTOM_DECOMPOSE',
+    memo: string | null,
+  ) => {
     const { data: inv } = await supabase
       .from('inventories').select('id, quantity')
-      .eq('branch_id', stockBranchId).eq('product_id', item.productId).maybeSingle();
+      .eq('branch_id', stockBranchId).eq('product_id', productId).maybeSingle();
     const inv_ = inv as any;
     const before = inv_?.quantity ?? 0;
-    const after = before - item.quantity;
+    const after = before - qty;
     if (inv_) {
       await db.from('inventories').update({ quantity: after }).eq('id', inv_.id);
     } else {
       // 레코드가 없으면 음수로 신규 생성 — 추후 입고 시 누적 복원
       await db.from('inventories').insert({
         branch_id: stockBranchId,
-        product_id: item.productId,
+        product_id: productId,
         quantity: after,
         safety_stock: 0,
       });
     }
     await db.from('inventory_movements').insert({
       branch_id: stockBranchId,
-      product_id: item.productId,
+      product_id: productId,
       movement_type: 'OUT',
-      quantity: item.quantity,
+      quantity: qty,
       reference_id: saleOrderId,
-      reference_type: 'POS_SALE',
-      memo: movementMemo,
+      reference_type: refType,
+      memo,
     });
+    return after;
+  };
+
+  for (const item of cart) {
+    // 재고 비관리 제품(SERVICE 등)은 차감/이력 모두 skip
+    if (trackByProduct.get(item.productId) === false) continue;
+
+    // Phantom 제품: 본인은 차감 X, BOM 분해해서 구성품 차감
+    if (phantomByProduct.get(item.productId) === true) {
+      const components = bomByPhantom.get(item.productId) || [];
+      const phantomMemo = [movementMemo, `세트분해: ${item.name} ×${item.quantity}`]
+        .filter(Boolean).join(' · ');
+      for (const c of components) {
+        const totalQty = Math.ceil(c.quantity * item.quantity); // 분수 BOM 안전 처리
+        if (totalQty <= 0) continue;
+        const after = await decrementStock(c.material_id, totalQty, 'PHANTOM_DECOMPOSE', phantomMemo);
+        stockUpdates[c.material_id] = after;
+      }
+      continue;
+    }
+
+    // 일반 제품: 자기 자신 차감
+    const after = await decrementStock(item.productId, item.quantity, 'POS_SALE', movementMemo);
     stockUpdates[item.productId] = after;
   }
 
