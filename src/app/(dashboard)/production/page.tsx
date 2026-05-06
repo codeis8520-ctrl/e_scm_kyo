@@ -1207,7 +1207,10 @@ function BomComposer({
   const [matSearch, setMatSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<'' | 'RAW' | 'SUB'>('');
   const [categoryFilter, setCategoryFilter] = useState<string>('');
-  const [showBrowser, setShowBrowser] = useState(true);
+  // 자재 브라우저(검색+후보 리스트) 가시성.
+  //   초기: 등록된 자재가 없으면 펼침(빈 BOM에서 바로 추가 가능), 있으면 접음(현재 구성에 집중).
+  //   사용자는 "+ 자재 추가" 토글로 언제든 켜고 끌 수 있음.
+  const [showBrowser, setShowBrowser] = useState(initialLines.length === 0);
   const [saving, setSavingState] = useState(false);
   const [dirty, setDirtyState] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -1225,6 +1228,8 @@ function BomComposer({
     setMatSearch('');
     setTypeFilter('');
     setCategoryFilter('');
+    // 새 제품 선택 시 — 자재 브라우저는 빈 BOM에선 펼침, 채워진 BOM에선 접음
+    setShowBrowser(initialLines.length === 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [product.id]);
 
@@ -1377,7 +1382,8 @@ function BomComposer({
   };
 
   return (
-    <div className="card">
+    <div className="card flex flex-col">
+      {/* 헤더는 항상 최상단(order-0 = 자동) — 그 아래 영역들은 order로 시각 순서 제어 */}
       <div className="flex items-start justify-between gap-3 mb-4 pb-3 border-b border-slate-100">
         <div>
           <p className="text-xs text-slate-400 font-mono">{product.code}</p>
@@ -1438,8 +1444,24 @@ function BomComposer({
         </div>
       )}
 
-      {/* 자재 브라우저 (검색 + 타입/카테고리 필터 + 상시 리스트) */}
-      <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+      {/* 자재 브라우저 (검색 + 타입/카테고리 필터 + 상시 리스트) — order-2: 시각상 BOM 라인 아래 */}
+      <div className="order-2 mb-4 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+        {/* 토글 헤더 — 항상 표시. 본문(검색·필터·리스트)만 펼침/접기. */}
+        <button
+          onClick={() => setShowBrowser(s => !s)}
+          className="w-full flex items-center justify-between gap-2 text-left mb-2 hover:bg-slate-100/60 -mx-1 -my-0.5 px-1 py-0.5 rounded"
+          aria-expanded={showBrowser}
+        >
+          <span className="text-sm font-semibold text-slate-700">
+            {showBrowser ? '➖ 자재 추가 닫기' : '➕ 자재 추가'}
+          </span>
+          <span className="text-xs text-slate-400">
+            {showBrowser ? '접기' : `${candidates.length}종 후보 · 펼치기`}
+          </span>
+        </button>
+
+        {/* 검색창 — 펼쳐졌을 때만 노출 */}
+        {showBrowser && (
         <div className="flex items-center justify-between gap-2 mb-2">
           <div className="relative flex-1">
             <input
@@ -1458,15 +1480,11 @@ function BomComposer({
               </button>
             )}
           </div>
-          <button
-            onClick={() => setShowBrowser(s => !s)}
-            className="text-xs text-slate-500 hover:text-slate-700 whitespace-nowrap"
-          >
-            {showBrowser ? '접기' : '펼치기'}
-          </button>
         </div>
+        )}
 
-        {/* 타입 chip */}
+        {/* 타입 chip — 펼쳐졌을 때만 */}
+        {showBrowser && (
         <div className="flex flex-wrap gap-1 mb-1.5">
           {([
             ['', '전체', typeCounts.all],
@@ -1490,9 +1508,10 @@ function BomComposer({
             );
           })}
         </div>
+        )}
 
-        {/* 카테고리 chip */}
-        {relevantCategories.length > 0 && (
+        {/* 카테고리 chip — 펼쳐졌을 때만 */}
+        {showBrowser && relevantCategories.length > 0 && (
           <div className="flex flex-wrap gap-1">
             <button
               onClick={() => setCategoryFilter('')}
@@ -1581,12 +1600,39 @@ function BomComposer({
         )}
       </div>
 
-      {/* BOM 행 목록 */}
-      {lines.length === 0 ? (
-        <div className="text-center py-10 text-slate-400 border-2 border-dashed border-slate-200 rounded-lg">
-          <p className="text-sm">위 검색창에서 자재를 추가하세요.</p>
+      {/* BOM 행 목록 — order-1: 시각상 자재 브라우저 위 */}
+      <div className="order-1 mb-1">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+            현재 조립 구성 <span className="text-slate-700 normal-case">{lines.length}종</span>
+          </p>
+          {lines.length > 0 && !showBrowser && (
+            <button
+              type="button"
+              onClick={() => setShowBrowser(true)}
+              className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+            >
+              ➕ 자재 추가
+            </button>
+          )}
         </div>
-      ) : (
+
+        {lines.length === 0 ? (
+          <div className="text-center py-12 text-slate-400 border-2 border-dashed border-slate-200 rounded-lg">
+            <p className="text-3xl mb-2">📦</p>
+            <p className="text-sm font-medium text-slate-500 mb-1">아직 등록된 자재가 없습니다</p>
+            <p className="text-xs">아래 <span className="font-medium text-slate-600">➕ 자재 추가</span> 영역에서 구성품을 선택하세요.</p>
+            {!showBrowser && (
+              <button
+                type="button"
+                onClick={() => setShowBrowser(true)}
+                className="mt-3 px-4 py-2 rounded-md bg-blue-600 text-white text-sm font-medium hover:bg-blue-700"
+              >
+                ➕ 자재 추가하기
+              </button>
+            )}
+          </div>
+        ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm min-w-[700px]">
             <thead className="text-xs text-slate-500">
@@ -1688,10 +1734,11 @@ function BomComposer({
             </tbody>
           </table>
         </div>
-      )}
+        )}
+      </div>
 
       {dirty && (
-        <p className="mt-3 text-xs text-amber-600">저장되지 않은 변경사항이 있습니다.</p>
+        <p className="order-3 mt-1 text-xs text-amber-600">저장되지 않은 변경사항이 있습니다.</p>
       )}
 
       {showCopyModal && (
