@@ -39,6 +39,7 @@ interface Material {
   unit?: string;
   cost?: number | null;
   product_type: ProductType;
+  is_phantom?: boolean;
   category_id?: string | null;
   category?: { id: string; name: string } | null;
   image_url?: string | null;
@@ -195,12 +196,19 @@ export default function ProductionPage() {
       }
     })();
     (async () => {
-      // 마이그레이션 042가 미적용이면 product_type 컬럼이 없어 실패 → 폴백
+      // 마이그 042(product_type)·061(is_phantom) 단계적 폴백
       let res: any = await supabase
         .from('products')
-        .select('id, name, code, unit, cost, image_url, product_type, category_id, category:categories(id, name)')
+        .select('id, name, code, unit, cost, image_url, product_type, is_phantom, category_id, category:categories(id, name)')
         .eq('is_active', true)
         .order('name');
+      if (res.error && /is_phantom/i.test(String(res.error.message))) {
+        res = await supabase
+          .from('products')
+          .select('id, name, code, unit, cost, image_url, product_type, category_id, category:categories(id, name)')
+          .eq('is_active', true)
+          .order('name');
+      }
       if (res.error) {
         console.warn('[production] products query fallback (migration 042?):', res.error.message);
         res = await supabase
@@ -1059,10 +1067,19 @@ function BomComposerLayout({
     () => products.filter(p => p.product_type === 'FINISHED' || p.product_type == null),
     [products],
   );
-  const materialCandidates: Material[] = useMemo(
-    () => products.filter(p => p.product_type === 'RAW' || p.product_type === 'SUB'),
-    [products],
-  );
+  // BOM 자식 후보:
+  //  - 일반 완제품(생산용 BOM)  → RAW + SUB만 (현 동작)
+  //  - Phantom 완제품(판매용 BOM) → FINISHED + RAW + SUB 모두 (자기 자신·SERVICE 제외)
+  //    예: "침향30환 +오)" Phantom의 자식으로 본품 침향30환(FINISHED) + 오미자(RAW)
+  const materialCandidates: Material[] = useMemo(() => {
+    const parent = products.find(p => p.id === selectedFinishedId);
+    if (parent?.is_phantom) {
+      return products.filter(p =>
+        p.id !== parent.id && p.product_type !== 'SERVICE'
+      );
+    }
+    return products.filter(p => p.product_type === 'RAW' || p.product_type === 'SUB');
+  }, [products, selectedFinishedId]);
 
   const bomCountByProduct = useMemo(() => {
     const map: Record<string, number> = {};
@@ -1126,6 +1143,11 @@ function BomComposerLayout({
                 <div className="flex items-center justify-between gap-2">
                   <span className={`font-medium text-sm truncate ${selected ? 'text-blue-700' : 'text-slate-700'}`}>{p.name}</span>
                   <div className="flex items-center gap-1">
+                    {p.is_phantom && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-medium" title="Phantom BOM — 판매 시 분해">
+                        🧩 세트
+                      </span>
+                    )}
                     {dirtyMark && <span className="text-amber-500 text-xs" title="저장되지 않음">●</span>}
                     {count > 0 ? (
                       <span className="text-xs text-blue-600 bg-blue-100 rounded-full px-2">{count}</span>
@@ -1359,8 +1381,20 @@ function BomComposer({
       <div className="flex items-start justify-between gap-3 mb-4 pb-3 border-b border-slate-100">
         <div>
           <p className="text-xs text-slate-400 font-mono">{product.code}</p>
-          <h3 className="font-bold text-slate-800 text-lg">{product.name}</h3>
+          <div className="flex items-center gap-2">
+            <h3 className="font-bold text-slate-800 text-lg">{product.name}</h3>
+            {product.is_phantom && (
+              <span className="text-xs px-2 py-0.5 rounded bg-purple-100 text-purple-700 font-medium" title="Phantom — 판매 시 BOM 분해 차감">
+                🧩 세트 상품
+              </span>
+            )}
+          </div>
           <p className="text-xs text-slate-500 mt-1">자재 {lines.length}종 · 예상 원가 <span className="font-medium text-slate-700">{Math.round(totalCost).toLocaleString()}원</span> / 완제품 1단위</p>
+          {product.is_phantom && (
+            <p className="text-[11px] text-purple-700 mt-1.5 bg-purple-50 border border-purple-200 rounded px-2 py-1">
+              💡 세트 상품의 BOM은 판매 시 자동 분해됩니다. <b>완제품(본품)도 구성품으로 추가 가능</b> — 옵션 추가품(오미자·생강 등)과 함께 등록하세요.
+            </p>
+          )}
         </div>
         <div className="flex gap-2">
           <button
