@@ -134,6 +134,21 @@ body {
     border-collapse: collapse;
   }
 
+  /* 그리드 헤더 sticky — 스크롤해도 어느 컬럼인지 항상 보이도록 */
+  .table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+
+  /* .table을 직접 감싸는 가로 스크롤 wrapper에 자동으로 세로 스크롤 컨테이너 부여.
+     이렇게 하지 않으면 sticky thead가 page scroll에 갇혀 viewport에 안 붙음.
+     max-height이 콘텐츠 높이보다 크면 작은 테이블엔 영향 없음. */
+  .overflow-x-auto:has(> table.table) {
+    max-height: calc(100vh - 200px);
+    overflow-y: auto;
+  }
+
   .table th {
     text-align: left;
     padding: 0.5rem 0.75rem;
