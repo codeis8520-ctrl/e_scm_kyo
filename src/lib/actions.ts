@@ -578,44 +578,46 @@ export async function bulkDeleteProducts(ids: string[]) {
   if (!Array.isArray(ids) || ids.length === 0) {
     return { error: '삭제할 제품이 없습니다.', deleted: 0, failed: [] };
   }
-  if (ids.length > 200) {
-    return { error: '한 번에 최대 200개까지 삭제할 수 있습니다.', deleted: 0, failed: [] };
-  }
   const supabase = await createClient();
   const db = supabase as any;
 
-  // 1) 자식 테이블 사전 정리 — 참조 행이 있어 삭제가 막히는 경우 대응.
-  //    실패해도 본 삭제 단계에서 어떤 id가 막혔는지 다시 확인.
-  await db.from('inventories').delete().in('product_id', ids);
-  await db.from('inventory_movements').delete().in('product_id', ids);
-  await db.from('product_files').delete().in('product_id', ids);
-  await db.from('product_bom').delete().in('product_id', ids);
-  await db.from('product_bom').delete().in('material_id', ids);
+  const DELETE_CHUNK = 200;
+  let totalDeleted = 0;
+  const allFailed: { id: string; reason: string }[] = [];
 
-  // 2) 일괄 시도
-  const tryBulk = await db.from('products').delete().in('id', ids);
-  if (!tryBulk.error) {
-    revalidatePath('/products');
-    revalidatePath('/inventory');
-    return { deleted: ids.length, failed: [] as { id: string; reason: string }[] };
-  }
+  for (let i = 0; i < ids.length; i += DELETE_CHUNK) {
+    const chunk = ids.slice(i, i + DELETE_CHUNK);
 
-  console.warn('[bulkDeleteProducts] 일괄 실패:', tryBulk.error);
+    // 1) 자식 테이블 사전 정리
+    await db.from('inventories').delete().in('product_id', chunk);
+    await db.from('inventory_movements').delete().in('product_id', chunk);
+    await db.from('product_files').delete().in('product_id', chunk);
+    await db.from('product_bom').delete().in('product_id', chunk);
+    await db.from('product_bom').delete().in('material_id', chunk);
 
-  // 3) 개별 시도 — 어떤 id가 막혔는지 정확히 식별
-  let deleted = 0;
-  const failed: { id: string; reason: string }[] = [];
-  for (const id of ids) {
-    const r = await db.from('products').delete().eq('id', id);
-    if (r.error) {
-      failed.push({ id, reason: r.error.message });
-    } else {
-      deleted++;
+    // 2) 일괄 시도
+    const tryBulk = await db.from('products').delete().in('id', chunk);
+    if (!tryBulk.error) {
+      totalDeleted += chunk.length;
+      continue;
+    }
+
+    console.warn('[bulkDeleteProducts] chunk 일괄 실패, 개별 시도:', tryBulk.error);
+
+    // 3) 일괄 실패 시 개별 시도 — FK 위반 등 정확한 실패 id 식별
+    for (const id of chunk) {
+      const r = await db.from('products').delete().eq('id', id);
+      if (r.error) {
+        allFailed.push({ id, reason: r.error.message });
+      } else {
+        totalDeleted++;
+      }
     }
   }
+
   revalidatePath('/products');
   revalidatePath('/inventory');
-  return { deleted, failed };
+  return { deleted: totalDeleted, failed: allFailed };
 }
 
 // ============ Customers ============

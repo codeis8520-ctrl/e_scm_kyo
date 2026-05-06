@@ -206,7 +206,10 @@ export default function ProductsPage() {
       const failed = res.failed || [];
       let msg = `✓ ${res.deleted}개 삭제 완료`;
       if (failed.length > 0) {
-        msg += `\n\n삭제 실패 ${failed.length}건 — 다른 데이터에서 사용 중일 수 있습니다.`;
+        const nameMap = new Map(products.map(p => [p.id, p.name]));
+        const lines = failed.slice(0, 20).map(f => `• ${nameMap.get(f.id) ?? f.id}`);
+        msg += `\n\n삭제 실패 ${failed.length}건 (다른 데이터에서 참조 중):\n${lines.join('\n')}`;
+        if (failed.length > 20) msg += `\n  … 외 ${failed.length - 20}건`;
       }
       alert(msg);
       setSelectedIds(new Set());
