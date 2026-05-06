@@ -1,16 +1,11 @@
 name: E2E Smoke Tests
 
-# ⚠ 활성화 전 GitHub Secrets에 다음 두 값 등록 필요:
-#    E2E_LOGIN_ID, E2E_PASSWORD
-#    (E2E_BASE_URL은 운영 URL을 그대로 쓸 거면 secret 또는 vars로,
-#     로컬 빌드를 띄워 테스트하려면 변수 비우면 webServer가 npm run dev 기동)
+# Secrets 등록 후 수동 실행 또는 push 트리거 재활성화:
+#   E2E_LOGIN_ID, E2E_PASSWORD, E2E_BASE_URL (vars)
 #
-# 이 워크플로우는 push에 즉시 반응하지 않습니다 — workflow_dispatch (수동) +
-# main 브랜치 push 시에만 동작. PR마다 돌리려면 pull_request 트리거 추가.
+# 현재는 workflow_dispatch(수동)만 활성화 — secrets 미설정 시 push마다 실패 메일 방지
 
 on:
-  push:
-    branches: [master]
   workflow_dispatch:
 
 jobs:

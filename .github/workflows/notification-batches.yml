@@ -2,24 +2,20 @@ name: Scheduled Batches
 
 # 경옥채 정기 배치 작업 (GitHub Actions 무료 크론)
 #
-# 필요한 Repository Secrets:
-#   - APP_URL        : 배포된 URL (예: https://e-scm-kyo.vercel.app)
-#   - CRON_SECRET    : 배치 엔드포인트 보호용 Bearer 토큰 (Vercel 환경변수와 동일)
+# 필요한 Repository Secrets (Settings → Secrets and variables → Actions):
+#   - APP_URL     : 배포된 URL (예: https://e-scm-kyo.vercel.app)
+#   - CRON_SECRET : 배치 엔드포인트 보호용 Bearer 토큰 (Vercel 환경변수와 동일)
+#
+# ⚠ Secrets 미설정 시 각 job이 skip 처리되어 실패 메일이 발송되지 않습니다.
 
 on:
   schedule:
-    # 카페24 매출 자동 동기화 — 매일 08:00 + 18:00 KST
-    - cron: '0 23 * * *'
-    - cron: '0 9 * * *'
-    # 생일 축하 알림톡 — 매일 09:00 KST (UTC 00:00)
-    - cron: '0 0 * * *'
-    # 휴면 고객 재유치 — 매주 월요일 10:00 KST (UTC 01:00)
-    - cron: '0 1 * * 1'
-    # 카페24 토큰 갱신 — 매일 02:00 KST (UTC 17:00)
-    - cron: '0 17 * * *'
-    # 캠페인 예약 발송 스케줄러 — 10분 간격
-    # (GitHub Actions 무료 플랜은 고부하 시 수 분 지연될 수 있음 — 분 단위 정밀도 불요구 전제)
-    - cron: '*/10 * * * *'
+    - cron: '0 23 * * *'   # 카페24 동기화 08:00 KST
+    - cron: '0 9 * * *'    # 카페24 동기화 18:00 KST
+    - cron: '0 0 * * *'    # 생일 알림톡 09:00 KST
+    - cron: '0 1 * * 1'    # 휴면 재유치 월 10:00 KST
+    - cron: '0 17 * * *'   # 카페24 토큰 갱신 02:00 KST
+    - cron: '*/10 * * * *' # 캠페인 예약 발송 10분 간격
   workflow_dispatch:
     inputs:
       job:
@@ -42,15 +38,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Cafe24 매출 자동 동기화 (최근 3일)
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "⚠ APP_URL 또는 CRON_SECRET 미설정 — 건너뜀"
+            exit 0
+          fi
           echo "▶ 카페24 매출 동기화 호출"
           RESPONSE=$(curl -sSL -w "\n%{http_code}" \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.APP_URL }}/api/cafe24/sync-orders?days=3")
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$APP_URL/api/cafe24/sync-orders?days=3")
           BODY=$(echo "$RESPONSE" | head -n -1)
           CODE=$(echo "$RESPONSE" | tail -n 1)
-          echo "HTTP: $CODE"
-          echo "Body: $BODY"
+          echo "HTTP: $CODE  Body: $BODY"
           if [ "$CODE" != "200" ]; then exit 1; fi
 
   birthday:
@@ -60,15 +62,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 생일 축하 배치
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "⚠ APP_URL 또는 CRON_SECRET 미설정 — 건너뜀"
+            exit 0
+          fi
           echo "▶ 생일 축하 배치 호출"
           RESPONSE=$(curl -sSL -w "\n%{http_code}" \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.APP_URL }}/api/notifications/batch/birthday")
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$APP_URL/api/notifications/batch/birthday")
           BODY=$(echo "$RESPONSE" | head -n -1)
           CODE=$(echo "$RESPONSE" | tail -n 1)
-          echo "HTTP: $CODE"
-          echo "Body: $BODY"
+          echo "HTTP: $CODE  Body: $BODY"
           if [ "$CODE" != "200" ]; then exit 1; fi
 
   dormant:
@@ -78,15 +86,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 휴면 재유치 배치
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "⚠ APP_URL 또는 CRON_SECRET 미설정 — 건너뜀"
+            exit 0
+          fi
           echo "▶ 휴면 재유치 배치 호출"
           RESPONSE=$(curl -sSL -w "\n%{http_code}" \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.APP_URL }}/api/notifications/batch/dormant?days=90&limit=50")
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$APP_URL/api/notifications/batch/dormant?days=90&limit=50")
           BODY=$(echo "$RESPONSE" | head -n -1)
           CODE=$(echo "$RESPONSE" | tail -n 1)
-          echo "HTTP: $CODE"
-          echo "Body: $BODY"
+          echo "HTTP: $CODE  Body: $BODY"
           if [ "$CODE" != "200" ]; then exit 1; fi
 
   cafe24-refresh:
@@ -96,15 +110,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 카페24 토큰 갱신
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "⚠ APP_URL 또는 CRON_SECRET 미설정 — 건너뜀"
+            exit 0
+          fi
           echo "▶ 카페24 토큰 갱신 호출"
           RESPONSE=$(curl -sSL -w "\n%{http_code}" \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.APP_URL }}/api/cafe24/refresh")
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$APP_URL/api/cafe24/refresh")
           BODY=$(echo "$RESPONSE" | head -n -1)
           CODE=$(echo "$RESPONSE" | tail -n 1)
-          echo "HTTP: $CODE"
-          echo "Body: $BODY"
+          echo "HTTP: $CODE  Body: $BODY"
           if [ "$CODE" != "200" ]; then exit 1; fi
 
   campaign-scheduler:
@@ -114,13 +134,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 캠페인 예약 발송 스케줄러
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "⚠ APP_URL 또는 CRON_SECRET 미설정 — 건너뜀"
+            exit 0
+          fi
           echo "▶ 캠페인 스케줄러 호출"
           RESPONSE=$(curl -sSL -w "\n%{http_code}" \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.APP_URL }}/api/notifications/batch/campaign-scheduler")
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$APP_URL/api/notifications/batch/campaign-scheduler")
           BODY=$(echo "$RESPONSE" | head -n -1)
           CODE=$(echo "$RESPONSE" | tail -n 1)
-          echo "HTTP: $CODE"
-          echo "Body: $BODY"
+          echo "HTTP: $CODE  Body: $BODY"
           if [ "$CODE" != "200" ]; then exit 1; fi
