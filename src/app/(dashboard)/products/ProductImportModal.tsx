@@ -60,7 +60,13 @@ export default function ProductImportModal({
   const [rows, setRows] = useState<PreviewRow[]>([]);
   const [parseError, setParseError] = useState('');
   const [result, setResult] = useState<{ created: number; updated: number; skipped: { row: number; reason: string }[] } | null>(null);
+  // 진행률: 클라이언트에서 chunk 단위로 끊어 호출하므로 N/M 표시
+  const [progress, setProgress] = useState<{ current: number; total: number; partial: { created: number; updated: number; skipped: number } } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Vercel Hobby(10초 함수 timeout) 안전 마진 — 한 번에 200행씩.
+  //   서버 측 batch upsert 처리 능력은 약 100행/초이므로 200행 chunk는 2~3초 내 완료.
+  const CHUNK_SIZE = 200;
 
   const handleFile = async (file: File) => {
     setParseError('');
@@ -126,19 +132,61 @@ export default function ProductImportModal({
   };
 
   const handleImport = async () => {
-    const valid = rows.filter(r => !r._error).map(r => {
-      const { _row, _error, _existingCode, ...rest } = r;
-      return rest as ProductImportRow;
-    });
-    if (valid.length === 0) { alert('등록 가능한 행이 없습니다.'); return; }
+    // PreviewRow에 매겨진 _row(엑셀 행 번호) 보존 → 서버에서 받는 row 번호를 원본 엑셀 행으로 보정
+    const validWithRowNo = rows.filter(r => !r._error);
+    if (validWithRowNo.length === 0) { alert('등록 가능한 행이 없습니다.'); return; }
+
     setStep('importing');
-    const res = await bulkImportProducts(valid);
-    if ((res as any).error) {
-      alert(`실패: ${(res as any).error}`);
-      setStep('preview');
-      return;
+
+    const totalChunks = Math.ceil(validWithRowNo.length / CHUNK_SIZE);
+    setProgress({ current: 0, total: totalChunks, partial: { created: 0, updated: 0, skipped: 0 } });
+
+    let agg = { created: 0, updated: 0, skipped: [] as { row: number; reason: string }[] };
+
+    for (let c = 0; c < totalChunks; c++) {
+      const startIdx = c * CHUNK_SIZE;
+      const sliceWithRowNo = validWithRowNo.slice(startIdx, startIdx + CHUNK_SIZE);
+      const slice = sliceWithRowNo.map(r => {
+        const { _row, _error, _existingCode, ...rest } = r;
+        return rest as ProductImportRow;
+      });
+
+      try {
+        const res = await bulkImportProducts(slice);
+
+        if ((res as any).error) {
+          // chunk 전체 실패 — 행 번호와 사유 누적, 다음 chunk 계속
+          for (const r of sliceWithRowNo) {
+            agg.skipped.push({ row: r._row, reason: (res as any).error });
+          }
+        } else {
+          agg.created += res.created;
+          agg.updated += res.updated;
+          // 서버가 반환한 row 번호(1-based, chunk 내)를 원본 엑셀 행 번호로 변환
+          for (const s of res.skipped) {
+            const local = s.row - 1;
+            const original = sliceWithRowNo[local];
+            agg.skipped.push({
+              row: original ? original._row : s.row,
+              reason: s.reason,
+            });
+          }
+        }
+      } catch (err: any) {
+        // 네트워크/timeout 등 — 해당 chunk 전체를 실패로 기록하고 진행 계속
+        for (const r of sliceWithRowNo) {
+          agg.skipped.push({ row: r._row, reason: `네트워크/타임아웃: ${err?.message || '알 수 없음'}` });
+        }
+      }
+
+      setProgress({
+        current: c + 1,
+        total: totalChunks,
+        partial: { created: agg.created, updated: agg.updated, skipped: agg.skipped.length },
+      });
     }
-    setResult({ created: res.created, updated: res.updated, skipped: res.skipped });
+
+    setResult(agg);
     setStep('done');
   };
 
@@ -147,6 +195,7 @@ export default function ProductImportModal({
     setRows([]);
     setParseError('');
     setResult(null);
+    setProgress(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -257,7 +306,37 @@ export default function ProductImportModal({
           )}
 
           {step === 'importing' && (
-            <div className="py-8 text-center text-slate-500 text-sm">처리 중... (제품 수에 따라 시간이 걸릴 수 있습니다)</div>
+            <div className="py-8 px-4">
+              <div className="text-center text-sm text-slate-700 font-medium mb-3">
+                {progress ? (
+                  <>처리 중... <span className="text-blue-600">{progress.current}/{progress.total}</span> 묶음 완료</>
+                ) : '처리 시작...'}
+              </div>
+              {progress && (
+                <>
+                  <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden mb-3">
+                    <div
+                      className="h-full bg-blue-600 transition-all duration-300"
+                      style={{ width: `${Math.round((progress.current / progress.total) * 100)}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-center gap-4 text-xs text-slate-600">
+                    <span>신규 <b className="text-green-600">{progress.partial.created}</b></span>
+                    <span>·</span>
+                    <span>업데이트 <b className="text-blue-600">{progress.partial.updated}</b></span>
+                    {progress.partial.skipped > 0 && (
+                      <>
+                        <span>·</span>
+                        <span>제외 <b className="text-red-500">{progress.partial.skipped}</b></span>
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+              <p className="text-center text-[11px] text-slate-400 mt-3">
+                {CHUNK_SIZE}행씩 끊어서 안전하게 처리합니다 (Vercel 함수 timeout 보호).
+              </p>
+            </div>
           )}
 
           {step === 'done' && result && (
