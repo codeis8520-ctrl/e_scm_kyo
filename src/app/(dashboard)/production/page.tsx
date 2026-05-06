@@ -14,7 +14,7 @@ import {
 } from '@/lib/oem-actions';
 import { createClient } from '@/lib/supabase/client';
 import { fmtDateKST } from '@/lib/date';
-import { buildCategoryInfo as buildCategoryInfoForOrders, sortedCategoryOptions as sortedCategoryOptionsForOrders, type CategoryRow as _CategoryRowOrders } from '@/lib/category-tree';
+import { buildCategoryInfo as buildCategoryInfoForOrders, sortedCategoryOptions as sortedCategoryOptionsForOrders, categoryOptionLabel, type CategoryRow as _CategoryRowOrders } from '@/lib/category-tree';
 
 type ProductType = 'FINISHED' | 'RAW' | 'SUB';
 const TYPE_BADGE: Record<ProductType, { label: string; cls: string }> = {
@@ -406,9 +406,7 @@ export default function ProductionPage() {
                 >
                   <option value="">전체 카테고리</option>
                   {opts.map(c => (
-                    <option key={c.id} value={c.id}>
-                      {`${'  '.repeat(c.depth)}[${c.pathCode}] ${c.name}`}
-                    </option>
+                    <option key={c.id} value={c.id}>{categoryOptionLabel(c)}</option>
                   ))}
                 </select>
               );

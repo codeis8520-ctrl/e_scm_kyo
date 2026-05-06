@@ -284,7 +284,7 @@ export default function ProductsPage() {
           <option value="">전체 카테고리</option>
           {categoryOptions.map(c => (
             <option key={c.id} value={c.id}>
-              {`${'  '.repeat(c.depth)}[${c.pathCode}] ${c.name}`}
+              {'  '.repeat(c.depth) + `[${c.pathCode}] ${c.name}`}
             </option>
           ))}
         </select>
