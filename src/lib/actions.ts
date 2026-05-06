@@ -295,6 +295,50 @@ function buildServerCategoryMap(categories: any[]): {
   return { byPathName, byPathCode, byLeafName };
 }
 
+// 엑셀 카테고리 경로(A / B / C)를 DB 계층으로 자동 생성.
+// 이미 있는 노드는 건드리지 않고, 없는 노드만 생성 후 갱신된 전체 목록 반환.
+async function ensureCategoryPaths(paths: string[], db: any): Promise<any[]> {
+  const { data: existing } = await db.from('categories').select('id, name, parent_id, sort_order');
+  const all: any[] = existing || [];
+
+  // parentId(null='__root__') → name → id 빠른 조회용
+  const lookup = new Map<string, Map<string, string>>();
+  const key = (pid: string | null) => pid ?? '__root__';
+  for (const c of all) {
+    if (!lookup.has(key(c.parent_id))) lookup.set(key(c.parent_id), new Map());
+    lookup.get(key(c.parent_id))!.set(c.name, c.id);
+  }
+
+  let created = false;
+  for (const path of paths) {
+    const parts = path.split('/').map((p: string) => p.trim()).filter(Boolean);
+    let parentId: string | null = null;
+    for (const part of parts) {
+      const k = key(parentId);
+      if (!lookup.has(k)) lookup.set(k, new Map());
+      if (!lookup.get(k)!.has(part)) {
+        const { data } = await db
+          .from('categories')
+          .insert({ name: part, parent_id: parentId, sort_order: 0 })
+          .select('id')
+          .single();
+        if (data?.id) {
+          lookup.get(k)!.set(part, data.id);
+          all.push({ id: data.id, name: part, parent_id: parentId, sort_order: 0 });
+          created = true;
+        }
+      }
+      parentId = lookup.get(k)!.get(part) ?? null;
+    }
+  }
+
+  if (created) {
+    const { data: fresh } = await db.from('categories').select('id, name, parent_id, sort_order');
+    return fresh || [];
+  }
+  return all;
+}
+
 function resolveCategoryId(
   raw: string | undefined,
   maps: ReturnType<typeof buildServerCategoryMap>,
@@ -355,13 +399,16 @@ export async function bulkImportProducts(rows: ProductImportRow[]) {
   const supabase = await createClient();
   const db = supabase as any;
 
-  // ① 사전 조회 (병렬) — 카테고리 트리 + 활성 지점
-  const [catsRes, branchesRes] = await Promise.all([
-    db.from('categories').select('id, name, parent_id, sort_order'),
-    db.from('branches').select('id').eq('is_active', true),
-  ]);
-  const catMaps = buildServerCategoryMap((catsRes.data || []) as any[]);
+  // ① 사전 조회 (병렬) — 활성 지점
+  const branchesRes = await db.from('branches').select('id').eq('is_active', true);
   const activeBranchIds = ((branchesRes.data || []) as any[]).map((b: any) => b.id);
+
+  // ① 카테고리: 엑셀 경로 기준으로 없는 계층 자동 생성 후 맵 빌드
+  const uniqueCatPaths = Array.from(new Set(
+    rows.map(r => (r.category || '').trim()).filter(Boolean)
+  ));
+  const freshCats = await ensureCategoryPaths(uniqueCatPaths, db);
+  const catMaps = buildServerCategoryMap(freshCats);
 
   // ② 기존 제품 전체 컬럼 조회 — merge용 (빈 칸은 기존 값 유지)
   const inputCodes = Array.from(new Set(rows.map(r => (r.code || '').trim()).filter(Boolean)));
