@@ -158,7 +158,7 @@ export default function ProductsPage() {
       return a.name.localeCompare(b.name, 'ko');
     });
     return arr;
-  }, [products, search, allowedCategoryIds, categoryInfo]);
+  }, [products, search, phantomFilter, allowedCategoryIds, categoryInfo]);
 
   const marginPct = (p: Product) => {
     if (!p.cost || !p.price) return null;
