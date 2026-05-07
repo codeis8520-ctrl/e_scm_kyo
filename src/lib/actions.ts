@@ -2011,14 +2011,14 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     console.log('[processPosCheckout] shipment created:', shipData);
   }
 
-  // ③ 판매 항목 저장 — 품목별 배송/수령 필드 포함
-  for (const item of cart) {
+  // ③ 판매 항목 저장 — 배치 INSERT (N개 순차 round-trip → 1회)
+  const itemPayloads: any[] = cart.map(item => {
     const dtype: ItemDeliveryType = (item.deliveryType as ItemDeliveryType) || 'PICKUP';
     const itemReceiptStatus: ReceiptStatus =
       dtype === 'PARCEL' ? 'PARCEL_PLANNED'
       : dtype === 'QUICK' ? 'QUICK_PLANNED'
-      : 'RECEIVED';  // PICKUP = 현장수령 (바로 받아감 가정)
-    const itemPayload: any = {
+      : 'RECEIVED';
+    return {
       sales_order_id: saleOrderId,
       product_id: item.productId,
       quantity: item.quantity,
@@ -2030,16 +2030,20 @@ export async function processPosCheckout(payload: CheckoutPayload) {
       receipt_status: itemReceiptStatus,
       receipt_date: item.receiptDate || null,
     };
+  });
+  {
     const optionalCols = ['order_option', 'delivery_type', 'receipt_status', 'receipt_date'];
-    let r = await db.from('sales_order_items').insert(itemPayload);
-    // 컬럼 누락 대응: 단계적 제거 후 재시도 (051/052 미적용 환경)
+    let r = await db.from('sales_order_items').insert(itemPayloads);
+    // 컬럼 누락 대응: optional 필드 제거 후 재시도 (051/052 미적용 환경)
     if (r.error) {
       const msg0 = String(r.error.message || '').toLowerCase();
       const code0 = String((r.error as any).code || '');
       if (code0 === '42703' || (msg0.includes('column') && msg0.includes('does not exist'))) {
-        // 052 컬럼부터 제거
-        const slim: any = { ...itemPayload };
-        for (const k of optionalCols) delete slim[k];
+        const slim = itemPayloads.map(p => {
+          const s: any = { ...p };
+          for (const k of optionalCols) delete s[k];
+          return s;
+        });
         await db.from('sales_order_items').insert(slim);
       }
     }
@@ -2090,27 +2094,46 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     return after;
   };
 
-  for (const item of cart) {
-    // 재고 비관리 제품(SERVICE 등)은 차감/이력 모두 skip
-    if (trackByProduct.get(item.productId) === false) continue;
+  // ④ 재고 차감 — 품목별 병렬 처리 (N×3 순차 round-trip → 병렬)
+  //   동일 product_id가 카트에 중복 존재하는 경우 UNIQUE 충돌을 피하기 위해
+  //   product_id 단위로 묶어서 수량 합산 후 차감.
+  {
+    // 일반 제품: product_id별 총 수량 합산
+    const normalMap = new Map<string, number>();
+    // Phantom 제품: (material_id → totalQty) 합산
+    const phantomMap = new Map<string, { qty: number; memo: string }>();
 
-    // Phantom 제품: 본인은 차감 X, BOM 분해해서 구성품 차감
-    if (phantomByProduct.get(item.productId) === true) {
-      const components = bomByPhantom.get(item.productId) || [];
-      const phantomMemo = [movementMemo, `세트분해: ${item.name} ×${item.quantity}`]
-        .filter(Boolean).join(' · ');
-      for (const c of components) {
-        const totalQty = Math.ceil(c.quantity * item.quantity); // 분수 BOM 안전 처리
-        if (totalQty <= 0) continue;
-        const after = await decrementStock(c.material_id, totalQty, 'PHANTOM_DECOMPOSE', phantomMemo);
-        stockUpdates[c.material_id] = after;
+    for (const item of cart) {
+      if (trackByProduct.get(item.productId) === false) continue;
+      if (phantomByProduct.get(item.productId) === true) {
+        const components = bomByPhantom.get(item.productId) || [];
+        const phantomMemo = [movementMemo, `세트분해: ${item.name} ×${item.quantity}`]
+          .filter(Boolean).join(' · ');
+        for (const c of components) {
+          const totalQty = Math.ceil(c.quantity * item.quantity);
+          if (totalQty <= 0) continue;
+          const prev = phantomMap.get(c.material_id);
+          phantomMap.set(c.material_id, { qty: (prev?.qty || 0) + totalQty, memo: phantomMemo });
+        }
+      } else {
+        normalMap.set(item.productId, (normalMap.get(item.productId) || 0) + item.quantity);
       }
-      continue;
     }
 
-    // 일반 제품: 자기 자신 차감
-    const after = await decrementStock(item.productId, item.quantity, 'POS_SALE', movementMemo);
-    stockUpdates[item.productId] = after;
+    const tasks: Promise<void>[] = [];
+    for (const [productId, qty] of normalMap) {
+      tasks.push(
+        decrementStock(productId, qty, 'POS_SALE', movementMemo)
+          .then(after => { stockUpdates[productId] = after; })
+      );
+    }
+    for (const [materialId, { qty, memo }] of phantomMap) {
+      tasks.push(
+        decrementStock(materialId, qty, 'PHANTOM_DECOMPOSE', memo)
+          .then(after => { stockUpdates[materialId] = after; })
+      );
+    }
+    await Promise.all(tasks);
   }
 
   // ⑤ 포인트 처리
