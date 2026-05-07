@@ -2104,7 +2104,8 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     const phantomMap = new Map<string, { qty: number; memo: string }>();
 
     for (const item of cart) {
-      if (trackByProduct.get(item.productId) === false) continue;
+      // Phantom 우선 분기 — phantom 제품은 본인 track_inventory=false(자동)이므로
+      // track 체크보다 먼저 와야 BOM 분해가 실제로 실행된다.
       if (phantomByProduct.get(item.productId) === true) {
         const components = bomByPhantom.get(item.productId) || [];
         const phantomMemo = [movementMemo, `세트분해: ${item.name} ×${item.quantity}`]
@@ -2115,9 +2116,12 @@ export async function processPosCheckout(payload: CheckoutPayload) {
           const prev = phantomMap.get(c.material_id);
           phantomMap.set(c.material_id, { qty: (prev?.qty || 0) + totalQty, memo: phantomMemo });
         }
-      } else {
-        normalMap.set(item.productId, (normalMap.get(item.productId) || 0) + item.quantity);
+        continue;
       }
+      // 재고 비관리 제품(SERVICE 등): 차감/이력 모두 skip
+      if (trackByProduct.get(item.productId) === false) continue;
+      // 일반 제품: product_id 단위 합산
+      normalMap.set(item.productId, (normalMap.get(item.productId) || 0) + item.quantity);
     }
 
     const tasks: Promise<void>[] = [];
