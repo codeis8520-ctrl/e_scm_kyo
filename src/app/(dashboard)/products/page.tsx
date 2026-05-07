@@ -87,6 +87,7 @@ export default function ProductsPage() {
   const [search, setSearch] = useState('');
   const [activeFilter, setActiveFilter] = useState<'' | 'true' | 'false'>('');
   const [typeFilter, setTypeFilter] = useState<'' | ProductType>('');
+  const [phantomFilter, setPhantomFilter] = useState<'' | 'exclude' | 'only'>('');
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
@@ -138,6 +139,9 @@ export default function ProductsPage() {
   const filtered = useMemo(() => {
     const arr = products.filter(p => {
       if (allowedCategoryIds && !(p.category_id && allowedCategoryIds.has(p.category_id))) return false;
+      // 세트상품(Phantom) 필터
+      if (phantomFilter === 'exclude' && p.is_phantom === true) return false;
+      if (phantomFilter === 'only' && p.is_phantom !== true) return false;
       if (!search) return true;
       const q = search.toLowerCase();
       return (
@@ -268,6 +272,20 @@ export default function ProductsPage() {
               onClick={() => setTypeFilter(v as '' | ProductType)}
               className={`px-3 py-1.5 font-medium transition-colors ${
                 typeFilter === v ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {/* 세트상품(Phantom) 필터 */}
+        <div className="flex rounded-lg border border-slate-200 overflow-hidden text-sm" title="세트상품(Phantom BOM) 필터">
+          {([['', '전체'], ['exclude', '세트 제외'], ['only', '세트만']] as [string, string][]).map(([v, label]) => (
+            <button
+              key={v}
+              onClick={() => setPhantomFilter(v as '' | 'exclude' | 'only')}
+              className={`px-3 py-1.5 font-medium transition-colors ${
+                phantomFilter === v ? 'bg-purple-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'
               }`}
             >
               {label}
