@@ -540,6 +540,25 @@ export default function ShippingPage() {
     return true;
   });
 
+  // 카페24 탭 — 현재 필터된 목록 중 추가 가능한(이미 등록되지 않은) 주문만 모두선택 대상
+  const cafe24SelectableIds = filteredCafe24Orders
+    .filter(o => !o.already_added)
+    .map(o => o.cafe24_order_id);
+  const cafe24AllSelected =
+    cafe24SelectableIds.length > 0 &&
+    cafe24SelectableIds.every(id => selectedOrders.has(id));
+  const toggleSelectAllCafe24 = () => {
+    setSelectedOrders(prev => {
+      const n = new Set(prev);
+      if (cafe24AllSelected) {
+        for (const id of cafe24SelectableIds) n.delete(id);
+      } else {
+        for (const id of cafe24SelectableIds) n.add(id);
+      }
+      return n;
+    });
+  };
+
   // ── 목록 탭 핸들러 ────────────────────────────────────────────────────────
   const filteredShipments = shipments.filter(s => {
     if (statusFilter !== 'ALL' && s.status !== statusFilter) return false;
@@ -719,7 +738,19 @@ export default function ShippingPage() {
               </div>
               <div className="overflow-x-auto">
                 <table className="table w-full">
-                  <thead><tr><th className="w-10"></th><th>주문일</th><th>주문자</th><th>수령자</th><th>주소</th><th>배송메모</th><th>품목</th><th>금액</th><th>카페24 상태</th><th></th></tr></thead>
+                  <thead><tr>
+                    <th className="w-10">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4"
+                        checked={cafe24AllSelected}
+                        onChange={toggleSelectAllCafe24}
+                        disabled={cafe24SelectableIds.length === 0}
+                        title={cafe24SelectableIds.length === 0 ? '선택 가능한 주문이 없습니다' : '필터된 주문 모두 선택/해제'}
+                      />
+                    </th>
+                    <th>주문일</th><th>주문자</th><th>수령자</th><th>주소</th><th>배송메모</th><th>품목</th><th>금액</th><th>카페24 상태</th><th></th>
+                  </tr></thead>
                   <tbody>
                     {filteredCafe24Orders.map(order => (
                       <tr key={order.cafe24_order_id} className={`align-top ${order.already_added ? 'opacity-40' : ''}`}>
