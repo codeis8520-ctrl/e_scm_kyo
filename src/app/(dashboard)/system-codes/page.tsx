@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { generateQrDataUrl } from '@/lib/qr-actions';
 import {
@@ -82,16 +82,6 @@ interface Category {
   parent?: { name: string } | null;
 }
 
-interface NotificationTemplate {
-  id: string;
-  template_code: string;
-  template_name: string;
-  message_template: string;
-  buttons: any[];
-  is_active: boolean;
-  created_at: string;
-}
-
 const CHANNEL_OPTIONS = [
   { value: 'STORE', label: '한약국' },
   { value: 'DEPT_STORE', label: '백화점' },
@@ -153,7 +143,7 @@ interface ScreenPermission {
 }
 
 export default function SystemCodesPage() {
-  const [activeTab, setActiveTab] = useState<'channels' | 'branches' | 'grades' | 'tags' | 'categories' | 'staff' | 'templates' | 'permissions' | 'campaign_types'>('channels');
+  const [activeTab, setActiveTab] = useState<'channels' | 'branches' | 'grades' | 'tags' | 'categories' | 'staff' | 'permissions' | 'campaign_types'>('channels');
   const [role] = useState<string | null>(() => getCookie('user_role'));
   const canConfigureHq = role === 'SUPER_ADMIN' || role === 'HQ_OPERATOR';
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -162,7 +152,6 @@ export default function SystemCodesPage() {
   const [tags, setTags] = useState<CustomerTag[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [users, setUsers] = useState<User[]>([]);
-  const [templates, setTemplates] = useState<NotificationTemplate[]>([]);
   const [permissions, setPermissions] = useState<ScreenPermission[]>([]);
   const [campaignTypes, setCampaignTypes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -178,14 +167,12 @@ export default function SystemCodesPage() {
   const [categoryParentPreset, setCategoryParentPreset] = useState<string | null>(null);
   const [collapsedCategoryIds, setCollapsedCategoryIds] = useState<Set<string>>(new Set());
   const [showUserModal, setShowUserModal] = useState(false);
-  const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
   const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
   const [editingGrade, setEditingGrade] = useState<CustomerGrade | null>(null);
   const [editingTag, setEditingTag] = useState<CustomerTag | null>(null);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [editingUser, setEditingUser] = useState<User | null>(null);
-  const [editingTemplate, setEditingTemplate] = useState<NotificationTemplate | null>(null);
 
   useEffect(() => {
     fetchData();
@@ -221,9 +208,6 @@ export default function SystemCodesPage() {
       ]);
       setUsers((usersData || []) as User[]);
       setBranches(branchesData || []);
-    } else if (activeTab === 'templates') {
-      const { data } = await supabase.from('notification_templates').select('*').order('created_at', { ascending: false });
-      setTemplates((data || []) as NotificationTemplate[]);
     } else if (activeTab === 'campaign_types') {
       const { data } = await supabase.from('campaign_event_types').select('*').order('sort_order');
       setCampaignTypes(data || []);
@@ -381,16 +365,6 @@ export default function SystemCodesPage() {
           }`}
         >
           직원 관리
-        </button>
-        <button
-          onClick={() => setActiveTab('templates')}
-          className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
-            activeTab === 'templates'
-              ? 'border-blue-500 text-blue-600'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          알림톡 템플릿
         </button>
         <button
           onClick={() => setActiveTab('campaign_types')}
@@ -1019,63 +993,6 @@ export default function SystemCodesPage() {
         </div>
       )}
 
-      {activeTab === 'templates' && (
-        <div className="card">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="font-semibold">알림톡 템플릿 목록</h3>
-            <button
-              onClick={() => { setEditingTemplate(null); setShowTemplateModal(true); }}
-              className="btn-primary text-sm"
-            >
-              + 템플릿 추가
-            </button>
-          </div>
-
-          <div className="overflow-x-auto -mx-4 sm:mx-0">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>템플릿 코드</th>
-                <th>템플릿명</th>
-                <th>메시지 미리보기</th>
-                <th>상태</th>
-                <th>관리</th>
-              </tr>
-            </thead>
-            <tbody>
-              {templates.map((template) => (
-                <tr key={template.id}>
-                  <td className="font-mono text-sm">{template.template_code}</td>
-                  <td>{template.template_name}</td>
-                  <td className="max-w-xs text-sm truncate">{template.message_template}</td>
-                  <td>
-                    <span className={`badge ${template.is_active ? 'badge-success' : 'badge-error'}`}>
-                      {template.is_active ? '활성' : '비활성'}
-                    </span>
-                  </td>
-                  <td>
-                    <button
-                      onClick={() => { setEditingTemplate(template); setShowTemplateModal(true); }}
-                      className="text-blue-600 hover:underline mr-2"
-                    >
-                      수정
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              {templates.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="text-center text-slate-400 py-8">
-                    등록된 템플릿이 없습니다
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-          </div>
-        </div>
-      )}
-
       {activeTab === 'campaign_types' && (
         <CampaignEventTypeManager
           data={campaignTypes}
@@ -1197,13 +1114,6 @@ export default function SystemCodesPage() {
         />
       )}
 
-      {showTemplateModal && (
-        <TemplateModal
-          template={editingTemplate}
-          onClose={() => setShowTemplateModal(false)}
-          onSuccess={() => { setShowTemplateModal(false); fetchData(); }}
-        />
-      )}
     </div>
   );
 }
@@ -2119,175 +2029,6 @@ function UserModal({
               {loading ? '처리 중...' : (user ? '수정' : '추가')}
             </button>
             <button type="button" onClick={onClose} className="flex-1 btn-secondary">취소</button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-const TEMPLATE_VARIABLES = [
-  { key: '{{customer_name}}', label: '고객명' },
-  { key: '{{product_name}}', label: '제품명' },
-  { key: '{{amount}}', label: '금액' },
-  { key: '{{order_number}}', label: '주문번호' },
-  { key: '{{event_name}}', label: '이벤트명' },
-  { key: '{{branch_name}}', label: '지점명' },
-  { key: '{{point_balance}}', label: '포인트잔액' },
-  { key: '{{grade}}', label: '등급' },
-  { key: '{{date}}', label: '날짜' },
-];
-
-function TemplateModal({ template, onClose, onSuccess }: { template: NotificationTemplate | null; onClose: () => void; onSuccess: () => void }) {
-  const supabase = createClient();
-  const [formData, setFormData] = useState({
-    template_code: template?.template_code || '',
-    template_name: template?.template_name || '',
-    message_template: template?.message_template || '',
-  });
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError('');
-
-    try {
-      const db = supabase as any;
-      if (template?.id) {
-        await db.from('notification_templates').update(formData).eq('id', template.id);
-      } else {
-        await db.from('notification_templates').insert({ ...formData, is_active: true });
-      }
-      onSuccess();
-    } catch (err: any) {
-      setError(err?.message || '오류가 발생했습니다.');
-      setLoading(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!template?.id) return;
-    if (!confirm('정말 삭제하시겠습니까?')) return;
-    await supabase.from('notification_templates').delete().eq('id', template.id);
-    onSuccess();
-  };
-
-  const insertVariable = (varKey: string) => {
-    const el = textareaRef.current;
-    if (!el) return;
-    const start = el.selectionStart ?? formData.message_template.length;
-    const end = el.selectionEnd ?? start;
-    const current = formData.message_template;
-    const next = current.slice(0, start) + varKey + current.slice(end);
-    setFormData({ ...formData, message_template: next });
-    // Restore focus and cursor after state update
-    requestAnimationFrame(() => {
-      el.focus();
-      const pos = start + varKey.length;
-      el.setSelectionRange(pos, pos);
-    });
-  };
-
-  const removeVariable = (varKey: string) => {
-    setFormData({
-      ...formData,
-      message_template: formData.message_template.split(varKey).join(''),
-    });
-  };
-
-  const usedVars = TEMPLATE_VARIABLES.filter(v => formData.message_template.includes(v.key));
-
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-lg font-bold">{template?.id ? '템플릿 수정' : '템플릿 추가'}</h2>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">✕</button>
-        </div>
-
-        {error && (
-          <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-lg text-sm">{error}</div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700">템플릿 코드 *</label>
-            <input
-              type="text"
-              value={formData.template_code}
-              onChange={(e) => setFormData({ ...formData, template_code: e.target.value })}
-              required
-              disabled={!!template?.id}
-              className="mt-1 input"
-              placeholder="ORDER_COMPLETE"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700">템플릿명 *</label>
-            <input
-              type="text"
-              value={formData.template_name}
-              onChange={(e) => setFormData({ ...formData, template_name: e.target.value })}
-              required
-              className="mt-1 input"
-              placeholder="주문 완료 알림"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700">메시지 템플릿 *</label>
-            <div className="mt-1 mb-2">
-              <p className="text-xs text-slate-500 mb-1.5">변수 클릭 시 커서 위치에 삽입 / 파란색 변수는 이미 사용 중 (클릭 시 제거)</p>
-              <div className="flex flex-wrap gap-1.5">
-                {TEMPLATE_VARIABLES.map(v => {
-                  const inUse = formData.message_template.includes(v.key);
-                  return (
-                    <button
-                      key={v.key}
-                      type="button"
-                      onClick={() => inUse ? removeVariable(v.key) : insertVariable(v.key)}
-                      title={inUse ? `${v.key} 제거` : `${v.key} 삽입`}
-                      className={`px-2 py-0.5 rounded text-xs font-mono border transition-colors ${
-                        inUse
-                          ? 'bg-blue-100 text-blue-700 border-blue-300 hover:bg-red-100 hover:text-red-600 hover:border-red-300'
-                          : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
-                      }`}
-                    >
-                      {inUse ? '✓ ' : ''}{v.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-            <textarea
-              ref={textareaRef}
-              value={formData.message_template}
-              onChange={(e) => setFormData({ ...formData, message_template: e.target.value })}
-              required
-              rows={6}
-              className="input w-full"
-              placeholder="{{customer_name}}님, 안녕하세요..."
-            />
-            {usedVars.length > 0 && (
-              <p className="text-xs text-blue-600 mt-1">
-                사용 중: {usedVars.map(v => v.key).join(', ')}
-              </p>
-            )}
-          </div>
-
-          <div className="flex gap-2 pt-4">
-            <button type="submit" disabled={loading} className="flex-1 btn-primary">
-              {loading ? '처리 중...' : (template?.id ? '수정' : '등록')}
-            </button>
-            {template?.id && (
-              <button type="button" onClick={handleDelete} className="px-4 py-2 bg-red-100 text-red-600 rounded-md hover:bg-red-200">
-                삭제
-              </button>
-            )}
           </div>
         </form>
       </div>

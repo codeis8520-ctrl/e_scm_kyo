@@ -404,7 +404,7 @@ export async function getNotifications(filters?: { status?: string; type?: strin
   const supabase = await createClient();
   let q = (supabase as any)
     .from('notifications')
-    .select('*, customer:customers(name, phone), template:notification_templates(template_name)')
+    .select('*, customer:customers(name, phone)')
     .order('created_at', { ascending: false })
     .limit(200);
 

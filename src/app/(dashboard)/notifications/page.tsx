@@ -8,6 +8,7 @@ import { sendSmsAction, sendKakaoAction, getNotifications, resendFailedNotificat
 import { getTemplateMappings } from '@/lib/notification-template-mapping-actions';
 import { EVENT_TYPES, type TemplateMapping } from '@/lib/notification-event-types';
 import { fmtDateTimeKST, fmtDateKST, kstDayStart, kstDayEnd, kstTodayString } from '@/lib/date';
+import KakaoAlimtalkPreview from '@/components/KakaoAlimtalkPreview';
 
 const TYPE_LABEL: Record<string, string> = { KAKAO: '알림톡', SMS: 'SMS' };
 const STATUS_LABEL: Record<string, string> = { sent: '발송완료', pending: '대기중', failed: '실패' };
@@ -373,6 +374,46 @@ const AUTH_PAT     = /^(인증번호|인증코드|otp)$/i;
 const AUTO_PAT = /^([가-힣]{2,3}|고객명|이름|성함|회원명|구매자명|주문자명|수신자명|신청자명|고객이름|회원이름|받는분|구매자|주문자|수신자|고객|전화번호|연락처|핸드폰|휴대폰|휴대전화|등급|회원등급|고객등급|상점명|상점|매장명|매장|브랜드명|브랜드|업체명|업체|회사명|회사|가게명|가게|샵명|샵|url|링크|사이트|홈페이지|주소)$/i;
 
 interface ManualField { key: string; label: string; contextKey: string; }
+
+// 자동 치환 변수 → 샘플 값 (실제 발송 시엔 수신자별로 치환됨)
+const AUTO_SAMPLE_PATTERNS: Array<{ pat: RegExp; pick: (sample: { name: string; phone: string; grade: string; branch: string }) => string }> = [
+  { pat: /^([가-힣]{2,3}|고객명|이름|성함|회원명|구매자명|주문자명|수신자명|신청자명|고객이름|회원이름|받는분|구매자|주문자|수신자|고객)$/, pick: s => s.name },
+  { pat: /^(전화번호|연락처|핸드폰|휴대폰|휴대전화)$/, pick: s => s.phone },
+  { pat: /^(등급|회원등급|고객등급)$/, pick: s => s.grade },
+  { pat: /^(상점명|상점|매장명|매장|브랜드명|브랜드|업체명|업체|회사명|회사|가게명|가게|샵명|샵)$/, pick: s => s.branch },
+  { pat: /^(url|링크|사이트|홈페이지|주소)$/i, pick: () => 'https://example.com' },
+];
+
+function renderPreview(
+  message: string,
+  manualVars: Record<string, string>,
+  selectedCustomerIds: string[],
+  customers: any[],
+  singlePhone: string,
+): string {
+  if (!message) return '';
+  const sampleCustomer = customers.find(c => c.id === selectedCustomerIds[0]);
+  const sample = {
+    name: sampleCustomer?.name || '홍길동',
+    phone: sampleCustomer?.phone || singlePhone || '010-0000-0000',
+    grade: GRADE_LABELS[sampleCustomer?.grade] || '일반',
+    branch: '경옥채',
+  };
+  let out = message;
+  // 1) 사용자가 입력한 수동 변수 먼저 치환
+  for (const [k, v] of Object.entries(manualVars)) {
+    if (v) out = out.split(k).join(v);
+  }
+  // 2) 남은 #{변수} 들을 샘플 값으로 치환
+  out = out.replace(/#\{([^}]+)\}/g, (raw, inner) => {
+    const trimmed = String(inner).trim();
+    for (const { pat, pick } of AUTO_SAMPLE_PATTERNS) {
+      if (pat.test(trimmed)) return pick(sample);
+    }
+    return raw; // 매칭 안 되면 그대로 노출 (사용자가 수동 입력 필요한 변수임을 인지)
+  });
+  return out;
+}
 
 function detectManualFields(keys: string[]): ManualField[] {
   return keys.flatMap(key => {
@@ -752,6 +793,19 @@ function SendModal({ type, templates, templateMappings, customers, onClose, onSu
               <p className="text-xs text-slate-400 mt-1">변수는 발송 시 수신자 정보로 자동 치환됩니다</p>
             )}
           </div>
+
+          {/* 카카오 알림톡 미리보기 */}
+          {type === 'kakao' && (
+            <div>
+              <div className="text-xs text-slate-500 mb-2 flex items-center gap-1.5">
+                <span className="font-medium">미리보기</span>
+                <span className="text-slate-400">— 실제 카카오톡에서 보일 모양 (변수는 샘플 값으로 표시)</span>
+              </div>
+              <KakaoAlimtalkPreview
+                message={renderPreview(message, manualVars, selectedCustomerIds, customers, sendMode === 'single' ? phone : '')}
+              />
+            </div>
+          )}
 
           {/* 환경변수 미설정 안내 */}
           {!process.env.NEXT_PUBLIC_SOLAPI_CONFIGURED && (
