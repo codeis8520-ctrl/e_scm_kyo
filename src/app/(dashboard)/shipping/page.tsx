@@ -122,6 +122,13 @@ export default function ShippingPage() {
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
   const [addingOrders, setAddingOrders] = useState(false);
   const [addError, setAddError] = useState('');
+  // 카페24 매장 발송지(출고지) — 모든 카페24 주문에 공통 적용
+  const [cafe24DefaultSender, setCafe24DefaultSender] = useState<{
+    source: 'shippingorigins' | 'store' | null;
+    name: string; phone: string; zipcode: string;
+    address: string; address_detail: string;
+    warning?: string;
+  } | null>(null);
 
   // ── 직접 입력 탭 ──────────────────────────────────────────────────────────
   const [manualForm, setManualForm] = useState({
@@ -447,6 +454,7 @@ export default function ShippingPage() {
       if (!res.ok) throw new Error('불러오기 실패');
       const data = await res.json();
       setCafe24Orders(data.orders ?? []);
+      setCafe24DefaultSender(data.default_sender ?? null);
       setIsDemo(!!data.is_demo);
       setDemoReason(data.demo_reason ?? '');
       if (data.error) setCafe24Error(data.demo_reason || '카페24 연동 오류');
@@ -472,11 +480,16 @@ export default function ShippingPage() {
     setAddError('');
     try {
       const toAdd = cafe24Orders.filter(o => selectedOrders.has(o.cafe24_order_id));
+      // 매장 발송지(출고지) — 카페24 API에서 가져온 값. 없으면 빈 문자열로 폴백.
+      const sender = cafe24DefaultSender;
       for (const order of toAdd) {
         const result = await createShipment({
           source: 'CAFE24', cafe24_order_id: order.cafe24_order_id,
-          sender_name: order.orderer_name || order.recipient_name,
-          sender_phone: order.orderer_phone || order.recipient_phone,
+          sender_name: sender?.name || '',
+          sender_phone: sender?.phone || '',
+          sender_zipcode: sender?.zipcode || undefined,
+          sender_address: sender?.address || undefined,
+          sender_address_detail: sender?.address_detail || undefined,
           recipient_name: order.recipient_name,
           recipient_phone: order.recipient_phone,
           recipient_address: order.recipient_address,
@@ -602,11 +615,14 @@ export default function ShippingPage() {
       '출처': s.source === 'CAFE24' ? '카페24' : '직접입력',
       '발송자': s.sender_name,
       '발송자 전화': s.sender_phone,
+      '발송자 우편번호': (s as any).sender_zipcode ?? '',
+      '발송자 주소': s.sender_address ?? '',
+      '발송자 상세주소': (s as any).sender_address_detail ?? '',
       '수령자': s.recipient_name,
       '수령자 전화': s.recipient_phone,
-      '우편번호': s.recipient_zipcode ?? '',
-      '주소': s.recipient_address,
-      '상세주소': s.recipient_address_detail ?? '',
+      '수령자 우편번호': s.recipient_zipcode ?? '',
+      '수령자 주소': s.recipient_address,
+      '수령자 상세주소': s.recipient_address_detail ?? '',
       '배송 메모': s.delivery_message ?? '',
       '품목': s.items_summary ?? '',
       '상태': STATUS_LABEL[s.status] ?? s.status,
@@ -722,6 +738,37 @@ export default function ShippingPage() {
                   카페24 재인증
                 </a>
               </div>
+            )}
+
+            {/* 발송지(출고지) 배너 — 카페24 매장 설정에서 가져온 값. 추가 시 모든 주문에 동일 적용 */}
+            {cafe24DefaultSender && (
+              cafe24DefaultSender.name ? (
+                <div className="mt-3 px-4 py-3 rounded-lg bg-emerald-50 border border-emerald-200">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="text-sm text-emerald-900 leading-relaxed">
+                      <span className="font-semibold">📦 발송지: {cafe24DefaultSender.name}</span>
+                      <span className="mx-2 text-emerald-400">|</span>
+                      <span>{cafe24DefaultSender.phone || '전화 미등록'}</span>
+                      <div className="text-xs text-emerald-700 mt-0.5">
+                        {cafe24DefaultSender.zipcode && <span className="mr-1">({cafe24DefaultSender.zipcode})</span>}
+                        {cafe24DefaultSender.address}
+                        {cafe24DefaultSender.address_detail && <span> {cafe24DefaultSender.address_detail}</span>}
+                      </div>
+                    </div>
+                    <span className="text-[11px] text-emerald-600 bg-emerald-100 px-2 py-0.5 rounded">
+                      {cafe24DefaultSender.source === 'shippingorigins' ? '카페24 출고지' : '매장 사업자정보'}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-3 px-4 py-3 rounded-lg bg-rose-50 border border-rose-200 text-sm text-rose-800">
+                  ⚠️ <b>발송지 정보를 가져오지 못했습니다.</b> 대한통운 임포트 시 보내는분 주소가 비어 있게 됩니다.
+                  {cafe24DefaultSender.warning && <div className="text-xs mt-1">{cafe24DefaultSender.warning}</div>}
+                  <a href="/api/cafe24/auth" className="inline-block mt-2 px-3 py-1 rounded bg-rose-600 text-white text-xs font-medium hover:bg-rose-700">
+                    카페24 재인증
+                  </a>
+                </div>
+              )
             )}
           </div>
 

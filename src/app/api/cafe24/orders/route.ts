@@ -56,6 +56,71 @@ interface Cafe24OrderForShipping {
   cafe24_status: string;
 }
 
+// 카페24 매장 발송지(출고지) — 모든 주문에 동일하게 적용
+interface Cafe24DefaultSender {
+  source: 'shippingorigins' | 'store' | null;
+  name: string;
+  phone: string;
+  zipcode: string;
+  address: string;        // 도로명 또는 지번 (address1)
+  address_detail: string; // 상세 (address2)
+  warning?: string;       // 가져오지 못한 경우 사유
+}
+
+async function fetchDefaultSender(base: string, headers: Record<string, string>): Promise<Cafe24DefaultSender> {
+  // 1순위: /admin/shippingorigins?default=T (mall.read_store 필요)
+  try {
+    const res = await fetch(`${base}/admin/shippingorigins?limit=100`, { headers });
+    if (res.ok) {
+      const j = await res.json();
+      const list: any[] = j?.shippingorigins ?? [];
+      if (list.length > 0) {
+        // default 'T' 우선, 없으면 첫 번째
+        const so = list.find((x: any) => x.default === 'T') ?? list[0];
+        return {
+          source: 'shippingorigins',
+          name: so.sender_name ?? so.shipping_origin_name ?? '',
+          phone: so.mobile ?? so.phone ?? '',
+          zipcode: so.zipcode ?? '',
+          address: so.address1 ?? '',
+          address_detail: so.address2 ?? '',
+        };
+      }
+    } else if (res.status !== 401 && res.status !== 403) {
+      console.warn('[cafe24 sender] shippingorigins 응답 비정상:', res.status);
+    }
+  } catch (e) {
+    console.warn('[cafe24 sender] shippingorigins 페치 실패:', e);
+  }
+
+  // 2순위: /admin/store
+  try {
+    const res = await fetch(`${base}/admin/store`, { headers });
+    if (res.ok) {
+      const j = await res.json();
+      const s = j?.store ?? j;
+      if (s) {
+        return {
+          source: 'store',
+          name: s.president_name ?? s.company_name ?? s.shop_name ?? '',
+          phone: s.phone ?? s.customer_service_phone ?? '',
+          zipcode: s.zipcode ?? '',
+          address: s.address1 ?? '',
+          address_detail: s.address2 ?? '',
+        };
+      }
+    }
+  } catch (e) {
+    console.warn('[cafe24 sender] store 페치 실패:', e);
+  }
+
+  return {
+    source: null,
+    name: '', phone: '', zipcode: '', address: '', address_detail: '',
+    warning: '발송지 정보를 가져오지 못했습니다. 카페24 OAuth 스코프에 mall.read_store 추가 후 /api/cafe24/auth 재인증이 필요합니다.',
+  };
+}
+
 const DEMO_ORDERS: Omit<Cafe24OrderForShipping, 'already_added'>[] = [
   {
     cafe24_order_id: 'CAFE24-2024-0001',
@@ -122,7 +187,14 @@ export async function GET(request: NextRequest) {
 
   if (!mallId) {
     const orders = DEMO_ORDERS.map(o => ({ ...o, already_added: existingIds.has(o.cafe24_order_id) }));
-    return NextResponse.json({ orders, is_demo: true, demo_reason: 'CAFE24_MALL_ID 환경변수 없음' });
+    const default_sender: Cafe24DefaultSender = {
+      source: null,
+      name: '데모 발송자', phone: '02-0000-0000',
+      zipcode: '06000', address: '서울특별시 강남구 데모로 1',
+      address_detail: '데모빌딩 1층',
+      warning: '데모 데이터입니다 — 실제 매장 발송지가 아님.',
+    };
+    return NextResponse.json({ orders, default_sender, is_demo: true, demo_reason: 'CAFE24_MALL_ID 환경변수 없음' });
   }
 
   let accessToken = await getValidAccessToken();
@@ -239,7 +311,10 @@ export async function GET(request: NextRequest) {
       })
     );
 
-    return NextResponse.json({ orders, is_demo: false });
+    // 매장 발송지(출고지) 동시 조회 — 모든 주문에 공통 적용
+    const default_sender = await fetchDefaultSender(base, headers);
+
+    return NextResponse.json({ orders, default_sender, is_demo: false });
   } catch (err: unknown) {
     console.error('Cafe24 Orders API 오류:', err);
     return NextResponse.json({

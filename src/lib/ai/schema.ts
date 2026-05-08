@@ -79,7 +79,8 @@ journal_entry_lines: id, journal_entry_id, account_id, debit, credit, memo
 accounting_period_closes: id, period(YYYY-MM), closed_at, closed_by, memo
 
 --- 배송 ---
-shipments: id, source(CAFE24/STORE), delivery_type(PARCEL/QUICK), cafe24_order_id, sales_order_id, sender_name, sender_phone, recipient_name, recipient_phone, recipient_address, tracking_number, status(PENDING/PRINTED/SHIPPED/DELIVERED), branch_id, created_at
+shipments: id, source(CAFE24/STORE), delivery_type(PARCEL/QUICK), cafe24_order_id, sales_order_id, sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail, recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail, tracking_number, status(PENDING/PRINTED/SHIPPED/DELIVERED), branch_id, created_at
+  ※ sender_*: 발송자(출고지). CAFE24 출처는 /admin/shippingorigins(폴백 /admin/store)에서 자동 채움. 직접입력은 매뉴얼. 대한통운 엑셀 임포트 필수값.
   ※ branch_id = 출고 지점 (재고가 차감된 지점). POS에서 배송 활성 시 판매 지점과 다를 수 있음. 판매 지점은 sales_orders.branch_id 참조.
   ※ delivery_type: PARCEL=택배(SweetTracker 송장·알림톡), QUICK=퀵배송(당일 인편·직접 배송).
 

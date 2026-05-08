@@ -10,7 +10,9 @@ export interface ShipmentInput {
   sales_order_id?: string;
   sender_name: string;
   sender_phone: string;
+  sender_zipcode?: string;
   sender_address?: string;
+  sender_address_detail?: string;
   recipient_name: string;
   recipient_phone: string;
   recipient_zipcode?: string;

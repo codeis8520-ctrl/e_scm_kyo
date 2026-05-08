@@ -11,11 +11,14 @@ export async function GET() {
   const tokenRow = await loadTokens();
   const scopeDiag = {
     발급된스코프: (tokenRow as any)?.scopes || '(scopes 컬럼 비어있음)',
-    필요한스코프: ['mall.read_order', 'mall.read_customer', 'mall.read_personal'],
+    필요한스코프: ['mall.read_order', 'mall.read_customer', 'mall.read_personal', 'mall.read_store'],
     mall_read_personal_포함여부: Array.isArray((tokenRow as any)?.scopes)
       ? (tokenRow as any).scopes.includes('mall.read_personal')
       : '확인불가(scopes가 배열 아님)',
-    해결방법: 'mall.read_personal이 없으면: 카페24 개발자 센터 → 내 앱 → 권한 설정에서 추가 후 /api/cafe24/auth 재인증',
+    mall_read_store_포함여부: Array.isArray((tokenRow as any)?.scopes)
+      ? (tokenRow as any).scopes.includes('mall.read_store')
+      : '확인불가(scopes가 배열 아님)',
+    해결방법: '누락된 스코프가 있으면: 카페24 개발자 센터 → 내 앱 → 권한 설정에서 추가 후 /api/cafe24/auth 재인증',
   };
 
   // 1. 환경변수 확인
