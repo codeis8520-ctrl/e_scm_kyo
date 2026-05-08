@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import { validators, formatPhone } from '@/lib/validators';
 import { sendSmsAction, sendKakaoAction, getNotifications, resendFailedNotification, runNotificationBatch } from '@/lib/notification-actions';
@@ -9,6 +8,7 @@ import { getTemplateMappings } from '@/lib/notification-template-mapping-actions
 import { EVENT_TYPES, type TemplateMapping } from '@/lib/notification-event-types';
 import { fmtDateTimeKST, fmtDateKST, kstDayStart, kstDayEnd, kstTodayString } from '@/lib/date';
 import KakaoAlimtalkPreview from '@/components/KakaoAlimtalkPreview';
+import NotificationTemplateClassifier from '@/components/notifications/NotificationTemplateClassifier';
 
 const TYPE_LABEL: Record<string, string> = { KAKAO: '알림톡', SMS: 'SMS' };
 const STATUS_LABEL: Record<string, string> = { sent: '발송완료', pending: '대기중', failed: '실패' };
@@ -30,7 +30,7 @@ export default function NotificationsPage() {
   const [templateMappings, setTemplateMappings] = useState<Record<string, TemplateMapping>>({});
   const [customers, setCustomers]         = useState<any[]>([]);
   const [loading, setLoading]             = useState(true);
-  const [activeTab, setActiveTab]         = useState<'kakao' | 'sms'>('kakao'); // 기본값: 알림톡
+  const [activeTab, setActiveTab]         = useState<'kakao' | 'sms' | 'templates'>('kakao'); // 기본값: 알림톡
   const [showSendModal, setShowSendModal] = useState(false);
   const [statusFilter, setStatusFilter]   = useState('');
   // 검색 조건 (탭별 독립)
@@ -45,15 +45,16 @@ export default function NotificationsPage() {
   const [batchRunning, setBatchRunning]   = useState<string | null>(null);
   const [solapiBalance, setSolapiBalance] = useState<{ balance?: number; point?: number; error?: string } | null>(null);
 
-  // 탭별 타입 매핑
+  // 탭별 타입 매핑 (템플릿 탭은 발송 이력 조회 안 함)
   const typeByTab: Record<'kakao' | 'sms', string> = { kakao: 'KAKAO', sms: 'SMS' };
 
   const fetchData = async () => {
+    if (activeTab === 'templates') return; // 템플릿 탭은 별도 컴포넌트에서 자체 페치
     setLoading(true);
     const [notifRes, templateRes, mappingRes, customerRes] = await Promise.all([
       getNotifications({
         status: statusFilter || undefined,
-        type: typeByTab[activeTab], // 탭 기준으로 유형 강제
+        type: typeByTab[activeTab as 'kakao' | 'sms'],
       }),
       fetch('/api/solapi/templates').then(r => r.json()).then(d => d.templates ?? []),
       getTemplateMappings(),
@@ -77,8 +78,9 @@ export default function NotificationsPage() {
   useEffect(() => { fetchData(); }, [statusFilter, activeTab]);
 
   // 탭 전환 시 검색 조건 초기화 (각 탭별 독립)
-  const handleTabChange = (tab: 'kakao' | 'sms') => {
+  const handleTabChange = (tab: 'kakao' | 'sms' | 'templates') => {
     setActiveTab(tab);
+    if (tab === 'templates') return;
     setSearchKeyword('');
     setStatusFilter('');
     const d = new Date(); d.setMonth(d.getMonth() - 1);
@@ -148,44 +150,51 @@ export default function NotificationsPage() {
       {/* 헤더 */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex gap-1 border-b border-slate-200">
-          {(['kakao', 'sms'] as const).map(t => (
+          {([
+            { key: 'kakao' as const, label: '알림톡' },
+            { key: 'sms' as const, label: 'SMS' },
+            { key: 'templates' as const, label: '템플릿 관리' },
+          ]).map(t => (
             <button
-              key={t}
-              onClick={() => handleTabChange(t)}
+              key={t.key}
+              onClick={() => handleTabChange(t.key)}
               className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
-                activeTab === t ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
+                activeTab === t.key ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}
             >
-              {t === 'kakao' ? '알림톡' : 'SMS'}
+              {t.label}
             </button>
           ))}
         </div>
-        <div className="flex gap-2 flex-wrap">
-          <button
-            onClick={() => handleRunBatch('BIRTHDAY')}
-            disabled={batchRunning === 'BIRTHDAY'}
-            className="px-3 py-2 rounded text-sm font-medium bg-pink-50 text-pink-600 hover:bg-pink-100 disabled:opacity-50"
-            title="오늘 생일 고객에게 축하 알림톡 즉시 발송"
-          >
-            🎂 {batchRunning === 'BIRTHDAY' ? '실행 중...' : '생일 배치'}
-          </button>
-          <button
-            onClick={() => handleRunBatch('DORMANT')}
-            disabled={batchRunning === 'DORMANT'}
-            className="px-3 py-2 rounded text-sm font-medium bg-amber-50 text-amber-600 hover:bg-amber-100 disabled:opacity-50"
-            title="90일간 미구매 고객에게 재유치 알림톡 즉시 발송"
-          >
-            💤 {batchRunning === 'DORMANT' ? '실행 중...' : '휴면 배치'}
-          </button>
-          <Link href="/notifications/templates" className="px-3 py-2 rounded text-sm font-medium bg-slate-100 text-slate-600 hover:bg-slate-200">
-            템플릿 관리
-          </Link>
-          <button onClick={() => setShowSendModal(true)} className="btn-primary text-sm">
-            + {activeTab === 'sms' ? 'SMS' : '알림톡'} 발송
-          </button>
-        </div>
+        {activeTab !== 'templates' && (
+          <div className="flex gap-2 flex-wrap">
+            <button
+              onClick={() => handleRunBatch('BIRTHDAY')}
+              disabled={batchRunning === 'BIRTHDAY'}
+              className="px-3 py-2 rounded text-sm font-medium bg-pink-50 text-pink-600 hover:bg-pink-100 disabled:opacity-50"
+              title="오늘 생일 고객에게 축하 알림톡 즉시 발송"
+            >
+              🎂 {batchRunning === 'BIRTHDAY' ? '실행 중...' : '생일 배치'}
+            </button>
+            <button
+              onClick={() => handleRunBatch('DORMANT')}
+              disabled={batchRunning === 'DORMANT'}
+              className="px-3 py-2 rounded text-sm font-medium bg-amber-50 text-amber-600 hover:bg-amber-100 disabled:opacity-50"
+              title="90일간 미구매 고객에게 재유치 알림톡 즉시 발송"
+            >
+              💤 {batchRunning === 'DORMANT' ? '실행 중...' : '휴면 배치'}
+            </button>
+            <button onClick={() => setShowSendModal(true)} className="btn-primary text-sm">
+              + {activeTab === 'sms' ? 'SMS' : '알림톡'} 발송
+            </button>
+          </div>
+        )}
       </div>
 
+      {activeTab === 'templates' ? (
+        <NotificationTemplateClassifier />
+      ) : (
+      <>
       {/* 통계 (현재 탭 기준) + 솔라피 잔액 */}
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 sm:gap-4">
         <div className="stat-card">
@@ -338,15 +347,18 @@ export default function NotificationsPage() {
         </table>
         </div>
       </div>
+      </>
+      )}
 
-      {showSendModal && (
+      {showSendModal && activeTab !== 'templates' && (
         <SendModal
-          type={activeTab}
+          type={activeTab as 'kakao' | 'sms'}
           templates={templates}
           templateMappings={templateMappings}
           customers={customers}
           onClose={() => setShowSendModal(false)}
           onSuccess={() => { setShowSendModal(false); fetchData(); }}
+          onGoToTemplatesTab={() => { setShowSendModal(false); setActiveTab('templates'); }}
         />
       )}
     </div>
@@ -362,6 +374,7 @@ interface SendModalProps {
   customers: any[];
   onClose: () => void;
   onSuccess: () => void;
+  onGoToTemplatesTab: () => void;
 }
 
 // 시스템에서 자동 제공 불가 → 사용자 직접 입력 필요한 변수 감지
@@ -428,7 +441,7 @@ function detectManualFields(keys: string[]): ManualField[] {
   });
 }
 
-function SendModal({ type, templates, templateMappings, customers, onClose, onSuccess }: SendModalProps) {
+function SendModal({ type, templates, templateMappings, customers, onClose, onSuccess, onGoToTemplatesTab }: SendModalProps) {
   const [sendMode, setSendMode]                   = useState<'bulk' | 'single'>('bulk');
   const [showEventOnly, setShowEventOnly]         = useState(false); // 이벤트 전용 템플릿까지 보기
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<string[]>([]);
@@ -643,7 +656,7 @@ function SendModal({ type, templates, templateMappings, customers, onClose, onSu
                     {needFallback && (
                       <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
                         💡 수동 발송 가능으로 분류된 템플릿이 없어 전체 템플릿을 표시합니다.
-                        <Link href="/notifications/templates" className="underline font-medium ml-1">템플릿 관리</Link>에서 용도별로 분류해주세요.
+                        <button type="button" onClick={onGoToTemplatesTab} className="underline font-medium ml-1 text-blue-700 hover:text-blue-800">템플릿 관리 탭</button>에서 용도별로 분류해주세요.
                       </div>
                     )}
                     <div>
@@ -727,7 +740,7 @@ function SendModal({ type, templates, templateMappings, customers, onClose, onSu
                           ⚠️ 분류되지 않은 템플릿입니다
                         </div>
                         <div className="text-xs text-amber-700 mt-1">
-                          <Link href="/notifications/templates" className="underline font-medium">템플릿 관리</Link> 페이지에서
+                          <button type="button" onClick={onGoToTemplatesTab} className="underline font-medium text-amber-700 hover:text-amber-800">템플릿 관리 탭</button>에서
                           이 템플릿의 용도와 수동 발송 가능 여부를 먼저 지정해주세요.
                         </div>
                       </div>
