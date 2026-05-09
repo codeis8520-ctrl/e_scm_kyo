@@ -1254,12 +1254,13 @@ export async function deleteBranch(id: string) {
   const supabase = await createClient();
 
   const { error } = await supabase.from('branches').delete().eq('id', id);
-  
+
   if (error) {
     return { error: error.message };
   }
-  
+
   revalidatePath('/branches');
+  revalidatePath('/system-codes');
   return { success: true };
 }
 

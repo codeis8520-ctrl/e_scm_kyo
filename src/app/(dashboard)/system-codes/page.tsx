@@ -230,8 +230,12 @@ export default function SystemCodesPage() {
   };
 
   const handleDeleteBranch = async (id: string) => {
-    if (!confirm('정말 삭제하시겠습니까?')) return;
-    await deleteBranch(id);
+    if (!confirm('정말 삭제하시겠습니까?\n\n※ 이 지점을 참조하는 직원·재고·판매전표 등이 있으면 삭제할 수 없습니다.\n   대신 지점 수정에서 "비활성"으로 전환해주세요.')) return;
+    const result = await deleteBranch(id);
+    if (result?.error) {
+      alert(`삭제 실패: ${result.error}\n\n참조 데이터가 있는 지점은 삭제 대신 비활성으로 전환해야 합니다.`);
+      return;
+    }
     fetchData();
   };
 
