@@ -726,6 +726,25 @@ sales_orders·inventories 등 핵심 거래 테이블은 삭제 불가.`,
       },
     },
   },
+  // ── 판매 취소 ─────────────────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'cancel_sales_order',
+      description: `POS 판매 주문 취소 (CANCELLED). 환불(return_orders 생성)과 다른 점은 거래 자체를 무르는 것 — 매출 자체를 역분개합니다.
+사용 예: "방금 등록한 SA-GN-... 잘못 등록했어 취소해줘", "거래 자체를 취소".
+원리: status→CANCELLED + 재고 복원(SALE_CANCEL movement) + 적립 포인트 차감 + 사용 포인트 환원 + 매출 분개 역분개.
+주의: 원본 주문 status가 COMPLETED여야 함. 환불 진행 중인 건은 환불로 이어가야 함. 외상 미수금 건은 자동으로 외상 취소 흐름으로 위임.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          order_number: { type: 'string', description: '취소할 주문의 order_number (예: SA-GN-20260408-ABCD)' },
+          reason: { type: 'string', description: '취소 사유 (필수, 예: "잘못 등록", "고객 요청 취소", "결제 오류")' },
+        },
+        required: ['order_number', 'reason'],
+      },
+    },
+  },
   // ── Phase B: 부분 입고 ────────────────────────────────────────────────────
   {
     type: 'function',
@@ -902,6 +921,7 @@ export const WRITE_TOOLS = new Set([
   'update_product',
   'bulk_update_product_costs',
   'delete_record',
+  'cancel_sales_order',
   // Phase B
   'refund_sales_order',
   'receive_purchase_order_partial',
@@ -1054,6 +1074,7 @@ export async function executeTool(
       case 'bulk_update_product_costs':return execBulkUpdateProductCosts(sb, args as any, ctx);
       case 'get_customer_consultations':return execGetCustomerConsultations(sb, args as any);
       case 'delete_record':            return execDeleteRecord(sb, args as any, ctx);
+      case 'cancel_sales_order':       return execCancelSalesOrder(sb, args as any, ctx);
       // Phase B
       case 'refund_sales_order':       return execRefundSalesOrder(sb, args as any, ctx);
       case 'receive_purchase_order_partial': return execReceivePurchaseOrderPartial(sb, args as any, ctx);
@@ -2502,6 +2523,38 @@ async function execDeleteRecord(sb: any, args: { table: string; record_id: strin
     테이블: args.table,
     삭제ID: args.record_id,
     사유: args.reason || '미지정',
+  });
+}
+
+// ── 판매 취소 ────────────────────────────────────────────────────────────────
+async function execCancelSalesOrder(sb: any, args: {
+  order_number: string;
+  reason: string;
+}, ctx: ToolContext): Promise<string> {
+  if (!args.reason?.trim()) return JSON.stringify({ error: '취소 사유는 필수입니다.' });
+
+  // 주문 조회 + 지점 권한 검증
+  const { data: order } = await sb
+    .from('sales_orders')
+    .select('id, order_number, status, total_amount, payment_method, branch:branches(id, name)')
+    .eq('order_number', args.order_number)
+    .maybeSingle();
+  if (!order) return JSON.stringify({ error: `주문 "${args.order_number}"을(를) 찾을 수 없습니다.` });
+  const denied = assertBranchAccess(ctx, order.branch?.id, order.branch?.name || '지점');
+  if (denied) return denied;
+
+  const { cancelSalesOrder } = await import('@/lib/sales-cancel-actions');
+  const res = await cancelSalesOrder({ orderId: order.id, reason: args.reason });
+  if ('error' in res && res.error) return JSON.stringify({ error: res.error });
+
+  return JSON.stringify({
+    성공: true,
+    주문번호: (res as any).orderNumber || order.order_number,
+    취소금액: (res as any).amount?.toLocaleString?.() + '원',
+    사유: args.reason,
+    안내: order.payment_method === 'card' || order.payment_method === 'card_keyin' || order.payment_method === 'kakao'
+      ? '⚠️ 카드 결제건입니다. 결제 단말기/PG에서 결제 취소를 별도로 진행해주세요.'
+      : undefined,
   });
 }
 

@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/client';
 import ReceiptModal from './ReceiptModal';
 import RefundModal from './RefundModal';
 import { fmtDateKST, kstTodayString, kstDayStart, kstDayEnd } from '@/lib/date';
+import { cancelSalesOrder } from '@/lib/sales-cancel-actions';
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -906,7 +907,40 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
   const [payments, setPayments] = useState<any[]>([]);
   const [shipment, setShipment] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [cancelling, setCancelling] = useState(false);
   const [markingReceipt, setMarkingReceipt] = useState(false);
+
+  const handleCancelSale = async () => {
+    if (!order) return;
+    const isCard = ['card', 'card_keyin', 'kakao'].includes(order.payment_method);
+    const cardWarning = isCard
+      ? '\n\n⚠️ 카드 결제건입니다. 결제 단말기/PG에서 결제 취소를 별도로 진행해주세요.\n   본 처리는 ERP 데이터(매출·재고·포인트·분개)만 무릅니다.'
+      : '';
+    const shipped = (shipment?.status === 'SHIPPED' || shipment?.status === 'DELIVERED');
+    const shipWarning = shipped
+      ? '\n\n⚠️ 이미 배송된 건입니다. 일반적으로는 환불·반품으로 처리하는 것이 권장됩니다.'
+      : '';
+    const reason = window.prompt(
+      `이 판매를 "취소" 처리하시겠습니까?\n\n` +
+      `주문번호: ${order.order_number}\n` +
+      `금액: ${Number(order.total_amount).toLocaleString()}원\n` +
+      `결제수단: ${order.payment_method}` +
+      cardWarning + shipWarning +
+      `\n\n취소 사유를 입력하세요:`
+    );
+    if (!reason || !reason.trim()) return;
+
+    setCancelling(true);
+    const res = await cancelSalesOrder({ orderId: order.id, reason: reason.trim() });
+    setCancelling(false);
+    if ('error' in res && res.error) {
+      alert(`취소 실패: ${res.error}`);
+      return;
+    }
+    alert(`판매 취소 완료 · ${(res as any).orderNumber || order.order_number}`);
+    onChanged();
+    onClose();
+  };
   const [changingDeliveryType, setChangingDeliveryType] = useState(false);
   const [markingItemId, setMarkingItemId] = useState<string | null>(null);
 
@@ -1649,6 +1683,14 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
                 <button onClick={() => onRefundIntent(order.order_number)}
                   className="flex-1 min-w-[120px] py-2 text-sm rounded-md border border-red-200 text-red-600 hover:bg-red-50">
                   환불 처리
+                </button>
+              )}
+              {order.status === 'COMPLETED' && (
+                <button onClick={() => handleCancelSale()}
+                  disabled={cancelling}
+                  className="flex-1 min-w-[120px] py-2 text-sm rounded-md border border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100 disabled:opacity-50"
+                  title="거래 자체를 취소합니다 (잘못 등록한 건). 환불과 달리 매출 자체를 역분개합니다.">
+                  {cancelling ? '취소 중...' : '🚫 판매 취소'}
                 </button>
               )}
             </div>
