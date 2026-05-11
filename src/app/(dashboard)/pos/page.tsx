@@ -539,13 +539,9 @@ function POSPageInner() {
   [inventoryMap, selectedBranch]);
 
   // ── 장바구니 ──────────────────────────────────────────────────────────────
+  // 정책: 재고 부족/품절이어도 판매 허용 (음수 재고 정책 — schema.ts 참조).
+  //       UI 카드에 이미 "품절" 배지가 보이므로 별도 차단 없음.
   const addToCart = (product: any) => {
-    const stock = getStock(product.id);
-    const inCartQty = cart.find(i => i.productId === product.id)?.quantity ?? 0;
-    if (stock !== null && inCartQty + 1 > stock) {
-      alert(`"${product.name}" 재고 부족 (현재 ${stock}개)`);
-      return;
-    }
     setCart(prev => {
       const existing = prev.find(item => item.productId === product.id);
       if (existing) {
@@ -572,11 +568,7 @@ function POSPageInner() {
 
   const updateQuantity = (productId: string, quantity: number) => {
     if (quantity <= 0) { removeFromCart(productId); return; }
-    const stock = getStock(productId);
-    if (stock !== null && quantity > stock) {
-      alert(`재고 부족 (현재 ${stock}개)`);
-      return;
-    }
+    // 재고 부족/음수여도 판매 허용 (음수 재고 정책)
     setCart(prev => prev.map(item => item.productId === productId ? { ...item, quantity } : item));
   };
 
