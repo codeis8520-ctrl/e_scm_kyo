@@ -18,7 +18,7 @@ interface Inventory {
   quantity: number;
   safety_stock: number;
   branch?: { id: string; name: string; is_headquarters?: boolean };
-  product?: { id: string; name: string; code: string; barcode?: string; product_type?: ProductType | null; category_id?: string | null; track_inventory?: boolean };
+  product?: { id: string; name: string; code: string; barcode?: string; product_type?: ProductType | null; category_id?: string | null; track_inventory?: boolean; is_phantom?: boolean };
 }
 
 interface Branch {
@@ -42,6 +42,8 @@ interface ProductRow {
   productType?: ProductType | null;
   barcode?: string;
   categoryId: string | null;
+  trackInventory: boolean;
+  isPhantom: boolean;
   byBranch: Record<string, Inventory>; // branch_id → Inventory
 }
 
@@ -185,8 +187,15 @@ export default function InventoryPage() {
     // product_type · category_id · is_headquarters 포함 시도 → 미적용 폴백
     let res: any = await supabase
       .from('inventories')
-      .select('*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory)')
+      .select('*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory, is_phantom)')
       .order('product_id');
+    if (res.error) {
+      // is_phantom(마이그 061) 미적용 폴백
+      res = await supabase
+        .from('inventories')
+        .select('*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory)')
+        .order('product_id');
+    }
     if (res.error) {
       // track_inventory 컬럼(마이그 059) 미적용 환경 폴백
       res = await supabase
@@ -240,12 +249,12 @@ export default function InventoryPage() {
   })();
 
   // ── 피벗 데이터 계산 — 카테고리 트리 순으로 정렬 ──────────────────────
+  // 정책: track_inventory=false / is_phantom=true 도 화면엔 노출 (배지로 상태 안내).
+  //       이전엔 track_inventory=false 행을 통째로 숨겨서 phantom·세트상품이 안 보이는 문제가 있었음.
   const productRows: ProductRow[] = (() => {
     const map = new Map<string, ProductRow>();
     for (const inv of inventories) {
       if (!inv.product) continue;
-      // 재고 관리 대상 해제(track_inventory=false) 제품 제외 — 컬럼 미적용 환경에선 undefined → 표시 유지
-      if (inv.product.track_inventory === false) continue;
       if (!map.has(inv.product_id)) {
         map.set(inv.product_id, {
           productId: inv.product_id,
@@ -254,6 +263,8 @@ export default function InventoryPage() {
           productType: (inv.product.product_type ?? null) as ProductType | null,
           barcode: inv.product.barcode,
           categoryId: inv.product.category_id ?? null,
+          trackInventory: inv.product.track_inventory !== false,  // undefined → true
+          isPhantom: inv.product.is_phantom === true,
           byBranch: {},
         });
       }
@@ -532,6 +543,16 @@ export default function InventoryPage() {
                           {TYPE_BADGE[row.productType].label}
                         </span>
                       ) : null}
+                      {row.isPhantom && (
+                        <span className="ml-2 inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-100 text-indigo-700" title="세트상품(Phantom) — 본인 재고 관리 대상 아님. 구성품 재고를 참조.">
+                          세트
+                        </span>
+                      )}
+                      {!row.trackInventory && !row.isPhantom && (
+                        <span className="ml-2 inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700" title="재고 추적이 해제된 제품. 제품 편집에서 활성화 가능.">
+                          추적 해제
+                        </span>
+                      )}
                       {row.barcode && (
                         <span className="ml-2 text-xs text-slate-400 font-mono">{row.barcode}</span>
                       )}

@@ -170,9 +170,10 @@ sales_orders.receipt_status: 품목 receipt_status 집계(우선순위 PARCEL_PL
 - "VIP한테 문자" → bulk_send_sms(grade: "VIP", ...)
 
 [Phantom BOM(세트 상품) 운영 규칙]
-- products.is_phantom=true 제품은 옵션 조합 SKU(예: "침향30환 +오)") 운영용.
-- POS 판매 시 본인 재고는 0 유지(차감 X), product_bom의 구성품을 분해 차감.
-- 재고/대시보드/AI 도구의 부족 알림에서 phantom 본인은 의미 없음 — 구성품 재고만 추적.
+- products.is_phantom=true 제품은 "묶음 명칭일 뿐" 본인 재고 관리 대상이 아님.
+- BOM 구성품은 각각 단독으로도 판매 가능한 일반 제품(non-phantom)이며, 개별 재고로 관리됨.
+- POS 판매 시 phantom 본인 재고는 차감하지 않고, product_bom의 구성품을 분해 차감.
+- 재고 화면/백필 대상에서 phantom 본인은 제외. 구성품(non-phantom)이 단독 SKU로 재고 추적됨.
 - 사용자가 "세트상품 재고 얼마야?" 같은 질문을 하면, phantom의 BOM 구성품 중 가장 부족한 품목 기준으로 답해야 함.
 
 [B2B 거래]

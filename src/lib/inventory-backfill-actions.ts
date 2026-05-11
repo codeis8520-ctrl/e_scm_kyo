@@ -34,22 +34,32 @@ export async function backfillMissingInventories(): Promise<{
   const branchIds: string[] = (branches || []).map((b: any) => b.id);
   if (branchIds.length === 0) return { inserted: 0, scanned: 0 };
 
-  // 2) 재고 추적 대상 제품 모음 — track_inventory / is_phantom 컬럼 없는 환경에도 대응
+  // 2) 재고 추적 대상 제품 모음
+  //    정책: 세트상품(Phantom)은 묶음 명칭일 뿐 본인 재고 관리 대상 아님 — 구성품 각각이
+  //         개별 재고 관리됨. 따라서 phantom 은 제외. SERVICE 무형상품도 제외.
+  //    포함: is_active && is_phantom != true && product_type != 'SERVICE'
+  //         track_inventory=false 라도 visibility/관리를 위해 포함 (UI 에 "재고 추적 해제" 배지)
   let productsRes: any = await supabase
     .from('products')
-    .select('id, track_inventory, is_phantom')
+    .select('id, product_type, track_inventory, is_phantom')
     .eq('is_active', true);
   if (productsRes.error) {
-    // 컬럼 미적용 폴백
+    // is_phantom 컬럼 미적용 폴백
+    productsRes = await supabase.from('products').select('id, product_type, track_inventory').eq('is_active', true);
+  }
+  if (productsRes.error) {
+    productsRes = await supabase.from('products').select('id, product_type').eq('is_active', true);
+  }
+  if (productsRes.error) {
     productsRes = await supabase.from('products').select('id').eq('is_active', true);
   }
   if (productsRes.error) return { inserted: 0, scanned: 0, error: productsRes.error.message };
 
   const trackable: string[] = (productsRes.data || [])
     .filter((p: any) => {
-      const tr = p.track_inventory ?? true;     // 컬럼 없으면 true 가정
-      const ph = p.is_phantom ?? false;          // 컬럼 없으면 false 가정
-      return tr === true && ph === false;
+      const pt = p.product_type;            // 없으면 undefined
+      const ph = p.is_phantom ?? false;     // 없으면 false 가정
+      return pt !== 'SERVICE' && ph !== true;
     })
     .map((p: any) => p.id);
 
