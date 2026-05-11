@@ -7,6 +7,7 @@ import InventoryModal from './InventoryModal';
 import TransferModal from './TransferModal';
 import MovementHistoryModal from './MovementHistoryModal';
 import { updateSafetyStock } from '@/lib/inventory-actions';
+import { backfillMissingInventories } from '@/lib/inventory-backfill-actions';
 
 type ProductType = 'FINISHED' | 'RAW' | 'SUB' | 'SERVICE';
 
@@ -135,9 +136,20 @@ export default function InventoryPage() {
   const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
 
   useEffect(() => {
-    fetchBranches();
-    fetchCategories();
-    fetchInventory();
+    (async () => {
+      // 누락 재고 행 자가 치유 (조용히, idempotent) — 그 다음 페치
+      try {
+        const r = await backfillMissingInventories();
+        if (r.inserted > 0) {
+          console.log(`[inventory] 누락 재고 행 ${r.inserted}개 자동 복구`);
+        }
+      } catch (e) {
+        console.warn('[inventory] backfill 스킵:', e);
+      }
+      fetchBranches();
+      fetchCategories();
+      fetchInventory();
+    })();
     if (isBranchUser && userBranchId) {
       setFlatBranchFilter(userBranchId);
       setViewMode('flat');
