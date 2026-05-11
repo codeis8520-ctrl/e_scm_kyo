@@ -2,7 +2,8 @@ export const DB_SCHEMA = `
 == 핵심 테이블 스키마 ==
 
 --- 지점·제품·재고 ---
-branches: id, name, code, channel(STORE/DEPT_STORE/ONLINE/EVENT), address, phone, is_active
+branches: id, name, code, channel(STORE/DEPT_STORE/ONLINE/EVENT), address, phone, is_active, is_headquarters, sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail
+  ※ sender_*: 택배 보내는분 정보 (대한통운 엑셀 임포트용). 미입력 시 sender_name←"경옥채 "+name, sender_phone←phone, sender_address←address 로 폴백.
 products: id, name, code, barcode, unit, price(판매가), cost(원가), cost_source(MANUAL/BOM), product_type(FINISHED/RAW/SUB/SERVICE), track_inventory(bool), is_phantom(bool), is_active
   ※ product_type: FINISHED=완제품(POS 판매), RAW=원자재, SUB=부자재, SERVICE=무형상품(컨설팅·교육 등 POS 판매 가능, 재고 X)
   ※ track_inventory(마이그 059): false면 inventories/inventory_movements 미사용. SERVICE는 기본 false.
@@ -82,7 +83,8 @@ accounting_period_closes: id, period(YYYY-MM), closed_at, closed_by, memo
 
 --- 배송 ---
 shipments: id, source(CAFE24/STORE), delivery_type(PARCEL/QUICK), cafe24_order_id, sales_order_id, sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail, recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail, tracking_number, status(PENDING/PRINTED/SHIPPED/DELIVERED), branch_id, created_at
-  ※ sender_*: 발송자(출고지). CAFE24 출처는 /admin/shippingorigins(폴백 /admin/store)에서 자동 채움. 직접입력은 매뉴얼. 대한통운 엑셀 임포트 필수값.
+  ※ sender_*: 배송 행 생성 시점 스냅샷. CAFE24 출처는 /admin/shippingorigins(폴백 /admin/store)에서 자동 채움.
+  ※ 대한통운 엑셀 다운로드 시 발송지는 별도 모달에서 지점 선택(본사/한남점 등) — branches.sender_* 우선, 없으면 branches.address/phone 폴백. 모든 행에 통일 적용.
   ※ branch_id = 출고 지점 (재고가 차감된 지점). POS에서 배송 활성 시 판매 지점과 다를 수 있음. 판매 지점은 sales_orders.branch_id 참조.
   ※ delivery_type: PARCEL=택배(SweetTracker 송장·알림톡), QUICK=퀵배송(당일 인편·직접 배송).
 
@@ -129,6 +131,7 @@ PENDING → IN_PROGRESS → COMPLETED
      ※ 입고 지점이 본사가 아닌 경우에도 부자재 차감 지점은 항상 본사.
      ※ 음수 재고 허용 — 본사 재고 부족해도 차단하지 않고 마이너스로 차감, 추후 입고 시 누적 복원.
        레코드 자체가 없으면 음수로 신규 생성.
+     ※ POS 판매도 동일 정책 — 재고 0/품절 상태여도 판매 허용. UI는 "품절" 배지만 표시하고 차단하지 않음.
      ※ 본사가 미지정이면 생산 완료 자체가 불가 — 지점 관리에서 본사 지정이 전제.
   ② 완제품 재고를 "입고 지점(production_orders.branch_id)"에 증가.
   ③ inventory_movements 기록: 부자재 차감은 본사 branch_id로, 완제품 입고는 입고 지점 branch_id로.

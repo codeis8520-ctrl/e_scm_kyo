@@ -199,6 +199,55 @@ export default function ShippingPage() {
   const [batchTracking, setBatchTracking] = useState(false);
   const [batchProgress, setBatchProgress] = useState('');
 
+  // ── 대한통운 엑셀 발송지(보내는분) 선택 ───────────────────────────────────
+  interface BranchSender {
+    id: string; name: string; is_headquarters: boolean;
+    address: string | null; phone: string | null;
+    // migration 063 신규 컬럼 (적용 전이면 undefined)
+    sender_name?: string | null; sender_phone?: string | null;
+    sender_zipcode?: string | null; sender_address?: string | null;
+    sender_address_detail?: string | null;
+  }
+  const [branchSenders, setBranchSenders] = useState<BranchSender[]>([]);
+  const [showSenderPicker, setShowSenderPicker] = useState<'cj' | 'selected' | null>(null);
+  const [pickerBranchId, setPickerBranchId] = useState<string>(''); // 'manual' = 직접 입력
+  const [pickerForm, setPickerForm] = useState({
+    name: '', phone: '', zipcode: '', address: '', address_detail: '',
+  });
+
+  // 지점 발송지 목록 로드 + 마지막 선택값 복원
+  useEffect(() => {
+    (async () => {
+      const sb = createClient() as any;
+      const { data } = await sb.from('branches')
+        .select('id, name, is_headquarters, address, phone, sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail')
+        .eq('is_active', true)
+        .order('is_headquarters', { ascending: false })
+        .order('name');
+      const list = (data || []) as BranchSender[];
+      setBranchSenders(list);
+      const remembered = typeof window !== 'undefined' ? window.localStorage.getItem('shipping.lastSenderBranchId') : null;
+      const hq = list.find(b => b.is_headquarters);
+      const initial = (remembered && list.find(b => b.id === remembered)?.id) || hq?.id || list[0]?.id || '';
+      setPickerBranchId(initial);
+    })();
+  }, []);
+
+  // 지점 선택 변경 시 폼 프리필
+  useEffect(() => {
+    if (pickerBranchId === 'manual') return;
+    const b = branchSenders.find(x => x.id === pickerBranchId);
+    if (!b) return;
+    const defaultName = b.sender_name ?? (b.name.includes('경옥채') ? b.name : `경옥채 ${b.name}`);
+    setPickerForm({
+      name: defaultName,
+      phone: b.sender_phone ?? b.phone ?? '',
+      zipcode: b.sender_zipcode ?? '',
+      address: b.sender_address ?? b.address ?? '',
+      address_detail: b.sender_address_detail ?? '',
+    });
+  }, [pickerBranchId, branchSenders]);
+
   // ── Daum 우편번호 스크립트 로드 ──────────────────────────────────────────
   useEffect(() => {
     const script = document.createElement('script');
@@ -285,33 +334,57 @@ export default function ShippingPage() {
   };
 
   // ── 대한통운 엑셀 다운로드 ────────────────────────────────────────────────
+  // 1단계: 발송지 선택 모달 열기 (실제 export 는 confirmSenderAndExport 에서)
   const downloadCjExcel = () => {
     const targets = statusFilter === 'ALL' ? shipments : shipments.filter(s => s.status === statusFilter);
     if (targets.length === 0) { alert('다운로드할 배송 건이 없습니다.'); return; }
+    setShowSenderPicker('cj');
+  };
 
-    const header = [
-      '받는분성명', '받는분전화번호', '받는분기타연락처',
-      '받는분주소(전체, 분할)', '배송메세지1',
-      '품목명', '내품명', '내품수량', '운임구분',
-      '보내는분성명', '보내는분전화번호', '보내는분주소(전체, 분할)',
-    ];
+  // 2단계: 모달에서 발송지 확정 후 실제 export
+  const confirmSenderAndExport = () => {
+    if (!pickerForm.name.trim()) { alert('보내는분 이름을 입력해주세요.'); return; }
+    if (!pickerForm.phone.trim()) { alert('보내는분 전화번호를 입력해주세요.'); return; }
+    if (!pickerForm.address.trim()) { alert('보내는분 주소를 입력해주세요.'); return; }
 
-    const rows = targets.map(s => [
-      s.recipient_name, s.recipient_phone, '',
-      [s.recipient_address, s.recipient_address_detail].filter(Boolean).join(' '),
-      s.delivery_message || '', s.items_summary || '', '', '', '선불',
-      s.sender_name, s.sender_phone, s.sender_address || '',
-    ]);
+    if (showSenderPicker === 'cj') {
+      const targets = statusFilter === 'ALL' ? shipments : shipments.filter(s => s.status === statusFilter);
+      const senderFullAddress = [pickerForm.address, pickerForm.address_detail].filter(Boolean).join(' ');
 
-    const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
-    ws['!cols'] = [
-      { wch: 12 }, { wch: 16 }, { wch: 14 }, { wch: 50 }, { wch: 30 },
-      { wch: 24 }, { wch: 16 }, { wch: 8 }, { wch: 8 },
-      { wch: 12 }, { wch: 16 }, { wch: 40 },
-    ];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'sheet1');
-    XLSX.writeFile(wb, `CJ대한통운_${kstTodayString().replace(/-/g, '')}.xlsx`);
+      const header = [
+        '받는분성명', '받는분전화번호', '받는분기타연락처',
+        '받는분주소(전체, 분할)', '배송메세지1',
+        '품목명', '내품명', '내품수량', '운임구분',
+        '보내는분성명', '보내는분전화번호', '보내는분주소(전체, 분할)',
+        '보내는분우편번호',
+      ];
+
+      const rows = targets.map(s => [
+        s.recipient_name, s.recipient_phone, '',
+        [s.recipient_address, s.recipient_address_detail].filter(Boolean).join(' '),
+        s.delivery_message || '', s.items_summary || '', '', '', '선불',
+        pickerForm.name, pickerForm.phone, senderFullAddress,
+        pickerForm.zipcode || '',
+      ]);
+
+      const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+      ws['!cols'] = [
+        { wch: 12 }, { wch: 16 }, { wch: 14 }, { wch: 50 }, { wch: 30 },
+        { wch: 24 }, { wch: 16 }, { wch: 8 }, { wch: 8 },
+        { wch: 12 }, { wch: 16 }, { wch: 40 }, { wch: 10 },
+      ];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'sheet1');
+      XLSX.writeFile(wb, `CJ대한통운_${kstTodayString().replace(/-/g, '')}.xlsx`);
+    } else if (showSenderPicker === 'selected') {
+      doExportSelectedToExcel();
+    }
+
+    // 마지막 선택 기억
+    if (pickerBranchId && pickerBranchId !== 'manual' && typeof window !== 'undefined') {
+      window.localStorage.setItem('shipping.lastSenderBranchId', pickerBranchId);
+    }
+    setShowSenderPicker(null);
   };
 
   // ── 엑셀 임포트 (송장번호) ────────────────────────────────────────────────
@@ -610,14 +683,21 @@ export default function ShippingPage() {
   const exportSelectedToExcel = () => {
     const toExport = filteredShipments.filter(s => selectedShipments.has(s.id));
     if (toExport.length === 0) return;
+    setShowSenderPicker('selected');
+  };
+
+  // 모달 확정 후 실제 export (선택 엑셀 익스포트)
+  const doExportSelectedToExcel = () => {
+    const toExport = filteredShipments.filter(s => selectedShipments.has(s.id));
+    if (toExport.length === 0) return;
     const rows = toExport.map(s => ({
       '등록일': s.created_at?.slice(0, 10) ?? '',
       '출처': s.source === 'CAFE24' ? '카페24' : '직접입력',
-      '발송자': s.sender_name,
-      '발송자 전화': s.sender_phone,
-      '발송자 우편번호': (s as any).sender_zipcode ?? '',
-      '발송자 주소': s.sender_address ?? '',
-      '발송자 상세주소': (s as any).sender_address_detail ?? '',
+      '발송자': pickerForm.name,
+      '발송자 전화': pickerForm.phone,
+      '발송자 우편번호': pickerForm.zipcode,
+      '발송자 주소': pickerForm.address,
+      '발송자 상세주소': pickerForm.address_detail,
       '수령자': s.recipient_name,
       '수령자 전화': s.recipient_phone,
       '수령자 우편번호': s.recipient_zipcode ?? '',
@@ -1276,6 +1356,93 @@ export default function ShippingPage() {
             <div className="flex gap-2 pt-2">
               <button className="btn-primary flex-1" onClick={handleEditSave} disabled={editSaving}>{editSaving ? '저장 중...' : '저장'}</button>
               <button className="flex-1 px-4 py-2 rounded border border-slate-300 text-slate-600 text-sm hover:bg-slate-50" onClick={handleEditClose}>취소</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── 발송지(보내는분) 선택 모달 ─────────────────────────────────────── */}
+      {showSenderPicker && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-auto p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-slate-800">발송지(보내는분) 선택</h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {showSenderPicker === 'cj' ? '대한통운 엑셀' : '선택 엑셀'} 의 모든 행에 적용됩니다.
+                </p>
+              </div>
+              <button onClick={() => setShowSenderPicker(null)} className="text-slate-400 hover:text-slate-600 text-xl">&times;</button>
+            </div>
+
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">발송 지점</label>
+              <select
+                className="input w-full"
+                value={pickerBranchId}
+                onChange={e => setPickerBranchId(e.target.value)}
+              >
+                {branchSenders.map(b => (
+                  <option key={b.id} value={b.id}>
+                    {b.is_headquarters ? '🏢 ' : '🏪 '}경옥채 {b.name}{b.is_headquarters ? ' (본사)' : ''}
+                  </option>
+                ))}
+                <option value="manual">✏️ 직접 입력</option>
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">보내는분 이름 *</label>
+                <input className="input w-full" value={pickerForm.name}
+                  onChange={e => setPickerForm(f => ({ ...f, name: e.target.value }))} placeholder="경옥채 본사" />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">전화번호 *</label>
+                <input className="input w-full" value={pickerForm.phone}
+                  onChange={e => setPickerForm(f => ({ ...f, phone: e.target.value }))} placeholder="02-0000-0000" />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs text-slate-500 block mb-1">우편번호</label>
+              <div className="flex gap-2">
+                <input className="input flex-1" value={pickerForm.zipcode}
+                  onChange={e => setPickerForm(f => ({ ...f, zipcode: e.target.value }))} placeholder="06000" />
+                <button
+                  type="button"
+                  onClick={() => openDaumPostcode((zipcode, address) => {
+                    setPickerForm(f => ({ ...f, zipcode, address }));
+                  })}
+                  className="px-3 py-2 rounded border border-slate-300 text-sm text-slate-600 hover:bg-slate-50 whitespace-nowrap"
+                >주소 검색</button>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs text-slate-500 block mb-1">주소 *</label>
+              <input className="input w-full" value={pickerForm.address}
+                onChange={e => setPickerForm(f => ({ ...f, address: e.target.value }))} placeholder="서울특별시 ..." />
+            </div>
+
+            <div>
+              <label className="text-xs text-slate-500 block mb-1">상세주소</label>
+              <input className="input w-full" value={pickerForm.address_detail}
+                onChange={e => setPickerForm(f => ({ ...f, address_detail: e.target.value }))} placeholder="1층 물류센터" />
+            </div>
+
+            <div className="rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-xs text-slate-600">
+              💡 지점 선택 후 필요하면 위 항목을 직접 수정하세요. 다음에 열면 마지막 선택이 유지됩니다.
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button className="btn-primary flex-1" onClick={confirmSenderAndExport}>
+                이 발송지로 다운로드
+              </button>
+              <button
+                className="flex-1 px-4 py-2 rounded border border-slate-300 text-slate-600 text-sm hover:bg-slate-50"
+                onClick={() => setShowSenderPicker(null)}
+              >취소</button>
             </div>
           </div>
         </div>
