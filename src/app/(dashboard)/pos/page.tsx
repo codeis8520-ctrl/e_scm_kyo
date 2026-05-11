@@ -1525,17 +1525,15 @@ function POSPageInner() {
                 {filteredProducts.map(product => {
                   const stock = getStock(product.id);
                   const inCart = cart.find(i => i.productId === product.id)?.quantity ?? 0;
-                  const isOutOfStock = stock !== null && stock === 0;
+                  // 음수 재고 정책: 품절(0) 또는 음수여도 클릭 가능. 빨강 배지로 시각 안내만.
+                  const isOutOfStock = stock !== null && stock <= 0;
                   const isLow = stock !== null && stock > 0 && stock < 10;
                   return (
                     <button
                       key={product.id}
                       onClick={() => addToCart(product)}
-                      disabled={isOutOfStock}
-                      className={`bg-white p-2 rounded-md shadow-sm text-left border transition-all ${
-                        isOutOfStock
-                          ? 'border-slate-100 opacity-40 cursor-not-allowed'
-                          : 'border-slate-100 hover:border-blue-300 hover:shadow-md active:scale-95'
+                      className={`bg-white p-2 rounded-md shadow-sm text-left border transition-all hover:border-blue-300 hover:shadow-md active:scale-95 ${
+                        isOutOfStock ? 'border-red-200 bg-red-50/30' : 'border-slate-100'
                       } ${inCart > 0 ? 'ring-2 ring-blue-400 ring-inset' : ''}`}
                     >
                       {product.barcode && (
@@ -1553,7 +1551,7 @@ function POSPageInner() {
                         isOutOfStock ? 'text-red-500 font-semibold' :
                         isLow ? 'text-orange-500' : 'text-slate-400'
                       }`}>
-                        {stock === null ? '\u00A0' : isOutOfStock ? '품절' : `재고 ${stock}`}
+                        {stock === null ? '\u00A0' : stock === 0 ? '품절 (판매 가능)' : stock < 0 ? `재고 ${stock} (판매 가능)` : `재고 ${stock}`}
                       </p>
                     </button>
                   );
