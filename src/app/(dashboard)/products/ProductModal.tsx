@@ -67,6 +67,11 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
   });
   const [bomComputedCost, setBomComputedCost] = useState<number | null>(null);
   const [bomLinesCount, setBomLinesCount] = useState(0);
+  // 세트상품(Phantom) 일 때 구성품 상세 표시용
+  const [bomLines, setBomLines] = useState<Array<{
+    materialId: string; name: string; code: string;
+    productType: ProductType | null; quantity: number; lossRate: number;
+  }>>([]);
   const [whereUsed, setWhereUsed] = useState<any[]>([]);
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -89,21 +94,33 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
     getCategories().then(res => setCategories(res.data || []));
   }, []);
 
-  // 수정 모드 + 완제품이면 BOM 합계 계산 (자동 원가 미리보기)
+  // 수정 모드 + 완제품이면 BOM 상세 + 합계 계산 (자동 원가 미리보기 / Phantom 구성품 표시)
   useEffect(() => {
     if (!product?.id || formData.product_type !== 'FINISHED') {
       setBomComputedCost(null);
       setBomLinesCount(0);
+      setBomLines([]);
       return;
     }
     const supabase = createClient() as any;
     (async () => {
       const { data } = await supabase
         .from('product_bom')
-        .select('quantity, loss_rate, material:products!product_bom_material_id_fkey(cost)')
+        .select('material_id, quantity, loss_rate, material:products!product_bom_material_id_fkey(id, name, code, cost, product_type)')
         .eq('product_id', product.id);
       const rows = (data || []) as any[];
       setBomLinesCount(rows.length);
+
+      const detailRows = rows.map(r => ({
+        materialId: r.material_id,
+        name: r.material?.name || '(이름 없음)',
+        code: r.material?.code || '',
+        productType: (r.material?.product_type ?? null) as ProductType | null,
+        quantity: Number(r.quantity || 0),
+        lossRate: Number(r.loss_rate || 0),
+      }));
+      setBomLines(detailRows);
+
       let sum = 0;
       for (const r of rows) {
         const mc = Number(r.material?.cost || 0);
@@ -418,36 +435,73 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
 
           {/* 세트 상품(Phantom BOM) — 판매 시 BOM 분해해서 구성품 차감 */}
           {formData.product_type === 'FINISHED' && (
-            <div className={`flex items-start gap-2 p-3 rounded-md border ${
+            <div className={`p-3 rounded-md border ${
               formData.is_phantom ? 'bg-purple-50 border-purple-200' : 'bg-slate-50 border-slate-200'
             }`}>
-              <input
-                type="checkbox"
-                id="is_phantom"
-                checked={!!formData.is_phantom}
-                onChange={e => {
-                  const next = e.target.checked;
-                  setFormData(prev => ({
-                    ...prev,
-                    is_phantom: next,
-                    // phantom이면 본인 재고 안 잡으므로 track_inventory 자동 해제
-                    track_inventory: next ? false : prev.track_inventory,
-                  }));
-                }}
-                className="w-4 h-4 mt-0.5"
-              />
-              <label htmlFor="is_phantom" className="text-sm text-slate-700 flex-1 cursor-pointer">
-                🧩 세트 상품 (Phantom BOM)
-                <p className="text-xs text-slate-500 mt-0.5">
-                  체크 시 판매되어도 <b>본인 재고는 차감되지 않고</b>, 아래 BOM에 등록된
-                  구성품의 재고가 자동으로 차감됩니다. (예: "침향30환 +오)" → 침향30환 1개 + 오미자 1개)
-                </p>
-                {formData.is_phantom && bomLinesCount === 0 && (
-                  <p className="text-xs text-red-600 mt-1">
-                    ⚠️ BOM이 비어있습니다. 저장 후 BOM 화면에서 구성품을 등록해야 판매 가능합니다.
+              <div className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  id="is_phantom"
+                  checked={!!formData.is_phantom}
+                  onChange={e => {
+                    const next = e.target.checked;
+                    setFormData(prev => ({
+                      ...prev,
+                      is_phantom: next,
+                      // phantom이면 본인 재고 안 잡으므로 track_inventory 자동 해제
+                      track_inventory: next ? false : prev.track_inventory,
+                    }));
+                  }}
+                  className="w-4 h-4 mt-0.5"
+                />
+                <label htmlFor="is_phantom" className="text-sm text-slate-700 flex-1 cursor-pointer">
+                  🧩 세트 상품 (Phantom BOM)
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    체크 시 판매되어도 <b>본인 재고는 차감되지 않고</b>, 아래 BOM에 등록된
+                    구성품의 재고가 자동으로 차감됩니다. (예: "침향30환 +오)" → 침향30환 1개 + 오미자 1개)
                   </p>
-                )}
-              </label>
+                  {formData.is_phantom && bomLinesCount === 0 && (
+                    <p className="text-xs text-red-600 mt-1">
+                      ⚠️ BOM이 비어있습니다. 저장 후 BOM 화면에서 구성품을 등록해야 판매 가능합니다.
+                    </p>
+                  )}
+                </label>
+              </div>
+
+              {/* Phantom 구성품 노출 — 세트가 체크되어 있고 BOM 등록되어 있을 때 */}
+              {formData.is_phantom && bomLines.length > 0 && (
+                <div className="mt-3 pt-3 border-t border-purple-200">
+                  <p className="text-xs font-semibold text-purple-800 mb-1.5">
+                    📦 구성품 {bomLines.length}종 — 판매 시 아래 항목의 재고가 자동 차감됩니다
+                  </p>
+                  <ul className="space-y-1">
+                    {bomLines.map(line => {
+                      const typeBadge =
+                        line.productType === 'RAW' ? { label: '원자재', cls: 'bg-emerald-100 text-emerald-700' }
+                        : line.productType === 'SUB' ? { label: '부자재', cls: 'bg-amber-100 text-amber-700' }
+                        : line.productType === 'SERVICE' ? { label: '무형', cls: 'bg-purple-100 text-purple-700' }
+                        : { label: '완제품', cls: 'bg-blue-100 text-blue-700' };
+                      return (
+                        <li key={line.materialId} className="flex items-center gap-2 text-xs bg-white rounded px-2 py-1.5 border border-purple-100">
+                          <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 ${typeBadge.cls}`}>
+                            {typeBadge.label}
+                          </span>
+                          <span className="font-medium text-slate-800 flex-1 truncate">{line.name}</span>
+                          <span className="font-mono text-[10px] text-slate-400 shrink-0">{line.code}</span>
+                          <span className="text-slate-600 shrink-0">×{line.quantity}</span>
+                          {line.lossRate > 0 && (
+                            <span className="text-[10px] text-orange-500 shrink-0">손실 {line.lossRate}%</span>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  <p className="text-[11px] text-slate-500 mt-1.5">
+                    구성품 자체는 단독으로도 판매·재고 관리되며, 세트 판매 시 분해되어 차감됩니다.
+                    상세 편집은 <b>생산 → BOM 목록</b> 화면에서 가능합니다.
+                  </p>
+                </div>
+              )}
             </div>
           )}
 

@@ -62,7 +62,8 @@ export default function InventoryCountPage() {
       .from('inventories')
       .select('id, quantity, product:products(id, name, code, unit, is_active, track_inventory)')
       .eq('branch_id', selectedBranch)
-      .order('product(name)');
+      .order('product(name)')
+      .range(0, 99999);
 
     setRows(
       (data || [])

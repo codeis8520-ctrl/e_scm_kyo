@@ -185,23 +185,28 @@ export default function InventoryPage() {
     setLoading(true);
     const supabase = createClient();
     // product_type · category_id · is_headquarters 포함 시도 → 미적용 폴백
+    // ⚠️ Supabase PostgREST 기본 응답 행 제한(1000) 회피 — 명시적으로 큰 range 지정.
+    //    제품 200+ × 지점 5+ = 1000+ 행이라 기본 limit 에 걸려 후순위 제품이 누락되던 문제 해결.
     let res: any = await supabase
       .from('inventories')
       .select('*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory, is_phantom)')
-      .order('product_id');
+      .order('product_id')
+      .range(0, 99999);
     if (res.error) {
       // is_phantom(마이그 061) 미적용 폴백
       res = await supabase
         .from('inventories')
         .select('*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory)')
-        .order('product_id');
+        .order('product_id')
+        .range(0, 99999);
     }
     if (res.error) {
       // track_inventory 컬럼(마이그 059) 미적용 환경 폴백
       res = await supabase
         .from('inventories')
         .select('*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id)')
-        .order('product_id');
+        .order('product_id')
+        .range(0, 99999);
     }
     if (res.error) {
       res = await supabase

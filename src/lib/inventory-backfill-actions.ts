@@ -66,11 +66,14 @@ export async function backfillMissingInventories(): Promise<{
   if (trackable.length === 0) return { inserted: 0, scanned: 0 };
 
   // 3) 기존 inventories 행 모음 (Set으로 빠른 조회)
-  // 한 번에 가져오기 — 대용량이면 분할 필요
+  //    ⚠️ Supabase 기본 응답 1000행 제한 우회 — range(0, 99999) 명시.
+  //       제품 200+ × 지점 5+ 이면 기본 limit 에 걸려 일부 행이 누락된 것으로 잘못 판정해
+  //       이미 존재하는 (branch, product) 쌍에 다시 INSERT 시도 → unique violation 으로 chunk 전체 실패.
   const { data: existing, error: invErr } = await supabase
     .from('inventories')
     .select('branch_id, product_id')
-    .in('product_id', trackable);
+    .in('product_id', trackable)
+    .range(0, 99999);
   if (invErr) return { inserted: 0, scanned: 0, error: invErr.message };
 
   const existingSet = new Set<string>(
