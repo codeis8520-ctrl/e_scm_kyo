@@ -23,8 +23,14 @@ inventory_movements: id, branch_id, product_id, movement_type(IN/OUT/ADJUST/TRAN
 customers: id, name, phone, email, grade(NORMAL/VIP/VVIP), primary_branch_id, address, health_note, is_active
 customer_grades: code(NORMAL/VIP/VVIP), name, point_rate(1%/2%/3%), is_active
 customer_consultations: id, customer_id, consultation_type, content(JSONB), consulted_by, created_at
+  ※ consultation_type='LEGACY': 외부 엑셀에서 임포트한 과거 상담. content={text, consulted_at, source:'legacy'}.
 point_history: id, customer_id, sales_order_id, type(earn/use/adjust/expire), points, balance, description
   ※ 고객 현재 포인트 = point_history에서 해당 고객의 최신 balance 값
+legacy_purchases(마이그 064): id, legacy_purchase_no(P000001 등), customer_id, phone, ordered_at, channel_text, branch_id, branch_code_raw, item_text, quantity, total_amount, payment_status, source_file, mapped_to_sales_order_id, metadata
+  ※ 외부 엑셀에서 임포트한 과거 구매 이력 보존. sales_orders와 완전 분리 — 매출/재고/회계 영향 없음.
+  ※ item_text 는 원본 텍스트 그대로(예: "십전10선*2,쌍화10선"). 자동 매핑 안 함.
+  ※ mapped_to_sales_order_id: 향후 사람이 매핑 검수해 sales_orders로 승격한 경우 그 ID. NULL이면 legacy 전용.
+  ※ 고객 상세 화면의 "과거 구매" 탭에서 표시.
 
 --- 판매(POS) ---
 sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, ordered_by(담당자), total_amount, discount_amount, points_used, points_earned, payment_method(cash/card/card_keyin/kakao/credit/cod/mixed), credit_settled(bool), credit_settled_at, credit_settled_method, memo, status(COMPLETED/CANCELLED/REFUNDED/PARTIALLY_REFUNDED), ordered_at, receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date, approval_status(COMPLETED/CARD_PENDING/UNSETTLED), payment_info, taxable_amount, exempt_amount, vat_amount

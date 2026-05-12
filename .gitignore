@@ -49,3 +49,8 @@ next-env.d.ts
 /test-results/
 /playwright-report/
 /playwright/.cache/
+
+# Legacy data import — 원본 엑셀과 생성된 SQL 청크는 커밋 제외 (용량 큼)
+/*.xlsx
+.~lock.*.xlsx#
+/legacy-import/

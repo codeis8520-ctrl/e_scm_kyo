@@ -49,7 +49,21 @@ interface Tag { id: string; name: string; color: string; }
 interface Branch { id: string; name: string; }
 interface User { id: string; name: string; }
 
-type TabKey = 'timeline' | 'consultations' | 'purchases' | 'info';
+type TabKey = 'timeline' | 'consultations' | 'purchases' | 'legacy' | 'info';
+
+interface LegacyPurchase {
+  id: string;
+  legacy_purchase_no: string | null;
+  ordered_at: string;
+  channel_text: string | null;
+  branch_code_raw: string | null;
+  branch?: { name: string } | null;
+  item_text: string;
+  quantity: number | null;
+  total_amount: number | null;
+  payment_status: string | null;
+  source_file: string | null;
+}
 
 const GRADE_COLORS: Record<string, string> = {
   NORMAL: 'bg-slate-100 text-slate-700',
@@ -127,6 +141,8 @@ export default function CustomerDetailPage() {
 
   const [customer, setCustomer] = useState<CustomerDetail | null>(null);
   const [purchaseOrders, setPurchaseOrders] = useState<any[]>([]);
+  const [legacyPurchases, setLegacyPurchases] = useState<LegacyPurchase[]>([]);
+  const [legacySearch, setLegacySearch] = useState('');
   const [expandedOrders, setExpandedOrders] = useState<Set<string>>(new Set());
   const [allExpanded, setAllExpanded] = useState(false);
   const [consultations, setConsultations] = useState<Consultation[]>([]);
@@ -161,7 +177,7 @@ export default function CustomerDetailPage() {
     setLoading(true);
     const supabase = createClient();
 
-    const [customerRes, purchasesRes, consultationsRes, tagsRes, branchesRes, usersRes, pointRes] = await Promise.all([
+    const [customerRes, purchasesRes, consultationsRes, tagsRes, branchesRes, usersRes, pointRes, legacyRes] = await Promise.all([
       supabase
         .from('customers')
         .select(`*, primary_branch:branches(*), tags:customer_tag_map(tag:customer_tags(*)), assigned_to:users!customers_assigned_to_fkey(*)`)
@@ -185,6 +201,12 @@ export default function CustomerDetailPage() {
       supabase.from('branches').select('id, name').eq('is_active', true),
       supabase.from('users').select('id, name').eq('is_active', true),
       supabase.from('point_history').select('balance').eq('customer_id', customerId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
+      supabase
+        .from('legacy_purchases')
+        .select('id, legacy_purchase_no, ordered_at, channel_text, branch_code_raw, item_text, quantity, total_amount, payment_status, source_file, branch:branches(name)')
+        .eq('customer_id', customerId)
+        .order('ordered_at', { ascending: false })
+        .range(0, 9999),
     ]) as any;
 
     if (customerRes.data) {
@@ -206,6 +228,7 @@ export default function CustomerDetailPage() {
       return true;
     });
     setPurchaseOrders(filteredOrders);
+    setLegacyPurchases((legacyRes?.data || []) as LegacyPurchase[]);
     setConsultations((consultationsRes.data || []) as Consultation[]);
     setAllTags((tagsRes.data || []) as Tag[]);
     setBranches((branchesRes.data || []) as Branch[]);
@@ -556,6 +579,7 @@ export default function CustomerDetailPage() {
               { key: 'consultations' as TabKey, label: `상담 기록 (${consultations.length})` },
               { key: 'timeline' as TabKey, label: `통합 타임라인` },
               { key: 'purchases' as TabKey, label: `구매 이력 (${purchaseOrders.length})` },
+              ...(legacyPurchases.length > 0 ? [{ key: 'legacy' as TabKey, label: `과거 구매 (${legacyPurchases.length})` }] : []),
               { key: 'info' as TabKey, label: '기본 정보' },
             ]).map(t => (
               <button key={t.key} onClick={() => {
@@ -1041,6 +1065,100 @@ export default function CustomerDetailPage() {
                   })}
                 </div>
               )}
+            </div>
+          )}
+
+          {activeTab === 'legacy' && (
+            <div className="space-y-3">
+              <div className="card bg-amber-50/40 border-amber-200">
+                <div className="flex items-start gap-2">
+                  <span className="text-amber-700 text-lg">📦</span>
+                  <div className="text-xs text-amber-900 leading-relaxed">
+                    <b>과거 구매 (Legacy)</b> — 외부 시스템(엑셀)에서 임포트한 과거 거래.
+                    품목은 원본 텍스트 그대로 표시되며 시스템 매출/재고/회계에는 반영되지 않습니다.
+                    <span className="ml-2 text-amber-600">총 <b>{legacyPurchases.length}</b>건 · 합계 <b>{legacyPurchases.reduce((s, p) => s + (Number(p.total_amount) || 0), 0).toLocaleString()}원</b></span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="flex flex-wrap items-center gap-2 mb-3">
+                  <input
+                    type="text"
+                    placeholder="품목/매출처/지점 검색"
+                    value={legacySearch}
+                    onChange={e => setLegacySearch(e.target.value)}
+                    className="input text-sm py-1.5 w-60"
+                  />
+                  {legacySearch && (
+                    <button onClick={() => setLegacySearch('')} className="text-xs text-slate-500 underline">초기화</button>
+                  )}
+                </div>
+
+                {legacyPurchases.length === 0 ? (
+                  <p className="text-center text-slate-400 py-8 text-sm">과거 구매 이력이 없습니다.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="table text-sm min-w-[800px]">
+                      <thead>
+                        <tr className="text-xs text-slate-500">
+                          <th className="whitespace-nowrap">일자</th>
+                          <th className="whitespace-nowrap">출고처</th>
+                          <th className="whitespace-nowrap">매출처</th>
+                          <th>품목 (원본)</th>
+                          <th className="text-center whitespace-nowrap">수량</th>
+                          <th className="text-right whitespace-nowrap">합계</th>
+                          <th className="whitespace-nowrap">결제</th>
+                          <th className="text-xs text-slate-400 whitespace-nowrap">원본ID</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {legacyPurchases
+                          .filter(p => {
+                            if (!legacySearch) return true;
+                            const q = legacySearch.toLowerCase();
+                            return (
+                              (p.item_text || '').toLowerCase().includes(q) ||
+                              (p.channel_text || '').toLowerCase().includes(q) ||
+                              (p.branch?.name || '').toLowerCase().includes(q) ||
+                              (p.branch_code_raw || '').toLowerCase().includes(q)
+                            );
+                          })
+                          .map(p => (
+                            <tr key={p.id} className="hover:bg-slate-50">
+                              <td className="whitespace-nowrap text-slate-700">{p.ordered_at}</td>
+                              <td className="text-xs">
+                                {p.branch?.name ? (
+                                  <span className="inline-block px-2 py-0.5 rounded bg-blue-50 text-blue-700">{p.branch.name}</span>
+                                ) : (
+                                  <span className="text-slate-400 font-mono text-[11px]">{p.branch_code_raw || '-'}</span>
+                                )}
+                              </td>
+                              <td className="text-xs text-slate-600">{p.channel_text || '-'}</td>
+                              <td className="text-sm text-slate-800 whitespace-pre-wrap break-words max-w-md">{p.item_text}</td>
+                              <td className="text-center text-slate-700 whitespace-nowrap">{p.quantity ?? '-'}</td>
+                              <td className="text-right font-medium text-slate-800 whitespace-nowrap">
+                                {p.total_amount ? `${Number(p.total_amount).toLocaleString()}원` : '-'}
+                              </td>
+                              <td className="text-xs whitespace-nowrap">
+                                {p.payment_status === '결제 완료' ? (
+                                  <span className="inline-block px-1.5 py-0.5 rounded bg-green-100 text-green-700">완료</span>
+                                ) : p.payment_status === '미결' ? (
+                                  <span className="inline-block px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">미결</span>
+                                ) : p.payment_status ? (
+                                  <span className="text-slate-500">{p.payment_status}</span>
+                                ) : (
+                                  <span className="text-slate-300">-</span>
+                                )}
+                              </td>
+                              <td className="font-mono text-[11px] text-slate-400 whitespace-nowrap">{p.legacy_purchase_no || ''}</td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
