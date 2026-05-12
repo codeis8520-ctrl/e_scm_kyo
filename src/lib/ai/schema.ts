@@ -94,6 +94,12 @@ shipments: id, source(CAFE24/STORE), delivery_type(PARCEL/QUICK), cafe24_order_i
   ※ 대한통운 엑셀 다운로드 시 발송지는 별도 모달에서 지점 선택(본사/한남점 등) — branches.sender_* 우선, 없으면 branches.address/phone 폴백. 모든 행에 통일 적용.
   ※ branch_id = 출고 지점 (재고가 차감된 지점). POS에서 배송 활성 시 판매 지점과 다를 수 있음. 판매 지점은 sales_orders.branch_id 참조.
   ※ delivery_type: PARCEL=택배(SweetTracker 송장·알림톡), QUICK=퀵배송(당일 인편·직접 배송).
+  ※ status 자동 전환 머신:
+     · 행 생성 시 PENDING.
+     · CJ 엑셀 다운로드(선택건) = "출력 명단 확정" → PENDING → PRINTED 일괄.
+     · 송장번호 임포트(SweetTracker 키 매칭) → PRINTED/PENDING → SHIPPED 일괄, tracking_number 채움.
+     · 선택건 송장 추적(SweetTracker API) → SHIPPED → DELIVERED.
+  ※ 송장 임포트 매칭: export 시 "내품명" 컬럼에 RTC(KX-{shipment.id 8자리}) 박아 round-trip. import 시 RTC > 전화 1:1 > 다중후보(사용자 선택) > 미매칭 4단계 신뢰도.
 
 --- 알림·캠페인 ---
 notifications: id, customer_id, type(SMS/ALIMTALK), message, status(sent/failed/pending), sent_at, sent_by

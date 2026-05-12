@@ -381,7 +381,7 @@ export default function ShippingPage() {
   };
 
   // 2단계: 모달에서 발송지 확정 후 실제 export
-  const confirmSenderAndExport = () => {
+  const confirmSenderAndExport = async () => {
     if (!pickerForm.name.trim()) { alert('보내는분 이름을 입력해주세요.'); return; }
     if (!pickerForm.phone.trim()) { alert('보내는분 전화번호를 입력해주세요.'); return; }
     if (!pickerForm.address.trim()) { alert('보내는분 주소를 입력해주세요.'); return; }
@@ -422,6 +422,32 @@ export default function ShippingPage() {
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'sheet1');
       XLSX.writeFile(wb, `CJ대한통운_${kstTodayString().replace(/-/g, '')}.xlsx`);
+
+      // ─── 상태 자동 전환: PENDING → PRINTED ──────────────────────────────
+      // CJ 엑셀 다운로드 = "출력 명단 확정" 의미. PENDING 만 PRINTED 로 전환.
+      // (이미 PRINTED/SHIPPED/DELIVERED 인 건은 그대로 — 운영 중에 재다운로드 케이스 보호)
+      const pendingIds = targets.filter(s => s.status === 'PENDING').map(s => s.id);
+      if (pendingIds.length > 0) {
+        try {
+          const sb = createClient() as any;
+          const { error } = await sb
+            .from('shipments')
+            .update({ status: 'PRINTED', updated_at: new Date().toISOString() })
+            .in('id', pendingIds)
+            .eq('status', 'PENDING');  // race condition 가드
+          if (error) {
+            console.error('[shipping] PENDING → PRINTED 전환 실패:', error);
+          } else {
+            await fetchShipments();
+            // 사용자에게 피드백 — 별도 alert 으로 다운로드와 분리해 인지하게
+            setTimeout(() => {
+              alert(`${pendingIds.length}건의 배송 상태가 "출력완료(PRINTED)" 로 전환되었습니다.\n실제로 CJ 임포트를 진행하지 않았다면 각 행에서 상태를 되돌릴 수 있습니다.`);
+            }, 100);
+          }
+        } catch (e) {
+          console.error('[shipping] 상태 전환 예외:', e);
+        }
+      }
     } else if (showSenderPicker === 'selected') {
       doExportSelectedToExcel();
     }
