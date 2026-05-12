@@ -151,6 +151,8 @@ function POSPageInner() {
   const [customerSearch, setCustomerSearch] = useState('');
   const [customerResults, setCustomerResults] = useState<Customer[]>([]);
   const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
+  const [customerHighlightIdx, setCustomerHighlightIdx] = useState(0);
+  const customerDropdownRef = useRef<HTMLDivElement>(null);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethodId>('card');
   const [cashReceived, setCashReceived] = useState('');
   const [processing, setProcessing] = useState(false);
@@ -297,7 +299,7 @@ function POSPageInner() {
 
       const [branchesRes, customersRes, gradesRes, invRes, usersRes] = await Promise.all([
         supabase.from('branches').select('*').eq('is_active', true).order('created_at'),
-        supabase.from('customers').select('id, name, phone, grade').eq('is_active', true).order('name'),
+        supabase.from('customers').select('id, name, phone, grade').eq('is_active', true).order('name').range(0, 99999),
         supabase.from('customer_grades').select('code, point_rate'),
         supabase.from('inventories').select('product_id, branch_id, quantity'),
         supabase.from('users').select('id, name, role, branch_id').eq('is_active', true).order('name'),
@@ -503,8 +505,9 @@ function POSPageInner() {
         c.name.toLowerCase().includes(q) ||
         c.phone.replace(/-/g, '').includes(q.replace(/-/g, ''))
       );
-      setCustomerResults(results.slice(0, 10));
+      setCustomerResults(results.slice(0, 50));  // 최대 50건까지 노출 (스크롤 가능)
       setShowCustomerDropdown(true);
+      setCustomerHighlightIdx(0);
     } else {
       setCustomerResults([]);
       setShowCustomerDropdown(false);
@@ -1328,11 +1331,27 @@ function POSPageInner() {
                 <input
                   ref={customerInputRef}
                   type="text"
-                  placeholder="고객 검색 (이름 / 전화번호)"
+                  placeholder="고객 검색 (이름 / 전화번호) — ↑↓ 키로 이동, Enter 로 선택"
                   value={customerSearch}
                   onChange={e => setCustomerSearch(e.target.value)}
                   onFocus={() => customerSearch.length >= 1 && setShowCustomerDropdown(true)}
                   onBlur={() => setTimeout(() => setShowCustomerDropdown(false), 200)}
+                  onKeyDown={(e) => {
+                    if (!showCustomerDropdown || customerResults.length === 0) return;
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault();
+                      setCustomerHighlightIdx(i => Math.min(i + 1, customerResults.length - 1));
+                    } else if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      setCustomerHighlightIdx(i => Math.max(i - 1, 0));
+                    } else if (e.key === 'Enter') {
+                      e.preventDefault();
+                      const pick = customerResults[customerHighlightIdx];
+                      if (pick) selectCustomer(pick);
+                    } else if (e.key === 'Escape') {
+                      setShowCustomerDropdown(false);
+                    }
+                  }}
                   className="input text-sm flex-1"
                 />
                 <button
@@ -1345,11 +1364,25 @@ function POSPageInner() {
               </div>
             )}
             {showCustomerDropdown && !selectedCustomer && (
-              <div className="absolute z-40 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-64 overflow-auto">
-                {customerResults.map(c => (
+              <div
+                ref={customerDropdownRef}
+                className="absolute z-40 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg overflow-y-auto"
+                style={{ maxHeight: 'min(60vh, 480px)' }}
+              >
+                {customerResults.map((c, idx) => (
                   <button
-                    key={c.id} onMouseDown={() => selectCustomer(c)}
-                    className="w-full text-left px-3 py-2.5 hover:bg-blue-50 border-b border-slate-100 last:border-b-0"
+                    key={c.id}
+                    onMouseDown={() => selectCustomer(c)}
+                    onMouseEnter={() => setCustomerHighlightIdx(idx)}
+                    ref={el => {
+                      // 키보드 네비게이션 시 highlighted 항목을 자동으로 스크롤하여 보이게
+                      if (el && idx === customerHighlightIdx && showCustomerDropdown) {
+                        el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                      }
+                    }}
+                    className={`w-full text-left px-3 py-2.5 border-b border-slate-100 last:border-b-0 transition-colors ${
+                      idx === customerHighlightIdx ? 'bg-blue-50' : 'hover:bg-blue-50'
+                    }`}
                   >
                     <div className="flex items-center justify-between">
                       <div>
@@ -1365,6 +1398,11 @@ function POSPageInner() {
                 {customerResults.length === 0 && (
                   <div className="p-3 text-center text-xs text-slate-400">
                     검색 결과 없음 · 우측 <span className="text-blue-600 font-medium">고객 추가</span> 버튼으로 등록
+                  </div>
+                )}
+                {customerResults.length >= 50 && (
+                  <div className="p-2 text-center text-[11px] text-slate-400 border-t border-slate-100 bg-slate-50">
+                    상위 50건만 표시 — 더 정확히 입력해주세요
                   </div>
                 )}
               </div>
