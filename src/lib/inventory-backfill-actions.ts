@@ -66,19 +66,32 @@ export async function backfillMissingInventories(): Promise<{
   if (trackable.length === 0) return { inserted: 0, scanned: 0 };
 
   // 3) 기존 inventories 행 모음 (Set으로 빠른 조회)
-  //    ⚠️ Supabase 기본 응답 1000행 제한 우회 — range(0, 99999) 명시.
-  //       제품 200+ × 지점 5+ 이면 기본 limit 에 걸려 일부 행이 누락된 것으로 잘못 판정해
-  //       이미 존재하는 (branch, product) 쌍에 다시 INSERT 시도 → unique violation 으로 chunk 전체 실패.
-  const { data: existing, error: invErr } = await supabase
-    .from('inventories')
-    .select('branch_id, product_id')
-    .in('product_id', trackable)
-    .range(0, 99999);
-  if (invErr) return { inserted: 0, scanned: 0, error: invErr.message };
-
-  const existingSet = new Set<string>(
-    (existing || []).map((r: any) => `${r.branch_id}__${r.product_id}`)
-  );
+  //    ⚠️ Supabase 프로젝트 max_rows(보통 1000) 으로 range(0, 99999) 만으로도 잘림.
+  //       count → 청크 병렬 패턴으로 완전히 가져와야 누락 0 (백필 정확성의 핵심).
+  const existingSet = new Set<string>();
+  {
+    const PAGE = 1000;
+    const countRes = await supabase
+      .from('inventories')
+      .select('*', { count: 'exact', head: true })
+      .in('product_id', trackable);
+    const total = countRes.count ?? 0;
+    if (total > 0) {
+      const pages = Math.ceil(total / PAGE);
+      const promises = Array.from({ length: pages }, (_, i) =>
+        supabase
+          .from('inventories')
+          .select('branch_id, product_id')
+          .in('product_id', trackable)
+          .range(i * PAGE, (i + 1) * PAGE - 1)
+          .then((r: any) => (r.data as any[]) || [])
+      );
+      const chunks = await Promise.all(promises);
+      for (const arr of chunks) {
+        for (const r of arr) existingSet.add(`${r.branch_id}__${r.product_id}`);
+      }
+    }
+  }
 
   // 4) 누락된 (branch × product) 쌍 INSERT
   const missing: { product_id: string; branch_id: string; quantity: number; safety_stock: number }[] = [];

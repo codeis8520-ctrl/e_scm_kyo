@@ -184,37 +184,48 @@ export default function InventoryPage() {
   const fetchInventory = async () => {
     setLoading(true);
     const supabase = createClient();
-    // product_type · category_id · is_headquarters 포함 시도 → 미적용 폴백
-    // ⚠️ Supabase PostgREST 기본 응답 행 제한(1000) 회피 — 명시적으로 큰 range 지정.
-    //    제품 200+ × 지점 5+ = 1000+ 행이라 기본 limit 에 걸려 후순위 제품이 누락되던 문제 해결.
-    let res: any = await supabase
-      .from('inventories')
-      .select('*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory, is_phantom)')
-      .order('product_id')
-      .range(0, 99999);
-    if (res.error) {
-      // is_phantom(마이그 061) 미적용 폴백
-      res = await supabase
-        .from('inventories')
-        .select('*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory)')
-        .order('product_id')
-        .range(0, 99999);
+
+    // ⚠️ Supabase 프로젝트 max_rows(보통 1000) 으로 range(0, 99999) 만으로도 1000 행에서 잘림.
+    //    제품 200+ × 지점 5+ = 1000+ 행이라 후순위 제품(생맥 10포 등)이 누락되던 문제 해결을
+    //    위해 head:true count → Math.ceil 청크 → Promise.all 병렬 패턴 적용.
+    const fetchAllParallel = async (selectCols: string): Promise<any[]> => {
+      const PAGE = 1000;
+      const countRes: any = await supabase.from('inventories').select('*', { count: 'exact', head: true });
+      const total = countRes.count ?? 0;
+      if (total === 0) return [];
+      const pages = Math.ceil(total / PAGE);
+      const promises = Array.from({ length: pages }, (_, i) =>
+        supabase
+          .from('inventories')
+          .select(selectCols)
+          .order('product_id')
+          .range(i * PAGE, (i + 1) * PAGE - 1)
+          .then((r: any) => (r.data as any[]) || [])
+      );
+      const chunks = await Promise.all(promises);
+      return chunks.flat();
+    };
+
+    // 컬럼 폴백 단계 — is_phantom(061) → track_inventory(059) → 최소
+    const trySelects = [
+      '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory, is_phantom)',
+      '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory)',
+      '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id)',
+      '*, branch:branches(id, name), product:products(id, name, code, barcode)',
+    ];
+
+    let data: any[] = [];
+    for (const sel of trySelects) {
+      try {
+        const t0 = performance.now();
+        data = await fetchAllParallel(sel);
+        console.log(`[inventory] ${data.length}행 로드 — ${(performance.now() - t0).toFixed(0)}ms`);
+        break;
+      } catch (e) {
+        console.warn('[inventory] select 단계 폴백:', e);
+      }
     }
-    if (res.error) {
-      // track_inventory 컬럼(마이그 059) 미적용 환경 폴백
-      res = await supabase
-        .from('inventories')
-        .select('*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id)')
-        .order('product_id')
-        .range(0, 99999);
-    }
-    if (res.error) {
-      res = await supabase
-        .from('inventories')
-        .select('*, branch:branches(id, name), product:products(id, name, code, barcode)')
-        .order('product_id');
-    }
-    setInventories(res.data || []);
+    setInventories(data);
     setLoading(false);
   };
 
