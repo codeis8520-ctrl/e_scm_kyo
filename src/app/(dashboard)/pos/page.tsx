@@ -297,20 +297,21 @@ function POSPageInner() {
           .order('name');
       }
 
-      // 고객은 청크로 페치 — Supabase 프로젝트 max_rows(보통 1000) 설정 우회.
-      //   .range(0, 99999) 만으로는 서버측 max_rows 에 막혀 일부 고객(예: ㅈ 성씨)이 누락됨.
-      const fetchAllCustomers = async () => {
+      // ─── 청크 페치 헬퍼 ────────────────────────────────────────────────
+      // Supabase 프로젝트 max_rows(보통 1000) 설정 우회. .range(0, 99999) 만으로는
+      // 서버측에서 잘려 누락 발생 — 명시적으로 페이지네이션으로 끝까지 가져옴.
+      const fetchAll = async (table: string, selectCols: string, orderBy?: string) => {
         const all: any[] = [];
         const PAGE = 1000;
         let from = 0;
-        // 안전장치 — 최대 30,000명까지만 (= 30 chunks)
-        for (let i = 0; i < 30; i++) {
-          const { data, error } = await supabase
-            .from('customers')
-            .select('id, name, phone, grade, is_active')
-            .order('name')
-            .range(from, from + PAGE - 1);
-          if (error) { console.error('[customers chunk] error', error); break; }
+        for (let i = 0; i < 100; i++) {  // 최대 100K건 안전장치
+          let q = supabase.from(table).select(selectCols);
+          if (orderBy) q = (q as any).order(orderBy);
+          const { data, error } = await (q as any).range(from, from + PAGE - 1);
+          if (error) {
+            console.error(`[fetchAll/${table}] error at chunk ${i}:`, error);
+            break;
+          }
           if (!data || data.length === 0) break;
           all.push(...data);
           if (data.length < PAGE) break;
@@ -319,14 +320,18 @@ function POSPageInner() {
         return all;
       };
 
-      const [branchesRes, allCustomers, gradesRes, invRes, usersRes] = await Promise.all([
+      const [branchesRes, allCustomers, gradesRes, allInventories, usersRes] = await Promise.all([
         supabase.from('branches').select('*').eq('is_active', true).order('created_at'),
-        fetchAllCustomers(),
+        // 고객 — is_active 필터 없음, 전체 청크 페치
+        fetchAll('customers', 'id, name, phone, grade, is_active', 'name'),
         supabase.from('customer_grades').select('code, point_rate'),
-        supabase.from('inventories').select('product_id, branch_id, quantity'),
+        // 재고도 청크 — 제품×지점 곱이라 쉽게 1000 행 초과 가능
+        fetchAll('inventories', 'product_id, branch_id, quantity'),
         supabase.from('users').select('id, name, role, branch_id').eq('is_active', true).order('name'),
       ]);
+      console.log(`[POS] 고객 ${allCustomers.length}명, 재고 ${allInventories.length}행 로드`);
       const customersRes = { data: allCustomers } as any;
+      const invRes = { data: allInventories } as any;
 
       const gradesMap = new Map((gradesRes.data || []).map((g: any) => [g.code, parseFloat(g.point_rate) || 1.0]));
       const branchesData = (branchesRes.data || []) as any[];
@@ -1354,7 +1359,7 @@ function POSPageInner() {
                 <input
                   ref={customerInputRef}
                   type="text"
-                  placeholder="고객 검색 (이름 / 전화번호) — ↑↓ 키로 이동, Enter 로 선택"
+                  placeholder={`고객 검색 — ↑↓ 키 이동, Enter 선택 (등록 ${customers.length.toLocaleString()}명)`}
                   value={customerSearch}
                   onChange={e => setCustomerSearch(e.target.value)}
                   onFocus={() => customerSearch.length >= 1 && setShowCustomerDropdown(true)}
