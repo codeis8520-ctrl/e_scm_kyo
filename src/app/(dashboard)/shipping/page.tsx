@@ -51,11 +51,21 @@ const CAFE24_STATUS_BADGE: Record<string, string> = {
   C: 'badge badge-error', R: 'badge badge-error', E: 'badge badge-error',
 };
 
+// 매칭 신뢰도 단계
+//   rtc        — 내품명 컬럼에 박힌 round-trip code(KX-xxxxxxxx) 가 정확히 일치 → 신뢰
+//   phone_one  — RTC 못 찾았지만 수령자 전화 매칭이 후보 1건 → 합리적
+//   ambiguous  — 수령자 전화 매칭이 2건 이상 → 사용자 명시적 선택 필요
+//   unmatched  — RTC 도, 전화 매칭도 없음 → 대응 shipment 없음
+type ImportConfidence = 'rtc' | 'phone_one' | 'ambiguous' | 'unmatched';
+
 interface ImportRow {
   trackingNo: string;
   matchPhone: string;
+  matchRtc: string | null;          // 행에서 추출한 RTC (예: 'a3b1c2d4'), 없으면 null
   rawRow: string[];
-  matched: Shipment | null;
+  matched: Shipment | null;          // 확정 매칭. ambiguous면 사용자 선택 후 채워짐
+  candidates: Shipment[];            // ambiguous 시 후보 목록
+  confidence: ImportConfidence;
   alreadyHas: boolean;
 }
 
@@ -390,10 +400,15 @@ export default function ShippingPage() {
         '보내는분우편번호',
       ];
 
+      // Round-trip code — shipment.id 앞 8자리 hex 를 "내품명" 컬럼(7번째)에 박음.
+      // CJ 임포트 양식이 컬럼을 그대로 보존하므로 출력 후 다시 export 된 엑셀에도 유지됨.
+      // Import 시 이 코드로 1:1 매칭 → 동일 전화 다건 / 행 순서 변경 / 동명이인 사고 방지.
       const rows = targets.map(s => [
         s.recipient_name, s.recipient_phone, '',
         [s.recipient_address, s.recipient_address_detail].filter(Boolean).join(' '),
-        s.delivery_message || '', s.items_summary || '', '', '', '선불',
+        s.delivery_message || '', s.items_summary || '',
+        `KX-${s.id.replace(/-/g, '').slice(0, 8)}`,    // 내품명 ← RTC
+        '', '선불',
         pickerForm.name, pickerForm.phone, senderFullAddress,
         pickerForm.zipcode || '',
       ]);
@@ -449,20 +464,107 @@ export default function ShippingPage() {
   };
 
   const handleImportPreview = () => {
+    // RTC 패턴 — KX-{8자 hex}. 어느 컬럼이든 행 안에 있으면 인식.
+    const RTC_PAT = /KX-([0-9a-fA-F]{8})/;
+
+    // 1) shipment.id 앞 8자리 → shipment 매핑 (O(1) 조회용)
+    const rtcMap = new Map<string, Shipment>();
+    for (const s of shipments) {
+      const code = s.id.replace(/-/g, '').slice(0, 8).toLowerCase();
+      // 동일 RTC 충돌은 사실상 0 (8 hex = 약 42억 분의 1) — 그래도 첫 행 우선
+      if (!rtcMap.has(code)) rtcMap.set(code, s);
+    }
+
+    // 2) 수령자 전화 → shipment 후보 목록 (중복 가능)
+    const phoneMap = new Map<string, Shipment[]>();
+    for (const s of shipments) {
+      const p = normalPhone(s.recipient_phone || '');
+      if (!p) continue;
+      const arr = phoneMap.get(p) || [];
+      arr.push(s);
+      phoneMap.set(p, arr);
+    }
+
+    // 이번 임포트 안에서 같은 shipment 가 여러 행에 매핑되지 않도록 사용 추적
+    const claimed = new Set<string>();
+
     const preview: ImportRow[] = importRawRows.map(row => {
       const trackingNo = String(row[importTrackingCol] || '').trim();
-      const matchPhone = normalPhone(String(row[importPhoneCol] || ''));
-      const matched = shipments.find(s => normalPhone(s.recipient_phone) === matchPhone) || null;
+      const phoneRaw = String(row[importPhoneCol] || '');
+      const phoneNorm = normalPhone(phoneRaw);
+
+      // RTC: 행의 모든 셀을 합쳐서 패턴 검색 (사용자가 어느 컬럼인지 지정할 필요 없음)
+      const joined = row.join(' ');
+      const rtcMatch = joined.match(RTC_PAT);
+      const matchRtc = rtcMatch ? rtcMatch[1].toLowerCase() : null;
+
+      // 1순위 — RTC 매칭
+      if (matchRtc) {
+        const s = rtcMap.get(matchRtc);
+        if (s && !claimed.has(s.id)) {
+          claimed.add(s.id);
+          return {
+            trackingNo, matchPhone: phoneRaw, matchRtc,
+            rawRow: row, matched: s, candidates: [s],
+            confidence: 'rtc' as ImportConfidence,
+            alreadyHas: !!s.tracking_number,
+          };
+        }
+      }
+
+      // 2순위 — 전화 매칭
+      const candidates = (phoneMap.get(phoneNorm) || []).filter(s => !claimed.has(s.id));
+      if (candidates.length === 1) {
+        claimed.add(candidates[0].id);
+        return {
+          trackingNo, matchPhone: phoneRaw, matchRtc,
+          rawRow: row, matched: candidates[0], candidates,
+          confidence: 'phone_one' as ImportConfidence,
+          alreadyHas: !!candidates[0].tracking_number,
+        };
+      }
+      if (candidates.length > 1) {
+        return {
+          trackingNo, matchPhone: phoneRaw, matchRtc,
+          rawRow: row, matched: null, candidates,
+          confidence: 'ambiguous' as ImportConfidence,
+          alreadyHas: false,
+        };
+      }
+
+      // 3순위 — 미매칭
       return {
-        trackingNo,
-        matchPhone: String(row[importPhoneCol] || ''),
-        rawRow: row,
-        matched,
-        alreadyHas: matched ? !!matched.tracking_number : false,
+        trackingNo, matchPhone: phoneRaw, matchRtc,
+        rawRow: row, matched: null, candidates: [],
+        confidence: 'unmatched' as ImportConfidence,
+        alreadyHas: false,
       };
     }).filter(r => r.trackingNo);
+
     setImportPreview(preview);
     setImportStep(2);
+  };
+
+  // ambiguous 행에서 사용자가 후보를 직접 선택하면 매칭 확정
+  const resolveAmbiguousMatch = (rowIdx: number, shipmentId: string) => {
+    setImportPreview(prev => {
+      // 동일 shipment 가 다른 행에서 이미 확정됐는지 체크
+      const claimedByOther = prev.some((r, i) =>
+        i !== rowIdx && r.matched?.id === shipmentId
+      );
+      if (claimedByOther) {
+        alert('이 배송 행은 이미 다른 임포트 행에서 선택되었습니다. 다른 후보를 선택해주세요.');
+        return prev;
+      }
+      const pick = prev[rowIdx].candidates.find(c => c.id === shipmentId);
+      if (!pick) return prev;
+      return prev.map((r, i) => i === rowIdx ? {
+        ...r,
+        matched: pick,
+        confidence: 'phone_one' as ImportConfidence,  // 사용자 선택 = 확정
+        alreadyHas: !!pick.tracking_number,
+      } : r);
+    });
   };
 
   const handleImportConfirm = async () => {
@@ -1287,42 +1389,113 @@ export default function ShippingPage() {
               </div>
             )}
 
-            {importStep === 2 && (
+            {importStep === 2 && (() => {
+              const summary = {
+                total: importPreview.length,
+                rtc: importPreview.filter(r => r.confidence === 'rtc').length,
+                phone: importPreview.filter(r => r.confidence === 'phone_one').length,
+                ambiguous: importPreview.filter(r => r.confidence === 'ambiguous').length,
+                unmatched: importPreview.filter(r => r.confidence === 'unmatched').length,
+                ready: importPreview.filter(r => r.matched && !r.alreadyHas).length,
+                already: importPreview.filter(r => r.matched && r.alreadyHas).length,
+              };
+              return (
               <div className="space-y-4">
+                {/* 카운트 박스 — 한눈 검증 */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
+                  <div className="rounded bg-emerald-50 border border-emerald-200 px-2 py-1.5">
+                    <div className="font-bold text-emerald-700">{summary.rtc}</div>
+                    <div className="text-emerald-600">🟢 RTC 매칭</div>
+                  </div>
+                  <div className="rounded bg-amber-50 border border-amber-200 px-2 py-1.5">
+                    <div className="font-bold text-amber-700">{summary.phone}</div>
+                    <div className="text-amber-600">🟡 전화 1:1</div>
+                  </div>
+                  <div className="rounded bg-rose-50 border border-rose-200 px-2 py-1.5">
+                    <div className="font-bold text-rose-700">{summary.ambiguous}</div>
+                    <div className="text-rose-600">🔴 선택 필요</div>
+                  </div>
+                  <div className="rounded bg-slate-50 border border-slate-200 px-2 py-1.5">
+                    <div className="font-bold text-slate-700">{summary.unmatched}</div>
+                    <div className="text-slate-600">⚪ 미매칭</div>
+                  </div>
+                </div>
+                {summary.ambiguous > 0 && (
+                  <div className="px-3 py-2 rounded bg-rose-50 border border-rose-200 text-xs text-rose-800">
+                    ⚠️ 같은 수령자 전화로 매칭되는 배송이 여러 건인 행이 <b>{summary.ambiguous}건</b> 있습니다.
+                    아래에서 각 행에 맞는 배송을 직접 선택하세요. (Round-trip code 가 없는 임포트 엑셀에서 발생)
+                  </div>
+                )}
+
                 <div className="overflow-x-auto max-h-96">
                   <table className="table w-full text-sm">
                     <thead>
-                      <tr><th>수령자 전화</th><th>송장번호</th><th>수령자명</th><th>상태</th></tr>
+                      <tr>
+                        <th>상태</th>
+                        <th>송장번호</th>
+                        <th>수령자 전화</th>
+                        <th>매칭 배송</th>
+                      </tr>
                     </thead>
                     <tbody>
-                      {importPreview.map((row, i) => (
-                        <tr key={i} className={!row.matched ? 'opacity-40' : ''}>
-                          <td className="font-mono text-xs">{row.matchPhone}</td>
-                          <td className="font-mono text-xs">{row.trackingNo}</td>
-                          <td>{row.matched?.recipient_name || '-'}</td>
-                          <td>
-                            {!row.matched ? (
-                              <span className="text-slate-400 text-xs">미매칭</span>
-                            ) : row.alreadyHas ? (
-                              <span className="text-amber-500 text-xs">이미 있음</span>
-                            ) : (
-                              <span className="text-green-600 text-xs font-medium">등록 예정</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
+                      {importPreview.map((row, i) => {
+                        const badge =
+                          row.confidence === 'rtc'        ? <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px]">🟢 RTC</span>
+                          : row.confidence === 'phone_one' ? <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px]">🟡 전화</span>
+                          : row.confidence === 'ambiguous' ? <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 text-[10px]">🔴 선택</span>
+                          :                                 <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-[10px]">⚪ 미매칭</span>;
+                        return (
+                          <tr key={i} className={!row.matched && row.confidence !== 'ambiguous' ? 'opacity-50' : ''}>
+                            <td>
+                              {badge}
+                              {row.alreadyHas && <span className="ml-1 px-1 rounded bg-amber-100 text-amber-700 text-[10px]">중복</span>}
+                            </td>
+                            <td className="font-mono text-xs">{row.trackingNo}</td>
+                            <td className="font-mono text-xs">{row.matchPhone}</td>
+                            <td>
+                              {row.confidence === 'ambiguous' ? (
+                                <select
+                                  className="input text-xs py-1 w-full"
+                                  value={row.matched?.id || ''}
+                                  onChange={e => resolveAmbiguousMatch(i, e.target.value)}
+                                >
+                                  <option value="">— 선택 —</option>
+                                  {row.candidates.map(c => (
+                                    <option key={c.id} value={c.id}>
+                                      {c.recipient_name} · {c.items_summary?.slice(0, 30) || '품목 없음'} · {c.created_at?.slice(0, 10)}
+                                      {c.tracking_number ? ` (이미 송장 ${c.tracking_number.slice(0, 8)}...)` : ''}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : row.matched ? (
+                                <span className="text-xs">
+                                  {row.matched.recipient_name} · <span className="text-slate-400">{row.matched.items_summary?.slice(0, 30) || ''}</span>
+                                </span>
+                              ) : (
+                                <span className="text-xs text-slate-400">대응되는 배송 없음</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
                 <div className="flex gap-2">
-                  <button className="btn-primary flex-1" onClick={handleImportConfirm} disabled={importSaving || importPreview.filter(r => r.matched && !r.alreadyHas).length === 0}>
-                    {importSaving ? '등록 중...' : `송장번호 ${importPreview.filter(r => r.matched && !r.alreadyHas).length}건 등록`}
+                  <button
+                    className="btn-primary flex-1"
+                    onClick={handleImportConfirm}
+                    disabled={importSaving || summary.ready === 0 || summary.ambiguous > 0}
+                    title={summary.ambiguous > 0 ? '선택 필요 행을 모두 해결해야 등록 가능' : ''}
+                  >
+                    {importSaving ? '등록 중...' : `송장번호 ${summary.ready}건 등록${summary.already > 0 ? ` (중복 ${summary.already}건 제외)` : ''}`}
                   </button>
                   <button className="px-4 py-2 rounded border border-slate-300 text-sm text-slate-600 hover:bg-slate-50" onClick={() => setImportStep(1)}>← 다시 선택</button>
                   <button className="px-4 py-2 rounded border border-slate-300 text-sm text-slate-600 hover:bg-slate-50" onClick={() => setImportStep(0)}>취소</button>
                 </div>
               </div>
-            )}
+              );
+            })()}
           </div>
         </div>
       )}
