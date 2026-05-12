@@ -95,6 +95,18 @@ function fmtDateTime(iso: string): string {
   if (!iso) return '';
   return fmtDateTimeKST(iso);
 }
+// LEGACY 상담은 import 시점이 아니라 실제 상담 일자(content.consulted_at)를 우선 사용.
+function consultDisplayDate(c: { consultation_type?: string; content: any; created_at: string }): string {
+  if (c.consultation_type === 'LEGACY') {
+    const consulted = c.content?.consulted_at;
+    if (consulted) {
+      // 'YYYY-MM-DD' → 동일 일자 정오로 변환 (정렬·표시 일관성)
+      return /^\d{4}-\d{2}-\d{2}$/.test(consulted) ? `${consulted}T12:00:00+09:00` : String(consulted);
+    }
+  }
+  return c.created_at;
+}
+
 function relativeTime(iso: string | null | undefined): string {
   if (!iso) return '';
   const d = new Date(iso);
@@ -229,7 +241,11 @@ export default function CustomerDetailPage() {
     });
     setPurchaseOrders(filteredOrders);
     setLegacyPurchases((legacyRes?.data || []) as LegacyPurchase[]);
-    setConsultations((consultationsRes.data || []) as Consultation[]);
+    // LEGACY 상담의 실제 일자(content.consulted_at) 기준으로 다시 정렬 — 시간순 일관성 확보
+    const sortedConsults = ((consultationsRes.data || []) as Consultation[]).slice().sort((a, b) =>
+      new Date(consultDisplayDate(b)).getTime() - new Date(consultDisplayDate(a)).getTime()
+    );
+    setConsultations(sortedConsults);
     setAllTags((tagsRes.data || []) as Tag[]);
     setBranches((branchesRes.data || []) as Branch[]);
     setUsers((usersRes.data || []) as User[]);
@@ -334,7 +350,7 @@ export default function CustomerDetailPage() {
       | { kind: 'consult'; at: string; data: Consultation }
       | { kind: 'order'; at: string; data: any };
     const items: Item[] = [];
-    for (const c of consultations) items.push({ kind: 'consult', at: c.created_at, data: c });
+    for (const c of consultations) items.push({ kind: 'consult', at: consultDisplayDate(c), data: c });
     for (const o of purchaseOrders) items.push({ kind: 'order', at: o.ordered_at, data: o });
     items.sort((a, b) => (b.at || '').localeCompare(a.at || ''));
     return items;
@@ -756,9 +772,25 @@ export default function CustomerDetailPage() {
                                   <span className="text-xs text-slate-500">{consult.consulted_by?.name || '시스템'}</span>
                                 </div>
                                 <div className="flex items-center gap-2 text-xs text-slate-400 whitespace-nowrap">
-                                  <span title={fmtDateTime(consult.created_at)}>{relativeTime(consult.created_at)}</span>
-                                  <span>·</span>
-                                  <span>{fmtDateTime(consult.created_at)}</span>
+                                  {(() => {
+                                    const isLegacy = consult.consultation_type === 'LEGACY';
+                                    const consulted = isLegacy ? (consult.content as any)?.consulted_at : null;
+                                    if (isLegacy && consulted) {
+                                      return (
+                                        <>
+                                          <span className="font-medium text-slate-600">{consulted}</span>
+                                          <span title={`임포트 시점: ${fmtDateTime(consult.created_at)}`} className="text-slate-300">(상담일)</span>
+                                        </>
+                                      );
+                                    }
+                                    return (
+                                      <>
+                                        <span title={fmtDateTime(consult.created_at)}>{relativeTime(consult.created_at)}</span>
+                                        <span>·</span>
+                                        <span>{fmtDateTime(consult.created_at)}</span>
+                                      </>
+                                    );
+                                  })()}
                                   <button
                                     onClick={() => startEditConsult(consult)}
                                     className="text-slate-400 hover:text-blue-600 ml-1"
@@ -823,9 +855,25 @@ export default function CustomerDetailPage() {
                                 <span className="text-xs text-slate-500">{c.consulted_by?.name || '시스템'}</span>
                               </div>
                               <div className="text-xs text-slate-400 whitespace-nowrap">
-                                <span title={fmtDateTime(c.created_at)}>{relativeTime(c.created_at)}</span>
-                                <span className="mx-1">·</span>
-                                <span>{fmtDateTime(c.created_at)}</span>
+                                {(() => {
+                                  const isLegacy = c.consultation_type === 'LEGACY';
+                                  const consulted = isLegacy ? (c.content as any)?.consulted_at : null;
+                                  if (isLegacy && consulted) {
+                                    return (
+                                      <>
+                                        <span className="font-medium text-slate-600">{consulted}</span>
+                                        <span title={`임포트 시점: ${fmtDateTime(c.created_at)}`} className="text-slate-300 ml-1">(상담일)</span>
+                                      </>
+                                    );
+                                  }
+                                  return (
+                                    <>
+                                      <span title={fmtDateTime(c.created_at)}>{relativeTime(c.created_at)}</span>
+                                      <span className="mx-1">·</span>
+                                      <span>{fmtDateTime(c.created_at)}</span>
+                                    </>
+                                  );
+                                })()}
                               </div>
                             </div>
                             <p className="text-sm text-slate-700 whitespace-pre-wrap line-clamp-3">
