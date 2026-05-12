@@ -39,5 +39,12 @@ CREATE INDEX idx_lp_mapped      ON legacy_purchases(mapped_to_sales_order_id) WH
 
 ALTER TABLE legacy_purchases ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS legacy_purchases_all ON legacy_purchases;
+-- 시스템이 custom session auth(Supabase Auth 미사용)라 client 는 ANON role 로 호출됨.
+-- 다른 테이블과 동일하게 anon + authenticated 둘 다 허용.
 CREATE POLICY legacy_purchases_all ON legacy_purchases
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);
+  FOR ALL TO anon, authenticated
+  USING (true) WITH CHECK (true);
+
+-- PostgreSQL 테이블 권한 — Supabase 가 신규 테이블에 자동 grant 안 함.
+-- RLS 정책이 있어도 GRANT 가 없으면 anon/authenticated 모두 접근 거부.
+GRANT SELECT, INSERT, UPDATE, DELETE ON legacy_purchases TO anon, authenticated;
