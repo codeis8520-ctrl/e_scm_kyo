@@ -360,10 +360,13 @@ export default function ShippingPage() {
   };
 
   // ── 대한통운 엑셀 다운로드 ────────────────────────────────────────────────
+  // 정책: 행 체크박스로 선택한 건만 추출 (전체 일괄 추출은 의도치 않은 대량 발송 위험).
   // 1단계: 발송지 선택 모달 열기 (실제 export 는 confirmSenderAndExport 에서)
   const downloadCjExcel = () => {
-    const targets = statusFilter === 'ALL' ? shipments : shipments.filter(s => s.status === statusFilter);
-    if (targets.length === 0) { alert('다운로드할 배송 건이 없습니다.'); return; }
+    if (selectedShipments.size === 0) {
+      alert('대한통운 엑셀로 추출할 행을 좌측 체크박스로 먼저 선택해주세요.');
+      return;
+    }
     setShowSenderPicker('cj');
   };
 
@@ -374,7 +377,9 @@ export default function ShippingPage() {
     if (!pickerForm.address.trim()) { alert('보내는분 주소를 입력해주세요.'); return; }
 
     if (showSenderPicker === 'cj') {
-      const targets = statusFilter === 'ALL' ? shipments : shipments.filter(s => s.status === statusFilter);
+      // 선택된 행만 export — 정렬은 화면 순서(filteredShipments) 유지
+      const targets = filteredShipments.filter(s => selectedShipments.has(s.id));
+      if (targets.length === 0) { alert('선택된 행이 없습니다.'); setShowSenderPicker(null); return; }
       const senderFullAddress = [pickerForm.address, pickerForm.address_detail].filter(Boolean).join(' ');
 
       const header = [
@@ -507,9 +512,20 @@ export default function ShippingPage() {
     }
   };
 
+  // 선택된 행에 대해서만 SweetTracker 송장 추적 API 호출 → 배송 상태 갱신.
+  // 전체 SHIPPED 건을 자동으로 돌면 API 일일 쿼터 빠르게 소진 + 의도치 않은 비용 발생.
   const trackBatch = async () => {
-    const targets = shipments.filter(s => s.tracking_number && s.status === 'SHIPPED');
-    if (targets.length === 0) { alert('추적할 발송완료 건이 없습니다.'); return; }
+    if (selectedShipments.size === 0) {
+      alert('송장 추적할 행을 좌측 체크박스로 먼저 선택해주세요.');
+      return;
+    }
+    const targets = filteredShipments
+      .filter(s => selectedShipments.has(s.id) && s.tracking_number && s.status === 'SHIPPED');
+    if (targets.length === 0) {
+      alert('선택된 행 중 송장번호가 있고 발송완료(SHIPPED) 상태인 건이 없습니다.\n추적 대상이 아닙니다.');
+      return;
+    }
+    if (!confirm(`선택된 ${selectedShipments.size}건 중 추적 가능 ${targets.length}건의 송장을 SweetTracker API 로 조회해 배송 상태를 갱신합니다. 계속할까요?`)) return;
     setBatchTracking(true);
     let updated = 0;
     for (let i = 0; i < targets.length; i++) {
@@ -1097,13 +1113,14 @@ export default function ShippingPage() {
               />
             </div>
             <div className="flex gap-2 flex-wrap">
-              {/* 배송상태 일괄 추적 */}
+              {/* 선택건 송장 추적 — SweetTracker API 로 배송상태 갱신 */}
               <button
                 onClick={trackBatch}
-                disabled={batchTracking}
-                className="px-3 py-2 rounded text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+                disabled={batchTracking || selectedShipments.size === 0}
+                title="선택한 행 중 송장번호가 있는 SHIPPED 건을 SweetTracker API 로 조회해 배송 상태를 갱신"
+                className="px-3 py-2 rounded text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40"
               >
-                {batchTracking ? batchProgress : '배송상태 일괄 업데이트'}
+                {batchTracking ? batchProgress : `🛰 선택건 송장 추적 (${selectedShipments.size})`}
               </button>
               {/* 엑셀 임포트 */}
               <input ref={importFileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportFile} />
@@ -1113,9 +1130,14 @@ export default function ShippingPage() {
               >
                 엑셀로 송장번호 가져오기
               </button>
-              {/* CJ 엑셀 다운로드 */}
-              <button onClick={downloadCjExcel} className="px-3 py-2 rounded text-sm font-medium bg-green-600 text-white hover:bg-green-700">
-                대한통운 엑셀 다운로드
+              {/* CJ 엑셀 다운로드 — 선택건만 */}
+              <button
+                onClick={downloadCjExcel}
+                disabled={selectedShipments.size === 0}
+                title="선택한 행만 대한통운 임포트 형식으로 다운로드"
+                className="px-3 py-2 rounded text-sm font-medium bg-green-600 text-white hover:bg-green-700 disabled:opacity-40"
+              >
+                대한통운 엑셀 다운로드 ({selectedShipments.size})
               </button>
               {/* 선택 엑셀 익스포트 */}
               <button
