@@ -1187,7 +1187,7 @@ export async function createBranch(formData: FormData) {
   let { data: newBranch, error } = await supabase.from('branches').insert(branchData).select().single() as any;
 
   // 마이그 063 미적용 환경 폴백 — sender_* 컬럼 제거 후 재시도
-  if (error && /column.*sender_/i.test(String(error.message))) {
+  if (error && /sender_/i.test(String(error.message))) {
     delete branchData.sender_name; delete branchData.sender_phone;
     delete branchData.sender_zipcode; delete branchData.sender_address;
     delete branchData.sender_address_detail;
@@ -1258,7 +1258,7 @@ export async function updateBranch(id: string, formData: FormData) {
   let { error } = await supabase.from('branches').update(branchData).eq('id', id);
 
   // 마이그 063 미적용 환경 폴백
-  if (error && /column.*sender_/i.test(String(error.message))) {
+  if (error && /sender_/i.test(String(error.message))) {
     delete branchData.sender_name; delete branchData.sender_phone;
     delete branchData.sender_zipcode; delete branchData.sender_address;
     delete branchData.sender_address_detail;
