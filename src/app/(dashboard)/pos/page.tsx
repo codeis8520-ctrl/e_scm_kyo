@@ -297,14 +297,36 @@ function POSPageInner() {
           .order('name');
       }
 
-      const [branchesRes, customersRes, gradesRes, invRes, usersRes] = await Promise.all([
+      // 고객은 청크로 페치 — Supabase 프로젝트 max_rows(보통 1000) 설정 우회.
+      //   .range(0, 99999) 만으로는 서버측 max_rows 에 막혀 일부 고객(예: ㅈ 성씨)이 누락됨.
+      const fetchAllCustomers = async () => {
+        const all: any[] = [];
+        const PAGE = 1000;
+        let from = 0;
+        // 안전장치 — 최대 30,000명까지만 (= 30 chunks)
+        for (let i = 0; i < 30; i++) {
+          const { data, error } = await supabase
+            .from('customers')
+            .select('id, name, phone, grade, is_active')
+            .order('name')
+            .range(from, from + PAGE - 1);
+          if (error) { console.error('[customers chunk] error', error); break; }
+          if (!data || data.length === 0) break;
+          all.push(...data);
+          if (data.length < PAGE) break;
+          from += PAGE;
+        }
+        return all;
+      };
+
+      const [branchesRes, allCustomers, gradesRes, invRes, usersRes] = await Promise.all([
         supabase.from('branches').select('*').eq('is_active', true).order('created_at'),
-        // is_active 필터 제거 — 고객 관리 화면(/customers)과 일치시켜 비활성·레거시 고객도 검색 가능
-        supabase.from('customers').select('id, name, phone, grade, is_active').order('name').range(0, 99999),
+        fetchAllCustomers(),
         supabase.from('customer_grades').select('code, point_rate'),
         supabase.from('inventories').select('product_id, branch_id, quantity'),
         supabase.from('users').select('id, name, role, branch_id').eq('is_active', true).order('name'),
       ]);
+      const customersRes = { data: allCustomers } as any;
 
       const gradesMap = new Map((gradesRes.data || []).map((g: any) => [g.code, parseFloat(g.point_rate) || 1.0]));
       const branchesData = (branchesRes.data || []) as any[];
