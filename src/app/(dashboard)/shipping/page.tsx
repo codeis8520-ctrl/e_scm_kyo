@@ -216,15 +216,41 @@ export default function ShippingPage() {
   });
 
   // 지점 발송지 목록 로드 + 마지막 선택값 복원
+  // ⚠️ 마이그 063 (branches.sender_*) 미적용 환경 폴백 — 신규 컬럼 SELECT 실패 시 기본 컬럼만.
   useEffect(() => {
     (async () => {
       const sb = createClient() as any;
-      const { data } = await sb.from('branches')
+
+      // 1차: 마이그 063 신규 컬럼 포함
+      let res = await sb.from('branches')
         .select('id, name, is_headquarters, address, phone, sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail')
         .eq('is_active', true)
         .order('is_headquarters', { ascending: false })
         .order('name');
-      const list = (data || []) as BranchSender[];
+
+      // 2차: sender_* 컬럼 없음 폴백
+      if (res.error) {
+        console.warn('[shipping] branches sender_* 컬럼 미적용 폴백 (마이그 063):', res.error.message);
+        res = await sb.from('branches')
+          .select('id, name, is_headquarters, address, phone')
+          .eq('is_active', true)
+          .order('is_headquarters', { ascending: false })
+          .order('name');
+      }
+      // 3차: is_headquarters 도 없음 (마이그 047 미적용)
+      if (res.error) {
+        console.warn('[shipping] branches is_headquarters 미적용 폴백:', res.error.message);
+        res = await sb.from('branches')
+          .select('id, name, address, phone')
+          .eq('is_active', true)
+          .order('name');
+      }
+      if (res.error) {
+        console.error('[shipping] branches 페치 실패:', res.error);
+        return;
+      }
+
+      const list = (res.data || []) as BranchSender[];
       setBranchSenders(list);
       const remembered = typeof window !== 'undefined' ? window.localStorage.getItem('shipping.lastSenderBranchId') : null;
       const hq = list.find(b => b.is_headquarters);
