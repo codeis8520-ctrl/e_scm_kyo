@@ -299,7 +299,8 @@ function POSPageInner() {
 
       const [branchesRes, customersRes, gradesRes, invRes, usersRes] = await Promise.all([
         supabase.from('branches').select('*').eq('is_active', true).order('created_at'),
-        supabase.from('customers').select('id, name, phone, grade').eq('is_active', true).order('name').range(0, 99999),
+        // is_active 필터 제거 — 고객 관리 화면(/customers)과 일치시켜 비활성·레거시 고객도 검색 가능
+        supabase.from('customers').select('id, name, phone, grade, is_active').order('name').range(0, 99999),
         supabase.from('customer_grades').select('code, point_rate'),
         supabase.from('inventories').select('product_id, branch_id, quantity'),
         supabase.from('users').select('id, name, role, branch_id').eq('is_active', true).order('name'),
@@ -1386,7 +1387,12 @@ function POSPageInner() {
                   >
                     <div className="flex items-center justify-between">
                       <div>
-                        <p className="font-medium text-sm">{c.name}</p>
+                        <p className="font-medium text-sm flex items-center gap-1.5">
+                          {c.name}
+                          {(c as any).is_active === false && (
+                            <span className="text-[10px] px-1 rounded bg-slate-200 text-slate-600">비활성</span>
+                          )}
+                        </p>
                         <p className="text-xs text-slate-500">{c.phone}</p>
                       </div>
                       <span className={`px-1.5 py-0.5 text-xs rounded ${GRADE_BADGE[c.grade]}`}>
