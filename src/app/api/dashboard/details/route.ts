@@ -145,7 +145,7 @@ export async function GET(request: NextRequest) {
     // 최근 주문 상세
     let q = supabase
       .from('sales_orders')
-      .select('id, order_number, channel, total_amount, status, ordered_at, cafe24_order_id, payment_method, customer:customers(name, phone), branch:branches(name), items:sales_order_items(product:products(name), quantity, unit_price, subtotal)')
+      .select('id, order_number, channel, total_amount, status, ordered_at, cafe24_order_id, payment_method, customer:customers(name, phone), branch:branches(name), items:sales_order_items(product:products(name), quantity, unit_price, total_price)')
       .not('status', 'eq', 'CANCELLED')
       .order('ordered_at', { ascending: false })
       .limit(50);
@@ -173,7 +173,9 @@ export async function GET(request: NextRequest) {
         product_name: i.product?.name || '알 수 없음',
         quantity: i.quantity,
         unit_price: i.unit_price,
-        subtotal: i.subtotal,
+        // sales_order_items 의 실제 컬럼명은 total_price. 모달 호환을 위해 subtotal 키로도 매핑.
+        subtotal: i.total_price,
+        total_price: i.total_price,
       })),
     }));
     return NextResponse.json({ orders });
