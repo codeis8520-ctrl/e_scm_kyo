@@ -41,6 +41,12 @@ interface Branch {
   phone: string | null;
   is_active: boolean;
   is_headquarters?: boolean;
+  // 마이그 063 — 택배 보내는분 정보 (분리 저장)
+  sender_name?: string | null;
+  sender_phone?: string | null;
+  sender_zipcode?: string | null;
+  sender_address?: string | null;
+  sender_address_detail?: string | null;
 }
 
 interface User {
@@ -1264,10 +1270,43 @@ function BranchModal({ branch, channels, onClose, onSuccess }: { branch: Branch 
     address: branch?.address || '',
     phone: branch?.phone || '',
     is_active: branch?.is_active ?? true,
+    // 마이그 063 — 택배 발송지(보내는분) 분리 저장
+    sender_name: branch?.sender_name || '',
+    sender_phone: branch?.sender_phone || '',
+    sender_zipcode: branch?.sender_zipcode || '',
+    sender_address: branch?.sender_address || '',
+    sender_address_detail: branch?.sender_address_detail || '',
   });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  // Daum 우편번호 스크립트 로드 (페이지 진입 시 1회)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if ((window as any).daum?.Postcode) return;
+    const script = document.createElement('script');
+    script.src = 'https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js';
+    script.async = true;
+    document.head.appendChild(script);
+  }, []);
+
+  const openPostcode = () => {
+    const daum = (window as any).daum;
+    if (!daum?.Postcode) {
+      alert('주소 검색 스크립트 로딩 중입니다. 잠시 후 다시 시도해 주세요.');
+      return;
+    }
+    new daum.Postcode({
+      oncomplete: (data: any) => {
+        setFormData(f => ({
+          ...f,
+          sender_zipcode: data.zonecode || '',
+          sender_address: data.roadAddress || data.jibunAddress || '',
+        }));
+      },
+    }).open();
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1364,13 +1403,63 @@ function BranchModal({ branch, channels, onClose, onSuccess }: { branch: Branch 
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700">주소</label>
+            <label className="block text-sm font-medium text-gray-700">주소 (단일 텍스트, 표시용)</label>
             <input
               type="text"
               value={formData.address}
               onChange={(e) => setFormData({ ...formData, address: e.target.value })}
               className="mt-1 input"
+              placeholder="자유 텍스트 — 표시용. 택배 발송지는 아래 분리 입력 칸 사용"
             />
+          </div>
+
+          {/* ── 택배 발송지 (보내는분) — 마이그 063 ────────────────────── */}
+          <div className="border-t border-slate-200 pt-4 mt-2">
+            <h3 className="text-sm font-semibold text-slate-700 mb-2">📦 택배 발송지 (보내는분)</h3>
+            <p className="text-[11px] text-slate-500 mb-3">
+              대한통운/CJ 엑셀 임포트에 사용되는 우편번호·도로명·상세 분리 정보.
+              비워두면 발송 시 시스템이 자동 폴백(이름=&quot;경옥채 {formData.name || '지점명'}&quot;, 전화=위 연락처, 주소=위 주소).
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-slate-600 mb-1">발송자 이름</label>
+                <input type="text" value={formData.sender_name}
+                  onChange={e => setFormData({ ...formData, sender_name: e.target.value })}
+                  placeholder={`경옥채 ${formData.name || '본사'}`}
+                  className="input" />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-600 mb-1">발송 연락처</label>
+                <input type="tel" value={formData.sender_phone}
+                  onChange={e => setFormData({ ...formData, sender_phone: e.target.value })}
+                  placeholder="02-1234-5678"
+                  className="input" />
+              </div>
+            </div>
+            <div className="mt-3">
+              <label className="block text-xs text-slate-600 mb-1">우편번호</label>
+              <div className="flex gap-2">
+                <input type="text" value={formData.sender_zipcode}
+                  onChange={e => setFormData({ ...formData, sender_zipcode: e.target.value })}
+                  className="input flex-1" placeholder="06000" />
+                <button type="button" onClick={openPostcode}
+                  className="px-3 py-2 rounded border border-slate-300 text-sm text-slate-600 hover:bg-slate-50 whitespace-nowrap">
+                  주소 검색
+                </button>
+              </div>
+            </div>
+            <div className="mt-3">
+              <label className="block text-xs text-slate-600 mb-1">도로명 주소</label>
+              <input type="text" value={formData.sender_address}
+                onChange={e => setFormData({ ...formData, sender_address: e.target.value })}
+                className="input" placeholder="서울특별시 강남구 ..." />
+            </div>
+            <div className="mt-3">
+              <label className="block text-xs text-slate-600 mb-1">상세 주소</label>
+              <input type="text" value={formData.sender_address_detail}
+                onChange={e => setFormData({ ...formData, sender_address_detail: e.target.value })}
+                className="input" placeholder="1층 물류센터" />
+            </div>
           </div>
 
           {branch && (

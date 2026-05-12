@@ -1162,12 +1162,18 @@ const CHANNEL_SEED: Array<{ id: string; name: string; color: string; sort_order:
 export async function createBranch(formData: FormData) {
   const supabase = await createClient();
 
-  const branchData = {
+  const branchData: any = {
     name: formData.get('name') as string,
     code: 'BR-' + Date.now().toString(36).toUpperCase(),
     channel: formData.get('channel') as string,
     address: formData.get('address') as string || null,
     phone: formData.get('phone') as string || null,
+    // 마이그 063 — 택배 발송지(보내는분) 분리 컬럼
+    sender_name: (formData.get('sender_name') as string) || null,
+    sender_phone: (formData.get('sender_phone') as string) || null,
+    sender_zipcode: (formData.get('sender_zipcode') as string) || null,
+    sender_address: (formData.get('sender_address') as string) || null,
+    sender_address_detail: (formData.get('sender_address_detail') as string) || null,
   };
 
   // 채널 행이 누락된 환경에서 FK 위반이 나는 경우 자동 복구
@@ -1178,7 +1184,17 @@ export async function createBranch(formData: FormData) {
   }
 
   // @ts-ignore
-  const { data: newBranch, error } = await supabase.from('branches').insert(branchData).select().single() as any;
+  let { data: newBranch, error } = await supabase.from('branches').insert(branchData).select().single() as any;
+
+  // 마이그 063 미적용 환경 폴백 — sender_* 컬럼 제거 후 재시도
+  if (error && /column.*sender_/i.test(String(error.message))) {
+    delete branchData.sender_name; delete branchData.sender_phone;
+    delete branchData.sender_zipcode; delete branchData.sender_address;
+    delete branchData.sender_address_detail;
+    // @ts-ignore
+    const retry = await supabase.from('branches').insert(branchData).select().single() as any;
+    newBranch = retry.data; error = retry.error;
+  }
 
   if (error) {
     // 잔여 FK 위반에 대해 사용자 친화적 메시지 제공
@@ -1217,12 +1233,18 @@ export async function createBranch(formData: FormData) {
 export async function updateBranch(id: string, formData: FormData) {
   const supabase = await createClient();
 
-  const branchData = {
+  const branchData: any = {
     name: formData.get('name') as string,
     channel: formData.get('channel') as string,
     address: formData.get('address') as string || null,
     phone: formData.get('phone') as string || null,
     is_active: formData.get('is_active') === 'true',
+    // 마이그 063 — 발송지 분리 컬럼
+    sender_name: (formData.get('sender_name') as string) || null,
+    sender_phone: (formData.get('sender_phone') as string) || null,
+    sender_zipcode: (formData.get('sender_zipcode') as string) || null,
+    sender_address: (formData.get('sender_address') as string) || null,
+    sender_address_detail: (formData.get('sender_address_detail') as string) || null,
   };
 
   // createBranch와 동일하게 채널 시드 폴백
@@ -1233,7 +1255,17 @@ export async function updateBranch(id: string, formData: FormData) {
   }
 
   // @ts-ignore
-  const { error } = await supabase.from('branches').update(branchData).eq('id', id);
+  let { error } = await supabase.from('branches').update(branchData).eq('id', id);
+
+  // 마이그 063 미적용 환경 폴백
+  if (error && /column.*sender_/i.test(String(error.message))) {
+    delete branchData.sender_name; delete branchData.sender_phone;
+    delete branchData.sender_zipcode; delete branchData.sender_address;
+    delete branchData.sender_address_detail;
+    // @ts-ignore
+    const retry = await supabase.from('branches').update(branchData).eq('id', id);
+    error = retry.error;
+  }
 
   if (error) {
     const msg = String(error.message || '');
@@ -1245,8 +1277,10 @@ export async function updateBranch(id: string, formData: FormData) {
     }
     return { error: msg };
   }
-  
+
   revalidatePath('/branches');
+  revalidatePath('/system-codes');
+  revalidatePath('/shipping');
   return { success: true };
 }
 
