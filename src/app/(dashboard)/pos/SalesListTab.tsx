@@ -133,6 +133,7 @@ export default function SalesListTab() {
   const [search, setSearch] = useState('');                  // 고객명·전화·주문번호·메모 통합
   const [debouncedSearch, setDebouncedSearch] = useState(''); // loadOrders 트리거용 debounced 값
   const [includeCancelled, setIncludeCancelled] = useState(true);
+  const [showCustomerLookup, setShowCustomerLookup] = useState(false);
 
   // 고급 검색 필터 (PDF 중요도 순 상위 먼저 노출)
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -491,6 +492,11 @@ export default function SalesListTab() {
               className="input text-sm py-1 w-36" />
           </div>
           <button onClick={loadOrders} className="btn-secondary text-sm py-1.5 ml-auto">조회</button>
+          <button onClick={() => setShowCustomerLookup(true)}
+            className="text-sm py-1.5 px-3 rounded border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+            title="고객 이름·전화로 검색해 상담·구매(과거 포함) 이력 화면으로 이동">
+            🔍 고객 찾기
+          </button>
           <button onClick={handleCsv} disabled={filtered.length === 0}
             className="btn-secondary text-sm py-1.5 disabled:opacity-40">CSV 내보내기</button>
         </div>
@@ -891,6 +897,115 @@ export default function SalesListTab() {
           }}
         />
       )}
+
+      {showCustomerLookup && (
+        <CustomerLookupModal onClose={() => setShowCustomerLookup(false)} />
+      )}
+    </div>
+  );
+}
+
+// ─── 고객 직접 검색 모달 — 신규 customers + legacy 고객 모두 검색 ──────────────
+function CustomerLookupModal({ onClose }: { onClose: () => void }) {
+  const router = useRouter();
+  const [query, setQuery] = useState('');
+  const [debounced, setDebounced] = useState('');
+  const [results, setResults] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  // 디바운스
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(query), 300);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  useEffect(() => {
+    if (!debounced.trim()) { setResults([]); return; }
+    setLoading(true);
+    const params = new URLSearchParams();
+    params.set('q', debounced.trim());
+    params.set('page', '1');
+    params.set('limit', '20');
+    fetch(`/api/customers/search?${params.toString()}`)
+      .then(r => r.json())
+      .then(d => setResults(d.customers || []))
+      .catch(() => setResults([]))
+      .finally(() => setLoading(false));
+  }, [debounced]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 pt-20">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col">
+        <div className="flex items-center justify-between p-4 border-b">
+          <h3 className="font-bold text-slate-800">고객 찾기 — 상담·구매(과거 포함) 이력 보기</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl">&times;</button>
+        </div>
+        <div className="p-4 border-b">
+          <input
+            autoFocus
+            type="text"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="고객명 / 전화번호 / 주소 / 이메일"
+            className="input w-full"
+          />
+          <p className="text-[11px] text-slate-400 mt-1.5">
+            신규 등록 고객 + 과거 데이터 임포트 고객(레거시) 모두 검색됩니다.
+            선택하면 상담 · 구매 · 과거 구매 이력이 통합된 상세 화면으로 이동합니다.
+          </p>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2">
+          {loading ? (
+            <div className="text-center py-8 text-slate-400 text-sm">검색 중...</div>
+          ) : !debounced.trim() ? (
+            <div className="text-center py-12 text-slate-400 text-sm">검색어를 입력하세요.</div>
+          ) : results.length === 0 ? (
+            <div className="text-center py-12 text-slate-400 text-sm">검색 결과가 없습니다.</div>
+          ) : (
+            <ul className="space-y-1">
+              {results.map((c: any) => (
+                <li key={c.id}>
+                  <button
+                    onClick={() => { router.push(`/customers/${c.id}`); onClose(); }}
+                    className="w-full text-left p-3 rounded-lg hover:bg-slate-50 border border-slate-200 transition-colors"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="font-medium text-slate-800">{c.name}</span>
+                          {c.grade && c.grade !== 'NORMAL' && (
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded ${c.grade === 'VVIP' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                              {c.grade}
+                            </span>
+                          )}
+                          {(c.legacy_purchase_count || 0) > 0 && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title="과거 구매(legacy) 데이터 보유">
+                              과거 {c.legacy_purchase_count}건
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-slate-500 font-mono">{c.phone}</div>
+                        {c.address && (
+                          <div className="text-xs text-slate-400 mt-0.5 truncate">{c.address}</div>
+                        )}
+                      </div>
+                      <div className="text-right text-xs text-slate-500 whitespace-nowrap">
+                        {(c.consultation_count || 0) > 0 && <div>상담 {c.consultation_count}건</div>}
+                        {c.last_purchase_at && (
+                          <div>
+                            최근 구매: {String(c.last_purchase_at).slice(0, 10)}
+                            {c.last_purchase_source === 'legacy' && <span className="ml-1 text-amber-600">(과거)</span>}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

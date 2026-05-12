@@ -140,6 +140,22 @@ async function fallbackSearch(
   const digitsOnly = q.replace(/[^0-9]/g, '');
   const isPhoneSearch = digitsOnly.length >= 3;
 
+  // 전화번호 검색 정규화 — 저장은 010-XXXX-XXXX 형식이라
+  // 사용자가 01012345678 처럼 입력하면 그냥 ilike '%01012345678%' 로는 안 잡힘.
+  // 11자리 digits → 분할 패턴(010-XXXX-XXXX) 도 시도.
+  const phonePatterns: string[] = [];
+  if (isPhoneSearch) {
+    phonePatterns.push(digitsOnly);
+    if (digitsOnly.length === 11) {
+      phonePatterns.push(`${digitsOnly.slice(0,3)}-${digitsOnly.slice(3,7)}-${digitsOnly.slice(7)}`);
+    } else if (digitsOnly.length === 10) {
+      phonePatterns.push(`${digitsOnly.slice(0,3)}-${digitsOnly.slice(3,6)}-${digitsOnly.slice(6)}`);
+    } else if (digitsOnly.length >= 4) {
+      // 부분 검색 — 뒷자리 4자리 기준 매칭
+      phonePatterns.push(digitsOnly.slice(-4));
+    }
+  }
+
   const [directResults, productCustomerIds] = await Promise.all([
     (async () => {
       const orFilters = [
@@ -148,7 +164,9 @@ async function fallbackSearch(
         `address.ilike.%${q}%`,
         `phone.ilike.%${q}%`,
       ];
-      if (isPhoneSearch && digitsOnly !== q) orFilters.push(`phone.ilike.%${digitsOnly}%`);
+      for (const p of phonePatterns) {
+        orFilters.push(`phone.ilike.%${p}%`);
+      }
 
       let query = supabase
         .from('customers')
@@ -270,13 +288,13 @@ async function attachHistory(supabase: any, customers: any[]): Promise<any[]> {
   if (customers.length === 0) return [];
   const ids = customers.map((c: any) => c.id);
 
-  const [consultRes, consultCountRes, orderRes] = await Promise.all([
+  const [consultRes, consultCountRes, orderRes, legacyRes] = await Promise.all([
     supabase
       .from('customer_consultations')
       .select('customer_id, consultation_type, content, created_at, consulted_by:users(name)')
       .in('customer_id', ids)
       .order('created_at', { ascending: false })
-      .limit(ids.length * 5), // 여유있게
+      .limit(ids.length * 5),
     supabase
       .from('customer_consultations')
       .select('customer_id')
@@ -287,6 +305,13 @@ async function attachHistory(supabase: any, customers: any[]): Promise<any[]> {
       .in('customer_id', ids)
       .order('ordered_at', { ascending: false })
       .limit(ids.length * 3),
+    // 과거 구매(legacy) — 최근 N건씩만, 1000행 제한 우회
+    supabase
+      .from('legacy_purchases')
+      .select('customer_id, ordered_at, total_amount')
+      .in('customer_id', ids)
+      .order('ordered_at', { ascending: false })
+      .range(0, Math.max(99, ids.length * 5)),
   ]);
 
   const latestConsult: Record<string, any> = {};
@@ -306,12 +331,25 @@ async function attachHistory(supabase: any, customers: any[]): Promise<any[]> {
     consultCount[row.customer_id] = (consultCount[row.customer_id] || 0) + 1;
   }
 
-  const latestPurchase: Record<string, { ordered_at: string; total_amount: number }> = {};
+  const latestPurchase: Record<string, { ordered_at: string; total_amount: number; source?: 'sales' | 'legacy' }> = {};
   for (const row of (orderRes.data || []) as any[]) {
     if (['CANCELLED', 'REFUNDED'].includes(row.status)) continue;
     if (!(row.customer_id in latestPurchase)) {
-      latestPurchase[row.customer_id] = { ordered_at: row.ordered_at, total_amount: row.total_amount };
+      latestPurchase[row.customer_id] = { ordered_at: row.ordered_at, total_amount: row.total_amount, source: 'sales' };
     }
+  }
+  // legacy 더 최근이면 갈아치움 (둘 다 ordered_at 비교)
+  for (const row of (legacyRes.data || []) as any[]) {
+    const existing = latestPurchase[row.customer_id];
+    const lpDate = String(row.ordered_at);
+    if (!existing || lpDate > existing.ordered_at) {
+      latestPurchase[row.customer_id] = { ordered_at: lpDate, total_amount: Number(row.total_amount) || 0, source: 'legacy' };
+    }
+  }
+  // legacy 건수도 별도 집계
+  const legacyCount: Record<string, number> = {};
+  for (const row of (legacyRes.data || []) as any[]) {
+    legacyCount[row.customer_id] = (legacyCount[row.customer_id] || 0) + 1;
   }
 
   return customers.map((c: any) => ({
@@ -320,6 +358,8 @@ async function attachHistory(supabase: any, customers: any[]): Promise<any[]> {
     consultation_count: consultCount[c.id] || 0,
     last_purchase_at: latestPurchase[c.id]?.ordered_at || null,
     last_purchase_amount: latestPurchase[c.id]?.total_amount ?? null,
+    last_purchase_source: latestPurchase[c.id]?.source || null,
+    legacy_purchase_count: legacyCount[c.id] || 0,
   }));
 }
 

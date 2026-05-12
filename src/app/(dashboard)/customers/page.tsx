@@ -57,6 +57,8 @@ interface Customer {
   consultation_count?: number;
   last_purchase_at?: string | null;
   last_purchase_amount?: number | null;
+  last_purchase_source?: 'sales' | 'legacy' | null;
+  legacy_purchase_count?: number;
 }
 
 // 탭별 동적 로드
@@ -432,8 +434,11 @@ export default function CustomersPage() {
                 <td>
                   {customer.last_purchase_at ? (
                     <div>
-                      <div className="text-sm font-medium text-slate-700">
+                      <div className="text-sm font-medium text-slate-700 flex items-center gap-1">
                         {fmtShortDate(customer.last_purchase_at)}
+                        {customer.last_purchase_source === 'legacy' && (
+                          <span className="text-[10px] px-1 rounded bg-amber-100 text-amber-700" title="과거 구매(legacy) 데이터">과거</span>
+                        )}
                       </div>
                       <div className="text-xs text-slate-500">
                         {relativeTime(customer.last_purchase_at)}
@@ -443,6 +448,16 @@ export default function CustomersPage() {
                           {customer.last_purchase_amount.toLocaleString()}원
                         </div>
                       )}
+                      {(customer.legacy_purchase_count || 0) > 0 && (
+                        <div className="text-[10px] text-amber-600 mt-0.5">
+                          과거 구매 {customer.legacy_purchase_count}건
+                        </div>
+                      )}
+                    </div>
+                  ) : (customer.legacy_purchase_count || 0) > 0 ? (
+                    <div>
+                      <div className="text-xs text-amber-600">과거 구매만</div>
+                      <div className="text-[10px] text-amber-500">{customer.legacy_purchase_count}건</div>
                     </div>
                   ) : (
                     <span className="text-xs text-slate-400">구매 없음</span>
