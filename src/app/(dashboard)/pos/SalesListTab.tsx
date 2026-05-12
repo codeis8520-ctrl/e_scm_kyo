@@ -131,6 +131,7 @@ export default function SalesListTab() {
   const [paymentFilter, setPaymentFilter] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [search, setSearch] = useState('');                  // 고객명·전화·주문번호·메모 통합
+  const [debouncedSearch, setDebouncedSearch] = useState(''); // loadOrders 트리거용 debounced 값
   const [includeCancelled, setIncludeCancelled] = useState(true);
 
   // 고급 검색 필터 (PDF 중요도 순 상위 먼저 노출)
@@ -170,6 +171,12 @@ export default function SalesListTab() {
   const loadOrders = useCallback(async () => {
     setLoading(true);
     const sb = createClient() as any;
+    // 검색어가 있으면 날짜 필터 무시 (오늘이 아닌 과거 고객도 찾을 수 있게)
+    // debouncedSearch (메인 검색만) + 기타 텍스트 검색 합산. 어느 하나라도 있으면 전체 기간으로 확장.
+    const hasAnySearch = !!(
+      debouncedSearch.trim() || consultSearch.trim() || productSearch.trim() ||
+      orderOptionSearch.trim() || recipientSearch.trim() || addressSearch.trim()
+    );
     // 051 적용 전/후 모두 대응: full select → 실패 시 basic select 폴백
     const buildQuery = (useExtended: boolean) => {
       const baseSelect = useExtended ? `
@@ -190,10 +197,12 @@ export default function SalesListTab() {
         items:sales_order_items(id, quantity, unit_price, total_price, product:products(id, name, code))
       `;
       let q = sb.from('sales_orders').select(baseSelect)
-        .gte('ordered_at', kstDayStart(startDate))
-        .lte('ordered_at', kstDayEnd(endDate))
         .order('ordered_at', { ascending: false })
-        .limit(500);
+        .limit(hasAnySearch ? 2000 : 500);
+      // 검색어 없으면 날짜 필터 적용, 있으면 전체 기간 검색
+      if (!hasAnySearch) {
+        q = q.gte('ordered_at', kstDayStart(startDate)).lte('ordered_at', kstDayEnd(endDate));
+      }
       if (branchFilter) q = q.eq('branch_id', branchFilter);
       if (paymentFilter) q = q.eq('payment_method', paymentFilter);
       if (statusFilter) q = q.eq('status', statusFilter);
@@ -282,9 +291,17 @@ export default function SalesListTab() {
     setOrders(filteredRows);
     setLoading(false);
   }, [startDate, endDate, branchFilter, paymentFilter, statusFilter, includeCancelled,
-      handlerFilter, receiptStatusFilter, approvalStatusFilter, shipFromFilter, consultSearch]);
+      handlerFilter, receiptStatusFilter, approvalStatusFilter, shipFromFilter, consultSearch,
+      // 검색어 변경 시 날짜 필터 토글되므로 재페치 필요 — debouncedSearch 만 deps 에 포함 (타이핑마다 DB 호출 방지)
+      debouncedSearch, productSearch, orderOptionSearch, recipientSearch, addressSearch]);
 
   useEffect(() => { loadOrders(); }, [loadOrders]);
+
+  // search 입력 → 400ms 후 debouncedSearch 반영 (DB 재호출 빈도 제한)
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 400);
+    return () => clearTimeout(t);
+  }, [search]);
 
   // 클라이언트 검색 (텍스트 기반 부가 조건)
   const filtered = useMemo(() => {
@@ -484,8 +501,9 @@ export default function SalesListTab() {
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="고객명 · 전화번호 · 주문번호 · 메모"
+            placeholder="고객명 · 전화번호 · 주문번호 · 메모 (입력 시 전체 기간 검색)"
             className="input text-sm py-1 flex-1 min-w-[240px]"
+            title="검색어가 있으면 위 기간 필터를 무시하고 전체 기간에서 찾습니다"
           />
           {!isBranchUser && (
             <select value={branchFilter} onChange={e => setBranchFilter(e.target.value)} className="input text-sm py-1 w-36">
