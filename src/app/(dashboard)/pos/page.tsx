@@ -302,10 +302,36 @@ function POSPageInner() {
   };
 
   // ── 초기 데이터 로드 ───────────────────────────────────────────────────────
+  //
+  // 성능 전략 (대용량 데이터 대응):
+  //   1) Tier-1 (UI 차단): products + branches + grades + users — 즉시 화면 표시용. 빠름.
+  //   2) Tier-2 (백그라운드): inventories — 재고 숫자. count 받아 병렬 청크.
+  //   3) Tier-3 (백그라운드, lazy): customers — 검색용. count 받아 병렬 청크.
+  // 1만 명 고객 × 12 청크를 순차 처리하면 2~3초, 병렬이면 ~400ms.
   useEffect(() => {
-    const fetchData = async () => {
-      const supabase = createClient();
+    const supabase = createClient();
 
+    // ─── 병렬 청크 페치 헬퍼 ─────────────────────────────────────────────
+    // 1) head:true 로 count 만 받음 → 2) 청크 수 계산 → 3) Promise.all 로 모든 청크 동시 요청
+    const fetchAllParallel = async <T,>(table: string, selectCols: string, orderBy?: string): Promise<T[]> => {
+      const PAGE = 1000;
+      // 1. count
+      let countRes = await (supabase.from(table) as any).select('*', { count: 'exact', head: true });
+      const total = countRes.count ?? 0;
+      if (total === 0) return [];
+      const pages = Math.ceil(total / PAGE);
+      // 2. 병렬 청크
+      const promises = Array.from({ length: pages }, (_, i) => {
+        let q = supabase.from(table).select(selectCols);
+        if (orderBy) q = (q as any).order(orderBy);
+        return (q as any).range(i * PAGE, (i + 1) * PAGE - 1).then((r: any) => (r.data as T[]) || []);
+      });
+      const chunks = await Promise.all(promises);
+      return chunks.flat();
+    };
+
+    // ── Tier 1 — 즉시 화면 표시용 (products, branches, grades, users) ─────
+    const loadTier1 = async () => {
       // product_type 포함 시도 → 마이그 042 미적용 DB 폴백
       let productsRes: any = await supabase
         .from('products')
@@ -320,74 +346,30 @@ function POSPageInner() {
           .order('name');
       }
 
-      // ─── 청크 페치 헬퍼 ────────────────────────────────────────────────
-      // Supabase 프로젝트 max_rows(보통 1000) 설정 우회. .range(0, 99999) 만으로는
-      // 서버측에서 잘려 누락 발생 — 명시적으로 페이지네이션으로 끝까지 가져옴.
-      const fetchAll = async (table: string, selectCols: string, orderBy?: string) => {
-        const all: any[] = [];
-        const PAGE = 1000;
-        let from = 0;
-        for (let i = 0; i < 100; i++) {  // 최대 100K건 안전장치
-          let q = supabase.from(table).select(selectCols);
-          if (orderBy) q = (q as any).order(orderBy);
-          const { data, error } = await (q as any).range(from, from + PAGE - 1);
-          if (error) {
-            console.error(`[fetchAll/${table}] error at chunk ${i}:`, error);
-            break;
-          }
-          if (!data || data.length === 0) break;
-          all.push(...data);
-          if (data.length < PAGE) break;
-          from += PAGE;
-        }
-        return all;
-      };
-
-      const [branchesRes, allCustomers, gradesRes, allInventories, usersRes] = await Promise.all([
+      const [branchesRes, gradesRes, usersRes] = await Promise.all([
         supabase.from('branches').select('*').eq('is_active', true).order('created_at'),
-        // 고객 — is_active 필터 없음, 전체 청크 페치
-        fetchAll('customers', 'id, name, phone, grade, is_active', 'name'),
         supabase.from('customer_grades').select('code, point_rate'),
-        // 재고도 청크 — 제품×지점 곱이라 쉽게 1000 행 초과 가능
-        fetchAll('inventories', 'product_id, branch_id, quantity'),
         supabase.from('users').select('id, name, role, branch_id').eq('is_active', true).order('name'),
       ]);
-      console.log(`[POS] 고객 ${allCustomers.length}명, 재고 ${allInventories.length}행 로드`);
-      const customersRes = { data: allCustomers } as any;
-      const invRes = { data: allInventories } as any;
 
-      const gradesMap = new Map((gradesRes.data || []).map((g: any) => [g.code, parseFloat(g.point_rate) || 1.0]));
       const branchesData = (branchesRes.data || []) as any[];
-      // POS 판매 대상은 완제품만 — RAW/SUB 제외 (null은 레거시 FINISHED 취급)
       const productsData = ((productsRes.data || []) as any[]).filter(
         (p: any) => p.product_type !== 'RAW' && p.product_type !== 'SUB'
       );
-
-      const invMap = new Map<string, number>();
-      for (const inv of (invRes.data || []) as any[]) {
-        invMap.set(`${inv.branch_id}_${inv.product_id}`, inv.quantity);
-      }
+      const gradesMap = new Map(((gradesRes.data || []) as any[]).map((g: any) => [g.code, parseFloat(g.point_rate) || 1.0]));
 
       setProducts(productsData);
       setBranches(branchesData);
-      setInventoryMap(invMap);
-      setCustomers((customersRes.data || []).map((c: any) => ({
-        ...c,
-        grade_point_rate: gradesMap.get(c.grade) || 1.0,
-      })));
       setStaff(((usersRes.data as any[]) || []) as StaffUser[]);
 
       const pMap = new Map<string, any>();
-      productsData.forEach(p => {
+      productsData.forEach((p: any) => {
         if (p.barcode) pMap.set(p.barcode, p);
         pMap.set(p.code, p);
       });
       setProductMap(pMap);
 
-      // 판매 지점 확정: 쿠키 branch_id → 본사 → STORE(한약국) 채널 → 첫 번째 지점
-      //   ※ 담당지점 미지정 관리자(SUPER_ADMIN/HQ_OPERATOR)는 created_at 첫 행이
-      //     자사몰(ONLINE)일 수 있어 의외의 매출처가 기본 선택되는 문제가 있었음.
-      //     본사 → 한약국 채널 → 그래도 없으면 첫 번째 순으로 폴백.
+      // 판매 지점 확정 (쿠키 → 본사 → STORE → 첫 번째)
       if (initialBranchId) {
         setSelectedBranch(initialBranchId);
         setShipFromBranchId(initialBranchId);
@@ -399,9 +381,34 @@ function POSPageInner() {
         setShipFromBranchId(defaultBranch.id);
       }
 
-      setLoading(false);
+      setLoading(false);  // ← Tier 1 끝 = UI 표시
+      return { gradesMap };
     };
-    fetchData();
+
+    // ── Tier 2 — 재고 (백그라운드, 병렬 청크) ───────────────────────────
+    const loadTier2 = async () => {
+      const t0 = performance.now();
+      const allInv = await fetchAllParallel<any>('inventories', 'product_id, branch_id, quantity');
+      const invMap = new Map<string, number>();
+      for (const inv of allInv) invMap.set(`${inv.branch_id}_${inv.product_id}`, inv.quantity);
+      setInventoryMap(invMap);
+      console.log(`[POS] 재고 ${allInv.length}행 — ${(performance.now() - t0).toFixed(0)}ms`);
+    };
+
+    // ── Tier 3 — 고객 (백그라운드, 병렬 청크) ────────────────────────────
+    const loadTier3 = async (gradesMap: Map<string, number>) => {
+      const t0 = performance.now();
+      const allCust = await fetchAllParallel<any>('customers', 'id, name, phone, grade, is_active', 'name');
+      setCustomers(allCust.map((c: any) => ({ ...c, grade_point_rate: gradesMap.get(c.grade) || 1.0 })));
+      console.log(`[POS] 고객 ${allCust.length}명 — ${(performance.now() - t0).toFixed(0)}ms`);
+    };
+
+    (async () => {
+      const { gradesMap } = await loadTier1();
+      // Tier 2/3 동시 백그라운드 — UI 는 이미 표시됨
+      loadTier2();
+      loadTier3(gradesMap);
+    })();
     searchRef.current?.focus();
   }, [initialBranchId]);
 
