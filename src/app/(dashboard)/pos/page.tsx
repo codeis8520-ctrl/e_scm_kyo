@@ -153,6 +153,29 @@ function POSPageInner() {
   const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
   const [customerHighlightIdx, setCustomerHighlightIdx] = useState(0);
   const customerDropdownRef = useRef<HTMLDivElement>(null);
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number } | null>(null);
+
+  // input bounding rect 기준으로 dropdown 위치 계산 (viewport 좌표). 부모 overflow/스크롤 영향 없음.
+  const recomputeDropdownPos = () => {
+    const el = customerInputRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setDropdownPos({ top: r.bottom + 4, left: r.left, width: r.width });
+  };
+
+  useEffect(() => {
+    if (!showCustomerDropdown) return;
+    recomputeDropdownPos();
+    const onScroll = () => recomputeDropdownPos();
+    const onResize = () => recomputeDropdownPos();
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onResize);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showCustomerDropdown, customerResults.length]);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethodId>('card');
   const [cashReceived, setCashReceived] = useState('');
   const [processing, setProcessing] = useState(false);
@@ -1391,11 +1414,19 @@ function POSPageInner() {
                 </button>
               </div>
             )}
-            {showCustomerDropdown && !selectedCustomer && (
+            {showCustomerDropdown && !selectedCustomer && dropdownPos && (
               <div
                 ref={customerDropdownRef}
-                className="absolute z-40 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg overflow-y-auto"
-                style={{ maxHeight: 'min(60vh, 480px)' }}
+                className="fixed z-50 bg-white border border-slate-200 rounded-lg shadow-xl overflow-y-auto overscroll-contain"
+                style={{
+                  top: dropdownPos.top,
+                  left: dropdownPos.left,
+                  width: dropdownPos.width,
+                  // viewport 의 input 아래 영역으로 최대 높이 제한
+                  maxHeight: `calc(100vh - ${dropdownPos.top + 16}px)`,
+                }}
+                // 마우스 휠이 페이지로 새지 않게 — 드롭다운 내부에서만 스크롤
+                onWheel={(e) => e.stopPropagation()}
               >
                 {customerResults.map((c, idx) => (
                   <button
