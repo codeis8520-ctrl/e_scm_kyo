@@ -137,9 +137,10 @@ export default function InventoryPage() {
   const userBranchId = getCookie('user_branch_id');
   const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
 
+  // 첫 진입 — 페이지 메타(지점·카테고리)만 로드. inventories 는 검색 조건이 있을 때만.
   useEffect(() => {
     (async () => {
-      // 누락 재고 행 자가 치유 (조용히, idempotent) — 그 다음 페치
+      // 누락 재고 행 자가 치유 (조용히, idempotent)
       try {
         const r = await backfillMissingInventories();
         if (r.inserted > 0) {
@@ -150,13 +151,32 @@ export default function InventoryPage() {
       }
       fetchBranches();
       fetchCategories();
-      fetchInventory();
     })();
     if (isBranchUser && userBranchId) {
       setFlatBranchFilter(userBranchId);
       setViewMode('flat');
     }
+    setLoading(false);
   }, []);
+
+  // 검색 조건이 바뀔 때만 fetchInventory 실행 (debounced)
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 400);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  useEffect(() => {
+    const hasFilter = !!(
+      debouncedSearch.trim() || categoryFilter || typeFilter || (isBranchUser && userBranchId)
+    );
+    if (!hasFilter) {
+      setInventories([]);
+      return;
+    }
+    fetchInventory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearch, categoryFilter, typeFilter, flatBranchFilter]);
 
   const fetchCategories = async () => {
     const supabase = createClient();
@@ -181,32 +201,42 @@ export default function InventoryPage() {
     setBranches(res.data || []);
   };
 
+  // 검색·필터 매칭 product_id 만 페치 — 전체 페치 X (사용자 요청: 검색 위주, 첫 로드 즉시)
   const fetchInventory = async () => {
     setLoading(true);
     const supabase = createClient();
+    const t0 = performance.now();
 
-    // ⚠️ Supabase 프로젝트 max_rows(보통 1000) 으로 range(0, 99999) 만으로도 1000 행에서 잘림.
-    //    제품 200+ × 지점 5+ = 1000+ 행이라 후순위 제품(생맥 10포 등)이 누락되던 문제 해결을
-    //    위해 head:true count → Math.ceil 청크 → Promise.all 병렬 패턴 적용.
-    const fetchAllParallel = async (selectCols: string): Promise<any[]> => {
-      const PAGE = 1000;
-      const countRes: any = await supabase.from('inventories').select('*', { count: 'exact', head: true });
-      const total = countRes.count ?? 0;
-      if (total === 0) return [];
-      const pages = Math.ceil(total / PAGE);
-      const promises = Array.from({ length: pages }, (_, i) =>
-        supabase
-          .from('inventories')
-          .select(selectCols)
-          .order('product_id')
-          .range(i * PAGE, (i + 1) * PAGE - 1)
-          .then((r: any) => (r.data as any[]) || [])
-      );
-      const chunks = await Promise.all(promises);
-      return chunks.flat();
+    // 1) 매칭 product_id 추출 — search/typeFilter/categoryFilter 적용
+    const q = debouncedSearch.trim();
+    let pq = supabase.from('products').select('id').eq('is_active', true);
+    if (typeFilter) pq = pq.eq('product_type', typeFilter);
+    if (categoryFilter && allowedCategoryIds && allowedCategoryIds.size > 0) {
+      pq = pq.in('category_id', Array.from(allowedCategoryIds));
+    }
+    if (q) {
+      pq = pq.or(`name.ilike.%${q}%,code.ilike.%${q}%,barcode.ilike.%${q}%`);
+    }
+    const { data: matchedProducts, error: pErr } = await (pq as any).range(0, 999);
+    if (pErr) {
+      console.error('[inventory] product 매칭 실패', pErr);
+      setLoading(false);
+      return;
+    }
+    const productIds = ((matchedProducts || []) as any[]).map((p: any) => p.id);
+    if (productIds.length === 0) {
+      setInventories([]);
+      setLoading(false);
+      return;
+    }
+
+    // 2) 매칭 product_id 에 해당하는 inventories 만 페치 (지점 필터도 같이)
+    const fetchSelect = async (selectCols: string) => {
+      let invq = supabase.from('inventories').select(selectCols).in('product_id', productIds);
+      if (flatBranchFilter) invq = (invq as any).eq('branch_id', flatBranchFilter);
+      return (invq as any).order('product_id').range(0, 9999);
     };
 
-    // 컬럼 폴백 단계 — is_phantom(061) → track_inventory(059) → 최소
     const trySelects = [
       '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory, is_phantom)',
       '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory)',
@@ -216,15 +246,14 @@ export default function InventoryPage() {
 
     let data: any[] = [];
     for (const sel of trySelects) {
-      try {
-        const t0 = performance.now();
-        data = await fetchAllParallel(sel);
-        console.log(`[inventory] ${data.length}행 로드 — ${(performance.now() - t0).toFixed(0)}ms`);
+      const res: any = await fetchSelect(sel);
+      if (!res.error) {
+        data = res.data || [];
         break;
-      } catch (e) {
-        console.warn('[inventory] select 단계 폴백:', e);
       }
+      console.warn('[inventory] select 단계 폴백:', res.error);
     }
+    console.log(`[inventory] 제품 ${productIds.length} 매칭 → ${data.length}행 — ${(performance.now() - t0).toFixed(0)}ms`);
     setInventories(data);
     setLoading(false);
   };
@@ -483,6 +512,15 @@ export default function InventoryPage() {
 
       {loading ? (
         <div className="text-center text-slate-400 py-12">로딩 중...</div>
+      ) : inventories.length === 0 && !debouncedSearch.trim() && !categoryFilter && !typeFilter && !(isBranchUser && userBranchId) ? (
+        <div className="text-center py-16 px-6 bg-slate-50 rounded-lg border border-dashed border-slate-300">
+          <p className="text-4xl mb-2">🔍</p>
+          <p className="text-slate-600 font-medium mb-1">검색어 또는 필터를 입력해주세요</p>
+          <p className="text-xs text-slate-500">
+            제품명·코드·바코드로 검색하거나 카테고리/유형을 선택하면 매칭되는 재고만 표시됩니다.
+          </p>
+          <p className="text-[11px] text-slate-400 mt-3">전체 재고를 한 번에 불러오지 않아 빠르게 동작합니다.</p>
+        </div>
       ) : viewMode === 'pivot' ? (
         /* ── 제품별 피벗 뷰 ── */
         <div className="overflow-x-auto">
