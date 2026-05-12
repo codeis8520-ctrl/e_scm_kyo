@@ -31,6 +31,7 @@ legacy_purchases(마이그 064): id, legacy_purchase_no(P000001 등), customer_i
   ※ item_text 는 원본 텍스트 그대로(예: "십전10선*2,쌍화10선"). 자동 매핑 안 함.
   ※ mapped_to_sales_order_id: 향후 사람이 매핑 검수해 sales_orders로 승격한 경우 그 ID. NULL이면 legacy 전용.
   ※ 고객 상세 화면의 "과거 구매" 탭에서 표시.
+  ※ 고객 분석(/customers/analytics)의 RFM·재구매주기·이탈위험은 sales_orders(COMPLETED) + legacy_purchases 를 통합 집계해 LTV/F/M 계산.
 
 --- 판매(POS) ---
 sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, ordered_by(담당자), total_amount, discount_amount, points_used, points_earned, payment_method(cash/card/card_keyin/kakao/credit/cod/mixed), credit_settled(bool), credit_settled_at, credit_settled_method, memo, status(COMPLETED/CANCELLED/REFUNDED/PARTIALLY_REFUNDED), ordered_at, receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date, approval_status(COMPLETED/CARD_PENDING/UNSETTLED), payment_info, taxable_amount, exempt_amount, vat_amount

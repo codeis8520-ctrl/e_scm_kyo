@@ -5,6 +5,7 @@ import Link from 'next/link';
 import CustomerModal from './CustomerModal';
 import CustomerImportModal from './CustomerImportModal';
 import { autoUpgradeCustomerGrades } from '@/lib/actions';
+import { createClient } from '@/lib/supabase/client';
 
 const GRADE_LABELS: Record<string, string> = { VVIP: 'VVIP', VIP: 'VIP', NORMAL: '일반' };
 const GRADE_BADGE: Record<string, string> = {
@@ -104,9 +105,10 @@ export default function CustomersPage() {
   const [showImportModal, setShowImportModal] = useState(false);
   const [editCustomer, setEditCustomer] = useState<Customer | null>(null);
   const [upgrading, setUpgrading] = useState(false);
-  const [syncingMembers, setSyncingMembers] = useState(false);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
+  const [totalCustomers, setTotalCustomers] = useState<number | null>(null);
+  const [totalLegacy, setTotalLegacy] = useState<number | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const limit = 30;
@@ -166,6 +168,19 @@ export default function CustomersPage() {
     if (activeTab === 'list') searchRef.current?.focus();
   }, [activeTab]);
 
+  // 페이지 진입 시 총 고객 수 / 과거구매(legacy) 카운트 — 검색 없어도 표시
+  useEffect(() => {
+    (async () => {
+      const sb = createClient() as any;
+      const [cust, leg] = await Promise.all([
+        sb.from('customers').select('id', { count: 'exact', head: true }).eq('is_active', true),
+        sb.from('legacy_purchases').select('id', { count: 'exact', head: true }),
+      ]);
+      setTotalCustomers(cust.count ?? 0);
+      setTotalLegacy(leg.count ?? 0);
+    })();
+  }, []);
+
   const handleEdit = (customer: Customer) => {
     setEditCustomer(customer);
     setShowModal(true);
@@ -209,7 +224,19 @@ export default function CustomersPage() {
     <div className="card">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-2">
         <div>
-          <h3 className="font-semibold text-lg">고객 상담·히스토리</h3>
+          <h3 className="font-semibold text-lg flex items-center gap-2 flex-wrap">
+            고객 상담·히스토리
+            {totalCustomers !== null && (
+              <span className="text-sm font-normal text-slate-500">
+                총 <b className="text-slate-700">{totalCustomers.toLocaleString()}</b>명
+              </span>
+            )}
+            {totalLegacy !== null && totalLegacy > 0 && (
+              <span className="text-xs font-normal px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">
+                과거 구매 {totalLegacy.toLocaleString()}건
+              </span>
+            )}
+          </h3>
           <p className="text-xs text-slate-500 mt-0.5">상담 이력과 최근 구매 흐름을 한눈에 확인하고, 이름을 눌러 상세로 들어갑니다.</p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -229,26 +256,6 @@ export default function CustomersPage() {
             className="btn-secondary py-2 px-4 text-sm"
           >
             {upgrading ? '처리 중...' : '등급 자동 업그레이드'}
-          </button>
-          <button
-            onClick={async () => {
-              if (!confirm('카페24 회원 전체를 customers 테이블로 동기화합니다.\n(cafe24_member_id 기준 upsert)\n계속하시겠습니까?')) return;
-              setSyncingMembers(true);
-              try {
-                const res = await fetch('/api/cafe24/members', { method: 'POST' });
-                const json = await res.json();
-                alert(json.success ? json.message : `실패: ${json.error}`);
-                if (json.success) fetchCustomers(search, gradeFilter, page, hasConsult, sortKey);
-              } catch (e: any) {
-                alert(`오류: ${e.message}`);
-              } finally {
-                setSyncingMembers(false);
-              }
-            }}
-            disabled={syncingMembers}
-            className="btn-secondary py-2 px-4 text-sm"
-          >
-            {syncingMembers ? '동기화 중...' : '카페24 회원 동기화'}
           </button>
           <button
             onClick={() => setShowImportModal(true)}

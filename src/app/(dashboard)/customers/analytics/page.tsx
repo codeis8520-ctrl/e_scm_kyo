@@ -114,6 +114,9 @@ export default function CustomerAnalyticsPage() {
           </div>
           <h1 className="text-xl font-bold text-slate-800">고객 분석</h1>
           <p className="text-sm text-slate-500">RFM 세그멘테이션 · 재구매 주기 · 이탈 위험</p>
+          <p className="text-[11px] text-slate-400 mt-1">
+            분석 데이터: 신규 판매(sales_orders, COMPLETED) + 과거 구매(legacy_purchases) 통합
+          </p>
         </div>
         {!isBranchUser && (
           <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)} className="input text-sm py-1.5 w-44">

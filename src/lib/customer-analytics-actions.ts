@@ -54,28 +54,43 @@ export async function getRfmAnalysis(branchId?: string) {
 
   if (!customers?.length) return { data: [], segmentSummary: [] };
 
-  // 모든 완료 주문 (고객 연결된 것만)
+  // 모든 완료 주문 (고객 연결된 것만) — sales_orders + legacy_purchases 통합
   let ordersQ = sb
     .from('sales_orders')
     .select('customer_id, total_amount, ordered_at, branch_id')
     .eq('status', 'COMPLETED')
-    .not('customer_id', 'is', null);
+    .not('customer_id', 'is', null)
+    .range(0, 99999);
   if (branchId) ordersQ = ordersQ.eq('branch_id', branchId);
-  const { data: orders } = await ordersQ;
 
-  // 고객별 집계
+  let legacyQ = sb
+    .from('legacy_purchases')
+    .select('customer_id, total_amount, ordered_at, branch_id')
+    .not('customer_id', 'is', null)
+    .range(0, 99999);
+  if (branchId) legacyQ = legacyQ.eq('branch_id', branchId);
+
+  const [{ data: orders }, { data: legacyOrders }] = await Promise.all([ordersQ, legacyQ]);
+
+  // 고객별 집계 — sales_orders + legacy 합산
   const orderMap = new Map<string, { totalAmount: number; count: number; lastDate: string; firstDate: string }>();
-  for (const o of (orders || [])) {
-    const existing = orderMap.get(o.customer_id);
-    if (!existing) {
-      orderMap.set(o.customer_id, { totalAmount: o.total_amount, count: 1, lastDate: o.ordered_at, firstDate: o.ordered_at });
-    } else {
-      existing.totalAmount += o.total_amount;
-      existing.count += 1;
-      if (o.ordered_at > existing.lastDate)  existing.lastDate  = o.ordered_at;
-      if (o.ordered_at < existing.firstDate) existing.firstDate = o.ordered_at;
+  const accumulate = (rows: any[] | null) => {
+    for (const o of (rows || [])) {
+      const amt = Number(o.total_amount) || 0;
+      const at = String(o.ordered_at);
+      const existing = orderMap.get(o.customer_id);
+      if (!existing) {
+        orderMap.set(o.customer_id, { totalAmount: amt, count: 1, lastDate: at, firstDate: at });
+      } else {
+        existing.totalAmount += amt;
+        existing.count += 1;
+        if (at > existing.lastDate)  existing.lastDate  = at;
+        if (at < existing.firstDate) existing.firstDate = at;
+      }
     }
-  }
+  };
+  accumulate(orders);
+  accumulate(legacyOrders);
 
   const result = customers.map((c: any) => {
     const stats = orderMap.get(c.id);
@@ -116,23 +131,37 @@ export async function getRfmAnalysis(branchId?: string) {
 export async function getRepurchaseCycles(branchId?: string) {
   const sb = await createClient() as any;
 
+  // sales_orders + legacy_purchases 통합 페치
   let q = sb
     .from('sales_orders')
-    .select('customer_id, ordered_at')
+    .select('customer_id, ordered_at, branch_id')
     .eq('status', 'COMPLETED')
     .not('customer_id', 'is', null)
-    .order('customer_id')
-    .order('ordered_at', { ascending: true });
+    .range(0, 99999);
   if (branchId) q = q.eq('branch_id', branchId);
-  const { data: orders } = await q;
+
+  let lq = sb
+    .from('legacy_purchases')
+    .select('customer_id, ordered_at, branch_id')
+    .not('customer_id', 'is', null)
+    .range(0, 99999);
+  if (branchId) lq = lq.eq('branch_id', branchId);
+
+  const [{ data: orders }, { data: legacyOrders }] = await Promise.all([q, lq]);
 
   // 고객별 주문 날짜 배열
   const customerOrders = new Map<string, string[]>();
-  for (const o of (orders || [])) {
-    const existing = customerOrders.get(o.customer_id) || [];
-    existing.push(o.ordered_at);
-    customerOrders.set(o.customer_id, existing);
-  }
+  const collect = (rows: any[] | null) => {
+    for (const o of (rows || [])) {
+      const existing = customerOrders.get(o.customer_id) || [];
+      existing.push(String(o.ordered_at));
+      customerOrders.set(o.customer_id, existing);
+    }
+  };
+  collect(orders);
+  collect(legacyOrders);
+  // 고객별 날짜 정렬 (sales + legacy 합쳤으니 다시 정렬 필요)
+  for (const dates of customerOrders.values()) dates.sort();
 
   // 재구매 간격 계산 (2건 이상 구매한 고객만)
   const intervals: number[] = [];
@@ -188,26 +217,42 @@ export async function getChurnRiskCustomers(branchId?: string) {
   // KST 기준 60일 전 자정
   const cutoff = kstDaysAgoStart(60);
 
+  // sales_orders + legacy_purchases 통합
   let q = sb
     .from('sales_orders')
-    .select('customer_id, ordered_at, total_amount')
+    .select('customer_id, ordered_at, total_amount, branch_id')
     .eq('status', 'COMPLETED')
-    .not('customer_id', 'is', null);
+    .not('customer_id', 'is', null)
+    .range(0, 99999);
   if (branchId) q = q.eq('branch_id', branchId);
-  const { data: orders } = await q;
+
+  let lq = sb
+    .from('legacy_purchases')
+    .select('customer_id, ordered_at, total_amount, branch_id')
+    .not('customer_id', 'is', null)
+    .range(0, 99999);
+  if (branchId) lq = lq.eq('branch_id', branchId);
+
+  const [{ data: orders }, { data: legacyOrders }] = await Promise.all([q, lq]);
 
   // 고객별 마지막 구매일 & 구매 횟수 & LTV
   const customerMap = new Map<string, { lastDate: string; count: number; totalAmount: number }>();
-  for (const o of (orders || [])) {
-    const e = customerMap.get(o.customer_id);
-    if (!e) {
-      customerMap.set(o.customer_id, { lastDate: o.ordered_at, count: 1, totalAmount: o.total_amount });
-    } else {
-      e.count++;
-      e.totalAmount += o.total_amount;
-      if (o.ordered_at > e.lastDate) e.lastDate = o.ordered_at;
+  const aggregate = (rows: any[] | null) => {
+    for (const o of (rows || [])) {
+      const amt = Number(o.total_amount) || 0;
+      const at = String(o.ordered_at);
+      const e = customerMap.get(o.customer_id);
+      if (!e) {
+        customerMap.set(o.customer_id, { lastDate: at, count: 1, totalAmount: amt });
+      } else {
+        e.count++;
+        e.totalAmount += amt;
+        if (at > e.lastDate) e.lastDate = at;
+      }
     }
-  }
+  };
+  aggregate(orders);
+  aggregate(legacyOrders);
 
   // 이탈 위험 필터: 마지막 구매 > 60일 전 & 구매 횟수 >= 2
   const atRisk = Array.from(customerMap.entries())
