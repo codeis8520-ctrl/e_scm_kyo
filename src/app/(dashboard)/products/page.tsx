@@ -327,6 +327,30 @@ export default function ProductsPage() {
               선택 해제
             </button>
             <button
+              onClick={() => {
+                if (selectedIds.size !== 1) return;
+                const id = Array.from(selectedIds)[0];
+                const src = products.find(p => p.id === id);
+                if (!src) return;
+                // 복사 — id/code/barcode 제거하고 이름 뒤 "(복사)" 접미
+                // image_url 은 유지(공유 OK), name 만 충돌 회피용 접미
+                const clone: any = {
+                  ...src,
+                  id: undefined,
+                  code: '',
+                  barcode: null,
+                  name: `${src.name} (복사)`,
+                };
+                setEditProduct(clone);
+                setShowModal(true);
+              }}
+              disabled={selectedIds.size !== 1}
+              title={selectedIds.size === 1 ? '선택한 제품의 모든 정보를 새 제품으로 복사' : '복사는 한 건만 선택해주세요'}
+              className="px-3 py-1.5 text-sm rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40"
+            >
+              📋 제품 복사 {selectedIds.size === 1 ? '' : `(1건만 가능)`}
+            </button>
+            <button
               onClick={handleBulkDelete}
               disabled={bulkDeleting}
               className="px-3 py-1.5 text-sm rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"

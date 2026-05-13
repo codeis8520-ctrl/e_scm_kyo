@@ -26,13 +26,20 @@ export async function createProduct(formData: FormData) {
   const supabase = await createClient();
 
   const name = formData.get('name') as string;
-  const nameCode = name
-    .replace(/[^a-zA-Z0-9가-힣]/g, '')
-    .substring(0, 4)
-    .toUpperCase()
-    .padEnd(4, 'X');
-  const randomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-  const code = `KYO-${nameCode}-${randomCode}`;
+  // 제품코드 — 사용자가 입력했으면 그 값(uppercase), 비웠으면 자동 생성
+  const rawCode = ((formData.get('code') as string) || '').trim().toUpperCase();
+  let code: string;
+  if (rawCode) {
+    code = rawCode;
+  } else {
+    const nameCode = name
+      .replace(/[^a-zA-Z0-9가-힣]/g, '')
+      .substring(0, 4)
+      .toUpperCase()
+      .padEnd(4, 'X');
+    const randomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    code = `KYO-${nameCode}-${randomCode}`;
+  }
 
   const rawCategoryId = formData.get('category_id') as string;
   const rawBarcode = formData.get('barcode') as string;

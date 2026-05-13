@@ -547,18 +547,23 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
             </div>
           </div>
 
-          {product?.id && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700">제품코드</label>
-              <input
-                type="text"
-                value={formData.code}
-                onChange={(e) => setFormData({ ...formData, code: e.target.value.toUpperCase() })}
-                className="mt-1 input font-mono"
-              />
-              <p className="mt-1 text-xs text-slate-400">고유 코드 — 중복 불가</p>
-            </div>
-          )}
+          <div>
+            <label className="block text-sm font-medium text-gray-700">
+              제품코드 {!product?.id && <span className="text-xs text-slate-400 font-normal">(선택 — 비워두면 자동 생성)</span>}
+            </label>
+            <input
+              type="text"
+              value={formData.code}
+              onChange={(e) => setFormData({ ...formData, code: e.target.value.toUpperCase() })}
+              placeholder={product?.id ? undefined : "예: FSM10 (비워두면 KYO-XXXX-XXXXXX 형식 자동 생성)"}
+              className="mt-1 input font-mono"
+            />
+            <p className="mt-1 text-xs text-slate-400">
+              {product?.id
+                ? '고유 코드 — 중복 불가'
+                : '직접 지정하면 중복 시 등록 거부됩니다. 자동 생성을 원하면 비워두세요.'}
+            </p>
+          </div>
 
           <div>
             <label className="block text-sm font-medium text-gray-700">카테고리</label>
