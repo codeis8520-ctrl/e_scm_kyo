@@ -179,78 +179,58 @@ async function applyBomCostForMaterialConsumers(db: any, materialId: string): Pr
   }
 }
 
-// BOM 전체 저장 (완제품 하나의 BOM 일괄 upsert + 제거)
+// BOM 전체 저장 (완제품 하나의 BOM 일괄 wipe + bulk insert)
+//
+// 이전엔 lines 배열을 순차 for 루프로 row 단위 update/insert (round trip × N).
+// BOM 10행이면 직렬 supabase 호출 10번 → 2초+. 마이그 폴백 재시도 시 최대 20번.
+// 단순 lookup table 이라 "전체 wipe → bulk insert" 트랜잭션 의미 동일.
+// 새 패턴: 1 RT (delete) + 1 RT (bulk insert) + 1 RT (cost) = ≈600ms.
 export async function saveBom(productId: string, lines: BomLine[]) {
   if (!productId) return { error: '완제품이 지정되지 않았습니다.' };
   const supabase = await createClient();
   const db = supabase as any;
 
-  // 기존 행 조회 → 삭제 대상 추출
-  const { data: existing, error: existErr } = await db
-    .from('product_bom')
-    .select('id, material_id')
-    .eq('product_id', productId);
-
-  if (existErr) {
-    console.error('[saveBom] existing query failed:', existErr);
-    return { error: `기존 BOM 조회 실패: ${existErr.message}` };
+  // 1) 전체 wipe — 기존 행 모두 삭제
+  const { error: delErr } = await db.from('product_bom').delete().eq('product_id', productId);
+  if (delErr) {
+    console.error('[saveBom] wipe failed:', delErr);
+    return { error: `기존 BOM 삭제 실패: ${delErr.message}` };
   }
 
-  const existingIds: string[] = (existing || []).map((r: any) => r.id);
-  const keepIds = new Set(lines.filter(l => l.id).map(l => l.id!));
-  const toDelete = existingIds.filter(id => !keepIds.has(id));
+  // 2) 유효 라인만 추출 (material_id 있고 quantity > 0)
+  const validLines = lines.filter(l => l.material_id && l.quantity > 0);
 
-  if (toDelete.length > 0) {
-    const { error: delErr } = await db.from('product_bom').delete().in('id', toDelete);
-    if (delErr) {
-      console.error('[saveBom] delete failed:', delErr);
-      return { error: `기존 행 삭제 실패: ${delErr.message}` };
+  if (validLines.length > 0) {
+    // enhanced 행 (loss_rate/notes/sort_order 포함)
+    const enhancedRows = validLines.map((l, i) => ({
+      product_id: productId,
+      material_id: l.material_id,
+      quantity: l.quantity,
+      loss_rate: l.loss_rate ?? 0,
+      notes: l.notes ?? null,
+      sort_order: l.sort_order ?? i,
+    }));
+
+    // 3) bulk insert — 1 round trip
+    let { error } = await db.from('product_bom').insert(enhancedRows);
+
+    // 마이그 미적용 환경 폴백 — loss_rate/notes/sort_order 컬럼 없으면 minimal 재시도
+    if (error && isMissingColumnError(error)) {
+      const minimalRows = validLines.map(l => ({
+        product_id: productId,
+        material_id: l.material_id,
+        quantity: l.quantity,
+      }));
+      const retry = await db.from('product_bom').insert(minimalRows);
+      error = retry.error;
+    }
+    if (error) {
+      console.error('[saveBom] bulk insert failed:', error);
+      return { error: `행 추가 실패: ${error.message}` };
     }
   }
 
-  // 한 번은 enhanced(loss_rate/notes/sort_order 포함), 실패 시 minimal로 재시도
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.material_id || line.quantity <= 0) continue;
-
-    const enhanced: any = {
-      product_id: productId,
-      material_id: line.material_id,
-      quantity: line.quantity,
-      loss_rate: line.loss_rate ?? 0,
-      notes: line.notes ?? null,
-      sort_order: line.sort_order ?? i,
-    };
-    const minimal: any = {
-      product_id: productId,
-      material_id: line.material_id,
-      quantity: line.quantity,
-    };
-
-    if (line.id) {
-      let { error } = await db.from('product_bom').update(enhanced).eq('id', line.id);
-      if (error && isMissingColumnError(error)) {
-        const retry = await db.from('product_bom').update(minimal).eq('id', line.id);
-        error = retry.error;
-      }
-      if (error) {
-        console.error('[saveBom] update failed:', error);
-        return { error: `행 업데이트 실패: ${error.message}` };
-      }
-    } else {
-      let { error } = await db.from('product_bom').insert(enhanced);
-      if (error && isMissingColumnError(error)) {
-        const retry = await db.from('product_bom').insert(minimal);
-        error = retry.error;
-      }
-      if (error) {
-        console.error('[saveBom] insert failed:', error);
-        return { error: `행 추가 실패: ${error.message}` };
-      }
-    }
-  }
-
-  // BOM 변경 → cost_source='BOM'인 완제품은 자동 원가 재산정
+  // 4) BOM 변경 → cost_source='BOM'인 완제품은 자동 원가 재산정
   try {
     await applyBomCostIfAuto(db, productId);
   } catch (err) {
