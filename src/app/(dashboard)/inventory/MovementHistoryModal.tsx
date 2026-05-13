@@ -161,8 +161,19 @@ export default function MovementHistoryModal({ product, branches, initialBranchI
                 ) : items.map(m => {
                   const typeDef = MOVEMENT_TYPE_LABEL[m.movement_type] || { label: m.movement_type, cls: 'bg-slate-100 text-slate-600' };
                   const refLabel = m.reference_type ? (REFERENCE_LABEL[m.reference_type] || m.reference_type) : '-';
-                  const qty = Number(m.quantity);
-                  const positive = qty > 0;
+                  const rawQty = Number(m.quantity);
+                  // inventory_movements.quantity 는 절대값으로 저장됨. movement_type 으로 방향 결정.
+                  //   IN / TRANSFER 도착 / 복원 → +
+                  //   OUT / PRODUCTION (BOM·세트 분해 차감) → -
+                  //   ADJUST → 원본 부호 유지 (음수도 가능)
+                  const OUT_TYPES = new Set(['OUT', 'PRODUCTION']);
+                  const signedQty = OUT_TYPES.has(m.movement_type)
+                    ? -Math.abs(rawQty)
+                    : m.movement_type === 'ADJUST'
+                      ? rawQty
+                      : Math.abs(rawQty);
+                  const isPositive = signedQty > 0;
+                  const isNegative = signedQty < 0;
                   return (
                     <tr key={m.id}>
                       <td className="text-xs text-slate-500 whitespace-nowrap">{fmtDateTime(m.created_at)}</td>
@@ -172,8 +183,8 @@ export default function MovementHistoryModal({ product, branches, initialBranchI
                           {typeDef.label}
                         </span>
                       </td>
-                      <td className={`text-right font-semibold tabular-nums ${positive ? 'text-emerald-700' : qty < 0 ? 'text-red-600' : 'text-slate-500'}`}>
-                        {positive ? '+' : ''}{qty.toLocaleString()}
+                      <td className={`text-right font-semibold tabular-nums ${isPositive ? 'text-emerald-700' : isNegative ? 'text-red-600' : 'text-slate-500'}`}>
+                        {isPositive ? '+' : ''}{signedQty.toLocaleString()}
                       </td>
                       <td className="text-sm text-slate-600">{refLabel}</td>
                       <td className="text-xs text-slate-500">{m.memo || '-'}</td>
