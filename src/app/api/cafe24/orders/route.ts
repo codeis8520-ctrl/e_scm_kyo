@@ -311,10 +311,9 @@ export async function GET(request: NextRequest) {
       })
     );
 
-    // 매장 발송지(출고지) 동시 조회 — 모든 주문에 공통 적용
-    const default_sender = await fetchDefaultSender(base, headers);
-
-    return NextResponse.json({ orders, default_sender, is_demo: false });
+    // 매장 발송지(출고지)는 이제 우리 시스템(branches.sender_*)에서 관리하므로
+    // Cafe24 측에서 가져올 필요 없음. 응답에는 null 유지(클라이언트 호환).
+    return NextResponse.json({ orders, default_sender: null, is_demo: false });
   } catch (err: unknown) {
     console.error('Cafe24 Orders API 오류:', err);
     return NextResponse.json({

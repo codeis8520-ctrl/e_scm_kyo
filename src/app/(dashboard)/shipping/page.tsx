@@ -723,7 +723,8 @@ export default function ShippingPage() {
     setAddError('');
     try {
       const toAdd = cafe24Orders.filter(o => selectedOrders.has(o.cafe24_order_id));
-      // 매장 발송지(출고지) — 카페24 API에서 가져온 값. 없으면 빈 문자열로 폴백.
+      // 발송지(보내는분)는 행 생성 시 빈 채로 두고, CJ 엑셀 다운로드 모달에서
+      // 지점(branches.sender_*) 선택해 일괄 적용. cafe24DefaultSender 는 더 이상 사용 안 함.
       const sender = cafe24DefaultSender;
       for (const order of toAdd) {
         const result = await createShipment({
@@ -990,36 +991,7 @@ export default function ShippingPage() {
               </div>
             )}
 
-            {/* 발송지(출고지) 배너 — 카페24 매장 설정에서 가져온 값. 추가 시 모든 주문에 동일 적용 */}
-            {cafe24DefaultSender && (
-              cafe24DefaultSender.name ? (
-                <div className="mt-3 px-4 py-3 rounded-lg bg-emerald-50 border border-emerald-200">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="text-sm text-emerald-900 leading-relaxed">
-                      <span className="font-semibold">📦 발송지: {cafe24DefaultSender.name}</span>
-                      <span className="mx-2 text-emerald-400">|</span>
-                      <span>{cafe24DefaultSender.phone || '전화 미등록'}</span>
-                      <div className="text-xs text-emerald-700 mt-0.5">
-                        {cafe24DefaultSender.zipcode && <span className="mr-1">({cafe24DefaultSender.zipcode})</span>}
-                        {cafe24DefaultSender.address}
-                        {cafe24DefaultSender.address_detail && <span> {cafe24DefaultSender.address_detail}</span>}
-                      </div>
-                    </div>
-                    <span className="text-[11px] text-emerald-600 bg-emerald-100 px-2 py-0.5 rounded">
-                      {cafe24DefaultSender.source === 'shippingorigins' ? '카페24 출고지' : '매장 사업자정보'}
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-3 px-4 py-3 rounded-lg bg-rose-50 border border-rose-200 text-sm text-rose-800">
-                  ⚠️ <b>발송지 정보를 가져오지 못했습니다.</b> 대한통운 임포트 시 보내는분 주소가 비어 있게 됩니다.
-                  {cafe24DefaultSender.warning && <div className="text-xs mt-1">{cafe24DefaultSender.warning}</div>}
-                  <a href="/api/cafe24/auth" className="inline-block mt-2 px-3 py-1 rounded bg-rose-600 text-white text-xs font-medium hover:bg-rose-700">
-                    카페24 재인증
-                  </a>
-                </div>
-              )
-            )}
+            {/* 발송지 배너 제거 — 출고지는 우리 시스템(branches.sender_*)에서 관리. 대한통운 엑셀 다운로드 모달에서 지점 선택. */}
           </div>
 
           {cafe24Orders.length > 0 && (
