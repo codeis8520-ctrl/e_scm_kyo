@@ -321,8 +321,9 @@ export default function ShippingPage() {
     if (senderSearch.length < 1) { setSenderResults([]); setShowSenderDrop(false); return; }
     const supabase = createClient();
     const q = senderSearch.toLowerCase();
+    const s = q.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     supabase.from('customers').select('id,name,phone,address').eq('is_active', true)
-      .or(`name.ilike.%${q}%,phone.ilike.%${q}%`)
+      .or(`name.ilike."%${s}%",phone.ilike."%${s}%"`)
       .limit(8)
       .then(({ data }) => {
         setSenderResults(data || []);
@@ -347,8 +348,9 @@ export default function ShippingPage() {
     if (recipientSearch.length < 1) { setRecipientResults([]); setShowRecipientDrop(false); return; }
     const supabase = createClient();
     const q = recipientSearch.toLowerCase();
+    const s = q.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     supabase.from('customers').select('id,name,phone,address').eq('is_active', true)
-      .or(`name.ilike.%${q}%,phone.ilike.%${q}%`)
+      .or(`name.ilike."%${s}%",phone.ilike."%${s}%"`)
       .limit(8)
       .then(({ data }) => {
         setRecipientResults(data || []);

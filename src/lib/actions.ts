@@ -14,9 +14,10 @@ export async function getProducts(search?: string) {
   let query = supabase.from('products').select('*, category:categories(*)').order('created_at', { ascending: false });
   
   if (search) {
-    query = query.or(`name.ilike.%${search}%,code.ilike.%${search}%`);
+    const s = search.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    query = query.or(`name.ilike."%${s}%",code.ilike."%${s}%"`);
   }
-  
+
   const { data } = await query;
   return { data: data || [] };
 }
@@ -674,9 +675,11 @@ export async function getCustomers(search?: string, grade?: string) {
   let query = supabase.from('customers').select('*, primary_branch:branches(*)').order('created_at', { ascending: false });
   
   if (search) {
-    query = query.or(`name.ilike.%${search}%,phone.ilike.%${search}%`);
+    const s = search.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    query = query.or(`name.ilike."%${s}%",phone.ilike."%${s}%"`);
   }
-  
+
+
   if (grade) {
     query = query.eq('grade', grade);
   }
@@ -901,9 +904,11 @@ export async function getInventory(branchId?: string, search?: string) {
   }
   
   if (search) {
-    query = query.or(`product.name.ilike.%${search}%,product.code.ilike.%${search}%`);
+    const s = search.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    query = query.or(`product.name.ilike."%${s}%",product.code.ilike."%${s}%"`);
   }
-  
+
+
   const { data } = await query;
   return { data: data || [] };
 }

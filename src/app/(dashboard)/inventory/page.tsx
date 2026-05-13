@@ -215,7 +215,11 @@ export default function InventoryPage() {
       pq = pq.in('category_id', Array.from(allowedCategoryIds));
     }
     if (q) {
-      pq = pq.or(`name.ilike.%${q}%,code.ilike.%${q}%,barcode.ilike.%${q}%`);
+      // PostgREST .or() 는 () 와 , 를 그룹/구분자로 파싱. 검색어에 그런 문자가 있으면
+      // 값을 큰따옴표로 감싸야 함. 큰따옴표 자체는 \\ 로 escape.
+      //   예: 검색어 "경옥채세트(쌍+생+오)" → name.ilike."%경옥채세트(쌍+생+오)%"
+      const safe = q.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      pq = pq.or(`name.ilike."%${safe}%",code.ilike."%${safe}%",barcode.ilike."%${safe}%"`);
     }
     const { data: matchedProducts, error: pErr } = await (pq as any).range(0, 999);
     if (pErr) {

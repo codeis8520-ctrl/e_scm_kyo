@@ -301,10 +301,11 @@ export async function searchSalesOrdersForRefund(params: {
   // 고객명/전화 검색은 customer 조인 필터가 까다로워 customer_id로 1차 필터
   if (params.customerQuery && params.customerQuery.trim()) {
     const cq = params.customerQuery.trim();
+    const s = cq.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     const { data: cust } = await db
       .from('customers')
       .select('id')
-      .or(`name.ilike.%${cq}%,phone.ilike.%${cq}%`)
+      .or(`name.ilike."%${s}%",phone.ilike."%${s}%"`)
       .limit(50);
     const ids = (cust || []).map((c: any) => c.id);
     if (ids.length === 0) return { data: [] };

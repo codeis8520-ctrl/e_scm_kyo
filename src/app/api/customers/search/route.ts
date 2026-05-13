@@ -156,16 +156,20 @@ async function fallbackSearch(
     }
   }
 
+  // PostgREST .or() 내부 ilike 값은 (), , " 를 escape 위해 큰따옴표로 감싸야 안전.
+  const sQ = q.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
   const [directResults, productCustomerIds] = await Promise.all([
     (async () => {
       const orFilters = [
-        `name.ilike.%${q}%`,
-        `email.ilike.%${q}%`,
-        `address.ilike.%${q}%`,
-        `phone.ilike.%${q}%`,
+        `name.ilike."%${sQ}%"`,
+        `email.ilike."%${sQ}%"`,
+        `address.ilike."%${sQ}%"`,
+        `phone.ilike."%${sQ}%"`,
       ];
       for (const p of phonePatterns) {
-        orFilters.push(`phone.ilike.%${p}%`);
+        const sp = p.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        orFilters.push(`phone.ilike."%${sp}%"`);
       }
 
       let query = supabase
