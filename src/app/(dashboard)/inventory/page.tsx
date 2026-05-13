@@ -18,13 +18,7 @@ interface Inventory {
   quantity: number;
   safety_stock: number;
   branch?: { id: string; name: string; is_headquarters?: boolean };
-  product?: {
-    id: string; name: string; code: string; barcode?: string;
-    product_type?: ProductType | null; category_id?: string | null;
-    track_inventory?: boolean; is_phantom?: boolean;
-    unit?: string | null; unit_size?: number | null; unit_label?: string | null;
-  };
-  _is_synth_phantom?: boolean;   // Phantom 가용량 합성 행 표시용
+  product?: { id: string; name: string; code: string; barcode?: string; product_type?: ProductType | null; category_id?: string | null; track_inventory?: boolean; is_phantom?: boolean };
 }
 
 interface Branch {
@@ -50,10 +44,6 @@ interface ProductRow {
   categoryId: string | null;
   trackInventory: boolean;
   isPhantom: boolean;
-  unit?: string | null;
-  unitSize?: number | null;
-  unitLabel?: string | null;
-  isSynthPhantom?: boolean;       // 합성 phantom 행 (가용량)
   byBranch: Record<string, Inventory>;
 }
 
@@ -217,16 +207,11 @@ export default function InventoryPage() {
     const supabase = createClient();
     const t0 = performance.now();
 
-    // 1) 매칭 product 추출 — search/typeFilter/categoryFilter 적용
-    //    정책:
-    //      · 일반 제품: inventories 직접 페치
-    //      · Phantom + unit_size 설정: BOM 기반 가용량(=통 단위)을 합성 행으로 추가
-    //      · Phantom + unit_size 미설정: 기존 정책대로 제외 (운영자가 단위 환산 명시 안 한 세트)
+    // 1) 매칭 product_id 추출 — search/typeFilter/categoryFilter 적용
+    //    정책: Phantom(세트상품)은 본인 재고 관리 대상 아님 → 재고 검색에서 제외.
+    //    구성품(BOM 멤버)은 일반 제품이라 정상 노출됨.
     const q = debouncedSearch.trim();
-    let pq = supabase
-      .from('products')
-      .select('id, name, code, barcode, product_type, category_id, track_inventory, is_phantom, unit, unit_size, unit_label')
-      .eq('is_active', true);
+    let pq = supabase.from('products').select('id, is_phantom').eq('is_active', true);
     if (typeFilter) pq = pq.eq('product_type', typeFilter);
     if (categoryFilter && allowedCategoryIds && allowedCategoryIds.size > 0) {
       pq = pq.in('category_id', Array.from(allowedCategoryIds));
@@ -235,166 +220,44 @@ export default function InventoryPage() {
       const safe = q.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       pq = pq.or(`name.ilike."%${safe}%",code.ilike."%${safe}%",barcode.ilike."%${safe}%"`);
     }
-    let { data: matchedProducts, error: pErr } = await (pq as any).range(0, 999);
-    // 마이그 미적용 환경 폴백
-    if (pErr) {
-      let fallback = supabase.from('products')
-        .select('id, name, code, barcode, product_type, category_id, is_phantom')
-        .eq('is_active', true);
-      if (typeFilter) fallback = fallback.eq('product_type', typeFilter);
-      if (categoryFilter && allowedCategoryIds && allowedCategoryIds.size > 0) {
-        fallback = fallback.in('category_id', Array.from(allowedCategoryIds));
-      }
-      if (q) {
-        const safe = q.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-        fallback = fallback.or(`name.ilike."%${safe}%",code.ilike."%${safe}%",barcode.ilike."%${safe}%"`);
-      }
-      const r = await (fallback as any).range(0, 999);
-      matchedProducts = r.data; pErr = r.error;
-    }
+    const { data: matchedProducts, error: pErr } = await (pq as any).range(0, 999);
     if (pErr) {
       console.error('[inventory] product 매칭 실패', pErr);
       setLoading(false);
       return;
     }
-
-    const allMatched = (matchedProducts || []) as any[];
-    // 일반 제품 (phantom 아님)
-    const normalProducts = allMatched.filter(p => p.is_phantom !== true);
-    // Phantom + unit_size 설정된 것만 (통 단위 가용량 표시 대상)
-    const packPhantoms = allMatched.filter(p => p.is_phantom === true && p.unit_size && p.unit_size > 1);
-
-    const normalIds = normalProducts.map(p => p.id);
-
-    if (normalIds.length === 0 && packPhantoms.length === 0) {
+    const productIds = ((matchedProducts || []) as any[])
+      .filter((p: any) => p.is_phantom !== true)
+      .map((p: any) => p.id);
+    if (productIds.length === 0) {
       setInventories([]);
       setLoading(false);
       return;
     }
 
-    // 2) 일반 inventories 페치
+    // 2) 매칭 product_id 에 해당하는 inventories 만 페치 (지점 필터도 같이)
     const fetchSelect = async (selectCols: string) => {
-      let invq = supabase.from('inventories').select(selectCols).in('product_id', normalIds);
+      let invq = supabase.from('inventories').select(selectCols).in('product_id', productIds);
       if (flatBranchFilter) invq = (invq as any).eq('branch_id', flatBranchFilter);
       return (invq as any).order('product_id').range(0, 9999);
     };
 
     const trySelects = [
-      '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory, is_phantom, unit, unit_size, unit_label)',
       '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory, is_phantom)',
       '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory)',
       '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id)',
       '*, branch:branches(id, name), product:products(id, name, code, barcode)',
     ];
 
-    let normalRows: any[] = [];
-    if (normalIds.length > 0) {
-      for (const sel of trySelects) {
-        const res: any = await fetchSelect(sel);
-        if (!res.error) { normalRows = res.data || []; break; }
-        console.warn('[inventory] select 단계 폴백:', res.error);
-      }
+    let data: any[] = [];
+    for (const sel of trySelects) {
+      const res: any = await fetchSelect(sel);
+      if (!res.error) { data = res.data || []; break; }
+      console.warn('[inventory] select 단계 폴백:', res.error);
     }
-
-    // 3) Phantom + unit_size 가용량 합성 행 — BOM 기반 계산
-    let phantomRows: any[] = [];
-    if (packPhantoms.length > 0) {
-      try {
-        phantomRows = await buildPhantomAvailabilityRows(supabase, packPhantoms, flatBranchFilter);
-      } catch (err) {
-        console.warn('[inventory] phantom 가용량 계산 스킵:', err);
-      }
-    }
-
-    const merged = [...normalRows, ...phantomRows];
-    console.log(`[inventory] 일반 ${normalRows.length}행 + 세트 가용 ${phantomRows.length}행 — ${(performance.now() - t0).toFixed(0)}ms`);
-    setInventories(merged);
+    console.log(`[inventory] 제품 ${productIds.length} 매칭 → ${data.length}행 — ${(performance.now() - t0).toFixed(0)}ms`);
+    setInventories(data);
     setLoading(false);
-  };
-
-  // Phantom(세트상품) 가용량 합성 행 — unit_size 설정된 phantom 만 처리.
-  // 가용량 = floor(min(구성품_i 재고 ÷ BOM 수량_i)) — 단위는 그대로 base.
-  // 표시는 base 수량 그대로 (UI 에서 unit_size 환산해 "가용 N통" 표시).
-  const buildPhantomAvailabilityRows = async (
-    sb: any,
-    phantoms: any[],
-    branchFilter: string,
-  ): Promise<any[]> => {
-    const phantomIds = phantoms.map(p => p.id);
-
-    // BOM 페치 — 모든 phantom 의 구성품
-    const { data: boms } = await sb
-      .from('product_bom')
-      .select('product_id, material_id, quantity')
-      .in('product_id', phantomIds);
-    if (!boms || boms.length === 0) return [];
-
-    // 구성품 id 모음
-    const materialIds = Array.from(new Set((boms as any[]).map(b => b.material_id)));
-
-    // 활성 지점 모두 페치 (가용량 행을 지점별로 만들기 위해)
-    let branchQ = sb.from('branches').select('id, name, is_headquarters').eq('is_active', true);
-    if (branchFilter) branchQ = branchQ.eq('id', branchFilter);
-    const { data: branchesData } = await branchQ.order('name');
-    const activeBranches = (branchesData || []) as any[];
-    if (activeBranches.length === 0) return [];
-
-    // 구성품 재고 페치 (가용 지점들)
-    let invQ = sb.from('inventories').select('branch_id, product_id, quantity').in('product_id', materialIds);
-    if (branchFilter) invQ = invQ.eq('branch_id', branchFilter);
-    const { data: invs } = await invQ.range(0, 99999);
-    // 빠른 조회 맵: branch_id__product_id → quantity
-    const invMap = new Map<string, number>();
-    for (const i of (invs || []) as any[]) {
-      invMap.set(`${i.branch_id}__${i.product_id}`, Number(i.quantity) || 0);
-    }
-
-    // phantom × branch 별 가용량 계산
-    const phantomMap = new Map(phantoms.map(p => [p.id, p]));
-    const bomByPhantom = new Map<string, { material_id: string; quantity: number }[]>();
-    for (const b of boms as any[]) {
-      const arr = bomByPhantom.get(b.product_id) || [];
-      arr.push({ material_id: b.material_id, quantity: Number(b.quantity) || 0 });
-      bomByPhantom.set(b.product_id, arr);
-    }
-
-    const rows: any[] = [];
-    for (const phantom of phantoms) {
-      const bom = bomByPhantom.get(phantom.id) || [];
-      if (bom.length === 0) continue;
-      for (const branch of activeBranches) {
-        // 구성품별 가용 = 구성품 재고 ÷ BOM 수량. 최소값이 phantom 가용.
-        // 가용량은 base 단위 (= phantom 의 unit_size 와 같은 단위. 예: 30환 단위)
-        let minAvailable = Infinity;
-        for (const b of bom) {
-          const stock = invMap.get(`${branch.id}__${b.material_id}`) ?? 0;
-          if (b.quantity <= 0) continue;
-          const a = Math.floor(stock / b.quantity);
-          if (a < minAvailable) minAvailable = a;
-        }
-        if (!Number.isFinite(minAvailable)) minAvailable = 0;
-        // 가용량을 phantom 의 base 단위(예: 30환)로 표시하기 위해 unit_size 곱셈
-        // 단, UI 가 unit_size 가 있으면 자동으로 "N통" 으로 환산 표시하므로 그대로 사용.
-        // 합성 행 quantity = "환 단위 환산값"(가용 통 수 × unit_size)
-        const synthQty = minAvailable * (phantom.unit_size || 1);
-        rows.push({
-          id: `synth-phantom-${phantom.id}-${branch.id}`,
-          branch_id: branch.id,
-          product_id: phantom.id,
-          quantity: synthQty,
-          safety_stock: 0,
-          branch: { id: branch.id, name: branch.name, is_headquarters: branch.is_headquarters },
-          product: {
-            id: phantom.id, name: phantom.name, code: phantom.code, barcode: phantom.barcode,
-            product_type: phantom.product_type, category_id: phantom.category_id,
-            track_inventory: false, is_phantom: true,
-            unit: phantom.unit, unit_size: phantom.unit_size, unit_label: phantom.unit_label,
-          },
-          _is_synth_phantom: true,  // UI 측 분기용 마커
-        });
-      }
-    }
-    return rows;
   };
 
   const handleAdjust = (item: Inventory) => {
@@ -449,10 +312,6 @@ export default function InventoryPage() {
           categoryId: inv.product.category_id ?? null,
           trackInventory: inv.product.track_inventory !== false,
           isPhantom: inv.product.is_phantom === true,
-          unit: inv.product.unit ?? null,
-          unitSize: inv.product.unit_size ?? null,
-          unitLabel: inv.product.unit_label ?? null,
-          isSynthPhantom: inv._is_synth_phantom === true,
           byBranch: {},
         });
       }
@@ -745,11 +604,6 @@ export default function InventoryPage() {
                           세트
                         </span>
                       )}
-                      {row.isSynthPhantom && (
-                        <span className="ml-2 inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-700" title="세트상품 가용량 — BOM 구성품 재고 기반으로 계산. 직접 입출고 X.">
-                          🧩 세트 가용
-                        </span>
-                      )}
                       {!row.trackInventory && !row.isPhantom && (
                         <span className="ml-2 inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700" title="재고 추적이 해제된 제품. 제품 편집에서 활성화 가능.">
                           추적 해제
@@ -773,54 +627,32 @@ export default function InventoryPage() {
                       };
                       const isLow = effective.quantity < effective.safety_stock;
                       const isMissing = !inv;
-                      const isSynth = row.isSynthPhantom === true;
                       // 원자재·부자재는 본사에서만 입출고·조정 가능. 본사 지정이 없으면 제한 생략.
                       const materialBlocked = isMaterialType(row.productType) && !!hqBranchId && b.id !== hqBranchId;
-                      // 단위 환산 — unit_size 가 있으면 "통" 단위로 변환 표시
-                      const us = row.unitSize ?? 0;
-                      const showPack = us > 1;
-                      const packQty = showPack ? Math.floor(effective.quantity / us) : 0;
-                      const remainder = showPack ? effective.quantity - packQty * us : 0;
-                      const packLabel = row.unitLabel || '통';
                       return (
                         <td key={b.id} className="text-center p-0">
                           <button
-                            onClick={() => { if (!materialBlocked && !isSynth) handleAdjust(effective); }}
-                            disabled={materialBlocked || isSynth}
+                            onClick={() => { if (!materialBlocked) handleAdjust(effective); }}
+                            disabled={materialBlocked}
                             title={
-                              isSynth
-                                ? '세트상품 가용량 — 구성품 재고 변경으로만 조정 가능'
-                                : materialBlocked
-                                  ? '원자재·부자재는 본사에서만 입출고·조정 가능'
-                                  : isMissing ? '재고 없음 · 클릭하여 입고' : `입출고 · 안전재고 ${effective.safety_stock}`
+                              materialBlocked
+                                ? '원자재·부자재는 본사에서만 입출고·조정 가능'
+                                : isMissing ? '재고 없음 · 클릭하여 입고' : `입출고 · 안전재고 ${effective.safety_stock}`
                             }
                             className={`w-full h-full px-3 py-2 font-semibold transition-colors rounded ${
-                              isSynth
-                                ? 'text-purple-700 bg-purple-50/40 cursor-not-allowed'
-                                : materialBlocked
-                                  ? 'text-slate-300 cursor-not-allowed'
-                                  : `hover:ring-2 hover:ring-blue-300 hover:ring-inset ${
-                                      isMissing
-                                        ? 'text-slate-300 hover:bg-blue-50 hover:text-slate-600'
-                                        : isLow
-                                          ? 'text-red-600 bg-red-50 hover:bg-red-100'
-                                          : 'text-slate-800 hover:bg-blue-50'
-                                    }`
+                              materialBlocked
+                                ? 'text-slate-300 cursor-not-allowed'
+                                : `hover:ring-2 hover:ring-blue-300 hover:ring-inset ${
+                                    isMissing
+                                      ? 'text-slate-300 hover:bg-blue-50 hover:text-slate-600'
+                                      : isLow
+                                        ? 'text-red-600 bg-red-50 hover:bg-red-100'
+                                        : 'text-slate-800 hover:bg-blue-50'
+                                  }`
                             }`}
                           >
-                            {isSynth
-                              ? <span>가용 {packQty}{packLabel}</span>
-                              : (
-                                <>
-                                  {effective.quantity}
-                                  {showPack && effective.quantity > 0 && (
-                                    <span className="ml-1 text-[10px] font-normal text-slate-400">
-                                      ({packQty}{packLabel}{remainder > 0 ? `+${remainder}` : ''})
-                                    </span>
-                                  )}
-                                </>
-                              )}
-                            {!isSynth && isLow && !isMissing && !materialBlocked && <span className="ml-1 text-xs font-normal">↓{effective.safety_stock}</span>}
+                            {effective.quantity}
+                            {isLow && !isMissing && !materialBlocked && <span className="ml-1 text-xs font-normal">↓{effective.safety_stock}</span>}
                           </button>
                         </td>
                       );

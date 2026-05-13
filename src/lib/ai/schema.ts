@@ -4,8 +4,7 @@ export const DB_SCHEMA = `
 --- 지점·제품·재고 ---
 branches: id, name, code, channel(STORE/DEPT_STORE/ONLINE/EVENT), address, phone, is_active, is_headquarters, sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail
   ※ sender_*: 택배 보내는분 정보 (대한통운 엑셀 임포트용). 미입력 시 sender_name←"경옥채 "+name, sender_phone←phone, sender_address←address 로 폴백.
-products: id, name, code, barcode, unit, unit_size, unit_label, price(판매가), cost(원가), cost_source(MANUAL/BOM), product_type(FINISHED/RAW/SUB/SERVICE), track_inventory(bool), is_phantom(bool), is_active
-  ※ unit_size/unit_label (마이그 065): 입고/유통 단위 환산. 예: 침향환은 30환 1통 단위로 입고되니 unit='환', unit_size=30, unit_label='통'. 입출고 UI에 "통 단위" 토글 → 자동 ×30 환산해 base 단위로 저장. 소수점 누적 오차 방지.
+products: id, name, code, barcode, unit, price(판매가), cost(원가), cost_source(MANUAL/BOM), product_type(FINISHED/RAW/SUB/SERVICE), track_inventory(bool), is_phantom(bool), is_active
   ※ product_type: FINISHED=완제품(POS 판매), RAW=원자재, SUB=부자재, SERVICE=무형상품(컨설팅·교육 등 POS 판매 가능, 재고 X)
   ※ track_inventory(마이그 059): false면 inventories/inventory_movements 미사용. SERVICE는 기본 false.
     POS·B2B·생산에서 재고 차감 분기에서 skip 대상.

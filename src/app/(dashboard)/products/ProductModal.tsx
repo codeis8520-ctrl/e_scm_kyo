@@ -29,9 +29,6 @@ interface Product {
   image_url?: string | null;
   spec?: Record<string, string> | null;
   description?: string | null;
-  // 마이그 065 — 입고/유통 단위 환산
-  unit_size?: number | null;     // 입고 1단위 = N base unit. 예: 30
-  unit_label?: string | null;    // 입고 단위 라벨. 예: "통"
 }
 
 const TYPE_META: Record<ProductType, { label: string; hint: string; color: string }> = {
@@ -67,8 +64,6 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
       ?? ((product?.product_type as ProductType) === 'SERVICE' ? false : true),
     is_phantom: product?.is_phantom ?? false,
     image_url: product?.image_url || null,
-    unit_size: product?.unit_size ?? null,
-    unit_label: product?.unit_label ?? null,
   });
   const [bomComputedCost, setBomComputedCost] = useState<number | null>(null);
   const [bomLinesCount, setBomLinesCount] = useState(0);
@@ -714,47 +709,13 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700">재고 단위 (base unit)</label>
+              <label className="block text-sm font-medium text-gray-700">단위</label>
               <input
                 type="text"
                 value={formData.unit}
                 onChange={(e) => setFormData({ ...formData, unit: e.target.value })}
-                placeholder="예: 환, 포, 개"
                 className="mt-1 input"
               />
-              <p className="mt-1 text-[11px] text-slate-400">시스템이 차감·추적하는 최소 단위</p>
-              {/* 입고/유통 단위 환산 (예: 30환 1통) */}
-              {(formData.product_type === 'FINISHED' || formData.product_type === 'RAW' || formData.product_type === 'SUB') && (
-                <div className="mt-2 p-2 rounded-md bg-amber-50 border border-amber-200 space-y-1.5">
-                  <p className="text-[11px] text-amber-700 font-medium">📦 입고/유통 단위 환산 (선택)</p>
-                  <div className="flex items-center gap-1.5 text-xs">
-                    <span className="text-slate-600">1</span>
-                    <input
-                      type="text"
-                      value={formData.unit_label ?? ''}
-                      onChange={e => setFormData({ ...formData, unit_label: e.target.value || null })}
-                      placeholder="통"
-                      className="input text-xs py-1 w-16"
-                    />
-                    <span className="text-slate-600">=</span>
-                    <input
-                      type="number"
-                      min={1}
-                      value={formData.unit_size ?? ''}
-                      onChange={e => {
-                        const v = parseInt(e.target.value);
-                        setFormData({ ...formData, unit_size: Number.isFinite(v) && v > 0 ? v : null });
-                      }}
-                      placeholder="30"
-                      className="input text-xs py-1 w-20"
-                    />
-                    <span className="text-slate-600">{formData.unit || 'base'}</span>
-                  </div>
-                  <p className="text-[10px] text-slate-500">
-                    설정하면 입고·재고 화면에서 "통 단위" 입력 토글이 활성화됩니다 (자동 ×{formData.unit_size || 'N'} 환산).
-                  </p>
-                </div>
-              )}
             </div>
             {/* 바코드 — 완제품에만 노출 (RAW/SUB는 통상 별도 바코드가 없음, SERVICE는 무형) */}
             {formData.product_type === 'FINISHED' ? (

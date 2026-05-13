@@ -71,12 +71,6 @@ export async function createProduct(formData: FormData) {
   const isPhantom = rawPhantom == null ? false : rawPhantom === 'true';
   const finalTrackInventory = isPhantom ? false : trackInventory;
 
-  // 마이그 065 — 입고 단위 환산
-  const rawUnitSize = parseInt(formData.get('unit_size') as string);
-  const unitSize = Number.isFinite(rawUnitSize) && rawUnitSize > 1 ? rawUnitSize : null;
-  const rawUnitLabel = ((formData.get('unit_label') as string) || '').trim();
-  const unitLabel = rawUnitLabel || null;
-
   const productData: any = {
     name,
     code,
@@ -93,18 +87,11 @@ export async function createProduct(formData: FormData) {
     description: (formData.get('description') as string) || null,
     track_inventory: finalTrackInventory,
     is_phantom: isPhantom,
-    unit_size: unitSize,
-    unit_label: unitLabel,
   };
 
-  // 마이그 065/061/059 미적용 폴백 — 컬럼이 없으면 단계적으로 제거 후 재시도
+  // 마이그 061/059 미적용 폴백 — 컬럼이 없으면 단계적으로 제거 후 재시도
   let { data: newProduct, error } = await (supabase as any)
     .from('products').insert(productData).select().single();
-  if (error && /unit_size|unit_label/i.test(String(error.message))) {
-    delete productData.unit_size; delete productData.unit_label;
-    const retry = await (supabase as any).from('products').insert(productData).select().single();
-    newProduct = retry.data; error = retry.error;
-  }
   if (error && /is_phantom/i.test(String(error.message))) {
     delete productData.is_phantom;
     const retry = await (supabase as any).from('products').insert(productData).select().single();
@@ -182,12 +169,6 @@ export async function updateProduct(id: string, formData: FormData) {
   const isPhantom = rawPhantom == null ? undefined : rawPhantom === 'true';
   const finalTrackInventory = isPhantom === true ? false : trackInventory;
 
-  // 마이그 065 — 입고 단위 환산
-  const rawUnitSizeU = parseInt(formData.get('unit_size') as string);
-  const unitSize = Number.isFinite(rawUnitSizeU) && rawUnitSizeU > 1 ? rawUnitSizeU : null;
-  const rawUnitLabelU = ((formData.get('unit_label') as string) || '').trim();
-  const unitLabel = rawUnitLabelU || null;
-
   const productData: any = {
     name: formData.get('name') as string,
     ...(rawCode ? { code: rawCode } : {}),
@@ -206,18 +187,11 @@ export async function updateProduct(id: string, formData: FormData) {
     description: (formData.get('description') as string) || null,
     ...(finalTrackInventory !== undefined ? { track_inventory: finalTrackInventory } : {}),
     ...(isPhantom !== undefined ? { is_phantom: isPhantom } : {}),
-    unit_size: unitSize,
-    unit_label: unitLabel,
   };
 
-  // 마이그 065/061/059 미적용 폴백 — 단계적으로 컬럼 제거 후 재시도
+  // 마이그 061/059 미적용 폴백 — 단계적으로 컬럼 제거 후 재시도
   let res = await (supabase as any).from('products').update(productData).eq('id', id);
   let error = res.error;
-  if (error && /unit_size|unit_label/i.test(String(error.message))) {
-    delete productData.unit_size; delete productData.unit_label;
-    res = await (supabase as any).from('products').update(productData).eq('id', id);
-    error = res.error;
-  }
   if (error && /is_phantom/i.test(String(error.message))) {
     delete productData.is_phantom;
     res = await (supabase as any).from('products').update(productData).eq('id', id);
