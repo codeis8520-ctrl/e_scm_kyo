@@ -14,6 +14,9 @@ interface Product {
   name: string;
   code: string;
   product_type?: 'FINISHED' | 'RAW' | 'SUB' | null;
+  unit?: string | null;            // 재고 base 단위 (예: 환)
+  unit_size?: number | null;       // 입고 1단위 = N base. 예: 30
+  unit_label?: string | null;      // 입고 단위 라벨. 예: 통
 }
 
 interface Branch {
@@ -38,8 +41,13 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
       name: inventory.product?.name,
       code: inventory.product?.code,
       product_type: inventory.product?.product_type ?? null,
+      unit: inventory.product?.unit ?? null,
+      unit_size: inventory.product?.unit_size ?? null,
+      unit_label: inventory.product?.unit_label ?? null,
     } : null
   );
+  // "통 단위" 입력 모드 — 단위 환산 설정된 제품일 때만
+  const [packMode, setPackMode] = useState(false);
   const [formData, setFormData] = useState({
     branch_id: inventory?.branch_id || '',
     movement_type: 'IN',
@@ -70,7 +78,14 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
     const { createClient } = await import('@/lib/supabase/client');
     const client = createClient();
     // product_type 포함 시도 → 마이그 042 미적용 폴백
-    let res: any = await client.from('products').select('id, name, code, product_type').eq('is_active', true).order('name');
+    let res: any = await client.from('products').select('id, name, code, product_type, unit, unit_size, unit_label').eq('is_active', true).order('name');
+    if (res.error) {
+      // 마이그 065 미적용 폴백
+      res = await client.from('products').select('id, name, code, product_type, unit').eq('is_active', true).order('name');
+    }
+    if (res.error) {
+      res = await client.from('products').select('id, name, code, product_type').eq('is_active', true).order('name');
+    }
     if (res.error) {
       res = await client.from('products').select('id, name, code').eq('is_active', true).order('name');
     }
@@ -128,7 +143,11 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
     form.append('branch_id', formData.branch_id);
     form.append('product_id', finalProductId);
     form.append('movement_type', formData.movement_type);
-    form.append('quantity', String(formData.quantity));
+    // 통 단위 입력 모드면 자동 ×unit_size 환산해 base 단위로 저장
+    const finalQty = packMode && selectedProduct?.unit_size && selectedProduct.unit_size > 1
+      ? formData.quantity * selectedProduct.unit_size
+      : formData.quantity;
+    form.append('quantity', String(finalQty));
     form.append('safety_stock', String(formData.safety_stock));
     form.append('memo', formData.memo);
 
@@ -305,6 +324,25 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
             <label className="block text-sm font-medium text-gray-700">
               {formData.movement_type === 'ADJUST' ? '변경 후 수량 *' : '수량 *'}
             </label>
+            {/* 단위 환산 설정된 제품에 토글 노출 */}
+            {selectedProduct?.unit_size && selectedProduct.unit_size > 1 && (
+              <div className="flex gap-1 mt-1 mb-1.5">
+                <button type="button"
+                  onClick={() => setPackMode(false)}
+                  className={`flex-1 px-2 py-1 text-xs rounded ${
+                    !packMode ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}>
+                  {selectedProduct.unit || 'base'} 단위
+                </button>
+                <button type="button"
+                  onClick={() => setPackMode(true)}
+                  className={`flex-1 px-2 py-1 text-xs rounded ${
+                    packMode ? 'bg-amber-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}>
+                  📦 {selectedProduct.unit_label || '통'} (×{selectedProduct.unit_size})
+                </button>
+              </div>
+            )}
             <input
               type="number"
               value={formData.quantity}
@@ -312,8 +350,13 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
               onFocus={(e) => e.target.select()}
               required
               min="0"
-              className="mt-1 input"
+              className="input"
             />
+            {packMode && selectedProduct?.unit_size && selectedProduct.unit_size > 1 && (
+              <p className="mt-1 text-[11px] text-amber-700">
+                = {formData.quantity * selectedProduct.unit_size} {selectedProduct.unit || 'base'} (자동 환산되어 저장됩니다)
+              </p>
+            )}
           </div>
 
           {inventory && (
