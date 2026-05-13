@@ -69,6 +69,8 @@ interface Product {
   is_taxable: boolean;
   track_inventory: boolean;
   is_phantom?: boolean;
+  pack_child_id?: string | null;
+  pack_child_qty?: number | null;
   image_url: string | null;
   category?: { id: string; name: string };
 }

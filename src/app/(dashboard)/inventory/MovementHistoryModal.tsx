@@ -37,6 +37,7 @@ const REFERENCE_LABEL: Record<string, string> = {
   STOCK_COUNT:       '재고 실사',
   CREDIT_CANCEL:     '외상 취소 복원',
   RETURN:            '반품',
+  PACK_UNPACK:       '박스 분해/재포장',
 };
 
 function fmtDateTime(iso: string): string {

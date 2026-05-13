@@ -26,6 +26,8 @@ interface Product {
   is_taxable: boolean;
   track_inventory: boolean;
   is_phantom?: boolean;
+  pack_child_id?: string | null;
+  pack_child_qty?: number | null;
   image_url?: string | null;
   spec?: Record<string, string> | null;
   description?: string | null;
@@ -63,8 +65,13 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
     track_inventory: product?.track_inventory
       ?? ((product?.product_type as ProductType) === 'SERVICE' ? false : true),
     is_phantom: product?.is_phantom ?? false,
+    pack_child_id: product?.pack_child_id ?? null,
+    pack_child_qty: product?.pack_child_qty ?? null,
     image_url: product?.image_url || null,
   });
+  // 박스 분해 자식 SKU 선택용 — 자기 자신 제외, FINISHED 만
+  const [packChildOptions, setPackChildOptions] = useState<{ id: string; name: string; code: string }[]>([]);
+  const [packChildSearch, setPackChildSearch] = useState('');
   const [bomComputedCost, setBomComputedCost] = useState<number | null>(null);
   const [bomLinesCount, setBomLinesCount] = useState(0);
   // 세트상품(Phantom) 일 때 구성품 상세 표시용
@@ -93,6 +100,20 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
   useEffect(() => {
     getCategories().then(res => setCategories(res.data || []));
   }, []);
+
+  // 박스 분해 자식 SKU 후보 — 활성 제품 중 본인 제외, FINISHED 만
+  useEffect(() => {
+    const supabase = createClient();
+    (supabase.from('products') as any)
+      .select('id, name, code, product_type')
+      .eq('is_active', true)
+      .eq('product_type', 'FINISHED')
+      .order('name')
+      .then(({ data }: any) => {
+        const me = product?.id;
+        setPackChildOptions((data || []).filter((p: any) => p.id !== me));
+      });
+  }, [product?.id]);
 
   // 수정 모드 + 완제품이면 BOM 상세 + 합계 계산 (자동 원가 미리보기 / Phantom 구성품 표시)
   useEffect(() => {
@@ -502,6 +523,78 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
                   </p>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* 박스 분해/재포장 — 부모 SKU(예: 침향 30/박스) 에 자식 SKU(침향 10/소포장) + 1박스 당 갯수 */}
+          {formData.product_type === 'FINISHED' && !formData.is_phantom && (
+            <div className={`p-3 rounded-md border ${
+              formData.pack_child_id ? 'bg-amber-50 border-amber-200' : 'bg-slate-50 border-slate-200'
+            }`}>
+              <p className="text-sm font-medium text-slate-700 mb-2">
+                📦 박스 분해/재포장 설정 <span className="text-xs text-slate-500">(선택)</span>
+              </p>
+              <p className="text-xs text-slate-500 mb-2">
+                이 제품을 박스로 보고, 안에 들어있는 소포장 SKU 와 1박스 당 갯수를 지정하면
+                재고 화면에서 "박스 깨기 / 재포장" 버튼이 활성화됩니다.
+                예) 침향 30(박스) → 침향 10(소포장) × 3
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-[1fr_120px_auto] gap-2">
+                <div>
+                  <label className="block text-xs text-slate-600 mb-0.5">자식 SKU (소포장)</label>
+                  <input
+                    type="text"
+                    list="pack-child-list"
+                    value={
+                      formData.pack_child_id
+                        ? (packChildOptions.find(p => p.id === formData.pack_child_id)?.name
+                            ?? packChildSearch)
+                        : packChildSearch
+                    }
+                    onChange={e => {
+                      const v = e.target.value;
+                      setPackChildSearch(v);
+                      const match = packChildOptions.find(p => `${p.name} (${p.code})` === v || p.name === v);
+                      setFormData(prev => ({ ...prev, pack_child_id: match?.id ?? null }));
+                    }}
+                    placeholder="제품명 또는 코드 검색…"
+                    className="input"
+                  />
+                  <datalist id="pack-child-list">
+                    {packChildOptions.map(p => (
+                      <option key={p.id} value={`${p.name} (${p.code})`} />
+                    ))}
+                  </datalist>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-600 mb-0.5">1박스 당 갯수</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={formData.pack_child_qty ?? ''}
+                    onChange={e => {
+                      const n = parseInt(e.target.value, 10);
+                      setFormData(prev => ({ ...prev, pack_child_qty: Number.isFinite(n) && n > 0 ? n : null }));
+                    }}
+                    onFocus={e => e.target.select()}
+                    placeholder="3"
+                    className="input"
+                    disabled={!formData.pack_child_id}
+                  />
+                </div>
+                {(formData.pack_child_id || formData.pack_child_qty) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFormData(prev => ({ ...prev, pack_child_id: null, pack_child_qty: null }));
+                      setPackChildSearch('');
+                    }}
+                    className="self-end px-2 py-1.5 text-xs text-slate-500 hover:text-red-600"
+                  >
+                    해제
+                  </button>
+                )}
+              </div>
             </div>
           )}
 

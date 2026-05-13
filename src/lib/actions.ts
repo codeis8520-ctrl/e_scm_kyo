@@ -71,6 +71,16 @@ export async function createProduct(formData: FormData) {
   const isPhantom = rawPhantom == null ? false : rawPhantom === 'true';
   const finalTrackInventory = isPhantom ? false : trackInventory;
 
+  // 박스 분해/재포장 — pack_child_id 와 pack_child_qty 는 짝으로만 의미. Phantom 과 배타.
+  const rawPackChildId = formData.get('pack_child_id');
+  const rawPackChildQty = formData.get('pack_child_qty');
+  const packChildId = (typeof rawPackChildId === 'string' && rawPackChildId && rawPackChildId !== 'null')
+    ? rawPackChildId : null;
+  const packChildQtyNum = rawPackChildQty == null ? NaN : parseInt(String(rawPackChildQty), 10);
+  const packChildQty = (packChildId && Number.isFinite(packChildQtyNum) && packChildQtyNum > 0)
+    ? packChildQtyNum : null;
+  const finalPackChildId = (packChildQty && packChildId) ? packChildId : null;
+
   const productData: any = {
     name,
     code,
@@ -87,11 +97,19 @@ export async function createProduct(formData: FormData) {
     description: (formData.get('description') as string) || null,
     track_inventory: finalTrackInventory,
     is_phantom: isPhantom,
+    pack_child_id: finalPackChildId,
+    pack_child_qty: finalPackChildId ? packChildQty : null,
   };
 
-  // 마이그 061/059 미적용 폴백 — 컬럼이 없으면 단계적으로 제거 후 재시도
+  // 마이그 066/061/059 미적용 폴백 — 컬럼이 없으면 단계적으로 제거 후 재시도
   let { data: newProduct, error } = await (supabase as any)
     .from('products').insert(productData).select().single();
+  if (error && /pack_child/i.test(String(error.message))) {
+    delete productData.pack_child_id;
+    delete productData.pack_child_qty;
+    const retry = await (supabase as any).from('products').insert(productData).select().single();
+    newProduct = retry.data; error = retry.error;
+  }
   if (error && /is_phantom/i.test(String(error.message))) {
     delete productData.is_phantom;
     const retry = await (supabase as any).from('products').insert(productData).select().single();
@@ -169,6 +187,17 @@ export async function updateProduct(id: string, formData: FormData) {
   const isPhantom = rawPhantom == null ? undefined : rawPhantom === 'true';
   const finalTrackInventory = isPhantom === true ? false : trackInventory;
 
+  // 박스 분해/재포장 — pack_child_id / pack_child_qty 짝으로만 의미.
+  const rawPackChildId = formData.get('pack_child_id');
+  const rawPackChildQty = formData.get('pack_child_qty');
+  const packChildIdPresent = rawPackChildId != null;
+  const packChildId = (typeof rawPackChildId === 'string' && rawPackChildId && rawPackChildId !== 'null')
+    ? rawPackChildId : null;
+  const packChildQtyNum = rawPackChildQty == null ? NaN : parseInt(String(rawPackChildQty), 10);
+  const packChildQty = (packChildId && Number.isFinite(packChildQtyNum) && packChildQtyNum > 0)
+    ? packChildQtyNum : null;
+  const finalPackChildId = (packChildQty && packChildId) ? packChildId : null;
+
   const productData: any = {
     name: formData.get('name') as string,
     ...(rawCode ? { code: rawCode } : {}),
@@ -187,11 +216,19 @@ export async function updateProduct(id: string, formData: FormData) {
     description: (formData.get('description') as string) || null,
     ...(finalTrackInventory !== undefined ? { track_inventory: finalTrackInventory } : {}),
     ...(isPhantom !== undefined ? { is_phantom: isPhantom } : {}),
+    // pack_child_* 는 폼에 포함되어 있을 때만(=명시적으로 비우려는 의도 포함) 갱신
+    ...(packChildIdPresent ? { pack_child_id: finalPackChildId, pack_child_qty: finalPackChildId ? packChildQty : null } : {}),
   };
 
-  // 마이그 061/059 미적용 폴백 — 단계적으로 컬럼 제거 후 재시도
+  // 마이그 066/061/059 미적용 폴백 — 단계적으로 컬럼 제거 후 재시도
   let res = await (supabase as any).from('products').update(productData).eq('id', id);
   let error = res.error;
+  if (error && /pack_child/i.test(String(error.message))) {
+    delete productData.pack_child_id;
+    delete productData.pack_child_qty;
+    res = await (supabase as any).from('products').update(productData).eq('id', id);
+    error = res.error;
+  }
   if (error && /is_phantom/i.test(String(error.message))) {
     delete productData.is_phantom;
     res = await (supabase as any).from('products').update(productData).eq('id', id);

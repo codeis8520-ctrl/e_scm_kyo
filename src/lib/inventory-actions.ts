@@ -98,3 +98,135 @@ export async function getInventoryMovements(filters: {
   if (error) return { error: error.message, data: [], count: 0 };
   return { data: data || [], count: count ?? 0 };
 }
+
+// ─── 박스 분해/재포장 (Pack / Unpack) ────────────────────────────────────────
+//   부모 SKU(예: 침향 30/박스)와 자식 SKU(침향 10/소포장) 간 재고 이동.
+//   - direction='UNPACK': 부모 -parentQty, 자식 +parentQty * pack_child_qty
+//   - direction='PACK'  : 부모 +parentQty, 자식 -parentQty * pack_child_qty
+//   inventory_movements 2건 기록 (reference_type='PACK_UNPACK').
+//   POS 자동 분해 X — 사용자가 재고 화면에서 수동 호출.
+export async function packUnpackInventory(params: {
+  parentProductId: string;
+  branchId: string;
+  parentQty: number;                  // 부모 기준 수량 (예: 박스 2개)
+  direction: 'UNPACK' | 'PACK';
+  memo?: string;
+}) {
+  let session: any;
+  try {
+    session = await requireSession();
+  } catch (e: any) {
+    return { error: e.message };
+  }
+
+  const { parentProductId, branchId, parentQty, direction } = params;
+  if (!parentProductId || !branchId) return { error: '필수 값 누락' };
+  if (!Number.isFinite(parentQty) || parentQty <= 0) return { error: '수량은 1 이상이어야 합니다.' };
+
+  // BRANCH/PHARMACY 사용자는 자기 지점만
+  if ((session.role === 'BRANCH_STAFF' || session.role === 'PHARMACY_STAFF') && session.branch_id && session.branch_id !== branchId) {
+    return { error: '본인 지점만 처리 가능' };
+  }
+
+  const supabase = (await createClient()) as any;
+
+  // 1. 부모 제품에서 pack 메타 로드
+  const { data: parent, error: pErr } = await supabase
+    .from('products')
+    .select('id, name, pack_child_id, pack_child_qty, track_inventory')
+    .eq('id', parentProductId)
+    .single();
+  if (pErr || !parent) return { error: '부모 제품을 찾을 수 없습니다.' };
+  if (!parent.pack_child_id || !parent.pack_child_qty) {
+    return { error: '이 제품은 박스 분해/재포장이 설정되어 있지 않습니다.' };
+  }
+  if (parent.track_inventory === false) {
+    return { error: '재고 추적이 꺼진 제품은 분해/재포장할 수 없습니다.' };
+  }
+
+  const childId: string = parent.pack_child_id;
+  const ratio: number = parent.pack_child_qty;
+  const childDelta = parentQty * ratio;
+
+  // 2. 자식 제품 검증
+  const { data: child, error: cErr } = await supabase
+    .from('products')
+    .select('id, name, track_inventory')
+    .eq('id', childId)
+    .single();
+  if (cErr || !child) return { error: '자식 SKU 를 찾을 수 없습니다.' };
+  if (child.track_inventory === false) {
+    return { error: '자식 SKU 의 재고 추적이 꺼져있습니다.' };
+  }
+
+  // 3. inventories upsert — 부모/자식 둘 다 (해당 지점에 행 없을 수 있음)
+  const parentSign = direction === 'UNPACK' ? -1 : 1;
+  const childSign  = direction === 'UNPACK' ? 1 : -1;
+
+  async function applyDelta(productId: string, delta: number) {
+    const { data: inv } = await supabase
+      .from('inventories')
+      .select('id, quantity')
+      .eq('branch_id', branchId)
+      .eq('product_id', productId)
+      .maybeSingle();
+    if (inv) {
+      const next = (inv.quantity ?? 0) + delta;
+      const { error } = await supabase.from('inventories').update({ quantity: next }).eq('id', inv.id);
+      if (error) throw new Error(error.message);
+    } else {
+      // 행 없으면 신규 — 음수 허용 (재고 정책상)
+      const { error } = await supabase.from('inventories').insert({
+        branch_id: branchId,
+        product_id: productId,
+        quantity: delta,
+        safety_stock: 0,
+      });
+      if (error) throw new Error(error.message);
+    }
+  }
+
+  try {
+    await applyDelta(parentProductId, parentSign * parentQty);
+    await applyDelta(childId, childSign * childDelta);
+  } catch (e: any) {
+    return { error: '재고 갱신 실패: ' + (e?.message || 'unknown') };
+  }
+
+  // 4. inventory_movements 2건 기록 — quantity 는 절대값
+  const memo = params.memo || (direction === 'UNPACK'
+    ? `박스 분해: ${parent.name} ${parentQty} → ${child.name} ${childDelta}`
+    : `재포장: ${child.name} ${childDelta} → ${parent.name} ${parentQty}`);
+
+  const movements = [
+    {
+      branch_id: branchId,
+      product_id: parentProductId,
+      movement_type: direction === 'UNPACK' ? 'OUT' : 'IN',
+      quantity: parentQty,
+      reference_type: 'PACK_UNPACK',
+      memo,
+    },
+    {
+      branch_id: branchId,
+      product_id: childId,
+      movement_type: direction === 'UNPACK' ? 'IN' : 'OUT',
+      quantity: childDelta,
+      reference_type: 'PACK_UNPACK',
+      memo,
+    },
+  ];
+  const { error: mErr } = await supabase.from('inventory_movements').insert(movements);
+  if (mErr) {
+    // movements 실패해도 inventories 는 이미 갱신됨 — 로그만 남기고 진행
+    console.warn('[packUnpackInventory] movement insert failed:', mErr.message);
+  }
+
+  revalidatePath('/inventory');
+  return {
+    success: true,
+    parentDelta: parentSign * parentQty,
+    childDelta: childSign * childDelta,
+    childName: child.name,
+  };
+}

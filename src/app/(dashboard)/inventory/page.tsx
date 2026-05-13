@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client';
 import InventoryModal from './InventoryModal';
 import TransferModal from './TransferModal';
 import MovementHistoryModal from './MovementHistoryModal';
+import PackUnpackModal from './PackUnpackModal';
 import { updateSafetyStock } from '@/lib/inventory-actions';
 import { backfillMissingInventories } from '@/lib/inventory-backfill-actions';
 
@@ -18,7 +19,7 @@ interface Inventory {
   quantity: number;
   safety_stock: number;
   branch?: { id: string; name: string; is_headquarters?: boolean };
-  product?: { id: string; name: string; code: string; barcode?: string; product_type?: ProductType | null; category_id?: string | null; track_inventory?: boolean; is_phantom?: boolean };
+  product?: { id: string; name: string; code: string; barcode?: string; product_type?: ProductType | null; category_id?: string | null; track_inventory?: boolean; is_phantom?: boolean; pack_child_id?: string | null; pack_child_qty?: number | null };
 }
 
 interface Branch {
@@ -44,6 +45,8 @@ interface ProductRow {
   categoryId: string | null;
   trackInventory: boolean;
   isPhantom: boolean;
+  packChildId: string | null;
+  packChildQty: number | null;
   byBranch: Record<string, Inventory>;
 }
 
@@ -132,6 +135,11 @@ export default function InventoryPage() {
   // 재고 변동 이력 모달
   const [historyProduct, setHistoryProduct] = useState<{ id: string; name: string; code: string } | null>(null);
   const [historyInitialBranchId, setHistoryInitialBranchId] = useState<string | undefined>(undefined);
+  // 박스 분해/재포장 모달
+  const [packTarget, setPackTarget] = useState<{
+    id: string; name: string; code: string; packChildId: string; packChildQty: number;
+  } | null>(null);
+  const [packInitialBranchId, setPackInitialBranchId] = useState<string | undefined>(undefined);
 
   const userRole = getCookie('user_role');
   const userBranchId = getCookie('user_branch_id');
@@ -243,6 +251,7 @@ export default function InventoryPage() {
     };
 
     const trySelects = [
+      '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory, is_phantom, pack_child_id, pack_child_qty)',
       '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory, is_phantom)',
       '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory)',
       '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id)',
@@ -312,6 +321,8 @@ export default function InventoryPage() {
           categoryId: inv.product.category_id ?? null,
           trackInventory: inv.product.track_inventory !== false,
           isPhantom: inv.product.is_phantom === true,
+          packChildId: inv.product.pack_child_id ?? null,
+          packChildQty: inv.product.pack_child_qty ?? null,
           byBranch: {},
         });
       }
@@ -612,6 +623,25 @@ export default function InventoryPage() {
                       {row.barcode && (
                         <span className="ml-2 text-xs text-slate-400 font-mono">{row.barcode}</span>
                       )}
+                      {row.packChildId && row.packChildQty && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPackTarget({
+                              id: row.productId,
+                              name: row.productName,
+                              code: row.productCode,
+                              packChildId: row.packChildId!,
+                              packChildQty: row.packChildQty!,
+                            });
+                            setPackInitialBranchId(flatBranchFilter || (isBranchUser ? userBranchId : undefined) || undefined);
+                          }}
+                          title={`박스 분해/재포장 — 1박스 = 소포장 ×${row.packChildQty}`}
+                          className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-amber-100 text-amber-700 hover:bg-amber-200"
+                        >
+                          📦 분해/재포장
+                        </button>
+                      )}
                     </td>
                     {branches.map(b => {
                       const inv = row.byBranch[b.id];
@@ -804,6 +834,16 @@ export default function InventoryPage() {
           branches={isBranchUser && userBranchId ? branches.filter(b => b.id === userBranchId) : branches}
           initialBranchId={isBranchUser && userBranchId ? userBranchId : historyInitialBranchId}
           onClose={() => { setHistoryProduct(null); setHistoryInitialBranchId(undefined); }}
+        />
+      )}
+
+      {packTarget && (
+        <PackUnpackModal
+          parentProduct={packTarget}
+          branches={isBranchUser && userBranchId ? branches.filter(b => b.id === userBranchId) : branches}
+          initialBranchId={isBranchUser && userBranchId ? userBranchId : packInitialBranchId}
+          onClose={() => { setPackTarget(null); setPackInitialBranchId(undefined); }}
+          onSuccess={() => { setPackTarget(null); setPackInitialBranchId(undefined); fetchInventory(); }}
         />
       )}
     </div>
