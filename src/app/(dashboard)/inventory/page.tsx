@@ -208,8 +208,10 @@ export default function InventoryPage() {
     const t0 = performance.now();
 
     // 1) 매칭 product_id 추출 — search/typeFilter/categoryFilter 적용
+    //    정책: Phantom(세트상품)은 본인 재고 관리 대상 아님 → 재고 검색에서 제외.
+    //    구성품(BOM 멤버)은 일반 제품이라 정상 노출됨.
     const q = debouncedSearch.trim();
-    let pq = supabase.from('products').select('id').eq('is_active', true);
+    let pq = supabase.from('products').select('id, is_phantom').eq('is_active', true);
     if (typeFilter) pq = pq.eq('product_type', typeFilter);
     if (categoryFilter && allowedCategoryIds && allowedCategoryIds.size > 0) {
       pq = pq.in('category_id', Array.from(allowedCategoryIds));
@@ -227,7 +229,10 @@ export default function InventoryPage() {
       setLoading(false);
       return;
     }
-    const productIds = ((matchedProducts || []) as any[]).map((p: any) => p.id);
+    // is_phantom=true 제외 (컬럼 미적용 환경에선 undefined → 통과)
+    const productIds = ((matchedProducts || []) as any[])
+      .filter((p: any) => p.is_phantom !== true)
+      .map((p: any) => p.id);
     if (productIds.length === 0) {
       setInventories([]);
       setLoading(false);
