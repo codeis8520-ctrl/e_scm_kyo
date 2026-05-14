@@ -137,9 +137,17 @@ export default function InventoryPage() {
   const [historyInitialBranchId, setHistoryInitialBranchId] = useState<string | undefined>(undefined);
   // 박스 분해/재포장 모달
   const [packTarget, setPackTarget] = useState<{
-    id: string; name: string; code: string; packChildId: string; packChildQty: number;
+    id: string; name: string; code: string; packChildId: string; packChildQty: number; isPhantom: boolean;
   } | null>(null);
   const [packInitialBranchId, setPackInitialBranchId] = useState<string | undefined>(undefined);
+  // Phantom + pack_child 가 설정된 제품 — 본인 inventories 행이 없어서 일반 fetch 에는 안 잡힘.
+  // Pack/Unpack 버튼 도달용으로 별도 메타 보관.
+  type PhantomPackProduct = {
+    id: string; name: string; code: string; barcode: string | null;
+    productType: ProductType | null; categoryId: string | null;
+    packChildId: string; packChildQty: number;
+  };
+  const [phantomPackProducts, setPhantomPackProducts] = useState<PhantomPackProduct[]>([]);
 
   const userRole = getCookie('user_role');
   const userBranchId = getCookie('user_branch_id');
@@ -180,6 +188,7 @@ export default function InventoryPage() {
     );
     if (!hasFilter) {
       setInventories([]);
+      setPhantomPackProducts([]);
       return;
     }
     fetchInventory();
@@ -216,10 +225,12 @@ export default function InventoryPage() {
     const t0 = performance.now();
 
     // 1) 매칭 product_id 추출 — search/typeFilter/categoryFilter 적용
-    //    정책: Phantom(세트상품)은 본인 재고 관리 대상 아님 → 재고 검색에서 제외.
-    //    구성품(BOM 멤버)은 일반 제품이라 정상 노출됨.
+    //    정책: Phantom(세트상품)은 본인 재고 관리 대상 아님 → 일반 검색에서 제외.
+    //    단, pack_child_id 가 설정된 Phantom 은 Pack/Unpack 버튼 도달용으로 별도 노출.
     const q = debouncedSearch.trim();
-    let pq = supabase.from('products').select('id, is_phantom').eq('is_active', true);
+    let pq = supabase.from('products')
+      .select('id, name, code, barcode, product_type, category_id, is_phantom, pack_child_id, pack_child_qty')
+      .eq('is_active', true);
     if (typeFilter) pq = pq.eq('product_type', typeFilter);
     if (categoryFilter && allowedCategoryIds && allowedCategoryIds.size > 0) {
       pq = pq.in('category_id', Array.from(allowedCategoryIds));
@@ -234,10 +245,33 @@ export default function InventoryPage() {
       setLoading(false);
       return;
     }
-    const productIds = ((matchedProducts || []) as any[])
-      .filter((p: any) => p.is_phantom !== true)
-      .map((p: any) => p.id);
+
+    const allMatched = (matchedProducts || []) as any[];
+    // Phantom + pack_child: 본인 재고 없음 → 별도 행 합성 대상.
+    const phantomPacks: PhantomPackProduct[] = allMatched
+      .filter(p => p.is_phantom === true && p.pack_child_id && p.pack_child_qty)
+      .map(p => ({
+        id: p.id,
+        name: p.name,
+        code: p.code,
+        barcode: p.barcode ?? null,
+        productType: (p.product_type ?? null) as ProductType | null,
+        categoryId: p.category_id ?? null,
+        packChildId: p.pack_child_id,
+        packChildQty: p.pack_child_qty,
+      }));
+    setPhantomPackProducts(phantomPacks);
+
+    const productIds = allMatched
+      .filter(p => p.is_phantom !== true)
+      .map(p => p.id);
+    if (productIds.length === 0 && phantomPacks.length === 0) {
+      setInventories([]);
+      setLoading(false);
+      return;
+    }
     if (productIds.length === 0) {
+      // Phantom-pack 만 매칭됨 — inventories 페치 스킵.
       setInventories([]);
       setLoading(false);
       return;
@@ -327,6 +361,23 @@ export default function InventoryPage() {
         });
       }
       map.get(inv.product_id)!.byBranch[inv.branch_id] = inv;
+    }
+    // Phantom + pack_child 행 합성 — 본인 재고 없음. Pack/Unpack 버튼 도달용.
+    for (const p of phantomPackProducts) {
+      if (map.has(p.id)) continue;
+      map.set(p.id, {
+        productId: p.id,
+        productName: p.name,
+        productCode: p.code,
+        productType: p.productType,
+        barcode: p.barcode ?? undefined,
+        categoryId: p.categoryId,
+        trackInventory: false,
+        isPhantom: true,
+        packChildId: p.packChildId,
+        packChildQty: p.packChildQty,
+        byBranch: {},
+      });
     }
     const arr = Array.from(map.values());
     arr.sort((a, b) => {
@@ -633,10 +684,13 @@ export default function InventoryPage() {
                               code: row.productCode,
                               packChildId: row.packChildId!,
                               packChildQty: row.packChildQty!,
+                              isPhantom: row.isPhantom,
                             });
                             setPackInitialBranchId(flatBranchFilter || (isBranchUser ? userBranchId : undefined) || undefined);
                           }}
-                          title={`박스 분해/재포장 — 1박스 = 소포장 ×${row.packChildQty}`}
+                          title={row.isPhantom
+                            ? `세트 해체/조립 — 1세트 = 소포장 ×${row.packChildQty} (세트 본인 재고 없음, 자식 SKU 만 증감)`
+                            : `박스 분해/재포장 — 1박스 = 소포장 ×${row.packChildQty}`}
                           className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-amber-100 text-amber-700 hover:bg-amber-200"
                         >
                           📦 분해/재포장

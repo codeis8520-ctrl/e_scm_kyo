@@ -7,8 +7,10 @@ branches: id, name, code, channel(STORE/DEPT_STORE/ONLINE/EVENT), address, phone
 products: id, name, code, barcode, unit, price(판매가), cost(원가), cost_source(MANUAL/BOM), product_type(FINISHED/RAW/SUB/SERVICE), track_inventory(bool), is_phantom(bool), pack_child_id(uuid|null), pack_child_qty(int|null), is_active
   ※ pack_child_id / pack_child_qty (마이그 066): 박스 ↔ 소포장 수동 분해/재포장. 부모 SKU(박스) 가 자식 SKU(소포장)
     pack_child_qty 개를 담는다는 메타. 예: 침향 30(박스).pack_child_id=침향 10(소포장), pack_child_qty=3.
-    재고 화면 "📦 분해/재포장" 버튼으로 사용자가 수동 호출 — inventory_movements 2건(부모 OUT/IN + 자식 IN/OUT,
-    reference_type='PACK_UNPACK')로 기록. POS 자동 분해 X(자식·부모 각각 자기 재고로 판매). Phantom 과 배타.
+    재고 화면 "📦 분해/재포장" 버튼으로 사용자가 수동 호출 — reference_type='PACK_UNPACK' 으로 inventory_movements 기록.
+    POS 자동 분해 X(자식·부모 각각 자기 재고로 판매). 부모는 일반 완제품 또는 Phantom(세트) 모두 허용:
+      · 일반 부모: 부모 OUT/IN + 자식 IN/OUT (movements 2건)
+      · Phantom 부모: 본인 재고 없음 → 자식 IN/OUT 1건만 기록, 부모 inventory 변화 없음.
   ※ product_type: FINISHED=완제품(POS 판매), RAW=원자재, SUB=부자재, SERVICE=무형상품(컨설팅·교육 등 POS 판매 가능, 재고 X)
   ※ track_inventory(마이그 059): false면 inventories/inventory_movements 미사용. SERVICE는 기본 false.
     POS·B2B·생산에서 재고 차감 분기에서 skip 대상.

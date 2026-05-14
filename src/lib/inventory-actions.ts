@@ -133,14 +133,16 @@ export async function packUnpackInventory(params: {
   // 1. 부모 제품에서 pack 메타 로드
   const { data: parent, error: pErr } = await supabase
     .from('products')
-    .select('id, name, pack_child_id, pack_child_qty, track_inventory')
+    .select('id, name, pack_child_id, pack_child_qty, track_inventory, is_phantom')
     .eq('id', parentProductId)
     .single();
   if (pErr || !parent) return { error: '부모 제품을 찾을 수 없습니다.' };
   if (!parent.pack_child_id || !parent.pack_child_qty) {
     return { error: '이 제품은 박스 분해/재포장이 설정되어 있지 않습니다.' };
   }
-  if (parent.track_inventory === false) {
+  // Phantom(세트) 부모는 본인 재고 없음 → 자식 SKU 만 증감. track_inventory=false 거부는 일반 제품에만 적용.
+  const parentIsPhantom = parent.is_phantom === true;
+  if (!parentIsPhantom && parent.track_inventory === false) {
     return { error: '재고 추적이 꺼진 제품은 분해/재포장할 수 없습니다.' };
   }
 
@@ -187,26 +189,29 @@ export async function packUnpackInventory(params: {
   }
 
   try {
-    await applyDelta(parentProductId, parentSign * parentQty);
+    // Phantom 부모는 본인 재고가 없으므로 자식만 증감.
+    if (!parentIsPhantom) {
+      await applyDelta(parentProductId, parentSign * parentQty);
+    }
     await applyDelta(childId, childSign * childDelta);
   } catch (e: any) {
     return { error: '재고 갱신 실패: ' + (e?.message || 'unknown') };
   }
 
-  // 4. inventory_movements 2건 기록 — quantity 는 절대값
+  // 4. inventory_movements 기록 — quantity 는 절대값. Phantom 부모는 자식 movement 만.
   const memo = params.memo || (direction === 'UNPACK'
     ? `박스 분해: ${parent.name} ${parentQty} → ${child.name} ${childDelta}`
     : `재포장: ${child.name} ${childDelta} → ${parent.name} ${parentQty}`);
 
   const movements = [
-    {
+    ...(parentIsPhantom ? [] : [{
       branch_id: branchId,
       product_id: parentProductId,
       movement_type: direction === 'UNPACK' ? 'OUT' : 'IN',
       quantity: parentQty,
       reference_type: 'PACK_UNPACK',
       memo,
-    },
+    }]),
     {
       branch_id: branchId,
       product_id: childId,
@@ -225,8 +230,9 @@ export async function packUnpackInventory(params: {
   revalidatePath('/inventory');
   return {
     success: true,
-    parentDelta: parentSign * parentQty,
+    parentDelta: parentIsPhantom ? 0 : parentSign * parentQty,
     childDelta: childSign * childDelta,
     childName: child.name,
+    parentIsPhantom,
   };
 }

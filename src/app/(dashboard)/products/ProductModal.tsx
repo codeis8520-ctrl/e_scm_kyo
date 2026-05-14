@@ -526,8 +526,9 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
             </div>
           )}
 
-          {/* 박스 분해/재포장 — 부모 SKU(예: 침향 30/박스) 에 자식 SKU(침향 10/소포장) + 1박스 당 갯수 */}
-          {formData.product_type === 'FINISHED' && !formData.is_phantom && (
+          {/* 박스 분해/재포장 — 부모 SKU(예: 침향 30/박스) 에 자식 SKU(침향 10/소포장) + 1박스 당 갯수
+              Phantom 과 독립 (DB 제약 없음) — 완제품이기만 하면 노출. */}
+          {formData.product_type === 'FINISHED' && (
             <div className={`p-3 rounded-md border ${
               formData.pack_child_id ? 'bg-amber-50 border-amber-200' : 'bg-slate-50 border-slate-200'
             }`}>
