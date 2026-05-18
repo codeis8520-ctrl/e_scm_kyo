@@ -1694,6 +1694,20 @@ export async function deleteBranchPointRate(branchId: string, gradeId: string) {
   return { success: true };
 }
 
+// 지점 단위 일괄 원복 — 해당 branch_id 의 모든 오버라이드 행을 삭제하여
+// 모든 등급이 customer_grades.point_rate(등급 기본값)로 폴백되도록 한다.
+// 프로모션 종료 등 일시 적용 후 일반 적립율로 환원할 때 사용.
+export async function resetBranchPointRates(branchId: string) {
+  const supabase = await createClient();
+  const db = supabase as any;
+  const { error, count } = await db.from('branch_point_rates')
+    .delete({ count: 'exact' })
+    .eq('branch_id', branchId);
+  if (error) return { error: error.message };
+  revalidatePath('/system-codes');
+  return { success: true, cleared: count ?? 0 };
+}
+
 // 서버측 적립율 해결 — POS 체크아웃에서 호출.
 // 클라이언트가 보낸 rate 는 표시용/하위호환용이며, 적립 계산은 이 함수가 단일 진실원.
 //   1) branch_point_rates 에 (branch_id, grade_id) 활성 row 있으면 그 rate

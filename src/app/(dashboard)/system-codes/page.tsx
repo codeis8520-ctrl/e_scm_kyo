@@ -11,6 +11,7 @@ import {
   createUser, updateUser, deleteUser,
   createChannel, updateChannel, deleteChannel,
   upsertBranchPointRate,
+  resetBranchPointRates,
 } from '@/lib/actions';
 import { setHeadquarters, unsetHeadquarters } from '@/lib/oem-actions';
 import { validators } from '@/lib/validators';
@@ -268,6 +269,22 @@ export default function SystemCodesPage() {
     setSavingCell(null);
     if (result?.error) {
       alert(`저장 실패: ${result.error}`);
+      return;
+    }
+    fetchData();
+  };
+
+  // 지점 단위 일괄 원복: 해당 지점의 모든 오버라이드 행 삭제 → 등급 기본값으로 폴백.
+  const handleResetBranchRates = async (branch: Branch) => {
+    const overrideCount = branchPointRates.filter(r => r.branch_id === branch.id).length;
+    if (overrideCount === 0) return;
+    if (!confirm(
+      `"${branch.name}" 지점의 매트릭스 오버라이드 ${overrideCount}건을 모두 삭제합니다.\n\n` +
+      `삭제 후 이 지점의 모든 등급은 "고객 등급" 탭의 기본 적립율을 따릅니다.\n계속하시겠습니까?`
+    )) return;
+    const result = await resetBranchPointRates(branch.id);
+    if (result?.error) {
+      alert(`초기화 실패: ${result.error}`);
       return;
     }
     fetchData();
@@ -1078,6 +1095,7 @@ export default function SystemCodesPage() {
               빈 셀은 <b>등급 기본값</b>(고객 등급 탭에서 설정)으로 폴백합니다.
               0을 명시하면 "적립 없음"이며, 비워두면 등급 기본값을 따릅니다.
               저장은 셀에서 포커스 해제(blur) 시점에 자동으로 이뤄집니다.
+              프로모션 종료 등으로 한 지점의 매트릭스를 통째로 되돌리려면 우측 <b>"기본값 환원"</b> 버튼을 사용하세요.
             </p>
           </div>
 
@@ -1105,22 +1123,25 @@ export default function SystemCodesPage() {
                         </div>
                       </th>
                     ))}
+                    <th className="text-center min-w-[100px]">관리</th>
                   </tr>
                 </thead>
                 <tbody>
                   {branches.length === 0 ? (
                     <tr>
-                      <td colSpan={grades.length + 1} className="text-center py-8 text-slate-400">
+                      <td colSpan={grades.length + 2} className="text-center py-8 text-slate-400">
                         활성 지점이 없습니다. 먼저 "지점 관리"에서 지점을 등록하세요.
                       </td>
                     </tr>
                   ) : grades.length === 0 ? (
                     <tr>
-                      <td colSpan={1} className="text-center py-8 text-slate-400">
+                      <td colSpan={2} className="text-center py-8 text-slate-400">
                         활성 등급이 없습니다. 먼저 "고객 등급"에서 등급을 등록하세요.
                       </td>
                     </tr>
-                  ) : branches.map(branch => (
+                  ) : branches.map(branch => {
+                    const branchOverrideCount = branchPointRates.filter(r => r.branch_id === branch.id).length;
+                    return (
                     <tr key={branch.id}>
                       <td>
                         <div className="font-medium">{branch.name}</div>
@@ -1166,8 +1187,25 @@ export default function SystemCodesPage() {
                           </td>
                         );
                       })}
+                      <td className="text-center align-top">
+                        <button
+                          type="button"
+                          onClick={() => handleResetBranchRates(branch)}
+                          disabled={branchOverrideCount === 0}
+                          title={branchOverrideCount === 0
+                            ? '이 지점은 오버라이드 행이 없습니다 (이미 등급 기본값 사용 중).'
+                            : `이 지점의 매트릭스 오버라이드 ${branchOverrideCount}건을 모두 삭제하고 등급 기본값으로 환원합니다.`}
+                          className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-rose-300 hover:text-rose-600 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:border-slate-200 disabled:hover:text-slate-600"
+                        >
+                          기본값 환원
+                          {branchOverrideCount > 0 && (
+                            <span className="ml-1 text-[10px] text-slate-400">({branchOverrideCount})</span>
+                          )}
+                        </button>
+                      </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
