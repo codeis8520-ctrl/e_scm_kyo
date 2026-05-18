@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, Suspense } from 'react';
 import Link from 'next/link';
+import { useSearchParams, useRouter } from 'next/navigation';
 import CustomerModal from './CustomerModal';
 import CustomerImportModal from './CustomerImportModal';
 import { autoUpgradeCustomerGrades } from '@/lib/actions';
@@ -95,19 +96,31 @@ function fmtShortDate(iso: string | null | undefined): string {
 }
 
 export default function CustomersPage() {
-  const [activeTab, setActiveTab] = useState<TabType>('list');
+  // Next.js 16: useSearchParams() 가 Suspense 경계 안에 있어야 prerender 가능.
+  return (
+    <Suspense fallback={<div className="p-6 text-slate-400 text-sm">로딩 중...</div>}>
+      <CustomersPageInner />
+    </Suspense>
+  );
+}
+
+function CustomersPageInner() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  const [activeTab, setActiveTab] = useState<TabType>(() => (searchParams.get('tab') as TabType) || 'list');
   const [customers, setCustomers] = useState<Customer[]>([]);
-  const [search, setSearch] = useState('');
-  const [gradeFilter, setGradeFilter] = useState('');
-  const [hasConsult, setHasConsult] = useState(false);
-  const [sortKey, setSortKey] = useState<SortKey>('recent_consult');
+  const [search, setSearch] = useState(() => searchParams.get('q') || '');
+  const [gradeFilter, setGradeFilter] = useState(() => searchParams.get('grade') || '');
+  const [hasConsult, setHasConsult] = useState(() => searchParams.get('hasConsult') === '1');
+  const [sortKey, setSortKey] = useState<SortKey>(() => (searchParams.get('sort') as SortKey) || 'recent_consult');
   const [loading, setLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [editCustomer, setEditCustomer] = useState<Customer | null>(null);
   const [upgrading, setUpgrading] = useState(false);
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(() => Math.max(1, Number(searchParams.get('page')) || 1));
   const [total, setTotal] = useState(0);
   const [totalCustomers, setTotalCustomers] = useState<number | null>(null);
   const [totalLegacy, setTotalLegacy] = useState<number | null>(null);
@@ -164,6 +177,19 @@ export default function CustomersPage() {
   useEffect(() => {
     if (page > 1 && hasSearched) fetchCustomers(search, gradeFilter, page, hasConsult, sortKey);
   }, [page]);
+
+  // 검색 조건을 URL 쿼리스트링에 동기화 — 상세 페이지 갔다가 뒤로가기 시 복원
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (search.trim()) params.set('q', search);
+    if (gradeFilter) params.set('grade', gradeFilter);
+    if (hasConsult) params.set('hasConsult', '1');
+    if (sortKey && sortKey !== 'recent_consult') params.set('sort', sortKey);
+    if (page > 1) params.set('page', String(page));
+    if (activeTab && activeTab !== 'list') params.set('tab', activeTab);
+    const qs = params.toString();
+    router.replace(qs ? `/customers?${qs}` : '/customers', { scroll: false });
+  }, [search, gradeFilter, hasConsult, sortKey, page, activeTab, router]);
 
   // 자동 포커스
   useEffect(() => {
