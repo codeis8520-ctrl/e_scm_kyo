@@ -10,6 +10,7 @@ import {
   createCategory, updateCategory, deleteCategory,
   createUser, updateUser, deleteUser,
   createChannel, updateChannel, deleteChannel,
+  upsertBranchPointRate,
 } from '@/lib/actions';
 import { setHeadquarters, unsetHeadquarters } from '@/lib/oem-actions';
 import { validators } from '@/lib/validators';
@@ -148,8 +149,16 @@ interface ScreenPermission {
   can_edit: boolean;
 }
 
+interface BranchPointRate {
+  id: string;
+  branch_id: string;
+  grade_id: string;
+  point_rate: number;
+  is_active: boolean;
+}
+
 export default function SystemCodesPage() {
-  const [activeTab, setActiveTab] = useState<'channels' | 'branches' | 'grades' | 'tags' | 'categories' | 'staff' | 'permissions' | 'campaign_types'>('channels');
+  const [activeTab, setActiveTab] = useState<'channels' | 'branches' | 'grades' | 'tags' | 'categories' | 'staff' | 'permissions' | 'campaign_types' | 'point_rates'>('channels');
   const [role] = useState<string | null>(() => getCookie('user_role'));
   const canConfigureHq = role === 'SUPER_ADMIN' || role === 'HQ_OPERATOR';
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -160,6 +169,8 @@ export default function SystemCodesPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [permissions, setPermissions] = useState<ScreenPermission[]>([]);
   const [campaignTypes, setCampaignTypes] = useState<any[]>([]);
+  const [branchPointRates, setBranchPointRates] = useState<BranchPointRate[]>([]);
+  const [savingCell, setSavingCell] = useState<string | null>(null); // `${branchId}:${gradeId}`
   const [loading, setLoading] = useState(true);
 
   const [showChannelModal, setShowChannelModal] = useState(false);
@@ -220,9 +231,46 @@ export default function SystemCodesPage() {
     } else if (activeTab === 'permissions') {
       const { data } = await supabase.from('screen_permissions').select('*').order('role', { ascending: true });
       setPermissions((data || []) as ScreenPermission[]);
+    } else if (activeTab === 'point_rates') {
+      // 매트릭스 = 지점 × 등급. 모든 활성 지점과 등급을 함께 로드 (적립율 없는 셀도 표시되도록).
+      const db = supabase as any;
+      const [branchesRes, gradesRes, ratesRes] = await Promise.all([
+        db.from('branches').select('*').eq('is_active', true).order('name'),
+        db.from('customer_grades').select('*').eq('is_active', true).order('sort_order'),
+        db.from('branch_point_rates').select('id, branch_id, grade_id, point_rate, is_active'),
+      ]);
+      setBranches((branchesRes.data || []) as Branch[]);
+      setGrades((gradesRes.data || []) as CustomerGrade[]);
+      setBranchPointRates((ratesRes.data || []) as BranchPointRate[]);
     }
 
     setLoading(false);
+  };
+
+  // 매트릭스 셀 저장: 빈 값/NaN → delete(등급 기본값으로 폴백), 숫자 → upsert.
+  const handlePointRateBlur = async (
+    branchId: string,
+    gradeId: string,
+    rawValue: string,
+    prevValue: number | null,
+  ) => {
+    const trimmed = rawValue.trim();
+    const next: number | null = trimmed === '' ? null : Number(trimmed);
+    // 변경 없으면 스킵 (성능, 깜빡임 방지)
+    if (next === prevValue) return;
+    if (next !== null && (Number.isNaN(next) || next < 0 || next > 100)) {
+      alert('적립율은 0 ~ 100 사이여야 합니다.');
+      return;
+    }
+    const key = `${branchId}:${gradeId}`;
+    setSavingCell(key);
+    const result = await upsertBranchPointRate(branchId, gradeId, next, true);
+    setSavingCell(null);
+    if (result?.error) {
+      alert(`저장 실패: ${result.error}`);
+      return;
+    }
+    fetchData();
   };
 
   const handleDeleteChannel = async (id: string) => {
@@ -385,6 +433,16 @@ export default function SystemCodesPage() {
           }`}
         >
           캠페인 유형
+        </button>
+        <button
+          onClick={() => setActiveTab('point_rates')}
+          className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
+            activeTab === 'point_rates'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          지점별 적립율
         </button>
         <button
           onClick={() => setActiveTab('permissions')}
@@ -1009,6 +1067,112 @@ export default function SystemCodesPage() {
           loading={loading}
           onRefresh={fetchData}
         />
+      )}
+
+      {activeTab === 'point_rates' && (
+        <div className="card">
+          <div className="mb-4">
+            <h3 className="font-semibold">지점별 적립율 매트릭스</h3>
+            <p className="text-sm text-slate-500 mt-1">
+              구매가 발생한 <b>지점</b>과 고객 <b>등급</b>으로 적립율(%)을 결정합니다.
+              빈 셀은 <b>등급 기본값</b>(고객 등급 탭에서 설정)으로 폴백합니다.
+              0을 명시하면 "적립 없음"이며, 비워두면 등급 기본값을 따릅니다.
+              저장은 셀에서 포커스 해제(blur) 시점에 자동으로 이뤄집니다.
+            </p>
+          </div>
+
+          {loading ? (
+            <div className="text-center py-8 text-slate-400">로딩 중...</div>
+          ) : (
+            <div className="overflow-x-auto -mx-4 sm:mx-0">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th className="min-w-[180px]">지점</th>
+                    {grades.map(g => (
+                      <th key={g.id} className="text-center min-w-[140px]">
+                        <div className="flex flex-col items-center">
+                          <span
+                            className="inline-flex items-center gap-1.5"
+                            style={{ color: g.color }}
+                          >
+                            <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ backgroundColor: g.color }} />
+                            {g.name}
+                          </span>
+                          <span className="text-xs font-normal text-slate-400">
+                            기본 {Number(g.point_rate).toFixed(2)}%
+                          </span>
+                        </div>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {branches.length === 0 ? (
+                    <tr>
+                      <td colSpan={grades.length + 1} className="text-center py-8 text-slate-400">
+                        활성 지점이 없습니다. 먼저 "지점 관리"에서 지점을 등록하세요.
+                      </td>
+                    </tr>
+                  ) : grades.length === 0 ? (
+                    <tr>
+                      <td colSpan={1} className="text-center py-8 text-slate-400">
+                        활성 등급이 없습니다. 먼저 "고객 등급"에서 등급을 등록하세요.
+                      </td>
+                    </tr>
+                  ) : branches.map(branch => (
+                    <tr key={branch.id}>
+                      <td>
+                        <div className="font-medium">{branch.name}</div>
+                        <div className="text-xs text-slate-400 font-mono">{branch.code}</div>
+                      </td>
+                      {grades.map(grade => {
+                        const row = branchPointRates.find(
+                          r => r.branch_id === branch.id && r.grade_id === grade.id
+                        );
+                        const cellKey = `${branch.id}:${grade.id}`;
+                        const isSaving = savingCell === cellKey;
+                        const hasOverride = !!row && row.is_active;
+                        const prevValue = hasOverride ? Number(row!.point_rate) : null;
+                        return (
+                          <td key={grade.id} className="text-center align-top">
+                            <div className="inline-flex flex-col items-center gap-0.5">
+                              <div className="relative">
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  max="100"
+                                  defaultValue={prevValue ?? ''}
+                                  key={`${cellKey}:${prevValue ?? 'empty'}`}
+                                  placeholder={`${Number(grade.point_rate).toFixed(2)}`}
+                                  disabled={isSaving}
+                                  onBlur={(e) => handlePointRateBlur(branch.id, grade.id, e.target.value, prevValue)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                                    if (e.key === 'Escape') {
+                                      (e.target as HTMLInputElement).value = String(prevValue ?? '');
+                                      (e.target as HTMLInputElement).blur();
+                                    }
+                                  }}
+                                  className={`input w-24 text-center ${hasOverride ? 'font-semibold' : ''}`}
+                                />
+                                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 pointer-events-none">%</span>
+                              </div>
+                              <span className={`text-[10px] ${hasOverride ? 'text-blue-600' : 'text-slate-400'}`}>
+                                {isSaving ? '저장 중...' : hasOverride ? '매트릭스 적용' : '등급 기본'}
+                              </span>
+                            </div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       )}
 
       {activeTab === 'permissions' && (

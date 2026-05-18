@@ -1613,16 +1613,126 @@ export async function updateCustomerGrade(id: string, formData: FormData) {
 
 export async function deleteCustomerGrade(id: string) {
   const supabase = await createClient();
-  
+
 
   const { error } = await supabase.from('customer_grades').delete().eq('id', id);
-  
+
   if (error) {
     return { error: error.message };
   }
-  
+
   revalidatePath('/system-codes');
   return { success: true };
+}
+
+// ============ Branch × Grade Point Rates (마이그 067) ============
+// 매트릭스: (branch_id, grade_id) → point_rate
+//   · 매트릭스에 활성 row 있으면 그 값,
+//     없거나 is_active=false 면 customer_grades.point_rate 로 폴백
+//   · 적립율 결정은 서버측에서 재해결 — resolvePointRate() 사용
+
+export async function getBranchPointRates() {
+  const supabase = await createClient();
+  const db = supabase as any;
+  const { data } = await db
+    .from('branch_point_rates')
+    .select('id, branch_id, grade_id, point_rate, is_active');
+  return { data: (data || []) as Array<{
+    id: string;
+    branch_id: string;
+    grade_id: string;
+    point_rate: number;
+    is_active: boolean;
+  }> };
+}
+
+// 셀 단위 upsert: 빈 입력(rate=null)은 행 삭제로 처리 → 등급 기본값으로 폴백.
+export async function upsertBranchPointRate(
+  branchId: string,
+  gradeId: string,
+  pointRate: number | null,
+  isActive: boolean = true,
+) {
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  if (pointRate === null || Number.isNaN(pointRate)) {
+    const { error } = await db.from('branch_point_rates').delete()
+      .eq('branch_id', branchId).eq('grade_id', gradeId);
+    if (error) return { error: error.message };
+    revalidatePath('/system-codes');
+    return { success: true, cleared: true };
+  }
+
+  if (pointRate < 0 || pointRate > 100) {
+    return { error: '적립율은 0 ~ 100 사이여야 합니다.' };
+  }
+
+  // (branch_id, grade_id) UNIQUE — onConflict 로 upsert
+  const { error } = await db.from('branch_point_rates').upsert(
+    {
+      branch_id: branchId,
+      grade_id: gradeId,
+      point_rate: pointRate,
+      is_active: isActive,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'branch_id,grade_id' },
+  );
+  if (error) return { error: error.message };
+  revalidatePath('/system-codes');
+  return { success: true };
+}
+
+export async function deleteBranchPointRate(branchId: string, gradeId: string) {
+  const supabase = await createClient();
+  const db = supabase as any;
+  const { error } = await db.from('branch_point_rates').delete()
+    .eq('branch_id', branchId).eq('grade_id', gradeId);
+  if (error) return { error: error.message };
+  revalidatePath('/system-codes');
+  return { success: true };
+}
+
+// 서버측 적립율 해결 — POS 체크아웃에서 호출.
+// 클라이언트가 보낸 rate 는 표시용/하위호환용이며, 적립 계산은 이 함수가 단일 진실원.
+//   1) branch_point_rates 에 (branch_id, grade_id) 활성 row 있으면 그 rate
+//   2) 없으면 customer_grades.point_rate (등급 기본)
+//   3) 그것도 없으면 1.0
+export async function resolvePointRate(
+  db: any,
+  branchId: string | null | undefined,
+  gradeCode: string | null | undefined,
+): Promise<{ rate: number; source: 'matrix' | 'grade' | 'default' }> {
+  if (!gradeCode) return { rate: 1.0, source: 'default' };
+
+  // 등급 코드 → 등급 id, 기본 rate
+  const { data: gradeRow } = await db
+    .from('customer_grades')
+    .select('id, point_rate')
+    .eq('code', gradeCode)
+    .maybeSingle();
+
+  const gradeRate = gradeRow?.point_rate != null
+    ? parseFloat(String(gradeRow.point_rate)) : 1.0;
+
+  if (!branchId || !gradeRow?.id) {
+    return { rate: gradeRate, source: gradeRow ? 'grade' : 'default' };
+  }
+
+  // 매트릭스 우선
+  const { data: matRow } = await db
+    .from('branch_point_rates')
+    .select('point_rate, is_active')
+    .eq('branch_id', branchId)
+    .eq('grade_id', gradeRow.id)
+    .maybeSingle();
+
+  if (matRow && matRow.is_active && matRow.point_rate != null) {
+    return { rate: parseFloat(String(matRow.point_rate)), source: 'matrix' };
+  }
+
+  return { rate: gradeRate, source: 'grade' };
 }
 
 // ============ Customer Tags ============
@@ -1893,8 +2003,17 @@ export async function processPosCheckout(payload: CheckoutPayload) {
   const randomSuffix = Math.random().toString(36).substring(2, 6).toUpperCase();
   const orderNumber = `SA-${branchCode}-${today}-${randomSuffix}`;
 
+  // 적립율 서버측 재해결 (마이그 067) — branch_point_rates 우선, 없으면 등급 기본.
+  //   클라이언트가 보낸 gradePointRate 는 표시용. 서버는 (branchId, customer.grade) 로
+  //   매트릭스/등급 fallback 을 다시 계산한다.
+  let resolvedRate: number = gradePointRate || 1.0;
+  if (customerId) {
+    const customerGrade = (payload as any).customerGrade as string | null;
+    const r = await resolvePointRate(db, branchId, customerGrade);
+    resolvedRate = r.rate;
+  }
   const pointsEarned = customerId
-    ? Math.floor(finalAmount * (gradePointRate || 1.0) / 100)
+    ? Math.floor(finalAmount * (resolvedRate || 1.0) / 100)
     : 0;
 
   // 과세/면세 스냅샷 — 카트 항목별 is_taxable 조회 후 finalAmount를 비례 배분
@@ -1980,7 +2099,7 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     card_info: cardInfo || firstCard?.cardInfo || null,
     memo: payload.memo || null,
     customer_grade_at_order: customerId ? (payload as any).customerGrade || null : null,
-    point_rate_applied: customerId ? (gradePointRate || 1.0) : null,
+    point_rate_applied: customerId ? (resolvedRate || 1.0) : null,
     credit_settled: hasCredit ? false : null,
     // 051 워크플로 필드
     receipt_status: inferredReceiptStatus,

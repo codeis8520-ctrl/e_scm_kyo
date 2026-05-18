@@ -143,6 +143,8 @@ function POSPageInner() {
   const [products, setProducts] = useState<any[]>([]);
   const [productMap, setProductMap] = useState<Map<string, any>>(new Map());
   const [inventoryMap, setInventoryMap] = useState<Map<string, number>>(new Map());
+  // 매트릭스 067: `${branchId}|${gradeCode}` → 적립율(%). 매칭되면 등급 기본보다 우선.
+  const [branchRateMap, setBranchRateMap] = useState<Map<string, number>>(new Map());
   const [branches, setBranches] = useState<any[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [staff, setStaff] = useState<StaffUser[]>([]);
@@ -346,9 +348,10 @@ function POSPageInner() {
           .order('name');
       }
 
-      const [branchesRes, gradesRes, usersRes] = await Promise.all([
+      const [branchesRes, gradesRes, ratesRes, usersRes] = await Promise.all([
         supabase.from('branches').select('*').eq('is_active', true).order('created_at'),
-        supabase.from('customer_grades').select('code, point_rate'),
+        supabase.from('customer_grades').select('id, code, point_rate'),
+        (supabase as any).from('branch_point_rates').select('branch_id, grade_id, point_rate, is_active'),
         supabase.from('users').select('id, name, role, branch_id').eq('is_active', true).order('name'),
       ]);
 
@@ -356,7 +359,21 @@ function POSPageInner() {
       const productsData = ((productsRes.data || []) as any[]).filter(
         (p: any) => p.product_type !== 'RAW' && p.product_type !== 'SUB'
       );
-      const gradesMap = new Map(((gradesRes.data || []) as any[]).map((g: any) => [g.code, parseFloat(g.point_rate) || 1.0]));
+      const gradeRows = ((gradesRes.data || []) as any[]);
+      const gradesMap = new Map(gradeRows.map((g: any) => [g.code, parseFloat(g.point_rate) || 1.0]));
+      // 매트릭스 067: gradeId → gradeCode 매핑 후 (branchId|gradeCode) 키로 보관
+      const gradeIdToCode = new Map(gradeRows.map((g: any) => [g.id, g.code]));
+      const newBranchRateMap = new Map<string, number>();
+      // 마이그 067 미적용 환경 방어 — ratesRes.error 면 빈 map 으로 동작 (등급 기본값만 사용)
+      if (!ratesRes.error) {
+        for (const r of ((ratesRes.data || []) as any[])) {
+          if (r.is_active === false) continue;
+          const code = gradeIdToCode.get(r.grade_id);
+          if (!code) continue;
+          newBranchRateMap.set(`${r.branch_id}|${code}`, parseFloat(r.point_rate));
+        }
+      }
+      setBranchRateMap(newBranchRateMap);
 
       setProducts(productsData);
       setBranches(branchesData);
@@ -869,7 +886,10 @@ function POSPageInner() {
         branchChannel: branchData?.channel || 'STORE',
         customerId: selectedCustomer?.id || null,
         customerGrade: selectedCustomer?.grade || null,
-        gradePointRate: selectedCustomer?.grade_point_rate || 1.0,
+        // 매트릭스 067 — (지점, 등급) 매트릭스 우선, 없으면 등급 기본값. 서버에서도 재해결됨.
+        gradePointRate: (selectedBranch && selectedCustomer?.grade
+          ? branchRateMap.get(`${selectedBranch}|${selectedCustomer.grade}`)
+          : undefined) ?? (selectedCustomer?.grade_point_rate || 1.0),
         saleDate: saleIso,
         receiptStatus,
         receiptDate: receiptDate || null,

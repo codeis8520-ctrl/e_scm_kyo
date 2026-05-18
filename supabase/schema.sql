@@ -190,6 +190,28 @@ INSERT INTO customer_grades (code, name, description, color, sort_order, point_r
     ('VVIP', 'VVIP', 'VVIP 고객', '#ef4444', 3, 3.00);
 
 -- =====================================================
+-- 지점×고객등급 적립율 매트릭스 (마이그 067)
+--   · 매트릭스에 행이 있으면 그 point_rate 우선,
+--     없거나 is_active=false 이면 customer_grades.point_rate 폴백
+--   · 적립 기준 지점은 "구매가 발생한 지점"(sales_orders.branch_id) —
+--     고객의 primary_branch_id 와 무관
+-- =====================================================
+CREATE TABLE branch_point_rates (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    branch_id   UUID NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+    grade_id    UUID NOT NULL REFERENCES customer_grades(id) ON DELETE CASCADE,
+    point_rate  DECIMAL(5,2) NOT NULL DEFAULT 0.00 CHECK (point_rate >= 0 AND point_rate <= 100),
+    is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE (branch_id, grade_id)
+);
+
+CREATE INDEX idx_branch_point_rates_lookup
+    ON branch_point_rates (branch_id, grade_id)
+    WHERE is_active = TRUE;
+
+-- =====================================================
 -- 고객 태그 분류
 -- =====================================================
 CREATE TABLE customer_tags (
