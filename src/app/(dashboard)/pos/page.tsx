@@ -65,6 +65,14 @@ function getCookie(name: string): string | null {
   return cookies[name] || null;
 }
 
+// customers.address 는 "도로명\n상세" 로 저장됨 (CustomerModal 의 splitAddress 와 동일)
+function splitCustomerAddress(address: string | null | undefined): [string, string] {
+  if (!address) return ['', ''];
+  const idx = address.indexOf('\n');
+  if (idx === -1) return [address.trim(), ''];
+  return [address.slice(0, idx).trim(), address.slice(idx + 1).trim()];
+}
+
 const GRADE_LABELS: Record<string, string> = { VVIP: 'VVIP', VIP: 'VIP', NORMAL: '일반' };
 const GRADE_BADGE: Record<string, string> = {
   VVIP: 'bg-red-100 text-red-700',
@@ -233,6 +241,8 @@ function POSPageInner() {
     sender_name: '', sender_phone: '',
     sender_zipcode: '', sender_address: '', sender_address_detail: '',
   });
+  // 택배 주소가 고객 등록 주소에서 자동 채워졌는지 — 담당자에게 "고객 확인 후 저장" 안내용
+  const [addressFromRegistry, setAddressFromRegistry] = useState(false);
   const [shipFromBranchId, setShipFromBranchId] = useState<string>('');
 
   // 분할 결제
@@ -299,6 +309,8 @@ function POSPageInner() {
         setShipping(prev => target === 'recipient'
           ? { ...prev, recipient_zipcode: zip, recipient_address: road, recipient_address_detail: '' }
           : { ...prev, sender_zipcode: zip, sender_address: road, sender_address_detail: '' });
+        // 사용자가 주소 검색으로 직접 바꿨으면 "등록 주소 자동입력" 안내는 더 이상 표시 안 함
+        if (target === 'recipient') setAddressFromRegistry(false);
       },
     }).open();
   };
@@ -506,9 +518,11 @@ function POSPageInner() {
         sender_address: shipRow.sender_address || '',
         sender_address_detail: shipRow.sender_address_detail || '',
       }));
+      // 이전 거래의 배송지로 덮어썼으므로 "고객 등록 주소" 안내는 끔
+      setAddressFromRegistry(false);
       if (shipRow.branch_id) setShipFromBranchId(shipRow.branch_id);
     } else {
-      // 배송 정보 없으면 type=NONE으로
+      // 배송 정보 없으면 type=NONE으로. 단, selectCustomer 가 채운 recipient_* 는 유지.
       setShipping(prev => ({ ...prev, type: 'NONE' }));
     }
     // 초기화: 날짜·승인. 수령현황은 cart 집계가 계산(effect E).
@@ -695,12 +709,18 @@ function POSPageInner() {
 
   const selectCustomer = async (customer: Customer) => {
     const supabase = createClient() as any;
-    const { data: lastHistory } = await supabase
-      .from('point_history').select('balance')
-      .eq('customer_id', customer.id)
-      .order('created_at', { ascending: false }).limit(1).maybeSingle();
+    // 포인트 + 등록 주소를 함께 조회 (택배 수령지 자동 채움용)
+    const [pointRes, custRes] = await Promise.all([
+      supabase
+        .from('point_history').select('balance')
+        .eq('customer_id', customer.id)
+        .order('created_at', { ascending: false }).limit(1).maybeSingle(),
+      supabase
+        .from('customers').select('address')
+        .eq('id', customer.id).maybeSingle(),
+    ]);
 
-    setSelectedCustomer({ ...customer, currentPoints: lastHistory?.balance || 0 });
+    setSelectedCustomer({ ...customer, currentPoints: pointRes.data?.balance || 0 });
     setCustomerSearch('');
     setCustomerResults([]);
     setShowCustomerDropdown(false);
@@ -708,9 +728,21 @@ function POSPageInner() {
     setPointsToUse(0);
     setHistoryTab('consult');
 
-    setShipping(prev => prev.senderSameAsBuyer
-      ? { ...prev, sender_name: customer.name, sender_phone: customer.phone }
-      : prev);
+    // 고객 등록 주소를 택배 수령지에 미리 입력 — 담당자가 고객에게 확인 후 거래 저장.
+    // 현장 구매를 복사한 경우(shipment 없음)에도 이 단계에서 채워두면, applyCopy 의
+    // 후속 setShipping(type: NONE) 이 recipient_* 필드는 건드리지 않아 그대로 유지됨.
+    const [addrRoad, addrDetail] = splitCustomerAddress(custRes.data?.address);
+
+    setShipping(prev => ({
+      ...prev,
+      recipient_name: customer.name,
+      recipient_phone: customer.phone,
+      recipient_address: addrRoad || prev.recipient_address,
+      recipient_address_detail: addrRoad ? addrDetail : prev.recipient_address_detail,
+      sender_name: prev.senderSameAsBuyer ? customer.name : prev.sender_name,
+      sender_phone: prev.senderSameAsBuyer ? customer.phone : prev.sender_phone,
+    }));
+    setAddressFromRegistry(!!addrRoad);
 
     loadCustomerHistory(customer.id);
   };
@@ -743,6 +775,18 @@ function POSPageInner() {
     setPointsToUse(0);
     setHistory({ loading: false, consultations: [], orders: [], totalLtv: 0 });
     setConsultText('');
+    // 고객 해제 시 자동 채워졌던 수령인 정보도 비움 (다음 고객 선택 전 잔재 방지)
+    setShipping(prev => ({
+      ...prev,
+      recipient_name: '',
+      recipient_phone: '',
+      recipient_zipcode: '',
+      recipient_address: '',
+      recipient_address_detail: '',
+      sender_name: prev.senderSameAsBuyer ? '' : prev.sender_name,
+      sender_phone: prev.senderSameAsBuyer ? '' : prev.sender_phone,
+    }));
+    setAddressFromRegistry(false);
     customerInputRef.current?.focus();
   };
 
@@ -1004,6 +1048,7 @@ function POSPageInner() {
       sender_name: '', sender_phone: '',
       sender_zipcode: '', sender_address: '', sender_address_detail: '',
     });
+    setAddressFromRegistry(false);
     setShipFromBranchId(selectedBranch);
     setSplitMode(false);
     setExtraPayments([]);
@@ -1135,9 +1180,10 @@ function POSPageInner() {
       setSelectedCustomer(null);
     }
 
-    // 배송
+    // 배송 — draft 에 저장된 그대로 복원, "고객 등록 주소" 안내는 끔
     if (d.delivery_info) {
       setShipping((prev) => ({ ...prev, ...d.delivery_info }));
+      setAddressFromRegistry(false);
     }
 
     // 결제 진행 상태
@@ -2155,7 +2201,17 @@ function POSPageInner() {
 
                 {/* 수령인 */}
                 <div className="space-y-2">
-                  <p className="text-[11px] font-semibold text-slate-500 uppercase">수령인 (받는 분)</p>
+                  <div className="flex items-center justify-between">
+                    <p className="text-[11px] font-semibold text-slate-500 uppercase">수령인 (받는 분)</p>
+                    {addressFromRegistry && selectedCustomer && (
+                      <span
+                        className="text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200"
+                        title="고객 등록 정보의 주소를 자동으로 채웠습니다. 발송 전에 반드시 고객에게 확인하세요."
+                      >
+                        📍 고객 등록 주소 — 발송 전 확인 필요
+                      </span>
+                    )}
+                  </div>
                   <div className="grid grid-cols-2 gap-2">
                     <input type="text" placeholder="이름 *" value={shipping.recipient_name}
                       onChange={e => setShipping(p => ({ ...p, recipient_name: e.target.value }))}

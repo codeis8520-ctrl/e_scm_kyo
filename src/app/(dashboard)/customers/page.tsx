@@ -364,9 +364,9 @@ function CustomersPageInner() {
       <table className="table min-w-[900px]">
         <thead>
           <tr>
-            <th className="w-[22%]">고객</th>
+            <th className="w-[28%]">고객</th>
             <th className="w-[10%]">등급/지점</th>
-            <th className="w-[34%]">최근 상담</th>
+            <th className="w-[28%]">최근 상담</th>
             <th className="w-[18%]">최근 구매</th>
             <th className="w-[10%]">담당자</th>
             <th className="w-[6%]">관리</th>
@@ -407,14 +407,30 @@ function CustomersPageInner() {
                   >
                     {customer.name}
                   </Link>
-                  <div className="text-xs text-slate-500 mt-0.5">{customer.phone}</div>
+                  {customer.phone && (
+                    <div className="text-xs text-slate-500 mt-0.5 truncate" title={customer.phone}>
+                      📞 {customer.phone}
+                    </div>
+                  )}
+                  {customer.address && (
+                    <div
+                      className="text-xs text-slate-500 mt-0.5 line-clamp-2 break-words"
+                      title={customer.address}
+                    >
+                      📍 {customer.address}
+                    </div>
+                  )}
                   {!customer.is_active && (
                     <span className="inline-block mt-1 badge badge-error text-[10px]">비활성</span>
                   )}
                   {extraReasons.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-1">
                       {extraReasons.map((r, i) => (
-                        <span key={i} className={`text-xs ${MATCH_FIELD_STYLES[r.field] || 'text-slate-500'}`}>
+                        <span
+                          key={i}
+                          className={`text-xs ${MATCH_FIELD_STYLES[r.field] || 'text-slate-500'} truncate max-w-full`}
+                          title={r.label}
+                        >
                           {r.label}
                         </span>
                       ))}
@@ -441,7 +457,10 @@ function CustomersPageInner() {
                           <span className="text-[11px] text-slate-500 bg-slate-100 px-1.5 rounded-full">총 {cnt}회</span>
                         )}
                       </div>
-                      <div className="text-sm text-slate-700 line-clamp-2 break-words">
+                      <div
+                        className="text-sm text-slate-700 line-clamp-2 break-words"
+                        title={consult.snippet || ''}
+                      >
                         {consult.snippet || <span className="text-slate-400">(내용 없음)</span>}
                       </div>
                       {consult.consultant_name && (
