@@ -36,9 +36,11 @@ customer_consultations: id, customer_id, consultation_type, content(JSONB), cons
   ※ consultation_type='LEGACY': 외부 엑셀에서 임포트한 과거 상담. content={text, consulted_at, source:'legacy'}.
 point_history: id, customer_id, sales_order_id, type(earn/use/adjust/expire), points, balance, description
   ※ 고객 현재 포인트 = point_history에서 해당 고객의 최신 balance 값
-legacy_purchases(마이그 064): id, legacy_purchase_no(P000001 등), customer_id, phone, ordered_at, channel_text, branch_id, branch_code_raw, item_text, quantity, total_amount, payment_status, source_file, mapped_to_sales_order_id, metadata
-  ※ 외부 엑셀에서 임포트한 과거 구매 이력 보존. sales_orders와 완전 분리 — 매출/재고/회계 영향 없음.
-  ※ item_text 는 원본 텍스트 그대로(예: "십전10선*2,쌍화10선"). 자동 매핑 안 함.
+legacy_purchases(마이그 064+069): id, legacy_order_no(주문묶음=일자+순번+거래처코드), line_seq, customer_id, phone, ordered_at, channel_text(거래처명), branch_id, branch_code_raw(거래처코드 A0/B0/X7…), item_code(품목코드), item_text(품목명), option_text, quantity, unit_price_vat, supply_amount, vat_amount, discount_amount, total_amount(합계 VAT포함), staff_code, recipient_name/recipient_phone/recipient_address(선물배송 수령자), received_at(수령일자), payment_status, note, source_file, mapped_to_sales_order_id, metadata
+  ※ 외부 엑셀(경옥채판매DATA)에서 임포트한 과거 구매 이력 보존. **라인아이템(품목) 단위 1행**. sales_orders와 완전 분리 — 매출/재고/회계 영향 없음.
+  ※ 한 주문의 여러 품목은 legacy_order_no 가 동일. 주문 단위 집계 시 legacy_order_no 로 GROUP BY.
+  ※ item_text=품목명, item_code=원본 품목코드(향후 products.code 매핑 후보). 자동 매핑 안 함.
+  ※ recipient_*: 구매자(customer)≠수령자인 선물배송 정보. 전화 무(無)인 익명거래는 customer_id=NULL.
   ※ mapped_to_sales_order_id: 향후 사람이 매핑 검수해 sales_orders로 승격한 경우 그 ID. NULL이면 legacy 전용.
   ※ 고객 상세 화면의 "과거 구매" 탭에서 표시.
   ※ 고객 분석(/customers/analytics)의 RFM·재구매주기·이탈위험은 sales_orders(COMPLETED) + legacy_purchases 를 통합 집계해 LTV/F/M 계산.
