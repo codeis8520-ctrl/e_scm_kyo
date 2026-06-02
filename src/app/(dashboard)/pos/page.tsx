@@ -145,9 +145,29 @@ interface Customer {
   id: string;
   name: string;
   phone: string;
+  phone2?: string | null;
+  address?: string | null;
   grade: string;
   grade_point_rate?: number;
   currentPoints?: number;
+}
+
+// 검색 키워드(콤마 토큰)를 노란 배경으로 하이라이팅 (고객목록과 동일 규칙).
+function Highlight({ text, terms }: { text: string | null | undefined; terms: string[] }) {
+  if (text == null || text === '') return null;
+  const esc = terms.map((t) => t.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).filter(Boolean);
+  if (esc.length === 0) return <>{text}</>;
+  const re = new RegExp(`(${esc.join('|')})`, 'gi');
+  const segs = text.split(re);
+  return (
+    <>
+      {segs.map((seg, i) =>
+        i % 2 === 1
+          ? <mark key={i} className="bg-yellow-200 text-inherit rounded-sm px-0.5">{seg}</mark>
+          : <span key={i}>{seg}</span>
+      )}
+    </>
+  );
 }
 
 interface StaffUser {
@@ -478,7 +498,7 @@ function POSPageInner() {
     // ── Tier 3 — 고객 (백그라운드, 병렬 청크) ────────────────────────────
     const loadTier3 = async (gradesMap: Map<string, number>) => {
       const t0 = performance.now();
-      const allCust = await fetchAllParallel<any>('customers', 'id, name, phone, grade, is_active', 'name');
+      const allCust = await fetchAllParallel<any>('customers', 'id, name, phone, phone2, address, grade, is_active', 'name');
       setCustomers(allCust.map((c: any) => ({ ...c, grade_point_rate: gradesMap.get(c.grade) || 1.0 })));
       console.log(`[POS] 고객 ${allCust.length}명 — ${(performance.now() - t0).toFixed(0)}ms`);
     };
@@ -730,14 +750,19 @@ function POSPageInner() {
     });
   }, [paymentMethod]);
 
-  // 고객 검색 (로컬 필터)
+  // 고객 검색 (로컬 필터) — 고객목록과 동일: 콤마(,) 구분 토큰 모두 만족(AND),
+  // 각 토큰은 이름/연락처/전화번호2/주소 중 하나라도 매칭.
   useEffect(() => {
-    if (customerSearch.length >= 1) {
-      const q = customerSearch.toLowerCase();
-      const results = customers.filter(c =>
-        c.name.toLowerCase().includes(q) ||
-        c.phone.replace(/-/g, '').includes(q.replace(/-/g, ''))
-      );
+    const tokens = customerSearch.split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+    if (tokens.length >= 1) {
+      const matchTok = (c: Customer, tok: string) => {
+        const td = tok.replace(/-/g, '');
+        return c.name.toLowerCase().includes(tok)
+          || c.phone.replace(/-/g, '').includes(td)
+          || (!!c.phone2 && c.phone2.replace(/-/g, '').includes(td))
+          || (!!c.address && c.address.toLowerCase().includes(tok));
+      };
+      const results = customers.filter(c => tokens.every(tok => matchTok(c, tok)));
       setCustomerResults(results.slice(0, 50));  // 최대 50건까지 노출 (스크롤 가능)
       setShowCustomerDropdown(true);
       setCustomerHighlightIdx(0);
@@ -746,6 +771,12 @@ function POSPageInner() {
       setShowCustomerDropdown(false);
     }
   }, [customerSearch, customers]);
+
+  // 드롭다운 하이라이트용 토큰
+  const customerSearchTerms = useMemo(
+    () => customerSearch.split(',').map(t => t.trim()).filter(Boolean),
+    [customerSearch]
+  );
 
   useEffect(() => {
     if (editingQtyId) editingQtyRef.current?.focus();
@@ -1676,12 +1707,20 @@ function POSPageInner() {
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="font-medium text-sm flex items-center gap-1.5">
-                          {c.name}
+                          <span><Highlight text={c.name} terms={customerSearchTerms} /></span>
                           {(c as any).is_active === false && (
                             <span className="text-[10px] px-1 rounded bg-slate-200 text-slate-600">비활성</span>
                           )}
                         </p>
-                        <p className="text-xs text-slate-500">{c.phone}</p>
+                        <p className="text-xs text-slate-500">
+                          <Highlight text={c.phone} terms={customerSearchTerms} />
+                          {c.phone2 && <> · <Highlight text={c.phone2} terms={customerSearchTerms} /></>}
+                        </p>
+                        {c.address && (
+                          <p className="text-[11px] text-slate-400 line-clamp-1 max-w-[18rem]">
+                            📍 <Highlight text={c.address} terms={customerSearchTerms} />
+                          </p>
+                        )}
                       </div>
                       <span className={`px-1.5 py-0.5 text-xs rounded ${GRADE_BADGE[c.grade]}`}>
                         {GRADE_LABELS[c.grade]}
