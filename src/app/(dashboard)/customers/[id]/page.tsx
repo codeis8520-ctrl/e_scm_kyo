@@ -1264,7 +1264,19 @@ export default function CustomerDetailPage() {
                                     </div>
                                   ))
                                 )}
-                                <div className="px-3 py-1.5 text-right">
+                                <div className="px-3 py-1.5 flex items-center justify-between">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (confirm('이 과거 주문을 복사해 새 판매로 등록할까요?\n수령자·주소는 자동 채워지고, 매칭 안 된 품목은 POS 참고 패널에 표시됩니다.')) {
+                                        router.push(`/pos?legacyCopy=${o.id}`);
+                                      }
+                                    }}
+                                    className="text-xs px-3 py-1.5 rounded border border-indigo-200 text-indigo-700 hover:bg-indigo-50"
+                                    title="이 과거 주문을 복사해 새 판매 전표 생성"
+                                  >
+                                    📋 복사
+                                  </button>
                                   <span className="font-mono text-[11px] text-slate-300">{o.legacy_order_no || ''}</span>
                                 </div>
                               </div>

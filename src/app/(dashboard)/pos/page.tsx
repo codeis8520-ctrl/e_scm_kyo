@@ -169,8 +169,17 @@ function POSPageInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const copyOrderId = searchParams?.get('copy') || null;
+  const legacyCopyId = searchParams?.get('legacyCopy') || null;
 
   const [copyBanner, setCopyBanner] = useState<string | null>(null);
+  // 과거주문(legacy) 복사 시 이름매칭에 실패한 품목(원본 보존) — 참고 패널용
+  const [unmatchedLegacyItems, setUnmatchedLegacyItems] = useState<{
+    item_text: string | null;
+    option_text: string | null;
+    quantity: number | null;
+    unit_price_vat: number | null;
+    total_amount: number | null;
+  }[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [search, setSearch] = useState('');
   const [products, setProducts] = useState<any[]>([]);
@@ -578,6 +587,87 @@ function POSPageInner() {
     setCopyBanner(`📋 ${src.order_number} 복사 중 — 일자·승인은 초기화, 품목 배송방식은 유지됨`);
   }, [customers, products]);
 
+  // ── 과거주문(legacy) 복사 — product_id 없으므로 이름 정확매칭만 자동 담기 ──
+  const applyLegacyCopy = useCallback(async (legacyOrderId: string) => {
+    const sb = createClient() as any;
+    const { data: src } = await sb.from('legacy_orders')
+      .select(`
+        id, legacy_order_no, customer_id, recipient_name, recipient_phone,
+        recipient_address, ordered_at, total_amount, branch_id, channel_text,
+        legacy_order_items(line_seq, item_code, item_text, option_text, quantity, unit_price_vat, total_amount)
+      `)
+      .eq('id', legacyOrderId).maybeSingle();
+    if (!src) return;
+
+    // 매출처/출고지
+    if (src.branch_id) {
+      setSelectedBranch(src.branch_id);
+      setShipFromBranchId(src.branch_id);
+    }
+    // 고객
+    if (src.customer_id) {
+      const cust = customers.find(c => c.id === src.customer_id);
+      if (cust) await selectCustomer(cust);
+    }
+
+    const hasRecipient = !!(src.recipient_name || src.recipient_phone || src.recipient_address);
+    // 품목 — 이름 정확매칭(trim)만 자동 담기. 미매칭은 원본 보존.
+    const items = ((src.legacy_order_items as any[]) || [])
+      .slice()
+      .sort((a, b) => (a.line_seq ?? 0) - (b.line_seq ?? 0));
+    const newCart: CartItem[] = [];
+    const unmatched: typeof unmatchedLegacyItems = [];
+    for (const it of items) {
+      const prod = products.find(p => String(p.name).trim() === String(it.item_text ?? '').trim());
+      if (prod) {
+        newCart.push({
+          productId: prod.id,
+          name: prod.name,
+          price: Number(prod.price ?? 0),
+          quantity: Number(it.quantity) || 1,
+          discount: 0,
+          barcode: prod.barcode,
+          deliveryType: hasRecipient ? 'PARCEL' : 'PICKUP',
+        });
+      } else {
+        unmatched.push({
+          item_text: it.item_text ?? null,
+          option_text: it.option_text ?? null,
+          quantity: it.quantity ?? null,
+          unit_price_vat: it.unit_price_vat ?? null,
+          total_amount: it.total_amount ?? null,
+        });
+      }
+    }
+    setCart(newCart);
+
+    // 발송정보 — legacy엔 zipcode/detail 없음 → '', address는 통째로
+    if (hasRecipient) {
+      setShipping(prev => ({
+        ...prev,
+        type: 'PARCEL',
+        recipient_name: src.recipient_name || '',
+        recipient_phone: src.recipient_phone || '',
+        recipient_address: src.recipient_address || '',
+        recipient_zipcode: '',
+        recipient_address_detail: '',
+        delivery_message: '',
+      }));
+      setAddressFromRegistry(false);
+    } else {
+      setShipping(prev => ({ ...prev, type: 'NONE' }));
+    }
+
+    const today = kstTodayString();
+    setOrderMemo('');
+    setReceiptDate(today);
+    setSaleDate(today);
+    setApprovalStatus('COMPLETED');
+    setMainTab('checkout');
+    setUnmatchedLegacyItems(unmatched);
+    setCopyBanner(`📋 과거주문 복사 — 발송정보 복사됨 · 품목 ${newCart.length}개 자동 / ${unmatched.length}개 수동 확인 필요`);
+  }, [customers, products]);
+
   // ── URL ?copy=<id>로 진입 시 1회 적용 ───────────────────────────────────
   useEffect(() => {
     if (!copyOrderId || loading) return;
@@ -589,6 +679,18 @@ function POSPageInner() {
     return () => { aborted = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [copyOrderId, loading]);
+
+  // ── URL ?legacyCopy=<id>로 진입 시 1회 적용 ──────────────────────────────
+  useEffect(() => {
+    if (!legacyCopyId || loading) return;
+    let aborted = false;
+    (async () => {
+      await applyLegacyCopy(legacyCopyId);
+      if (!aborted) router.replace('/pos');
+    })();
+    return () => { aborted = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [legacyCopyId, loading]);
 
   // 배송 미활성 시 출고 지점을 판매 지점에 동기화
   useEffect(() => {
@@ -1117,6 +1219,7 @@ function POSPageInner() {
     setCurrentDraftId(null);
     setCopyBanner(null);
     setDraftBanner(null);
+    setUnmatchedLegacyItems([]);
   };
 
   const refreshDraftCount = useCallback(async () => {
@@ -1744,6 +1847,21 @@ function POSPageInner() {
                                   </div>
                                 </div>
                               ))}
+                              <div className="px-2 py-1.5 flex justify-end">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const warn = cart.length > 0
+                                      ? '현재 장바구니가 복사된 과거주문으로 대체됩니다. 진행할까요?'
+                                      : '이 과거 주문을 복사해 새 판매로 등록할까요?';
+                                    if (confirm(warn)) applyLegacyCopy(o.id);
+                                  }}
+                                  title="이 과거 주문을 복사해 새 판매 등록 (이름 매칭 품목만 자동 담김)"
+                                  className="text-[10px] px-1.5 py-0.5 rounded border border-indigo-200 text-indigo-600 hover:bg-indigo-50"
+                                >
+                                  📋 이 주문 복사
+                                </button>
+                              </div>
                             </div>
                           )}
                         </div>
@@ -2060,6 +2178,48 @@ function POSPageInner() {
             <p className="text-center text-slate-400 py-8 text-sm">제품을 선택해주세요</p>
           )}
         </div>
+
+        {/* 과거주문 미매칭 품목 참고 패널 — 이름 매칭 실패한 원본 품목(수동 검색·추가) */}
+        {unmatchedLegacyItems.length > 0 && (
+          <div className="mx-3 mb-2 border border-amber-200 rounded-lg bg-amber-50 overflow-hidden flex-shrink-0">
+            <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-amber-200">
+              <span className="text-xs font-semibold text-amber-800">
+                참고: 과거 주문 미매칭 품목 ({unmatchedLegacyItems.length}개)
+              </span>
+              <button
+                type="button"
+                onClick={() => setUnmatchedLegacyItems([])}
+                className="text-amber-400 hover:text-amber-700 text-sm leading-none"
+                title="참고 패널 비우기"
+              >✕</button>
+            </div>
+            <div className="divide-y divide-amber-100 max-h-[28vh] overflow-auto">
+              {unmatchedLegacyItems.map((it, idx) => {
+                const amount = it.total_amount ?? it.unit_price_vat;
+                return (
+                  <div key={idx} className="px-2.5 py-1.5 flex items-start gap-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium text-slate-800 whitespace-pre-wrap break-words">{it.item_text || '-'}</div>
+                      {it.option_text && <div className="text-[10px] text-slate-500">{it.option_text}</div>}
+                      <div className="text-[10px] text-slate-400">
+                        수량 {it.quantity ?? '-'}{amount != null ? ` · 원본 ${Number(amount).toLocaleString()}원` : ''}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearch(it.item_text || '');
+                        searchRef.current?.focus();
+                      }}
+                      className="text-[10px] px-1.5 py-0.5 rounded border border-amber-300 text-amber-700 hover:bg-amber-100 whitespace-nowrap"
+                      title="검색창에 품목명을 채워 제품을 찾습니다"
+                    >🔍 제품 찾기</button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* 결제 옵션 영역 — 필요 시 스크롤. 결제 버튼은 별도 푸터로 분리(아래) */}
         <div className="p-4 border-t space-y-3 overflow-y-auto flex-shrink-0 max-h-[55vh] lg:max-h-[55%]">

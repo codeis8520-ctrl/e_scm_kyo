@@ -6,6 +6,28 @@
 
 ## Completed Steps
 
+### Step — POS 큐 #1: 과거구매(legacy) 복사 → 새 판매 등록 (Phase 1 MVP)
+
+**상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, build ✅, 2026-06-02)
+
+**Goal**: 과거 주문(legacy) 1건 "📋 복사"로 POS 새 판매에 반영 — 발송정보 자동 prefill + 이름 정확매칭 품목만 자동 장바구니 + 미매칭은 참고 패널(수동).
+
+**변경 파일 (2개, DB 변경 없음)**:
+- `src/app/(dashboard)/pos/page.tsx` — legacyCopyId, unmatchedLegacyItems state, applyLegacyCopy(신설, applyCopy 미수정), `?legacyCopy=` useEffect, resetCheckoutForm 리셋, 참고 패널, POS 내부 legacy 카드 "📋 이 주문 복사" footer.
+- `src/app/(dashboard)/customers/[id]/page.tsx` — legacy 카드 footer 좌(📋 복사)·우(order_no), router.push('/pos?legacyCopy=').
+
+**주요 결정**:
+- 매칭 키 = `String(p.name).trim() === String(it.item_text ?? '').trim()` 단일. item_code/유사도/정규화 미사용.
+- 매칭가 = 현재 products.price. 원본 단가는 참고 패널에만.
+- 발송정보 PARCEL(recipient 있을 때), legacy엔 zipcode/detail 없어 ''. address 통째로.
+- confirm은 버튼 onClick에서만. 참고 패널 복사 후 유지(자동 제거 없음, ✕ 버튼만). clearCustomer 미접촉.
+- processPosCheckout/checkout/applyCopy/재사용 함수 전부 미변경.
+- build: ✓ Compiled successfully in 8.6s (에러/경고 0).
+
+**라인 어긋남**: 브리프 L487/L582 등 applyCopy 앵커는 일치. 참고 패널·legacy 카드는 브리프 라인이 함수 삽입(+~115줄)으로 이동했으나 고유 앵커 텍스트로 정확 적용(기능 동일). 별도 이슈 없음.
+
+**Known Gaps**: 없음 (Out of Scope 항목 — 별칭맵/유사도/포장/legacy_purchases/자동제거/schema.ts/마이그 전부 미접촉).
+
 ### Step — phone2 (전화번호2) 추가 — 프론트 + 액션 (마이그 072 는 Arch)
 
 **상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, build ✅, 2026-06-02)
