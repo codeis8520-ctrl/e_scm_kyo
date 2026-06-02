@@ -91,7 +91,7 @@ async function fetchDefaultList(
 
   let query = supabase
     .from('customers')
-    .select('id, name, phone, email, address, grade, is_active, primary_branch:branches(id, name), assigned_to:users!customers_assigned_to_fkey(id, name)', { count: 'exact' });
+    .select('id, name, phone, phone2, email, address, grade, is_active, primary_branch:branches(id, name), assigned_to:users!customers_assigned_to_fkey(id, name)', { count: 'exact' });
 
   if (!needsHistorySort) {
     if (sort === 'name') query = query.order('name', { ascending: true });
@@ -166,15 +166,17 @@ async function fallbackSearch(
         `email.ilike."%${sQ}%"`,
         `address.ilike."%${sQ}%"`,
         `phone.ilike."%${sQ}%"`,
+        `phone2.ilike."%${sQ}%"`,
       ];
       for (const p of phonePatterns) {
         const sp = p.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
         orFilters.push(`phone.ilike."%${sp}%"`);
+        orFilters.push(`phone2.ilike."%${sp}%"`);
       }
 
       let query = supabase
         .from('customers')
-        .select('id, name, phone, email, address, grade, is_active, primary_branch:branches(id, name), assigned_to:users!customers_assigned_to_fkey(id, name)')
+        .select('id, name, phone, phone2, email, address, grade, is_active, primary_branch:branches(id, name), assigned_to:users!customers_assigned_to_fkey(id, name)')
         .or(orFilters.join(','));
 
       if (grade) query = query.eq('grade', grade);
@@ -220,6 +222,8 @@ async function fallbackSearch(
     if (c.name?.toLowerCase().includes(ql)) reasons.push({ field: 'name', value: c.name });
     if (c.phone?.includes(q) || (isPhoneSearch && c.phone?.replace(/[^0-9]/g, '').includes(digitsOnly)))
       reasons.push({ field: 'phone', value: c.phone });
+    if (c.phone2?.includes(q) || (isPhoneSearch && c.phone2?.replace(/[^0-9]/g, '').includes(digitsOnly)))
+      reasons.push({ field: 'phone', value: c.phone2 });
     if (c.email?.toLowerCase().includes(ql)) reasons.push({ field: 'email', value: c.email });
     if (c.address?.toLowerCase().includes(ql))
       reasons.push({ field: 'address', value: c.address.length > 30 ? c.address.substring(0, 30) + '...' : c.address });
@@ -236,7 +240,7 @@ async function fallbackSearch(
   if (productOnlyIds.length > 0) {
     let query = supabase
       .from('customers')
-      .select('id, name, phone, email, address, grade, is_active, primary_branch:branches(id, name), assigned_to:users!customers_assigned_to_fkey(id, name)')
+      .select('id, name, phone, phone2, email, address, grade, is_active, primary_branch:branches(id, name), assigned_to:users!customers_assigned_to_fkey(id, name)')
       .in('id', productOnlyIds.slice(0, 100));
     if (grade) query = query.eq('grade', grade);
     if (branchId) query = query.eq('primary_branch_id', branchId);

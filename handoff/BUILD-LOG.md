@@ -6,6 +6,25 @@
 
 ## Completed Steps
 
+### Step — phone2 (전화번호2) 추가 — 프론트 + 액션 (마이그 072 는 Arch)
+
+**상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, build ✅, 2026-06-02)
+
+**Goal**: 고객 등록/수정 폼에 두 번째 전화번호(phone2) 입력·저장 + 검색에서 phone/phone2 둘 다 매칭(폴백 경로).
+
+**변경 파일 (4개, DB 변경 없음 — RPC 072 는 Arch 직접)**:
+- `src/app/(dashboard)/customers/CustomerModal.tsx` — interface phone2 추가, formData prefill, "연락처" 아래 "전화번호2" 입력(formatPhone, 검증 없음), form.append('phone2').
+- `src/lib/actions.ts` — createCustomer/updateCustomer customerData 에 `phone2: (formData.get('phone2') as string)?.trim() || null` (빈문자→NULL). 폴백 retry 미추가(070 적용 전제).
+- `src/app/api/customers/search/route.ts` — **fallbackSearch 폴백 경로만**: orFilters·phonePatterns 에 phone2.ilike 추가, select 3곳 phone2 포함, reasons phone2 매칭 push(field 'phone' 재사용). RPC 호출부 미변경.
+- `src/app/(dashboard)/customers/[id]/page.tsx` — interface CustomerDetail phone2 추가, 헤더 보조 표기 `{customer.phone2 && ...}`(formatPhone). select 는 `*`(L209)라 변경 불필요.
+
+**주요 결정**:
+- 상세 헤더 포함(스킵 안 함) — customer select 가 `*` 라 phone2 자동 노출, formatPhone import 기존 존재.
+- reasons 는 field 'phone' 재사용(FIELD_LABELS '연락처' 그대로).
+- build: ✓ Compiled successfully in 6.1s.
+
+**Known Gaps**: 없음 (Out of Scope 항목 미접촉 — schema.ts/RPC/마이그/병합/백필/legacy/POS 전부 미접촉).
+
 ### Step — 고객 상세 UX 2건 (인라인 수정 + 목록 복원)
 
 **상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, 2026-06-02)

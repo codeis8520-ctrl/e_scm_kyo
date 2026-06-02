@@ -763,6 +763,7 @@ export async function createCustomer(formData: FormData) {
   const customerData = {
     name: formData.get('name') as string,
     phone: formData.get('phone') as string,
+    phone2: (formData.get('phone2') as string)?.trim() || null,
     email: formData.get('email') as string || null,
     address: formData.get('address') as string || null,
     grade: formData.get('grade') as string || 'NORMAL',
@@ -797,6 +798,7 @@ export async function updateCustomer(id: string, formData: FormData) {
   const customerData = {
     name: formData.get('name') as string,
     phone: formData.get('phone') as string,
+    phone2: (formData.get('phone2') as string)?.trim() || null,
     email: formData.get('email') as string || null,
     address: formData.get('address') as string || null,
     grade: formData.get('grade') as string || 'NORMAL',

@@ -23,6 +23,7 @@ interface CustomerDetail {
   id: string;
   name: string;
   phone: string;
+  phone2: string | null;
   email: string | null;
   address: string | null;
   grade: string;
@@ -520,7 +521,10 @@ export default function CustomerDetailPage() {
           <Link href={backHref} className="text-slate-400 hover:text-slate-600">← 목록</Link>
           <div>
             <h1 className="text-2xl font-bold">{customer.name}</h1>
-            <p className="text-slate-500">{formatPhone(customer.phone)}</p>
+            <p className="text-slate-500">
+              {formatPhone(customer.phone)}
+              {customer.phone2 && <span> · {formatPhone(customer.phone2)}</span>}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2">

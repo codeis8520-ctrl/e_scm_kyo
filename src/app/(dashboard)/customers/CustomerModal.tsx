@@ -15,6 +15,7 @@ interface Customer {
   id?: string;
   name: string;
   phone: string;
+  phone2?: string | null;
   email: string | null;
   address: string | null;
   grade: string;
@@ -44,6 +45,7 @@ export default function CustomerModal({ customer, onClose, onSuccess }: Props) {
   const [formData, setFormData] = useState({
     name: customer?.name || '',
     phone: customer?.phone || '',
+    phone2: customer?.phone2 || '',
     email: customer?.email || '',
     grade: customer?.grade || '',
     primary_branch_id: customer?.primary_branch_id || '',
@@ -120,6 +122,7 @@ export default function CustomerModal({ customer, onClose, onSuccess }: Props) {
     const form = new FormData();
     form.append('name', formData.name);
     form.append('phone', formData.phone);
+    form.append('phone2', formData.phone2);
     form.append('email', formData.email);
     form.append('grade', formData.grade);
     form.append('primary_branch_id', formData.primary_branch_id);
@@ -197,6 +200,17 @@ export default function CustomerModal({ customer, onClose, onSuccess }: Props) {
               className={`mt-1 input ${fieldErrors.phone ? 'border-red-500' : ''}`}
             />
             {fieldErrors.phone && <p className="mt-1 text-xs text-red-500">{fieldErrors.phone}</p>}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">전화번호2</label>
+            <input
+              type="tel"
+              value={formData.phone2}
+              onChange={(e) => setFormData({ ...formData, phone2: formatPhone(e.target.value) })}
+              placeholder="010-0000-0000"
+              className="mt-1 input"
+            />
           </div>
 
           <div>
