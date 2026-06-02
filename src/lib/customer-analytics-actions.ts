@@ -54,7 +54,7 @@ export async function getRfmAnalysis(branchId?: string) {
 
   if (!customers?.length) return { data: [], segmentSummary: [] };
 
-  // 모든 완료 주문 (고객 연결된 것만) — sales_orders + legacy_purchases 통합
+  // 모든 완료 주문 (고객 연결된 것만) — sales_orders + legacy_orders 통합
   let ordersQ = sb
     .from('sales_orders')
     .select('customer_id, total_amount, ordered_at, branch_id')
@@ -64,7 +64,7 @@ export async function getRfmAnalysis(branchId?: string) {
   if (branchId) ordersQ = ordersQ.eq('branch_id', branchId);
 
   let legacyQ = sb
-    .from('legacy_purchases')
+    .from('legacy_orders')
     .select('customer_id, total_amount, ordered_at, branch_id')
     .not('customer_id', 'is', null)
     .range(0, 99999);
@@ -131,7 +131,7 @@ export async function getRfmAnalysis(branchId?: string) {
 export async function getRepurchaseCycles(branchId?: string) {
   const sb = await createClient() as any;
 
-  // sales_orders + legacy_purchases 통합 페치
+  // sales_orders + legacy_orders 통합 페치 (legacy_orders 는 주문당 1행 → count=주문수)
   let q = sb
     .from('sales_orders')
     .select('customer_id, ordered_at, branch_id')
@@ -141,7 +141,7 @@ export async function getRepurchaseCycles(branchId?: string) {
   if (branchId) q = q.eq('branch_id', branchId);
 
   let lq = sb
-    .from('legacy_purchases')
+    .from('legacy_orders')
     .select('customer_id, ordered_at, branch_id')
     .not('customer_id', 'is', null)
     .range(0, 99999);
@@ -217,7 +217,7 @@ export async function getChurnRiskCustomers(branchId?: string) {
   // KST 기준 60일 전 자정
   const cutoff = kstDaysAgoStart(60);
 
-  // sales_orders + legacy_purchases 통합
+  // sales_orders + legacy_orders 통합 (legacy_orders 는 주문당 1행 → count=주문수)
   let q = sb
     .from('sales_orders')
     .select('customer_id, ordered_at, total_amount, branch_id')
@@ -227,7 +227,7 @@ export async function getChurnRiskCustomers(branchId?: string) {
   if (branchId) q = q.eq('branch_id', branchId);
 
   let lq = sb
-    .from('legacy_purchases')
+    .from('legacy_orders')
     .select('customer_id, ordered_at, total_amount, branch_id')
     .not('customer_id', 'is', null)
     .range(0, 99999);

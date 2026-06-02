@@ -51,18 +51,29 @@ interface User { id: string; name: string; }
 
 type TabKey = 'timeline' | 'consultations' | 'purchases' | 'legacy' | 'info';
 
-interface LegacyPurchase {
+interface LegacyOrderItem {
+  line_seq: number | null;
+  item_code: string | null;
+  item_text: string | null;
+  option_text: string | null;
+  quantity: number | null;
+  total_amount: number | null;
+}
+
+interface LegacyOrder {
   id: string;
-  legacy_purchase_no: string | null;
+  legacy_order_no: string | null;
   ordered_at: string;
   channel_text: string | null;
   branch_code_raw: string | null;
   branch?: { name: string } | null;
-  item_text: string;
-  quantity: number | null;
-  total_amount: number | null;
+  recipient_name: string | null;
+  recipient_phone: string | null;
+  recipient_address: string | null;
   payment_status: string | null;
+  total_amount: number | null;
   source_file: string | null;
+  legacy_order_items: LegacyOrderItem[];
 }
 
 const GRADE_COLORS: Record<string, string> = {
@@ -153,7 +164,8 @@ export default function CustomerDetailPage() {
 
   const [customer, setCustomer] = useState<CustomerDetail | null>(null);
   const [purchaseOrders, setPurchaseOrders] = useState<any[]>([]);
-  const [legacyPurchases, setLegacyPurchases] = useState<LegacyPurchase[]>([]);
+  const [legacyOrders, setLegacyOrders] = useState<LegacyOrder[]>([]);
+  const [expandedLegacy, setExpandedLegacy] = useState<Set<string>>(new Set());
   const [legacySearch, setLegacySearch] = useState('');
   const [expandedOrders, setExpandedOrders] = useState<Set<string>>(new Set());
   const [allExpanded, setAllExpanded] = useState(false);
@@ -214,8 +226,8 @@ export default function CustomerDetailPage() {
       supabase.from('users').select('id, name').eq('is_active', true),
       supabase.from('point_history').select('balance').eq('customer_id', customerId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
       supabase
-        .from('legacy_purchases')
-        .select('id, legacy_purchase_no, ordered_at, channel_text, branch_code_raw, item_text, quantity, total_amount, payment_status, source_file, branch:branches(name)')
+        .from('legacy_orders')
+        .select('id, legacy_order_no, ordered_at, channel_text, branch_code_raw, recipient_name, recipient_phone, recipient_address, payment_status, total_amount, source_file, branch:branches(name), legacy_order_items(line_seq, item_code, item_text, option_text, quantity, total_amount)')
         .eq('customer_id', customerId)
         .order('ordered_at', { ascending: false })
         .range(0, 9999),
@@ -240,7 +252,7 @@ export default function CustomerDetailPage() {
       return true;
     });
     setPurchaseOrders(filteredOrders);
-    setLegacyPurchases((legacyRes?.data || []) as LegacyPurchase[]);
+    setLegacyOrders((legacyRes?.data || []) as LegacyOrder[]);
     // LEGACY 상담의 실제 일자(content.consulted_at) 기준으로 다시 정렬 — 시간순 일관성 확보
     const sortedConsults = ((consultationsRes.data || []) as Consultation[]).slice().sort((a, b) =>
       new Date(consultDisplayDate(b)).getTime() - new Date(consultDisplayDate(a)).getTime()
@@ -457,6 +469,15 @@ export default function CustomerDetailPage() {
     });
   };
 
+  const toggleLegacy = (orderId: string) => {
+    setExpandedLegacy(prev => {
+      const next = new Set(prev);
+      if (next.has(orderId)) next.delete(orderId);
+      else next.add(orderId);
+      return next;
+    });
+  };
+
   const handleDateFilterChange = (type: 'purchase' | 'consult', field: 'start' | 'end', value: string) => {
     if (type === 'purchase') {
       setActivePeriod(-1);
@@ -595,7 +616,7 @@ export default function CustomerDetailPage() {
               { key: 'consultations' as TabKey, label: `상담 기록 (${consultations.length})` },
               { key: 'timeline' as TabKey, label: `통합 타임라인` },
               { key: 'purchases' as TabKey, label: `구매 이력 (${purchaseOrders.length})` },
-              ...(legacyPurchases.length > 0 ? [{ key: 'legacy' as TabKey, label: `과거 구매 (${legacyPurchases.length})` }] : []),
+              ...(legacyOrders.length > 0 ? [{ key: 'legacy' as TabKey, label: `과거 구매 (${legacyOrders.length})` }] : []),
               { key: 'info' as TabKey, label: '기본 정보' },
             ]).map(t => (
               <button key={t.key} onClick={() => {
@@ -1124,7 +1145,7 @@ export default function CustomerDetailPage() {
                   <div className="text-xs text-amber-900 leading-relaxed">
                     <b>과거 구매 (Legacy)</b> — 외부 시스템(엑셀)에서 임포트한 과거 거래.
                     품목은 원본 텍스트 그대로 표시되며 시스템 매출/재고/회계에는 반영되지 않습니다.
-                    <span className="ml-2 text-amber-600">총 <b>{legacyPurchases.length}</b>건 · 합계 <b>{legacyPurchases.reduce((s, p) => s + (Number(p.total_amount) || 0), 0).toLocaleString()}원</b></span>
+                    <span className="ml-2 text-amber-600">총 <b>{legacyOrders.length}</b>건(주문) · 합계 <b>{legacyOrders.reduce((acc, o) => acc + (Number(o.total_amount) || 0), 0).toLocaleString()}원</b></span>
                   </div>
                 </div>
               </div>
@@ -1143,67 +1164,96 @@ export default function CustomerDetailPage() {
                   )}
                 </div>
 
-                {legacyPurchases.length === 0 ? (
+                {legacyOrders.length === 0 ? (
                   <p className="text-center text-slate-400 py-8 text-sm">과거 구매 이력이 없습니다.</p>
                 ) : (
-                  <div className="overflow-x-auto">
-                    <table className="table text-sm min-w-[800px]">
-                      <thead>
-                        <tr className="text-xs text-slate-500">
-                          <th className="whitespace-nowrap">일자</th>
-                          <th className="whitespace-nowrap">출고처</th>
-                          <th className="whitespace-nowrap">매출처</th>
-                          <th>품목 (원본)</th>
-                          <th className="text-center whitespace-nowrap">수량</th>
-                          <th className="text-right whitespace-nowrap">합계</th>
-                          <th className="whitespace-nowrap">결제</th>
-                          <th className="text-xs text-slate-400 whitespace-nowrap">원본ID</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {legacyPurchases
-                          .filter(p => {
-                            if (!legacySearch) return true;
-                            const q = legacySearch.toLowerCase();
-                            return (
-                              (p.item_text || '').toLowerCase().includes(q) ||
-                              (p.channel_text || '').toLowerCase().includes(q) ||
-                              (p.branch?.name || '').toLowerCase().includes(q) ||
-                              (p.branch_code_raw || '').toLowerCase().includes(q)
-                            );
-                          })
-                          .map(p => (
-                            <tr key={p.id} className="hover:bg-slate-50">
-                              <td className="whitespace-nowrap text-slate-700">{p.ordered_at}</td>
-                              <td className="text-xs">
-                                {p.branch?.name ? (
-                                  <span className="inline-block px-2 py-0.5 rounded bg-blue-50 text-blue-700">{p.branch.name}</span>
+                  <div className="space-y-2">
+                    {legacyOrders
+                      .filter(o => {
+                        if (!legacySearch) return true;
+                        const q = legacySearch.toLowerCase();
+                        return (
+                          (o.channel_text || '').toLowerCase().includes(q) ||
+                          (o.branch?.name || '').toLowerCase().includes(q) ||
+                          (o.branch_code_raw || '').toLowerCase().includes(q) ||
+                          (o.legacy_order_items || []).some(it => (it.item_text || '').toLowerCase().includes(q))
+                        );
+                      })
+                      .map(o => {
+                        const items = [...(o.legacy_order_items || [])].sort(
+                          (a, b) => (a.line_seq ?? 0) - (b.line_seq ?? 0)
+                        );
+                        const isOpen = expandedLegacy.has(o.id);
+                        const hasRecipient = !!(o.recipient_name || o.recipient_phone || o.recipient_address);
+                        return (
+                          <div key={o.id} className="border border-slate-200 rounded-lg overflow-hidden">
+                            <button
+                              onClick={() => toggleLegacy(o.id)}
+                              className="w-full text-left px-3 py-2.5 bg-slate-50 hover:bg-slate-100 transition-colors"
+                            >
+                              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                                <span className="text-slate-400 text-xs">{isOpen ? '▾' : '▸'}</span>
+                                <span className="text-sm font-medium text-slate-700 whitespace-nowrap">{o.ordered_at}</span>
+                                {o.branch?.name ? (
+                                  <span className="inline-block px-2 py-0.5 rounded bg-blue-50 text-blue-700 text-xs">{o.branch.name}</span>
                                 ) : (
-                                  <span className="text-slate-400 font-mono text-[11px]">{p.branch_code_raw || '-'}</span>
+                                  <span className="text-slate-400 font-mono text-[11px]">{o.branch_code_raw || '-'}</span>
                                 )}
-                              </td>
-                              <td className="text-xs text-slate-600">{p.channel_text || '-'}</td>
-                              <td className="text-sm text-slate-800 whitespace-pre-wrap break-words max-w-md">{p.item_text}</td>
-                              <td className="text-center text-slate-700 whitespace-nowrap">{p.quantity ?? '-'}</td>
-                              <td className="text-right font-medium text-slate-800 whitespace-nowrap">
-                                {p.total_amount ? `${Number(p.total_amount).toLocaleString()}원` : '-'}
-                              </td>
-                              <td className="text-xs whitespace-nowrap">
-                                {p.payment_status === '결제 완료' ? (
-                                  <span className="inline-block px-1.5 py-0.5 rounded bg-green-100 text-green-700">완료</span>
-                                ) : p.payment_status === '미결' ? (
-                                  <span className="inline-block px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">미결</span>
-                                ) : p.payment_status ? (
-                                  <span className="text-slate-500">{p.payment_status}</span>
+                                <span className="text-xs text-slate-500">{o.channel_text || '-'}</span>
+                                {o.payment_status === '결제 완료' ? (
+                                  <span className="inline-block px-1.5 py-0.5 rounded bg-green-100 text-green-700 text-xs">완료</span>
+                                ) : o.payment_status === '미결' ? (
+                                  <span className="inline-block px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-xs">미결</span>
+                                ) : o.payment_status ? (
+                                  <span className="text-slate-500 text-xs">{o.payment_status}</span>
+                                ) : null}
+                                <span className="ml-auto text-sm font-semibold text-slate-800 whitespace-nowrap">
+                                  {o.total_amount ? `${Number(o.total_amount).toLocaleString()}원` : '-'}
+                                </span>
+                                <span className="text-[11px] text-slate-400 whitespace-nowrap">({items.length}품목)</span>
+                              </div>
+                              <div className="mt-1.5 ml-6 text-xs">
+                                {hasRecipient ? (
+                                  <span className="text-slate-600">
+                                    🚚 발송지: {o.recipient_name || '-'} · {o.recipient_phone || '-'} · {o.recipient_address || '-'}
+                                  </span>
                                 ) : (
-                                  <span className="text-slate-300">-</span>
+                                  <span className="text-slate-300">🚚 발송지 정보 없음</span>
                                 )}
-                              </td>
-                              <td className="font-mono text-[11px] text-slate-400 whitespace-nowrap">{p.legacy_purchase_no || ''}</td>
-                            </tr>
-                          ))}
-                      </tbody>
-                    </table>
+                              </div>
+                            </button>
+
+                            {isOpen && (
+                              <div className="divide-y divide-slate-100">
+                                {items.length === 0 ? (
+                                  <p className="px-3 py-2 text-xs text-slate-400">품목 정보가 없습니다.</p>
+                                ) : (
+                                  items.map((it, idx) => (
+                                    <div key={idx} className="px-3 py-2 flex items-start gap-3">
+                                      <div className="flex-1 min-w-0">
+                                        <div className="text-sm text-slate-800 whitespace-pre-wrap break-words">{it.item_text || '-'}</div>
+                                        {it.option_text && (
+                                          <div className="text-xs text-slate-400">{it.option_text}</div>
+                                        )}
+                                        {it.item_code && (
+                                          <div className="font-mono text-[10px] text-slate-300">{it.item_code}</div>
+                                        )}
+                                      </div>
+                                      <div className="text-center text-slate-600 text-sm whitespace-nowrap w-12">{it.quantity ?? '-'}</div>
+                                      <div className="text-right font-medium text-slate-700 text-sm whitespace-nowrap w-24">
+                                        {it.total_amount ? `${Number(it.total_amount).toLocaleString()}원` : '-'}
+                                      </div>
+                                    </div>
+                                  ))
+                                )}
+                                <div className="px-3 py-1.5 text-right">
+                                  <span className="font-mono text-[11px] text-slate-300">{o.legacy_order_no || ''}</span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                   </div>
                 )}
               </div>

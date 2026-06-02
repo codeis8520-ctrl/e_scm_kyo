@@ -309,9 +309,9 @@ async function attachHistory(supabase: any, customers: any[]): Promise<any[]> {
       .in('customer_id', ids)
       .order('ordered_at', { ascending: false })
       .limit(ids.length * 3),
-    // 과거 구매(legacy) — 최근 N건씩만, 1000행 제한 우회
+    // 과거 구매(legacy) — legacy_orders(주문당 1행). 최근 N건씩만, 1000행 제한 우회
     supabase
-      .from('legacy_purchases')
+      .from('legacy_orders')
       .select('customer_id, ordered_at, total_amount')
       .in('customer_id', ids)
       .order('ordered_at', { ascending: false })
@@ -350,7 +350,7 @@ async function attachHistory(supabase: any, customers: any[]): Promise<any[]> {
       latestPurchase[row.customer_id] = { ordered_at: lpDate, total_amount: Number(row.total_amount) || 0, source: 'legacy' };
     }
   }
-  // legacy 건수도 별도 집계
+  // legacy 건수도 별도 집계 (legacy_orders 기준 → 주문수)
   const legacyCount: Record<string, number> = {};
   for (const row of (legacyRes.data || []) as any[]) {
     legacyCount[row.customer_id] = (legacyCount[row.customer_id] || 0) + 1;

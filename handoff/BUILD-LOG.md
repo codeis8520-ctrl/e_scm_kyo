@@ -184,3 +184,39 @@ Step 5 Richard APPROVED, 배포 대기.
 - legacy_purchases DROP / 임포터 재작성(legacy-import-v2 직접 정규화 적재) / phone2 백필 / 복사·매핑 UI.
 
 **Acceptance**: legacy_orders=47,268 · legacy_order_items=66,090 · SUM(total_amount) 일치 · line_seq NULL=0 · 고아 item=0 · build 통과.
+
+---
+
+## In Progress (갱신 2026-06-02)
+
+> 1단계(데이터층, 마이그 070)은 적용+커밋(`4c524fe`) 완료. 위 "In Progress" 의 1단계 블록은 종료로 간주.
+
+### Step — 레거시 판매데이터 정규화 2단계 (앱 read 리팩터)
+
+**상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, build ✅, 2026-06-02)
+
+**Goal**: 앱 read 경로를 `legacy_purchases`(라인) → `legacy_orders`(헤더)+`legacy_order_items`(품목) 로 전환. RFM 빈도(F)·재구매·"과거 N건" 뱃지가 주문수 기준으로 정확해짐(버그픽스). 고객 상세 과거구매 탭 = 주문 카드 + 품목 나열 + **발송지(recipient_*) 노출**.
+
+**대상 파일 (5)**:
+- `src/lib/customer-analytics-actions.ts` — getRfmAnalysis/getRepurchaseCycles/getChurnRiskCustomers 의 legacy fetch 테이블명만 `legacy_orders` 로. count=주문수 자동 보정.
+- `src/app/api/customers/search/route.ts` — legacy fetch → legacy_orders, legacyCount=주문수. 반환 필드명 `legacy_purchase_count` 유지.
+- `src/app/(dashboard)/customers/page.tsx` — 진입 카운트 head count → legacy_orders.
+- `src/app/(dashboard)/pos/SalesListTab.tsx` — 변경 0(값 의미만 주문수), 검토만.
+- `src/app/(dashboard)/customers/[id]/page.tsx` — 과거구매 탭 재구조화(주문 카드+품목+발송지). 중첩 select.
+
+**Locked Decisions (Arch)**:
+- 읽기 경로만. legacy_purchases ALTER/UPDATE/DROP 절대 금지(DROP=다음 스텝).
+- 고객 상세: 중첩 select 1회(`legacy_orders` + `legacy_order_items(*)` + `branch:branches(name)`). 별도 IN 페치 금지(FK 존재로 가능, 고객당 주문 수백 이내).
+- 발송지 = recipient_name/phone/address 헤더 1곳. **값 정제 금지**(카드/계좌 메모도 그대로), 빈값만 '-'.
+- 출고처 = branch.name, 없으면 branch_code_raw, 둘 다 없으면 '-'.
+- "과거 구매 N건" 의미 = 라인수→**주문수**(F 부풀림 버그픽스). 라벨 그대로 일관.
+- search route 반환 필드 `legacy_purchase_count` 리네이밍 안 함(churn 최소화).
+- M(Monetary) 값 보존: 라인 total 합 = 주문 헤더 total(070 SUM 일치 검증).
+- schema.ts(AI 스키마)는 070 에서 이미 동기화됨 → 이번 미변경.
+
+**Known Gaps (스코프 밖, 후속)**:
+- legacy_purchases DROP — 다음 별도 스텝.
+- 임포터 재작성 / phone2 백필 / 복사재판매 UI / POS prefill / item_code→products 매핑.
+- 발송지 값 정제(카드·계좌 메모 분리).
+
+**Acceptance**: build 통과 · 앱 read 의 `.from('legacy_purchases')` 잔존 0(grep) · 고객상세 주문카드+발송지 노출 · 뱃지 N=주문수 · M 값 보존.

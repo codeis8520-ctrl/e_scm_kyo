@@ -202,7 +202,7 @@ function CustomersPageInner() {
       const sb = createClient() as any;
       const [cust, leg] = await Promise.all([
         sb.from('customers').select('id', { count: 'exact', head: true }).eq('is_active', true),
-        sb.from('legacy_purchases').select('id', { count: 'exact', head: true }),
+        sb.from('legacy_orders').select('id', { count: 'exact', head: true }),
       ]);
       setTotalCustomers(cust.count ?? 0);
       setTotalLegacy(leg.count ?? 0);

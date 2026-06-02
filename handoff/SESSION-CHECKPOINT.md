@@ -30,9 +30,15 @@ flat `legacy_purchases`(66,090 라인) → 주문 헤더 + 품목 분리.
 - `src/lib/ai/schema.ts` 동기화(phone2, 신규 2테이블, legacy_purchases 정규화 주석)
 - legacy_purchases 는 무손상(후속 단계에서 드롭 예정)
 
+### 정규화 2단계 — 앱 read 리팩터 ✅ 적용+커밋+push
+- analytics(RFM 빈도=주문수로 버그픽스)·search·고객목록 카운트 → `legacy_orders`
+- 고객상세 과거구매 탭 → 주문 카드 + `legacy_order_items` 품목 + **발송지(recipient_*) 노출**
+- `from('legacy_purchases')` 앱 read 잔존 0. build ✅. 독립 Richard 리뷰 APPROVED(Must Fix 0)
+- ⚠️ 프로세스: Architect 에이전트가 빌드까지 수행 → 독립 Reviewer 따로 돌려 담보함
+
 ## What's Next (정규화 프로그램 남은 스텝 — 한 번에 하나)
 
-1. **앱 read 리팩터** — analytics(RFM 빈도=주문수로 자연 정확), legacy_purchase_count 뱃지, 고객상세 과거구매 탭을 `legacy_orders`/`legacy_order_items` 로 이전. **발송지(헤더 recipient_*) 노출 추가.** 끝나면 legacy_purchases 드롭(별도 스텝).
+1. **legacy_purchases 드롭** — 앱 read 0 확인됨. 백업/뷰 안전망 고려 후 테이블 제거(별도 마이그). AI schema.ts 에서도 제거.
 2. **임포터 재작성** — `import_sales.py`: 이카운트 엑셀 1개 → 헤더 upsert(legacy_order_no) + 품목 upsert(order_id,line_seq), phone2 채움, recipient_address 폴백(주소), customers.address 정리. 증분 멱등. (다음 이카운트 export 대비)
 3. **복사→재판매 UI + POS prefill** — 과거 주문 1건(헤더 발송지 + 품목) 복사 → POS 신규 판매. 품목은 legacy item_code→products 매핑 점진(현재 224코드 중 3개만 매칭).
 
