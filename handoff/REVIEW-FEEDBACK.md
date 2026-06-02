@@ -1,20 +1,29 @@
-# Review Feedback — Step 5
-Date: 2026-04-22
-Status: APPROVED
+# Review Feedback — Step: 레거시 판매데이터 정규화 1단계 (데이터층)
+Date: 2026-06-02
+Ready for Builder: YES
 
-## Conditions
-None.
+## Must Fix
+없음.
 
-## Escalate to Arch
-- 거래처별 단가표(`/trade` Partners 탭의 `getPartnerPrices`/`bulkUpsertPartnerPrices`)에서도 RAW/SUB 노출 여부는 정책 결정 필요. OEM 위탁 생산에서 RAW/SUB 단가표 자체가 무의미하면 후속 Step으로 필터 추가. Brief 스코프 외.
+## Should Fix
+없음 (블로킹 아님 — 참고용 메모만):
+- `070...sql:133-169` (e-2) — `numbered` CTE 가 재실행마다 legacy_purchases 66,090행 전체를 다시 스캔·번호매김한다. ON CONFLICT(order_id,line_seq) 가 중복을 막고 `ORDER BY lp.id` 가 결정적이라 멱등성·정합성에는 문제 없음. 1회성 정규화라 성능도 무관. 조치 불필요, 인지만.
+
+## Escalate to Architect
+없음.
 
 ## Cleared
-`B2bSalesTab.tsx` L40-53는 `product_type` select + 042 폴백을 POS Step 4와 동일 구조로 구현했고, L58-60의 `productsData` 필터가 `setProducts`(L64) 단일 경로로 전파되어 `B2bSalesForm`의 제품 `<option>` 드롭다운(L298)에서 자동 제외된다. `createB2bSalesOrder` L161-172 가드는 partner 조회(L175), 총액 계산(L184), 전표번호 조립(L179), `b2b_sales_orders` insert(L206), `b2b_sales_order_items` insert(L228), 재고 차감(L231~), 분개 생성(L253~) 이전에 실행되어 DB 무변경 상태로 한글 에러("판매 가능한 제품이 아닙니다.")를 반환. `ptRes.error` 체크로 042 미적용 DB에서는 검증 스킵(운영 차단 방지). null은 `!== 'RAW' && !== 'SUB'`로 FINISHED 취급. `b2b_sales_order_items` insert 경로는 `createB2bSalesOrder` 하나뿐(Grep 결과 L228만 존재). AI tools에서는 b2b 읽기만 있고 write 경로 없음. 단가표·수금·취소·분개·POS·재고·생산·매입 무변경. diff 22+13줄 소규모.
+070 마이그(신규 legacy_orders/legacy_order_items + customers.phone2)와 schema.ts DB_SCHEMA 동기화를 리뷰했고 통과.
 
----
-
-### Drift check
-- 변경 파일: `B2bSalesTab.tsx` + `b2b-actions.ts` 2개로 Brief 정확히 일치.
-- Step 4 POS 패턴과 동일 구조 (pos/page.tsx:274-301, actions.ts:1111-1122).
-- `handoff/ARCHITECT-BRIEF.md`·`REVIEW-REQUEST.md`는 프로세스 파일.
-- Step 4(POS RAW/SUB 가드)와 정책 일관성 유지.
+검증 항목:
+- 멱등: 두 INSERT 모두 UNIQUE 키에 ON CONFLICT DO NOTHING, 헤더는 legacy_order_no IS NOT NULL 가드. 재실행 안전.
+- 헤더 대표값 MIN(col) / total_amount=SUM(lp.total_amount) — Brief 일치.
+- line_seq = ROW_NUMBER() OVER(PARTITION BY legacy_order_no ORDER BY lp.id)::smallint — Brief 일치.
+- order_id 매칭: 헤더 먼저 적재(동일 NOT NULL 소스) → JOIN on legacy_order_no. 고아 아이템 발생 불가.
+- legacy_purchases 무손상: SELECT 만. ALTER/UPDATE/DROP 없음 — 절대 경계 준수.
+- RLS/GRANT: 064 패턴과 글자단위 동일. 두 테이블 각각 GRANT SELECT,INSERT,UPDATE,DELETE TO anon,authenticated 포함 — anon 경로 전면거부 위험 없음.
+- FK/제약: customer_id ON DELETE SET NULL, order_id ON DELETE CASCADE, UNIQUE(legacy_order_no), UNIQUE(order_id,line_seq) 전부 Brief 일치. gen_random_uuid() 는 064 에서 이미 동일 DB 에서 동작 확인됨(적용 시 깨질 위험 없음).
+- UUID 캐스팅: MIN(lp.customer_id::text)::uuid / MIN(lp.branch_id::text)::uuid. 소스 타입은 064 기준 UUID. 주문내 값갈림 0%(Arch 검증) 전제에서 text 사전식 MIN 은 결정적 대표값 — 정합성 안전.
+- 소스 컬럼 존재 확인: legacy_order_no·staff_code·recipient_*·received_at·note·item_code·option_text·unit_price_vat·supply_amount·vat_amount·discount_amount 전부 069 에서 ADD 됨. 누락 컬럼 참조 없음 → 적용 시 문법/존재 오류 없음.
+- AI Sync: customers 라인 phone2 추가, legacy_purchases 070 정규화 예정 주석 1줄, legacy_orders/legacy_order_items 2개 항목 추가 — CLAUDE.md AI Agent Sync 규칙 충족.
+- 범위: 변경 2파일뿐(schema.ts 6 insertions/1 deletion). 임포터·앱 read·복사UI 변경 없음. legacy_purchases 손대지 않음.

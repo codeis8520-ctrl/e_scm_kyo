@@ -6,6 +6,29 @@
 
 ## Completed Steps
 
+### Step — 레거시 판매데이터 정규화 1단계 (데이터층)
+
+**상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, 2026-06-02)
+
+**변경 파일 (2개)**:
+- 신규: `supabase/migrations/070_legacy_orders_normalize.sql` — customers.phone2 컬럼 추가, legacy_orders/legacy_order_items 테이블 생성(064 패턴 RLS+GRANT), legacy_purchases 에서 멱등 분리적재(헤더→아이템).
+- 수정: `src/lib/ai/schema.ts` — DB_SCHEMA 에 customers.phone2, legacy_orders, legacy_order_items 추가 + legacy_purchases 정규화 예정 주석.
+
+**주요 결정**:
+- 헤더 대표값은 MIN(col). UUID 컬럼(customer_id, branch_id)은 MIN(::text)::uuid 로 캐스팅(uuid 타입에 직접 min 집계 없음).
+- line_seq = ROW_NUMBER() OVER (PARTITION BY legacy_order_no ORDER BY lp.id), ::smallint 캐스팅.
+- 멱등: 두 INSERT 모두 ON CONFLICT DO NOTHING (legacy_order_no / (order_id,line_seq)).
+- 적재 소스에서 legacy_order_no IS NULL 행은 제외(WHERE 가드) — UNIQUE NOT NULL 위반 및 무키 주문 방지.
+- legacy_purchases 무손상: SELECT 만, ALTER/UPDATE/DROP 없음.
+
+**검증**: `npm run build` 통과 (schema.ts 타입/문법). .sql 적용·검증은 Arch 가 psycopg 로.
+
+**Known Gaps (스코프 밖)**:
+- 앱 read 정규화본 전환(고객 상세 과거구매 탭, /customers/analytics RFM) — 후속 단계.
+- legacy_purchases DROP, 임포터 재작성, phone2 백필, 복사/매핑 UI — 후속 단계.
+
+
+
 ### Step 2 — KST 타임존 Phase A (표시 레이어 표준화)
 
 **상태**: ✅ 배포 완료 (commit `2a8e8a2`, 2026-04-22)
@@ -137,3 +160,27 @@
 ## Current Status
 
 Step 5 Richard APPROVED, 배포 대기.
+
+---
+
+## In Progress
+
+### Step (신규) — 레거시 판매데이터 정규화 1단계 (데이터층)
+
+**상태**: 🔨 Brief 작성 완료, Bob 빌드 대기 (2026-06-02)
+
+**Goal**: flat legacy_purchases -> legacy_orders(헤더) + legacy_order_items(품목) 정규화 + customers.phone2. 순수 추가형.
+
+**Locked Decisions (Arch)**:
+- 헤더 컬럼 대표값 = MIN(col). 근거: 주문내 값갈림 0%(phone 만 5건 0.01%) DB 검증 완료 -> MIN 으로 결정성 확보.
+- line_seq = row_number() over (partition by legacy_order_no order by lp.id). (legacy_purchases.line_seq 전부 NULL)
+- RLS/GRANT 064 패턴 그대로(anon+authenticated FOR ALL USING true + 명시 GRANT). 시스템 custom session auth -> client ANON role.
+- 멱등 적재(ON CONFLICT DO NOTHING / NOT EXISTS) — 재실행 안전.
+- DB 적용은 Arch 가 psycopg 로 직접(.env.local DATABASE_URL, PYTHONIOENCODING=utf-8 PYTHONUTF8=1). Bob 는 .sql + schema.ts 만.
+- legacy_purchases 무손상(이번 스프린트). DROP 은 후속 단계.
+
+**Known Gaps (이번 스코프 밖, 후속 단계)**:
+- 앱 read 정규화본 이전(고객 상세 과거구매 탭, /customers/analytics RFM).
+- legacy_purchases DROP / 임포터 재작성(legacy-import-v2 직접 정규화 적재) / phone2 백필 / 복사·매핑 UI.
+
+**Acceptance**: legacy_orders=47,268 · legacy_order_items=66,090 · SUM(total_amount) 일치 · line_seq NULL=0 · 고아 item=0 · build 통과.

@@ -5,47 +5,43 @@
 ---
 
 ## Last Updated
-2026-04-22
+2026-06-02
 
 ## Current State
 
-Three Man Team 프레임워크 **실제 운영 개시** (cc5c9c1 적용 후 장기간 비활성 → 오늘부터 정상 가동).
-
-직전 세션들에서는 단일 에이전트가 조사·빌드·커밋을 일괄 수행했으나, 2026-04-22부로 Arch→Bob→Richard 플로 복귀.
+레거시 판매데이터(경옥채판매DATA ~260518) 재적재 완료 후, **정규화 프로그램** 진행 중.
+flat `legacy_purchases`(66,090 라인) → 주문 헤더 + 품목 분리.
 
 ## What's Done (이번 세션)
 
-### 통상 커밋 (TMT 미적용)
-- `df21cef` fix(production): 생산 지시 목록 본사 필터 고정 문제 해결
-- `6a273d4` feat(production): 생산 지시 목록 페이지네이션 + 상태전환 버튼 중복클릭 방지
-- `01b1cfb` feat(inventory): 제품별 재고 변동 이력 화면 추가
-- `dee1300` feat(inventory): 원자재·부자재 입출고·조정을 본사로 제한
-- `0c04920` perf(db): 쿼리 핫패스 복합 인덱스 6개 추가 (마이그 055)
+### 재적재 (TMT 외, 직접 실행)
+- 마이그 069(라인아이템 컬럼 + payment_status/recipient_phone/recipient_name TEXT 확장) 적용
+- reset → customers 12,395 / consultations 8,844 / legacy_purchases 66,090 라인 적재
+- 도구: `scripts/legacy_reimport.py`, 백업 `legacy-import-v2/_backup-before-reset.sql`(PII, gitignore)
+- 커밋 `92e1d82` push 완료
 
-### TMT 플로 정식 적용
-- `2a8e8a2` **Step 2** feat(i18n): KST 타임존 표시 레이어 표준화
-  - Arch 설계 → Bob 구현(12파일 치환, `src/lib/date.ts` 신설) → Richard 리뷰(APPROVED 0 conditions) → 배포
+### 정규화 1단계 — 데이터층 (TMT 정식 플로) ✅ 적용+커밋(push 대기)
+- Arch 브리프 → Bob 빌드 → Richard APPROVED(Must Fix 0) → Deploy Gate 승인
+- **마이그 070_legacy_orders_normalize.sql** 적용 완료:
+  - `customers.phone2` 컬럼 추가(백필은 후속 임포터)
+  - `legacy_orders`(47,268) + `legacy_order_items`(66,090) 생성, 064 RLS/GRANT 패턴
+  - legacy_purchases 에서 멱등 분리적재(헤더 MIN 대표값/SUM total, line_seq=row_number)
+  - 검증: 카운트 일치 / SUM 10,498,357,372 일치 / line_seq NULL 0 / 고아 0
+- `src/lib/ai/schema.ts` 동기화(phone2, 신규 2테이블, legacy_purchases 정규화 주석)
+- legacy_purchases 는 무손상(후속 단계에서 드롭 예정)
 
-## What's Next
+## What's Next (정규화 프로그램 남은 스텝 — 한 번에 하나)
 
-### 즉시 후보
-1. **Step 3** — KST 타임존 Phase B (쿼리 경계)
-   - `.toISOString().slice(0,10)`, `startOfDay` 유사 패턴 → `kstDayStart/End`, `kstMonthStart/End`
-   - 영향 경로: `ai/tools.ts`, `api/dashboard/route.ts`, `api/cafe24/members/route.ts`, `b2b-actions.ts`, `campaign-actions.ts`, `SalesListTab.tsx`, `agent-conversations/page.tsx` 등
-2. **Step 1 재개** — POS 매출처 기본값 (HQ 역할 자동 선택 제거) · Brief 기작성
-3. **마이그 055 Supabase 적용** — Arch 담당, 대형 테이블 CONCURRENTLY 권장
+1. **앱 read 리팩터** — analytics(RFM 빈도=주문수로 자연 정확), legacy_purchase_count 뱃지, 고객상세 과거구매 탭을 `legacy_orders`/`legacy_order_items` 로 이전. **발송지(헤더 recipient_*) 노출 추가.** 끝나면 legacy_purchases 드롭(별도 스텝).
+2. **임포터 재작성** — `import_sales.py`: 이카운트 엑셀 1개 → 헤더 upsert(legacy_order_no) + 품목 upsert(order_id,line_seq), phone2 채움, recipient_address 폴백(주소), customers.address 정리. 증분 멱등. (다음 이카운트 export 대비)
+3. **복사→재판매 UI + POS prefill** — 과거 주문 1건(헤더 발송지 + 품목) 복사 → POS 신규 판매. 품목은 legacy item_code→products 매핑 점진(현재 224코드 중 3개만 매칭).
 
-### Escalate (이번 세션 외 결정 필요)
-- `CampaignTab.toDTLocal` datetime-local input TZ 처리 방식
-- `fmtKoreanDayKST` / `fmtKoreanMonthKST` 장기 유지 여부
-
-## Decisions Pending
-
-- Step 3 를 곧 이어갈지 vs Step 1 먼저 처리할지
-- POS 매출처 개선 방향 (HQ만 비우기 vs 전체 지점 선택 강제)
+## Decisions Locked
+- 발송지 = 주문 헤더 1곳 (정규화로 라인 반복 제거). 별도 주소록 테이블 불필요.
+- customers.address = "기본 배송지 캐시"로 유지(POS 자동채움 무손상).
+- legacy item 매핑은 점진(복사 시 수령자/주소 우선 자동, 품목 수동).
 
 ## Active Rules
-
-- Plan 제시 = 진행 신호. 중간 확인 스킵, Deploy Gate(commit/push)만 명시 확인 (`feedback_work_pace.md`).
-- DB 마이그레이션은 Arch가 Supabase SQL 에디터에서 직접 실행.
-- `process.env.TZ` 전역 변경 금지 — 명시적 `timeZone: 'Asia/Seoul'`만 사용.
+- Plan 제시 = 진행 신호. Deploy Gate(commit/push)만 명시 확인 (`feedback_work_pace.md`).
+- DB 마이그는 Arch 가 psycopg(.env.local DATABASE_URL)로 직접 적용. Windows 콘솔 PYTHONIOENCODING=utf-8 PYTHONUTF8=1.
+- `legacy-import-v2/`·`.env.local` 은 gitignore(PII/비번). 절대 커밋 금지.

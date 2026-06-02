@@ -26,7 +26,7 @@ inventories: id, branch_id, product_id, quantity, safety_stock  [UNIQUE(branch_i
 inventory_movements: id, branch_id, product_id, movement_type(IN/OUT/ADJUST/TRANSFER/PRODUCTION), quantity, memo, created_at
 
 --- 고객·CRM ---
-customers: id, name, phone, email, grade(NORMAL/VIP/VVIP), primary_branch_id, address, health_note, is_active
+customers: id, name, phone, phone2(제2 연락처(정규화)), email, grade(NORMAL/VIP/VVIP), primary_branch_id, address, health_note, is_active
 customer_grades: code(NORMAL/VIP/VVIP), name, point_rate(1%/2%/3%), is_active
 branch_point_rates(마이그 067): id, branch_id→branches, grade_id→customer_grades, point_rate(0~100), is_active. UNIQUE(branch_id, grade_id).
   ※ 지점×등급 적립율 오버라이드 매트릭스. (branch_id, grade_id) 행이 있고 is_active=true 면 그 point_rate, 없거나 비활성이면 customer_grades.point_rate 사용.
@@ -44,6 +44,11 @@ legacy_purchases(마이그 064+069): id, legacy_order_no(주문묶음=일자+순
   ※ mapped_to_sales_order_id: 향후 사람이 매핑 검수해 sales_orders로 승격한 경우 그 ID. NULL이면 legacy 전용.
   ※ 고객 상세 화면의 "과거 구매" 탭에서 표시.
   ※ 고객 분석(/customers/analytics)의 RFM·재구매주기·이탈위험은 sales_orders(COMPLETED) + legacy_purchases 를 통합 집계해 LTV/F/M 계산.
+  ※ 070 에서 legacy_orders/legacy_order_items 로 정규화됨(주문헤더+품목). 앱 read 는 이 테이블 유지, 후속 단계 이전 예정.
+legacy_orders(마이그 070): id, legacy_order_no(UNIQUE 주문키=일자+순번+거래처코드), customer_id, phone, ordered_at, channel_text, branch_id, branch_code_raw, staff_code, recipient_name/recipient_phone/recipient_address(선물배송 수령자), received_at, payment_status, note, total_amount(주문합계=라인합 VAT포함), source_file, metadata, created_at/updated_at
+  ※ 주문당 1행(47,268). legacy_purchases 를 주문 단위로 정규화한 헤더.
+legacy_order_items(마이그 070): id, order_id(→legacy_orders ON DELETE CASCADE), line_seq(주문내 품목순서 1..n), item_code, item_text, option_text, quantity, unit_price_vat, supply_amount, vat_amount, discount_amount, total_amount
+  ※ 라인아이템 단위(66,090). UNIQUE(order_id, line_seq).
 
 --- 판매(POS) ---
 sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, ordered_by(담당자), total_amount, discount_amount, points_used, points_earned, payment_method(cash/card/card_keyin/kakao/credit/cod/mixed), credit_settled(bool), credit_settled_at, credit_settled_method, memo, status(COMPLETED/CANCELLED/REFUNDED/PARTIALLY_REFUNDED), ordered_at, receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date, approval_status(COMPLETED/CARD_PENDING/UNSETTLED), payment_info, taxable_amount, exempt_amount, vat_amount
