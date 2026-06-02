@@ -1,32 +1,23 @@
-# Review Request — POS 큐 #1: 과거구매(legacy) 복사 → 새 판매 등록 (Phase 1 MVP)
+# Review Request — 고객 검색 개선 (Enter 검색 + 콤마 AND + 안내문구)
 Date: 2026-06-02
 Ready for Review: YES
 
-## Build 결과
-- `npm run build` → ✓ Compiled successfully in 8.6s. 에러/경고 0. `/pos`·`/customers/[id]` 모두 컴파일됨.
-
 ## Files Changed
+- src/app/(dashboard)/customers/page.tsx:114 — 신규 state `searchInput`(초기 q). `search`는 커밋된 검색어로 유지.
+- src/app/(dashboard)/customers/page.tsx:127 — `debounceRef` 제거.
+- src/app/(dashboard)/customers/page.tsx:155-161 — 디바운스 useEffect 교체: setTimeout 완전 제거, `[search,gradeFilter,hasConsult,sortKey]` 변경 시 즉시 fetch. 조건 없으면 빈 상태 복귀.
+- src/app/(dashboard)/customers/page.tsx:313-345 — 검색 UI: `flex-1 max-w-lg` wrapper로 input(div.relative)+안내 `<p>` 세로 배치. 돋보기→검색 버튼(onClick setSearch(searchInput), aria-label). input value=searchInput/onChange=setSearchInput/onKeyDown Enter→setSearch. X 클리어 표시조건 searchInput, setSearchInput('')+setSearch(''). placeholder/안내문구 브리프 그대로. 셀렉트/체크박스 행 정렬 유지.
+- src/app/api/customers/search/route.ts:135-218 — 신규 `matchOneToken(token)→Set<id>` + `findProductCustomerIds(token)` (기존 단일어 매칭 로직 추출, id만 select).
+- src/app/api/customers/search/route.ts:220-265 — 신규 `fallbackSearchMultiToken`: 토큰별 Set 교집합(AND, 작은 집합 우선) → customers select + grade/branch 필터 → attachPoints/attachHistory/postFilterAndSort/페이징 기존 흐름. reason은 `검색: <토큰들>`.
+- src/app/api/customers/search/route.ts:267-282 — `fallbackSearch` 진입부에 콤마 토큰 분리 가드: ≥2개 → multiToken 분기. 0/1개 → 기존 단일어 블록 그대로(코드 미변경).
 
-### src/app/(dashboard)/pos/page.tsx
-- L172 — `legacyCopyId = searchParams?.get('legacyCopy')` 추가 (copyOrderId 옆).
-- L174-181 — `unmatchedLegacyItems` state 신설 (브리프 타입 그대로).
-- 신규 `applyLegacyCopy` useCallback — 기존 `applyCopy` 바로 아래 신설(applyCopy 수정 없음). legacy_orders 페치 → 매출처/출고지/고객 prefill → 품목 `products.name.trim()===item_text.trim()` 정확매칭만 CartItem 생성(price=현재 prod.price, deliveryType=recipient 있으면 PARCEL 아니면 PICKUP), 미매칭은 unmatched 보존 → setCart(newCart) → 발송정보 setShipping(PARCEL, zipcode/detail '')/없으면 NONE → 날짜·승인 초기화 → setMainTab('checkout') → setUnmatchedLegacyItems → setCopyBanner. confirm 없음(버튼 onClick에서).
-- 신규 useEffect — `?legacyCopy=` 1회 적용 후 `router.replace('/pos')`. 기존 copy useEffect 옆, abort 가드 동일.
-- resetCheckoutForm 내 `setUnmatchedLegacyItems([])` 추가(판매완료/초기화 시 비움). clearCustomer는 미접촉(복사 후 유지).
-- 참고 패널 — 장바구니 목록 div 바로 아래(`length>0`일 때만). 헤더 "참고: 과거 주문 미매칭 품목 (N개)" + ✕(비움). 각 줄 item_text/option_text/수량/원본금액(total_amount ?? unit_price_vat) + 🔍 "제품 찾기"(setSearch+searchRef.focus, 그게 전부).
-- POS 내부 "과거 구매" 탭 카드 — isOpen 블록 하단 footer "📋 이 주문 복사" 버튼(toggleLegacy button 밖). cart 있으면 대체 경고 confirm → `applyLegacyCopy(o.id)` 직접 호출(URL 미경유).
-
-### src/app/(dashboard)/customers/[id]/page.tsx
-- L1267 legacy 카드 footer — 기존 legacy_order_no 행을 좌(📋 복사)·우(order_no) 배치로 변경. onClick confirm → `router.push('/pos?legacyCopy='+o.id)`. useRouter 기존 import 재사용.
-
-## 정확매칭 키 / 가격 규칙 (Locked Decision 준수)
-- 매칭 = `String(p.name).trim() === String(it.item_text ?? '').trim()` 단일. item_code/유사도/정규화 전부 미사용.
-- 매칭가 = 현재 `products.price`. 원본 단가(unit_price_vat/total_amount)는 참고 패널에만 표시.
+## Verification
+- `npm run lint` — exit code 0. (코드베이스 전반 기존 no-explicit-any 다수 존재 → 비차단·신규 파일 무관. 신규 코드는 기존 route.ts의 `any` 스타일을 따름.)
+- `npm run build` — ✓ Compiled successfully. /customers static, /api/customers/search 정상, 에러 0.
 
 ## Open Questions
-- 동명복수 제품 시 `products.find` 첫 매칭(브리프 명시). 별도 처리 안 함.
+- 다중 토큰 결과의 match_reasons를 필드별이 아닌 `검색: <토큰들>` 한 줄로 표기했습니다(교집합이라 필드 귀속이 모호). 단일 토큰은 기존 필드별 reason 그대로. 표기 방식 확인 부탁.
+- 교집합 후보 상한 `.in('id', ids.slice(0,1000))` — 기존 폴백 관행과 일치시켰습니다.
 
-## Out of Scope (브리프 준수 확인)
-- processPosCheckout/checkout 로직 diff 0 (절대 미변경). Richard 필수 확인 요청.
-- applyCopy 수정 0, selectCustomer/addToCart/ShippingForm/setShipping 등 재사용 함수 시그니처 미변경.
-- 학습형 별칭맵·유사도·포장옵션·legacy_purchases·자동제거 미접촉. DB 마이그·schema.ts 미변경.
+## Out of Scope (logged in BUILD-LOG)
+- RPC 마이그 073 (Arch 담당), route.ts의 supabase.rpc 호출부, legacy/포장/병합/POS, 검색 랭킹, schema.ts — 전부 미접촉.

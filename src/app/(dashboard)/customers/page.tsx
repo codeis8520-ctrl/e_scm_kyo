@@ -111,6 +111,7 @@ function CustomersPageInner() {
   const [activeTab, setActiveTab] = useState<TabType>(() => (searchParams.get('tab') as TabType) || 'list');
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [search, setSearch] = useState(() => searchParams.get('q') || '');
+  const [searchInput, setSearchInput] = useState(() => searchParams.get('q') || '');
   const [gradeFilter, setGradeFilter] = useState(() => searchParams.get('grade') || '');
   const [hasConsult, setHasConsult] = useState(() => searchParams.get('hasConsult') === '1');
   const [sortKey, setSortKey] = useState<SortKey>(() => (searchParams.get('sort') as SortKey) || 'recent_consult');
@@ -125,7 +126,6 @@ function CustomersPageInner() {
   const [totalCustomers, setTotalCustomers] = useState<number | null>(null);
   const [totalLegacy, setTotalLegacy] = useState<number | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const limit = 30;
 
   const fetchCustomers = useCallback(async (
@@ -153,24 +153,12 @@ function CustomersPageInner() {
     }
   }, []);
 
-  // 디바운스 검색 / 필터: 검색어·필터·정렬 조건이 있을 때만 조회
+  // 검색 / 필터: 커밋된 검색어(search)·필터·정렬 변경 시에만 조회 (타이핑 중 조회 안 함)
   useEffect(() => {
     const hasCondition = search.trim() !== '' || gradeFilter !== '' || hasConsult;
-    if (!hasCondition) {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      // 모든 조건이 비워지면 리스트를 비우고 빈 상태로 복귀
-      setCustomers([]);
-      setTotal(0);
-      setHasSearched(false);
-      return;
-    }
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      setPage(1);
-      setHasSearched(true);
-      fetchCustomers(search, gradeFilter, 1, hasConsult, sortKey);
-    }, 300);
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+    if (!hasCondition) { setCustomers([]); setTotal(0); setHasSearched(false); return; }
+    setPage(1); setHasSearched(true);
+    fetchCustomers(search, gradeFilter, 1, hasConsult, sortKey);
   }, [search, gradeFilter, hasConsult, sortKey, fetchCustomers]);
 
   // 페이지 변경
@@ -311,28 +299,39 @@ function CustomersPageInner() {
 
       {/* 통합 검색 & 필터 */}
       <div className="flex flex-col sm:flex-row gap-3 flex-wrap mb-4 mt-4">
-        <div className="relative flex-1 max-w-lg">
-          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-          </svg>
-          <input
-            ref={searchRef}
-            type="text"
-            placeholder="이름, 연락처, 주소, 구매제품으로 검색..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="input pl-10 w-full"
-          />
-          {search && (
+        <div className="flex-1 max-w-lg">
+          <div className="relative">
             <button
-              onClick={() => setSearch('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              type="button"
+              onClick={() => setSearch(searchInput)}
+              aria-label="검색"
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
             </button>
-          )}
+            <input
+              ref={searchRef}
+              type="text"
+              placeholder="검색어 입력 후 Enter — 여러 조건은 콤마(,)로 (예: 이장우, 청담)"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setSearch(searchInput); } }}
+              className="input pl-10 w-full"
+            />
+            {searchInput && (
+              <button
+                onClick={() => { setSearchInput(''); setSearch(''); }}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            )}
+          </div>
+          <p className="text-xs text-slate-400 mt-1">Enter 또는 🔍로 검색 · 콤마(,)로 여러 조건을 묶으면 모두 만족하는 고객만 (예: 이장우, 청담)</p>
         </div>
         <select
           value={gradeFilter}

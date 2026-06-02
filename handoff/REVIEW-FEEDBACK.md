@@ -1,24 +1,23 @@
-# Review Feedback — POS 큐 #1: 과거구매(legacy) 복사 → 새 판매 (Phase 1 MVP)
+# Review Feedback — 고객 검색 개선 (Enter 검색 + 콤마 AND + 안내문구)
 Date: 2026-06-02
 Ready for Builder: YES
 
 ## Must Fix
-없음.
+(없음)
 
 ## Should Fix
-없음.
+- route.ts fallbackSearchMultiToken (match_reasons field:'name') — 다중토큰 폴백의 reason 을 field:'name' 으로 넣었는데, page.tsx L405-406 의 extraReasons 필터가 field==='name'/'phone' 을 제외하므로 "검색: 이장우, 청담" 라벨이 화면에 안 뜬다. 깨지진 않음(크래시·레이아웃 영향 0). 단, 폴백은 RPC 미적용/실패 시에만 타는 희귀 경로 → 즉시조치 불필요. 라벨을 굳이 보이려면 field 를 'product' 등 표시 대상으로 바꾸거나 UI 필터에 예외 추가. Arch 의 Open Question 답변에 위임 가능.
 
 ## Escalate to Architect
-없음.
+- 다중토큰 폴백 match_reasons 표기 방식(필드 귀속 모호 → "검색: <토큰>" 한 줄) — Bob 의 Open Question. 현재 UI 에선 안 보이지만(위 Should Fix) 폴백 자체가 희귀 경로라 UX 영향 미미. 표기 정책은 제품 결정이라 Arch 가 확정.
 
 ## Cleared
-2파일(pos/page.tsx, customers/[id]/page.tsx) diff 전체 리뷰 — 7개 점검항목 모두 통과.
+검토 대상: page.tsx(state 분리·디바운스 완전 제거·Enter/🔍 커밋·X 클리어·안내문구), route.ts(콤마 AND 교집합 matchOneToken/fallbackSearchMultiToken, 토큰 0/1개 기존경로 보존), 마이그 073(search_customers_full/_unified 콤마 AND).
 
-### 점검 결과
-1. **checkout 무변경(보안 핵심)** ✅ — processPosCheckout 은 import(L8)·호출(L1081)만 존재, diff에 없음. 판매등록/재고차감/포인트 경로 0변경. applyLegacyCopy 는 prefill(setCart/setShipping/탭전환)까지만 — 자동 submit 없음. 기존 applyCopy(L487~) diff 0(별도 신설).
-2. **품목 매칭** ✅ — `String(p.name).trim()===String(it.item_text??'').trim()` 단일키, item_code/유사도 미사용. CartItem 필드(productId/name/price/quantity/discount/barcode/deliveryType) 기존 형태 일치. 매칭가=현재 prod.price(Number 가드). quantity `Number(it.quantity)||1` NaN/0 가드 정상. 미매칭은 unmatched 원본 보존.
-3. **발송정보 prefill** ✅ — recipient_* → setShipping(type PARCEL, zipcode/detail ''), recipient 없으면 NONE. setAddressFromRegistry(false) 호출. 컬럼명(recipient_name/phone/address) 기존 쿼리(customers L233·pos L842)와 동일.
-4. **state 리셋/루프** ✅ — resetCheckoutForm 에 setUnmatchedLegacyItems([]) 추가(판매완료 비움). legacyCopy useEffect: loading 가드 + aborted 플래그 + router.replace('/pos') 로 1회 적용, deps [legacyCopyId, loading] — 무한루프 없음. 기존 ?copy= useEffect 와 독립(충돌 없음).
-5. **버튼 중첩** ✅ — POS: toggle button(L1808~1833) 닫힘 뒤 isOpen 형제 div(L1834+) 안에 복사버튼(L1851). 고객상세: toggle button(~L1242) 뒤 isOpen div(L1244+) 안에 복사버튼(L1268). 둘 다 button-in-button 없음 → hydration 안전.
-6. **🔍 제품 찾기** ✅ — setSearch(item_text)+searchRef.focus() 만. 새 모달/검색API 없음.
-7. **범위 가드** ✅ — 2파일만 수정. 별칭맵/유사도/포장/legacy_purchases/DB마이그/schema.ts 미접촉. legacy는 읽기전용 select.
+검증 결과:
+1) 단일어 회귀: 073 token_field/token_product + qualified(HAVING>=1) 가 072 direct_matches∪product_matches 와 동치. name/phone/phone2(→field 'phone')/email/address/product·숫자매칭·출력 jsonb 구조·created_at 정렬 모두 보존. 빈 검색어는 route.ts L32 `if(!q)`→fetchDefaultList 로 단락되어 RPC 에 빈 문자열 전달 안 됨(073 의 ARRAY[''] 폴백은 안전하나 앱 미진입). 회귀 0.
+2) 콤마 AND: count(DISTINCT tok)>=ntok = 모든 토큰 만족(각 토큰은 필드 OR). tokens DISTINCT·btrim·빈값제외·중복토큰("a,a"→ntok=1) 정상. token_product 가 grade/branch 미필터여도 filtered WHERE 에서 재적용되어 결과 정확(과매칭 후 제거).
+3) match_reasons: full merged jsonb_agg(DISTINCT {field,value}) → route FIELD_LABELS(name/phone/email/address/product) 호환, phone2→'phone' 매핑 일치.
+4) SQL 안전성: 시그니처(5인자·jsonb·SECURITY DEFINER) 072 와 동일, GRANT anon/authenticated 유지, phone2 regexp_replace NULL 안전, unnest/string_to_array/CROSS JOIN LATERAL 정상, OFFSET/LIMIT·total·page 보존, $$ 단일 dollar-quote(중첩 없음)→psycopg 적용 안전.
+5) 프론트: setTimeout/debounceRef 잔존 0(grep 확인), search/grade/hasConsult/sort 변경 시에만 fetch, searchInput onChange 는 fetch 미유발, Enter/🔍 버튼/X 동작 일치, q 초기복원(search·searchInput 둘 다 q), 안내문구·레이아웃(flex-1 max-w-lg) 적용.
+6) 범위 가드: schema.ts·legacy·포장·병합·POS·RPC 호출부(supabase.rpc) 미접촉 확인.

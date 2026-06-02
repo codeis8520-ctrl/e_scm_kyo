@@ -132,11 +132,140 @@ async function fetchDefaultList(
   });
 }
 
+// 단일 토큰의 매칭 customer id 집합 추출 (콤마 AND 교집합용).
+// grade/branch 필터는 호출부에서 일괄 적용하므로 여기서는 적용하지 않는다.
+async function matchOneToken(supabase: any, token: string): Promise<Set<string>> {
+  const digitsOnly = token.replace(/[^0-9]/g, '');
+  const isPhoneSearch = digitsOnly.length >= 3;
+
+  const phonePatterns: string[] = [];
+  if (isPhoneSearch) {
+    phonePatterns.push(digitsOnly);
+    if (digitsOnly.length === 11) {
+      phonePatterns.push(`${digitsOnly.slice(0,3)}-${digitsOnly.slice(3,7)}-${digitsOnly.slice(7)}`);
+    } else if (digitsOnly.length === 10) {
+      phonePatterns.push(`${digitsOnly.slice(0,3)}-${digitsOnly.slice(3,6)}-${digitsOnly.slice(6)}`);
+    } else if (digitsOnly.length >= 4) {
+      phonePatterns.push(digitsOnly.slice(-4));
+    }
+  }
+
+  const sQ = token.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+  const [directRows, productCustomerIds] = await Promise.all([
+    (async () => {
+      const orFilters = [
+        `name.ilike."%${sQ}%"`,
+        `email.ilike."%${sQ}%"`,
+        `address.ilike."%${sQ}%"`,
+        `phone.ilike."%${sQ}%"`,
+        `phone2.ilike."%${sQ}%"`,
+      ];
+      for (const p of phonePatterns) {
+        const sp = p.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        orFilters.push(`phone.ilike."%${sp}%"`);
+        orFilters.push(`phone2.ilike."%${sp}%"`);
+      }
+      const { data } = await supabase
+        .from('customers')
+        .select('id')
+        .or(orFilters.join(','));
+      return (data || []) as any[];
+    })(),
+    findProductCustomerIds(supabase, token),
+  ]);
+
+  const ids = new Set<string>();
+  for (const c of directRows) ids.add(c.id);
+  for (const id of productCustomerIds.keys()) ids.add(id);
+  return ids;
+}
+
+// 제품명 매칭 → 주문 → customer id/제품명 맵 (단일 토큰 기준)
+async function findProductCustomerIds(supabase: any, q: string): Promise<Map<string, string>> {
+  const { data: products } = await supabase
+    .from('products').select('id, name').ilike('name', `%${q}%`).limit(50);
+  if (!products?.length) return new Map<string, string>();
+
+  const productIds = products.map((p: any) => p.id);
+  const productNameMap = new Map<string, string>(products.map((p: any) => [p.id, p.name]));
+
+  const { data: orderItems } = await supabase
+    .from('sales_order_items').select('sales_order_id, product_id').in('product_id', productIds).limit(500);
+  if (!orderItems?.length) return new Map<string, string>();
+
+  const orderIds = [...new Set((orderItems as any[]).map((i: any) => i.sales_order_id))];
+  const orderProductMap = new Map<string, string>();
+  for (const item of orderItems as any[]) {
+    const pName = productNameMap.get(item.product_id);
+    if (pName) orderProductMap.set(item.sales_order_id, pName);
+  }
+
+  const { data: orders } = await supabase
+    .from('sales_orders').select('id, customer_id').in('id', orderIds.slice(0, 200)).not('customer_id', 'is', null);
+
+  const map = new Map<string, string>();
+  for (const o of (orders || []) as any[]) {
+    if (o.customer_id && !map.has(o.customer_id)) map.set(o.customer_id, orderProductMap.get(o.id) || q);
+  }
+  return map;
+}
+
+// 콤마 토큰 ≥2: 토큰별 매칭 id 교집합(AND) 후 해당 고객만 정렬/페이징.
+async function fallbackSearchMultiToken(
+  supabase: any, tokens: string[], grade: string, branchId: string | null | undefined,
+  page: number, limit: number, hasConsult: boolean, sort: SortKey,
+) {
+  const sets = await Promise.all(tokens.map((t) => matchOneToken(supabase, t)));
+
+  // 교집합 (가장 작은 집합 기준)
+  sets.sort((a, b) => a.size - b.size);
+  let intersect = sets[0];
+  for (let i = 1; i < sets.length && intersect.size > 0; i++) {
+    const next = sets[i];
+    intersect = new Set([...intersect].filter((id) => next.has(id)));
+  }
+  const ids = [...intersect];
+
+  if (ids.length === 0) {
+    return NextResponse.json({ customers: [], total: 0, page });
+  }
+
+  let query = supabase
+    .from('customers')
+    .select('id, name, phone, phone2, email, address, grade, is_active, primary_branch:branches(id, name), assigned_to:users!customers_assigned_to_fkey(id, name)')
+    .in('id', ids.slice(0, 1000));
+  if (grade) query = query.eq('grade', grade);
+  if (branchId) query = query.eq('primary_branch_id', branchId);
+  const { data } = await query;
+
+  // 다중 조건 결과는 매칭 필드 표시 대신 검색어 묶음을 reason 으로 표기
+  const reasonLabel = tokens.join(', ');
+  let customers = await attachPoints(supabase, (data || []) as any[]);
+  customers = await attachHistory(supabase, customers);
+  customers = customers.map((c: any) => ({
+    ...c,
+    match_reasons: [{ field: 'name', value: reasonLabel, label: `검색: ${reasonLabel}` }],
+  }));
+  customers = postFilterAndSort(customers, hasConsult, sort);
+
+  const total = customers.length;
+  const startIdx = (page - 1) * limit;
+  return NextResponse.json({ customers: customers.slice(startIdx, startIdx + limit), total, page });
+}
+
 // RPC 미적용 시 폴백 (다중 쿼리 방식)
 async function fallbackSearch(
   supabase: any, q: string, grade: string, branchId: string | null | undefined,
   page: number, limit: number, hasConsult: boolean, sort: SortKey,
 ) {
+  // 콤마 토큰 분리 — 2개 이상이면 교집합(AND) 경로
+  const tokens = q.split(',').map((t) => t.trim()).filter(Boolean);
+  if (tokens.length >= 2) {
+    return await fallbackSearchMultiToken(supabase, tokens, grade, branchId, page, limit, hasConsult, sort);
+  }
+  // 토큰 0/1개 → 기존 단일어 로직 그대로 (회귀 0)
+
   const digitsOnly = q.replace(/[^0-9]/g, '');
   const isPhoneSearch = digitsOnly.length >= 3;
 

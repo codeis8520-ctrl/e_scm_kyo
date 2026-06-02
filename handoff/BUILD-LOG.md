@@ -6,6 +6,40 @@
 
 ## Completed Steps
 
+### Step — 고객 검색 개선 (Enter 검색 + 콤마 AND + 안내문구)
+
+**상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, build ✅ / lint exit 0, 2026-06-02)
+
+**Goal**: 타이핑 중 조회 금지(디바운스 완전 제거) → Enter/🔍/필터변경에만 fetch. 콤마(,) 다중 토큰은 fallbackSearch에서 교집합(AND). 단일어는 회귀 0.
+
+**변경 파일 (2개, DB 변경 없음 — RPC 073은 Arch 담당)**:
+- `src/app/(dashboard)/customers/page.tsx`
+  - 신규 state `searchInput`(초기 q) — 텍스트박스 값. `search`(초기 q)는 커밋된 검색어로 유지.
+  - `debounceRef` 제거. 검색 useEffect에서 setTimeout 완전 제거 — `[search, gradeFilter, hasConsult, sortKey]` 변경 시 즉시 fetch.
+  - input: `value=searchInput` / `onChange=setSearchInput` / `onKeyDown` Enter→`setSearch(searchInput)`.
+  - 돋보기 svg → `<button onClick={()=>setSearch(searchInput)} aria-label="검색">`.
+  - X 클리어: 표시조건 `searchInput`, onClick `setSearchInput('')+setSearch('')`.
+  - 검색 div를 `flex-1 max-w-lg` wrapper로 감싸 input(`div.relative`) + 안내 `<p>` 세로 배치. placeholder/안내문구 브리프 그대로. 셀렉트/체크박스 행 정렬 유지.
+  - URL 동기화(L182~)/listQs(L195~): `search` 사용 — 수정 없음(검증만).
+- `src/app/api/customers/search/route.ts` — `fallbackSearch`만 수정.
+  - 진입부 `q.split(',').map(trim).filter(Boolean)` → 토큰 ≥2면 `fallbackSearchMultiToken`로 분기. 0/1개는 기존 단일어 로직 그대로(코드 미변경, 분기만 추가).
+  - 신규 `matchOneToken(token)→Set<id>`: 기존 direct ilike(name/email/address/phone/phone2 + phone 정규화 패턴) + 제품명 매칭을 id만 select하여 Set 반환. grade/branch는 호출부 일괄 적용.
+  - 신규 `findProductCustomerIds(token)`: 기존 제품→주문→customer 매핑 로직 추출(단일/다중 공용).
+  - 신규 `fallbackSearchMultiToken`: 토큰별 Set 교집합(작은 집합 우선) → 교집합 id로 customers select + grade/branch 필터 → attachPoints/attachHistory/postFilterAndSort/페이징 기존 흐름. match_reasons는 `검색: <토큰들>` 한 줄.
+
+**주요 결정**:
+- 단일 토큰 경로의 기존 코드 블록은 손대지 않음(분기 가드만 앞에 추가) → 회귀 0.
+- 다중 토큰은 매칭 필드별 reason 대신 검색어 묶음 한 줄로 표기(교집합이라 필드 귀속이 모호). 정렬/페이징/포인트/이력은 단일과 동일 흐름.
+- 교집합 id는 `.in('id', ids.slice(0,1000))` 상한(기존 폴백 관행과 일치).
+
+**라인 어긋남**: 앞선 state/useEffect 편집으로 L번호 약간 이동했으나 모든 앵커 고유 텍스트로 정확 적용. 기능 영향 없음.
+
+**검증**: `npm run lint` exit 0(코드베이스 기존 no-explicit-any 다수 — 신규 파일 무관, 비차단). `npm run build` ✓ — /customers static, /api/customers/search 정상 컴파일, 에러 0.
+
+**Known Gaps**: 없음 (Out of Scope — RPC 073/legacy/포장/병합/POS/schema.ts/검색랭킹 전부 미접촉).
+
+---
+
 ### Step — POS 큐 #1: 과거구매(legacy) 복사 → 새 판매 등록 (Phase 1 MVP)
 
 **상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, build ✅, 2026-06-02)
