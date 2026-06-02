@@ -1,43 +1,29 @@
-# Review Request — POS 판매등록 위젯 표시 속성 (pos_widget)
+# Review Request — POS 큐 #1: 판매등록 고객패널 과거구매(legacy) 표시
 Date: 2026-06-02
 Ready for Review: YES
 
-## Files Changed
+## Files Changed (단일 파일, 표시 전용, DB 변경 없음)
+`src/app/(dashboard)/pos/page.tsx`
+- L119~142 — `LegacyOrderItem`/`LegacyOrder` 타입 추가(customers/[id] L54~77과 동일 필드).
+- L227~241 — history state 에 `legacyOrders: LegacyOrder[]`(초깃값 []), historyTab union 에 `'legacy'`, `expandedLegacy: Set<string>` state + `toggleLegacy` 토글 헬퍼.
+- L703~735 — loadCustomerHistory: 진입부 `setExpandedLegacy(new Set())`, Promise.all 3번째 쿼리 legacy_orders(.limit(50), branch:branches(name) + legacy_order_items 중첩), setHistory 에 `(legacyRes.data || []) as LegacyOrder[]` 세팅. catch 도 `legacyOrders: []` 동기화. 기존 try/catch 재사용 — 신규 try/catch 없음.
+- L828, L1088 부근 — clearCustomer/resetForm 의 setHistory 전체 리셋에 `legacyOrders: []` + `setExpandedLegacy(new Set())` 추가.
+- 탭 버튼 — "구매 이력" 버튼 다음에 "과거 구매 ({history.legacyOrders.length})" 버튼(동일 className, 항상 노출).
+- 본문 렌더 — historyTab 3분기 ternary로 확장(`consult ? : orders ? : legacy`). legacy 분기: 빈 상태 문구 + 컴팩트 주문 카드(헤더: 일자·지점배지/code·합계·품목수 / 발송지 줄: name·phone·address 각 '-', 셋다 빈값 "발송지 정보 없음" / 카드 클릭 펼침 → line_seq 순 품목 item_text·option_text·quantity·total_amount).
 
-- `supabase/migrations/071_products_pos_widget.sql` (신규, 전체) — pos_widget boolean NOT NULL DEFAULT false 추가 + 백필(product_type='FINISHED' AND COALESCE(is_phantom,false)=false) + COMMENT. 인덱스 없음. **DB 미적용 — Arch 가 psycopg 로 적용·검증.**
-
-- `src/app/(dashboard)/products/ProductModal.tsx`
-  - L29 — interface 에 `pos_widget?: boolean` 추가.
-  - L68-72 — formData 초기값: 편집=`product?.pos_widget` 우선, 신규=완제품&비세트→true.
-  - L460-476 — track_inventory 체크박스 바로 아래 "판매등록 위젯 표시" 체크박스(모든 product_type 노출, disabled 없음).
-  - 직렬화: 기존 `Object.entries(formData)` 루프(L312)가 boolean 을 `String(value)` 로 자동 append → 별도 코드 불필요.
-
-- `src/lib/actions.ts`
-  - createProduct L73-77 — `posWidget`: 폼값 우선, 부재 시 `productType==='FINISHED' && !isPhantom` 폴백.
-  - createProduct L102 — productData 에 `pos_widget: posWidget`.
-  - createProduct L107-112 — 마이그 071 미적용 폴백(`/pos_widget/` 매칭 시 delete 후 retry), 기존 pack_child/is_phantom/track_inventory 폴백 앞에 배치.
-  - updateProduct L188-192 — `posWidget`: 폼값 우선, 부재+product_type 명시 시 규칙 폴백, 그 외 undefined(미변경).
-  - updateProduct L221 — `...(posWidget !== undefined ? { pos_widget: posWidget } : {})`.
-  - updateProduct L228-232 — 마이그 071 미적용 delete-retry 폴백.
-
-- `src/app/(dashboard)/pos/page.tsx`
-  - L349-368 — loadTier1 select 에 `pos_widget` 추가 + 2단 폴백(071 미적용→pos_widget 제거, 042 미적용→product_type 까지 제거). 기존 RAW/SUB in-memory 필터·productMap·로드 경로 무변경.
-  - L619-622 — filteredProducts 분기: `search.trim()` 있으면 name/code 매칭 전체, 없으면 `pos_widget===undefined || ===true`(컬럼 부재 폴백=전부 노출).
-
-- `src/lib/ai/schema.ts`
-  - L7 — products 라인 `pos_widget(bool, …)` 추가.
-
-## Self-review
-
-- **Richard 가 먼저 볼 지점**: pos select 폴백 순서. 071 미적용 시 첫 select 가 에러 → pos_widget 제거 재시도(product_type 유지) → 그래도 에러면 042 폴백. pos_widget 값이 row 에 없으면 `p.pos_widget === undefined` → 그리드 전부 노출(안전).
-- **모든 요구사항 구현 확인**: (1) 마이그 ✓ (2) UI 체크박스 모든 유형 노출 + 초기값 ✓ (3) actions 폼값 우선+규칙 폴백+미적용 폴백 ✓ (4) pos select+filteredProducts 분기+폴백, productMap/Enter 경로 보존 ✓ (5) schema.ts ✓.
-- **데이터 부재/실패 시 사용자 화면**: 마이그 071 미적용 환경에서도 POS 그리드는 전부 노출(기존 동작 유지), 제품 저장은 delete-retry 로 성공. raw 에러 노출 없음.
+## setHistory 전수 확인 (Flag 항목)
+`grep setHistory(` → 5건. L690 `{...prev, loading:true}`(부분, 영향 없음) + 전체 리셋 4건 전부 `legacyOrders: []` 동기화 완료.
 
 ## Build
-`npm run build` → `✓ Compiled successfully in 7.5s`. 타입/문법 통과.
+`npm run build` → ✓ Compiled successfully in 6.9s. TS 에러 0. `/pos` 정상 컴파일.
+
+## Self-review
+- Richard 첫 지적 예상: 본문 ternary 중첩 가독성 → 기존 코드(consult/orders 2분기 ternary) 패턴 그대로 1단 확장이라 일관성 유지.
+- Brief 요구사항 7항목 전부 구현 확인(타입·state·리셋3+1·페치·탭union·탭버튼·본문).
+- 빈/실패 케이스: legacy 0건 → "과거 구매 이력이 없습니다." / 페치 실패 → 기존 함수 catch 로 빈 배열(조용히). 발송지 셋다 빈값 → "발송지 정보 없음".
 
 ## Open Questions
 - 없음.
 
 ## Out of Scope (logged in BUILD-LOG)
-- 없음 (legacy 이력 표시·포장 옵션화·legacy_* 테이블 미접촉).
+- 복사→재판매 버튼, 포장옵션, legacy_purchases 드롭/임포터, schema.ts 수정, legacy 검색필터, 페이징 UI — 전부 미접촉.

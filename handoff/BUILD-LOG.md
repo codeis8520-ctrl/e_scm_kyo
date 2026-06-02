@@ -6,6 +6,28 @@
 
 ## Completed Steps
 
+### Step — POS 큐 #1: 판매등록 고객패널 과거구매(legacy) 표시
+
+**상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, 2026-06-02)
+
+**변경 파일 (1개)**: `src/app/(dashboard)/pos/page.tsx` (표시 전용, DB 변경 없음)
+- 타입 추가: `LegacyOrderItem` / `LegacyOrder` (interface Customer 위).
+- history state 에 `legacyOrders: LegacyOrder[]` 추가, 초깃값 `[]`.
+- historyTab union 에 `'legacy'` 추가.
+- `expandedLegacy: Set<string>` state + `toggleLegacy` 헬퍼 추가.
+- loadCustomerHistory: 진입부 `setExpandedLegacy(new Set())` 초기화, Promise.all 에 legacy_orders 3번째 쿼리(.limit(50)) 추가, setHistory 에 legacyOrders 세팅. 기존 try/catch 재사용(신규 X).
+- setHistory 전체 리셋 4곳 모두 `legacyOrders: []` 동기화(L710 성공·L717 catch·clearCustomer·resetForm). 후자 2곳은 `setExpandedLegacy(new Set())`도 동반.
+- 탭 버튼 "과거 구매 (N)" 추가(항상 노출).
+- 본문: historyTab 3분기 ternary(`consult ? : orders ? : legacy`). legacy 컴팩트 카드(일자·지점·합계·품목수 + 발송지 줄 + 클릭 펼침 line_seq 순 품목).
+
+**주요 결정**:
+- 패널 폭에 맞춰 customers/[id] 대비 컴팩트(text-[10px]/[11px], p-1.5, w-8/w-20). 검색필터·item_code·payment_status 배지·source_file 생략(범위 밖/좁은 패널).
+- limit 50 (브리프 락). 고객상세 9999 무손상.
+- build: ✓ Compiled successfully in 6.9s (TS 에러 0).
+
+**Known Gaps**: 없음 (범위 밖 항목 미접촉 — 복사버튼/포장옵션/임포터/schema.ts/검색필터/페이징 전부 미접촉).
+
+
 ### Step — POS 판매등록 위젯 표시 속성 (pos_widget)
 
 **상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, 2026-06-02)

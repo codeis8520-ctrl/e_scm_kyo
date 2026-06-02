@@ -1,33 +1,78 @@
-# ARCHITECT-BRIEF — POS 판매등록 위젯 표시 속성 (pos_widget)
+# Architect Brief — POS 큐 #1: 판매등록 고객패널 과거구매(legacy) 표시
 
-## 목표
-제품마다 "판매등록 위젯 표시" 여부 속성을 둔다. 기본값 = 완제품(FINISHED) & 비-세트(is_phantom=false)만 위젯 노출. 세트(phantom)·RAW·SUB·SERVICE 는 위젯 미노출이되 **검색으로는 등록 가능**. 제품 편집 화면에서 토글 가능.
+## Goal
+POS(판매등록) 고객 선택 시, 고객상세에만 있던 legacy_orders 과거구매 이력을 고객패널 탭에서도 볼 수 있게 한다. 표시 전용(read-only).
 
-## 범위 밖 (손대지 말 것)
-- POS 과거 구매(legacy) 이력 표시 (#1, 다음 스프린트)
-- 포장(쇼핑백/보자기) 옵션화 (#2b, 설계 미정)
-- legacy_* 테이블
+## 참고 패턴 (그대로 재사용 — 새 발명 금지)
+`src/app/(dashboard)/customers/[id]/page.tsx`:
+- L63~77: `LegacyOrder` / `LegacyOrderItem` 타입
+- L228~233: legacy_orders 중첩 select (단, 거긴 .range(0,9999) — POS는 .limit(50)로 변경)
+- L1167~1256: 주문 카드 렌더 (펼침 토글 / 발송지 줄 / line_seq 정렬 품목 / 합계·품목수)
 
-## 확인된 사실 (Arch DB 검증)
-- products: product_type(FINISHED/SUB/RAW/SERVICE), is_phantom(boolean). 활성: FINISHED non-phantom 63 / FINISHED phantom 154 / RAW 58 / SUB 155 / SERVICE 5. 세트=phantom.
-- POS 제품 로드: src/app/(dashboard)/pos/page.tsx 약 L349-372 — select(...,product_type) 후 in-memory product_type !== 'RAW' && !== 'SUB' 필터(마이그042 폴백 포함). 이 리스트가 그리드+검색 공용 소스. 그리드 표시 분기는 filteredProducts(약 L613).
+## Build Order — 단일 파일: src/app/(dashboard)/pos/page.tsx
 
-## Bob 작업 (5개 파일)
-1. **supabase/migrations/071_products_pos_widget.sql**
-   - `ALTER TABLE products ADD COLUMN IF NOT EXISTS pos_widget boolean NOT NULL DEFAULT false;`
-   - 백필: `UPDATE products SET pos_widget = (product_type='FINISHED' AND COALESCE(is_phantom,false)=false);`
-   - COMMENT ON COLUMN. 인덱스 없음(활성 ~435행, 불필요).
-2. **제품 편집 UI** (grep 으로 ProductModal.tsx 등 폼 컴포넌트 확정): interface 에 `pos_widget` 추가, 초기값(편집=기존값, 신규=완제품&비세트→true). track_inventory 체크박스 옆에 "판매등록 위젯 표시" 체크박스 추가 — **모든 product_type 에서 노출**(세트도 수동 on 가능). 직렬화는 기존 formData 패턴 사용.
-3. **src/lib/actions.ts** `createProduct`/`updateProduct`: 폼값 우선, 부재 시 규칙(FINISHED&비phantom) 폴백. 기존 `delete productData.xxx`(마이그 미적용) 폴백 패턴에 `pos_widget` 동일 적용.
-4. **pos/page.tsx**: select 에 `pos_widget` 추가. `filteredProducts`(약 L613) 분기 — **검색어 없으면 pos_widget===true 만 그리드, 검색어 있으면 name/code 매칭 전체(세트 포함)**. 로드 리스트(RAW/SUB 제외 전체)는 유지(검색 소스). 컬럼 부재 폴백=전부 노출. productMap·Enter 등록 경로 무변경.
-5. **src/lib/ai/schema.ts** products 라인에 `pos_widget` 추가.
+### 1) 타입 추가 (상단, 다른 interface 근처)
+`LegacyOrderItem` / `LegacyOrder` 인터페이스를 customers/[id] L60~77과 동일하게 추가.
+(필드: id, legacy_order_no, ordered_at, channel_text, branch_code_raw, branch?{name}, recipient_name, recipient_phone, recipient_address, payment_status, total_amount, source_file, legacy_order_items[])
 
-## 락된 결정
-- 컬럼명 `pos_widget`, NOT NULL DEFAULT false, 백필 = FINISHED & 비-phantom.
-- 그리드/검색 분리: 한 로드 리스트 유지, 표시단계 분기(검색어 유무).
-- 마이그 071 미적용 폴백 전 구간 보존.
-- 마이그 071 적용·검증은 Arch(오케스트레이터)가 psycopg 로 직접. Bob 은 .sql 작성만, DB 적용 금지.
+### 2) history state 에 legacyOrders 추가 (L205~210)
+state 타입에 `legacyOrders: LegacyOrder[];` 추가, 초깃값 `legacyOrders: []`.
 
-## 제약
-- Bob: DB 적용 금지(.sql/.ts/.tsx 작성만). 범위 밖 손대지 말 것. schema.ts 변경 후 `npm run build` 통과 확인.
-- 보안/판매경로 변경 가능성 → Richard 리뷰 필수.
+### 3) setHistory 리셋 3곳 모두 `legacyOrders: []` 동기화 — 누락 금지
+- L717 (loadCustomerHistory catch)
+- L787 (clearCustomer)
+- L1046 (그 외 리셋 지점)
+- Flag: 3곳 다 안 고치면 TS 컴파일 에러 또는 잔재 버그. grep `setHistory(` 로 전수 확인할 것.
+
+### 4) legacy 페치 추가 (loadCustomerHistory, L692 Promise.all)
+Promise.all 배열에 세 번째 쿼리 추가:
+```
+supabase
+  .from('legacy_orders')
+  .select('id, legacy_order_no, ordered_at, channel_text, branch_code_raw, recipient_name, recipient_phone, recipient_address, payment_status, total_amount, source_file, branch:branches(name), legacy_order_items(line_seq, item_code, item_text, option_text, quantity, total_amount)')
+  .eq('customer_id', customerId)
+  .order('ordered_at', { ascending: false })
+  .limit(50)
+```
+- Flag: 결과를 `(legacyRes.data || [])` 로 안전 추출 → setHistory 의 legacyOrders 에 넣기.
+- Flag: 폴백 — 이미 함수 전체가 try/catch 로 감싸져 catch 에서 빈 배열 세팅됨. 테이블/컬럼 부재여도 catch 로 떨어져 조용히 빈 배열. **추가 try/catch 만들지 말 것.** (단 catch 의 legacyOrders:[] 만 잊지 말 것 = 3번 항목)
+
+### 5) historyTab 타입 확장 (L211)
+`useState<'consult' | 'orders'>` → `useState<'consult' | 'orders' | 'legacy'>`.
+
+### 6) 탭 버튼 추가 (L1573~1579 "구매 이력" 버튼 옆)
+"구매 이력" 버튼 다음에 동일 className 패턴으로 세 번째 버튼: `과거 구매 ({history.legacyOrders.length})`.
+- 항상 노출(0건이어도 탭은 보이고 본문이 빈 상태).
+
+### 7) 본문 렌더 (L1599 orders 분기 다음에 legacy 분기 추가)
+`historyTab === 'legacy'` 분기. **좁은 패널용 컴팩트** — customers/[id] L1167~ 보다 간결하게:
+- 빈 상태: `<p className="text-center text-slate-400 py-4">과거 구매 이력이 없습니다.</p>`
+- 주문별 카드(`border border-slate-100 rounded p-1.5` 톤):
+  - 헤더 줄: 일자(ordered_at slice(0,10)) · 지점(branch.name 배지/없으면 branch_code_raw) · 합계(원) · (품목수)
+  - 발송지 줄(작게): recipient_name/phone/address — 각 빈값 '-', 셋다 빈값이면 "발송지 정보 없음"
+  - 품목 펼침: 카드 클릭 토글. 펼치면 line_seq 순 품목(item_text / option_text / quantity / total_amount). customers/[id] L1183~1247 차용.
+- 펼침: `expandedLegacy` 로컬 state(`Set<string>`) + 토글 헬퍼. loadCustomerHistory 진입부에서 `setExpandedLegacy(new Set())` 초기화.
+
+## Out of Scope (넣지 말 것)
+- "이 주문 복사 → 재판매" 버튼/applyCopy 연동 (후속 #3)
+- 포장옵션·legacy_purchases 드롭·임포터
+- legacy 검색 필터(좁은 패널 불필요 — 생략)
+- 페이징/더보기 UI (최근 50건 limit, 초과분은 후속)
+- src/lib/ai/schema.ts (이미 동기화 — 손대지 말 것)
+
+## Acceptance
+- `npm run build` 통과 (TS 에러 0).
+- POS 고객 선택 → "과거 구매 (N)" 탭 노출, N=legacy 주문수(최근 50건 한도).
+- 탭 클릭 시 주문 카드(일자·지점·합계·품목수 + 발송지 줄), 카드 클릭 시 품목 펼침(line_seq 순).
+- legacy 0건 고객: 탭 보이고 "과거 구매 이력이 없습니다."
+- 고객 변경/해제 시 legacyOrders·expandedLegacy 재로딩/초기화.
+- 기존 "상담 이력"·"구매 이력"(sales_orders) 탭 무손상.
+
+## 락한 결정
+- legacy 페치 limit 50 (좁은 패널). 고객상세는 9999 유지 — POS만 50.
+- 탭 항상 노출(0건이어도). 빈 상태 문구.
+- 검색 필터·복사 버튼 없음(범위 밖).
+- 폴백은 기존 함수 try/catch 재사용 — 신규 try/catch 금지.
+
+## 에스컬레이션
+없음. 패턴 확립, 표시 전용, 제품 행동 변경 없음. DB 변경 없음(마이그 불필요).

@@ -116,6 +116,31 @@ interface CartItem {
   deliveryType: ItemDeliveryType;  // 품목별 배송방식 (기본 PICKUP)
 }
 
+interface LegacyOrderItem {
+  line_seq: number | null;
+  item_code: string | null;
+  item_text: string | null;
+  option_text: string | null;
+  quantity: number | null;
+  total_amount: number | null;
+}
+
+interface LegacyOrder {
+  id: string;
+  legacy_order_no: string | null;
+  ordered_at: string;
+  channel_text: string | null;
+  branch_code_raw: string | null;
+  branch?: { name: string } | null;
+  recipient_name: string | null;
+  recipient_phone: string | null;
+  recipient_address: string | null;
+  payment_status: string | null;
+  total_amount: number | null;
+  source_file: string | null;
+  legacy_order_items: LegacyOrderItem[];
+}
+
 interface Customer {
   id: string;
   name: string;
@@ -206,9 +231,17 @@ function POSPageInner() {
     loading: boolean;
     consultations: any[];
     orders: any[];
+    legacyOrders: LegacyOrder[];
     totalLtv: number;
-  }>({ loading: false, consultations: [], orders: [], totalLtv: 0 });
-  const [historyTab, setHistoryTab] = useState<'consult' | 'orders'>('consult');
+  }>({ loading: false, consultations: [], orders: [], legacyOrders: [], totalLtv: 0 });
+  const [historyTab, setHistoryTab] = useState<'consult' | 'orders' | 'legacy'>('consult');
+  const [expandedLegacy, setExpandedLegacy] = useState<Set<string>>(new Set());
+  const toggleLegacy = (id: string) =>
+    setExpandedLegacy(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
 
   // 상담 작성
   const [consultType, setConsultType] = useState<string>('방문 상담');
@@ -688,8 +721,9 @@ function POSPageInner() {
   const loadCustomerHistory = async (customerId: string) => {
     const supabase = createClient() as any;
     setHistory(prev => ({ ...prev, loading: true }));
+    setExpandedLegacy(new Set());
     try {
-      const [consultRes, ordersRes] = await Promise.all([
+      const [consultRes, ordersRes, legacyRes] = await Promise.all([
         supabase
           .from('customer_consultations')
           .select('id, consultation_type, content, created_at, consulted_by')
@@ -702,6 +736,12 @@ function POSPageInner() {
           .eq('customer_id', customerId)
           .order('ordered_at', { ascending: false })
           .limit(20),
+        supabase
+          .from('legacy_orders')
+          .select('id, legacy_order_no, ordered_at, channel_text, branch_code_raw, recipient_name, recipient_phone, recipient_address, payment_status, total_amount, source_file, branch:branches(name), legacy_order_items(line_seq, item_code, item_text, option_text, quantity, total_amount)')
+          .eq('customer_id', customerId)
+          .order('ordered_at', { ascending: false })
+          .limit(50),
       ]);
       const orders = (ordersRes.data || []) as any[];
       const totalLtv = orders
@@ -711,10 +751,11 @@ function POSPageInner() {
         loading: false,
         consultations: (consultRes.data as any[]) || [],
         orders,
+        legacyOrders: (legacyRes.data || []) as LegacyOrder[],
         totalLtv,
       });
     } catch {
-      setHistory({ loading: false, consultations: [], orders: [], totalLtv: 0 });
+      setHistory({ loading: false, consultations: [], orders: [], legacyOrders: [], totalLtv: 0 });
     }
   };
 
@@ -784,7 +825,8 @@ function POSPageInner() {
     setShowCustomerDropdown(false);
     setUsePoints(false);
     setPointsToUse(0);
-    setHistory({ loading: false, consultations: [], orders: [], totalLtv: 0 });
+    setHistory({ loading: false, consultations: [], orders: [], legacyOrders: [], totalLtv: 0 });
+    setExpandedLegacy(new Set());
     setConsultText('');
     // 고객 해제 시 자동 채워졌던 수령인 정보도 비움 (다음 고객 선택 전 잔재 방지)
     setShipping(prev => ({
@@ -1043,7 +1085,8 @@ function POSPageInner() {
     setCart([]);
     setSelectedCustomer(null);
     setCustomerSearch('');
-    setHistory({ loading: false, consultations: [], orders: [], totalLtv: 0 });
+    setHistory({ loading: false, consultations: [], orders: [], legacyOrders: [], totalLtv: 0 });
+    setExpandedLegacy(new Set());
     setConsultText('');
     setUsePoints(false);
     setPointsToUse(0);
@@ -1577,6 +1620,13 @@ function POSPageInner() {
                   >
                     구매 이력 ({history.orders.length})
                   </button>
+                  <button
+                    onClick={() => setHistoryTab('legacy')}
+                    className={`flex-1 py-1.5 font-medium transition-colors ${historyTab === 'legacy'
+                      ? 'bg-white text-blue-600 border-b-2 border-blue-500 -mb-px' : 'text-slate-500 hover:text-slate-700'}`}
+                  >
+                    과거 구매 ({history.legacyOrders.length})
+                  </button>
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 text-xs space-y-1.5 bg-white">
                   {history.loading ? (
@@ -1596,7 +1646,7 @@ function POSPageInner() {
                         </div>
                       );
                     })
-                  ) : (
+                  ) : historyTab === 'orders' ? (
                     history.orders.length === 0 ? (
                       <p className="text-center text-slate-400 py-4">구매 이력이 없습니다.</p>
                     ) : history.orders.map((o: any) => {
@@ -1634,6 +1684,64 @@ function POSPageInner() {
                               </button>
                             )}
                           </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    history.legacyOrders.length === 0 ? (
+                      <p className="text-center text-slate-400 py-4">과거 구매 이력이 없습니다.</p>
+                    ) : history.legacyOrders.map((o) => {
+                      const items = [...(o.legacy_order_items || [])].sort(
+                        (a, b) => (a.line_seq ?? 0) - (b.line_seq ?? 0)
+                      );
+                      const isOpen = expandedLegacy.has(o.id);
+                      const hasRecipient = !!(o.recipient_name || o.recipient_phone || o.recipient_address);
+                      return (
+                        <div key={o.id} className="border border-slate-100 rounded overflow-hidden">
+                          <button
+                            type="button"
+                            onClick={() => toggleLegacy(o.id)}
+                            className="w-full text-left p-1.5 hover:bg-slate-50 transition-colors"
+                          >
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                              <span className="text-slate-400 text-[10px]">{isOpen ? '▾' : '▸'}</span>
+                              <span className="text-slate-700 font-medium whitespace-nowrap">{String(o.ordered_at).slice(0, 10)}</span>
+                              {o.branch?.name ? (
+                                <span className="inline-block px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 text-[10px]">{o.branch.name}</span>
+                              ) : (
+                                <span className="text-slate-400 font-mono text-[10px]">{o.branch_code_raw || '-'}</span>
+                              )}
+                              <span className="ml-auto text-slate-800 font-semibold whitespace-nowrap">
+                                {o.total_amount ? `${Number(o.total_amount).toLocaleString()}원` : '-'}
+                              </span>
+                              <span className="text-[10px] text-slate-400 whitespace-nowrap">({items.length}품목)</span>
+                            </div>
+                            <div className="mt-0.5 ml-4 text-[10px]">
+                              {hasRecipient ? (
+                                <span className="text-slate-500">🚚 {o.recipient_name || '-'} · {o.recipient_phone || '-'} · {o.recipient_address || '-'}</span>
+                              ) : (
+                                <span className="text-slate-300">🚚 발송지 정보 없음</span>
+                              )}
+                            </div>
+                          </button>
+                          {isOpen && (
+                            <div className="border-t border-slate-100 divide-y divide-slate-50">
+                              {items.length === 0 ? (
+                                <p className="px-2 py-1.5 text-[10px] text-slate-400">품목 정보가 없습니다.</p>
+                              ) : items.map((it, idx) => (
+                                <div key={idx} className="px-2 py-1 flex items-start gap-2">
+                                  <div className="flex-1 min-w-0">
+                                    <div className="text-slate-700 whitespace-pre-wrap break-words">{it.item_text || '-'}</div>
+                                    {it.option_text && <div className="text-[10px] text-slate-400">{it.option_text}</div>}
+                                  </div>
+                                  <div className="text-slate-500 whitespace-nowrap w-8 text-center">{it.quantity ?? '-'}</div>
+                                  <div className="text-right text-slate-600 font-medium whitespace-nowrap w-20">
+                                    {it.total_amount ? `${Number(it.total_amount).toLocaleString()}원` : '-'}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       );
                     })
