@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/client';
 import { formatPhone } from '@/lib/validators';
 import { settleCreditOrder } from '@/lib/accounting-actions';
 import { fmtDateTimeKST, fmtDateKST, fmtKoreanMonthKST, kstDayStart, kstDayEnd } from '@/lib/date';
+import CustomerModal from '../CustomerModal';
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -176,6 +177,7 @@ export default function CustomerDetailPage() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
   const [showAssignModal, setShowAssignModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
 
   const [activePeriod, setActivePeriod] = useState(1);
   const [purchaseDateRange, setPurchaseDateRange] = useState(() => getDateRange(1));
@@ -502,11 +504,20 @@ export default function CustomerDetailPage() {
   const customerTags = customer.tags || [];
   const availableTags = allTags.filter(t => !customerTags.find(ct => ct.id === t.id));
 
+  // "← 목록" 복원용 — 목록 검색 키만 추려 href 구성 (상세전용 tab 제외)
+  const backHref = (() => {
+    const keys = ['q', 'grade', 'hasConsult', 'sort', 'page'];
+    const p = new URLSearchParams();
+    for (const k of keys) { const v = searchParams.get(k); if (v) p.set(k, v); }
+    const qs = p.toString();
+    return qs ? `/customers?${qs}` : '/customers';
+  })();
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 sm:mb-6">
         <div className="flex items-center gap-4">
-          <Link href="/customers" className="text-slate-400 hover:text-slate-600">← 목록</Link>
+          <Link href={backHref} className="text-slate-400 hover:text-slate-600">← 목록</Link>
           <div>
             <h1 className="text-2xl font-bold">{customer.name}</h1>
             <p className="text-slate-500">{formatPhone(customer.phone)}</p>
@@ -524,7 +535,10 @@ export default function CustomerDetailPage() {
         {/* 사이드바 */}
         <div className="lg:col-span-1 space-y-6">
           <div className="card">
-            <h3 className="font-semibold mb-4">기본 정보</h3>
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-semibold">기본 정보</h3>
+              <button onClick={() => setShowEditModal(true)} className="text-sm text-blue-600 hover:underline">수정</button>
+            </div>
             <dl className="space-y-3 text-sm">
               <div className="flex justify-between"><dt className="text-slate-500">이메일</dt><dd>{customer.email || '-'}</dd></div>
               <div className="flex justify-between"><dt className="text-slate-500">주소</dt><dd className="text-right max-w-[180px] truncate" title={customer.address || ''}>{customer.address || '-'}</dd></div>
@@ -1263,13 +1277,21 @@ export default function CustomerDetailPage() {
           {activeTab === 'info' && (
             <div className="card">
               <h3 className="font-semibold mb-4">추가 정보</h3>
-              <p className="text-slate-500 text-sm">기본 정보 수정은 고객 목록의 "수정" 버튼을 이용하세요.</p>
+              <button onClick={() => setShowEditModal(true)} className="btn-secondary text-sm">기본 정보 수정</button>
             </div>
           )}
         </div>
       </div>
 
       {showAssignModal && <AssignModal currentUserId={customer.assigned_to?.id} users={users} onClose={() => setShowAssignModal(false)} onSubmit={handleUpdateAssignedTo} />}
+
+      {showEditModal && (
+        <CustomerModal
+          customer={customer}
+          onClose={() => setShowEditModal(false)}
+          onSuccess={() => { setShowEditModal(false); fetchData(); }}
+        />
+      )}
     </div>
   );
 }

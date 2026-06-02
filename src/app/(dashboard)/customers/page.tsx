@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback, Suspense } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, Suspense } from 'react';
 import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
 import CustomerModal from './CustomerModal';
@@ -190,6 +190,17 @@ function CustomersPageInner() {
     const qs = params.toString();
     router.replace(qs ? `/customers?${qs}` : '/customers', { scroll: false });
   }, [search, gradeFilter, hasConsult, sortKey, page, activeTab, router]);
+
+  // 상세 페이지로 넘길 검색 상태 qs (목록 복원용 — tab 제외)
+  const listQs = useMemo(() => {
+    const p = new URLSearchParams();
+    if (search.trim()) p.set('q', search);
+    if (gradeFilter) p.set('grade', gradeFilter);
+    if (hasConsult) p.set('hasConsult', '1');
+    if (sortKey && sortKey !== 'recent_consult') p.set('sort', sortKey);
+    if (page > 1) p.set('page', String(page));
+    return p.toString();
+  }, [search, gradeFilter, hasConsult, sortKey, page]);
 
   // 자동 포커스
   useEffect(() => {
@@ -402,7 +413,7 @@ function CustomersPageInner() {
               <tr key={customer.id} className="align-top">
                 <td>
                   <Link
-                    href={`/customers/${customer.id}`}
+                    href={listQs ? `/customers/${customer.id}?${listQs}` : `/customers/${customer.id}`}
                     className="font-medium text-slate-800 hover:text-blue-600 hover:underline"
                   >
                     {customer.name}
@@ -469,7 +480,7 @@ function CustomersPageInner() {
                     </div>
                   ) : (
                     <Link
-                      href={`/customers/${customer.id}?tab=consultations`}
+                      href={`/customers/${customer.id}?tab=consultations${listQs ? `&${listQs}` : ''}`}
                       className="inline-flex items-center gap-1 text-xs text-slate-400 hover:text-blue-600"
                     >
                       <span className="text-slate-300">—</span> 상담 기록 없음 · 추가하기

@@ -1,78 +1,76 @@
-# Architect Brief — POS 큐 #1: 판매등록 고객패널 과거구매(legacy) 표시
+# Architect Brief — Step: 고객 상세 UX 2건 (인라인 수정 + 목록 복원)
 
 ## Goal
-POS(판매등록) 고객 선택 시, 고객상세에만 있던 legacy_orders 과거구매 이력을 고객패널 탭에서도 볼 수 있게 한다. 표시 전용(read-only).
+고객 상세에서 기본정보를 바로 수정 가능(기존 CustomerModal 재사용)하고, "← 목록" 클릭 시 직전 검색/필터 결과로 복원된다.
 
-## 참고 패턴 (그대로 재사용 — 새 발명 금지)
-`src/app/(dashboard)/customers/[id]/page.tsx`:
-- L63~77: `LegacyOrder` / `LegacyOrderItem` 타입
-- L228~233: legacy_orders 중첩 select (단, 거긴 .range(0,9999) — POS는 .limit(50)로 변경)
-- L1167~1256: 주문 카드 렌더 (펼침 토글 / 발송지 줄 / line_seq 정렬 품목 / 합계·품목수)
+## Build Order
 
-## Build Order — 단일 파일: src/app/(dashboard)/pos/page.tsx
+### A) 기본정보 직접 수정 — CustomerModal 재사용 (새 폼 발명 금지)
+파일: `src/app/(dashboard)/customers/[id]/page.tsx`
+- CustomerModal import 추가: `import CustomerModal from '../CustomerModal';`
+- state 추가: `const [showEditModal, setShowEditModal] = useState(false);`
+- "기본 정보" 카드(L527 영역) 헤더에 "수정" 버튼 추가 → `onClick={() => setShowEditModal(true)}`.
+- info 탭 안내문(L1266 "기본 정보 수정은 고객 목록의 '수정' 버튼을 이용하세요.")은 동일한 "수정" 버튼으로 교체(안내문 제거).
+- 컴포넌트 return 말미에 모달 렌더:
+  ```
+  {showEditModal && (
+    <CustomerModal
+      customer={customer}
+      onClose={() => setShowEditModal(false)}
+      onSuccess={() => { setShowEditModal(false); fetchData(); }}
+    />
+  )}
+  ```
+- Flag: CustomerModal props는 `{ customer, onClose, onSuccess }` 정확히 이 3개(CustomerModal.tsx L26-29). 다른 prop 발명 금지.
+- Flag: 권한·저장 로직은 CustomerModal 내부 액션 그대로 사용. 상세 페이지에서 새 권한 분기/우회 작성 금지. 목록 수정과 동일 RBAC.
+- Flag: 모달이 읽는 `customer.primary_branch_id`(스칼라)는 상세 select의 `*` 에 포함됨 — 별도 매핑 불필요. customer 객체 그대로 넘길 것.
+- 저장 후 리로드는 반드시 기존 `fetchData()`(L200) 재호출. 새 fetch 함수 작성 금지.
 
-### 1) 타입 추가 (상단, 다른 interface 근처)
-`LegacyOrderItem` / `LegacyOrder` 인터페이스를 customers/[id] L60~77과 동일하게 추가.
-(필드: id, legacy_order_no, ordered_at, channel_text, branch_code_raw, branch?{name}, recipient_name, recipient_phone, recipient_address, payment_status, total_amount, source_file, legacy_order_items[])
+### B) 목록 복원 — 검색 qs를 상세 URL로 전달 (back() 폴백 방식 채택 안 함)
+목록 키 정의: `q`, `grade`, `hasConsult`, `sort`, `page` (tab은 상세로 전달하지 않음 — 상세는 자체 tab 키 사용).
 
-### 2) history state 에 legacyOrders 추가 (L205~210)
-state 타입에 `legacyOrders: LegacyOrder[];` 추가, 초깃값 `legacyOrders: []`.
+B-1. 목록 → 상세 링크에 현재 검색 qs 부착 — 파일: `src/app/(dashboard)/customers/page.tsx`
+- 현재 검색 상태로 qs 만드는 useMemo 추가(L182-192 동기화 키와 동일, tab 제외):
+  ```
+  const listQs = useMemo(() => {
+    const p = new URLSearchParams();
+    if (search.trim()) p.set('q', search);
+    if (gradeFilter) p.set('grade', gradeFilter);
+    if (hasConsult) p.set('hasConsult', '1');
+    if (sortKey && sortKey !== 'recent_consult') p.set('sort', sortKey);
+    if (page > 1) p.set('page', String(page));
+    return p.toString();
+  }, [search, gradeFilter, hasConsult, sortKey, page]);
+  ```
+- L405 이름 링크: `href={listQs ? \`/customers/${customer.id}?${listQs}\` : \`/customers/${customer.id}\`}`
+- L472 "상담 기록 없음" 링크: 기존 `?tab=consultations`에 listQs 머지 → `href={\`/customers/${customer.id}?tab=consultations${listQs ? \`&${listQs}\` : ''}\`}`
 
-### 3) setHistory 리셋 3곳 모두 `legacyOrders: []` 동기화 — 누락 금지
-- L717 (loadCustomerHistory catch)
-- L787 (clearCustomer)
-- L1046 (그 외 리셋 지점)
-- Flag: 3곳 다 안 고치면 TS 컴파일 에러 또는 잔재 버그. grep `setHistory(` 로 전수 확인할 것.
+B-2. 상세 "← 목록" 버튼이 목록 키로 복원 — 파일: `src/app/(dashboard)/customers/[id]/page.tsx` (L509)
+- searchParams에서 목록 키만 추려 href 구성(상세전용 tab 제외):
+  ```
+  const backHref = (() => {
+    const keys = ['q','grade','hasConsult','sort','page'];
+    const p = new URLSearchParams();
+    for (const k of keys) { const v = searchParams.get(k); if (v) p.set(k, v); }
+    const qs = p.toString();
+    return qs ? `/customers?${qs}` : '/customers';
+  })();
+  ```
+- L509 Link href를 `"/customers"` → `{backHref}`로 교체.
+- Flag: 상세 기존 탭-동기화(L624-626)는 searchParams 전체를 보존하므로 B-1로 실어준 목록 키가 상세 머무는 동안 URL에 유지됨 → backHref 정상 복원. 이 코드 건드리지 말 것.
 
-### 4) legacy 페치 추가 (loadCustomerHistory, L692 Promise.all)
-Promise.all 배열에 세 번째 쿼리 추가:
-```
-supabase
-  .from('legacy_orders')
-  .select('id, legacy_order_no, ordered_at, channel_text, branch_code_raw, recipient_name, recipient_phone, recipient_address, payment_status, total_amount, source_file, branch:branches(name), legacy_order_items(line_seq, item_code, item_text, option_text, quantity, total_amount)')
-  .eq('customer_id', customerId)
-  .order('ordered_at', { ascending: false })
-  .limit(50)
-```
-- Flag: 결과를 `(legacyRes.data || [])` 로 안전 추출 → setHistory 의 legacyOrders 에 넣기.
-- Flag: 폴백 — 이미 함수 전체가 try/catch 로 감싸져 catch 에서 빈 배열 세팅됨. 테이블/컬럼 부재여도 catch 로 떨어져 조용히 빈 배열. **추가 try/catch 만들지 말 것.** (단 catch 의 legacyOrders:[] 만 잊지 말 것 = 3번 항목)
-
-### 5) historyTab 타입 확장 (L211)
-`useState<'consult' | 'orders'>` → `useState<'consult' | 'orders' | 'legacy'>`.
-
-### 6) 탭 버튼 추가 (L1573~1579 "구매 이력" 버튼 옆)
-"구매 이력" 버튼 다음에 동일 className 패턴으로 세 번째 버튼: `과거 구매 ({history.legacyOrders.length})`.
-- 항상 노출(0건이어도 탭은 보이고 본문이 빈 상태).
-
-### 7) 본문 렌더 (L1599 orders 분기 다음에 legacy 분기 추가)
-`historyTab === 'legacy'` 분기. **좁은 패널용 컴팩트** — customers/[id] L1167~ 보다 간결하게:
-- 빈 상태: `<p className="text-center text-slate-400 py-4">과거 구매 이력이 없습니다.</p>`
-- 주문별 카드(`border border-slate-100 rounded p-1.5` 톤):
-  - 헤더 줄: 일자(ordered_at slice(0,10)) · 지점(branch.name 배지/없으면 branch_code_raw) · 합계(원) · (품목수)
-  - 발송지 줄(작게): recipient_name/phone/address — 각 빈값 '-', 셋다 빈값이면 "발송지 정보 없음"
-  - 품목 펼침: 카드 클릭 토글. 펼치면 line_seq 순 품목(item_text / option_text / quantity / total_amount). customers/[id] L1183~1247 차용.
-- 펼침: `expandedLegacy` 로컬 state(`Set<string>`) + 토글 헬퍼. loadCustomerHistory 진입부에서 `setExpandedLegacy(new Set())` 초기화.
-
-## Out of Scope (넣지 말 것)
-- "이 주문 복사 → 재판매" 버튼/applyCopy 연동 (후속 #3)
-- 포장옵션·legacy_purchases 드롭·임포터
-- legacy 검색 필터(좁은 패널 불필요 — 생략)
-- 페이징/더보기 UI (최근 50건 limit, 초과분은 후속)
-- src/lib/ai/schema.ts (이미 동기화 — 손대지 말 것)
+## Out of Scope
+- 고객 병합 / 포장옵션 / legacy 관련 — 손대지 말 것.
+- 목록 검색결과 캐싱·prefetch — 범위 밖.
+- DB/마이그/src/lib/ai/schema.ts — 변경 없음(순수 프론트).
+- back()/router.back() 폴백 — 채택 안 함. 구현 금지.
 
 ## Acceptance
-- `npm run build` 통과 (TS 에러 0).
-- POS 고객 선택 → "과거 구매 (N)" 탭 노출, N=legacy 주문수(최근 50건 한도).
-- 탭 클릭 시 주문 카드(일자·지점·합계·품목수 + 발송지 줄), 카드 클릭 시 품목 펼침(line_seq 순).
-- legacy 0건 고객: 탭 보이고 "과거 구매 이력이 없습니다."
-- 고객 변경/해제 시 legacyOrders·expandedLegacy 재로딩/초기화.
-- 기존 "상담 이력"·"구매 이력"(sales_orders) 탭 무손상.
+- 상세 기본정보 카드 + info탭에서 "수정" 버튼 → CustomerModal 열림 → 저장 시 상세 데이터 즉시 갱신.
+- 권한: 목록 수정과 동일(별도 권한 분기 없음).
+- 목록 검색/필터/정렬/페이지 적용 → 고객 클릭 → 상세 → "← 목록" → 직전 상태 복원.
+- 직접 URL 진입(qs 없음) 시 "← 목록"은 `/customers` 폴백.
+- `npm run build` 통과.
 
-## 락한 결정
-- legacy 페치 limit 50 (좁은 패널). 고객상세는 9999 유지 — POS만 50.
-- 탭 항상 노출(0건이어도). 빈 상태 문구.
-- 검색 필터·복사 버튼 없음(범위 밖).
-- 폴백은 기존 함수 try/catch 재사용 — 신규 try/catch 금지.
-
-## 에스컬레이션
-없음. 패턴 확립, 표시 전용, 제품 행동 변경 없음. DB 변경 없음(마이그 불필요).
+## Review
+보안 민감(고객정보 수정 경로). Richard 리뷰 필수 — RBAC/권한 우회 점검: 상세가 CustomerModal 외 별도 권한 분기를 만들지 않았는지, 저장 경로가 목록과 동일한지.

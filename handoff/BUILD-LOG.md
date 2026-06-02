@@ -6,6 +6,31 @@
 
 ## Completed Steps
 
+### Step — 고객 상세 UX 2건 (인라인 수정 + 목록 복원)
+
+**상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, 2026-06-02)
+
+**변경 파일 (2개, 순수 프론트, DB 변경 없음)**:
+
+`src/app/(dashboard)/customers/[id]/page.tsx`
+- import 추가: `CustomerModal` (`../CustomerModal`).
+- state 추가: `showEditModal`.
+- `backHref` 도출(검색 키 q/grade/hasConsult/sort/page 만 추림, 없으면 `/customers`) → "← 목록" Link href 교체.
+- "기본 정보" 카드 헤더에 "수정" 버튼 + info 탭 안내문을 "기본 정보 수정" 버튼으로 교체. 둘 다 `setShowEditModal(true)`.
+- 컴포넌트 말미 `CustomerModal` 렌더(props 3개: customer/onClose/onSuccess). onSuccess 시 기존 `fetchData()` 재호출로 리로드.
+
+`src/app/(dashboard)/customers/page.tsx`
+- `useMemo` import 추가(기존 미import 이었음).
+- `listQs` useMemo(검색 동기화 키와 동일, tab 제외).
+- 이름 링크(L405)·"상담 기록 없음" 링크(L472)에 `listQs` 부착.
+
+**주요 결정**:
+- CustomerModal props 시그니처 실제 확인(CustomerModal.tsx L26-30): `{ customer?, onClose, onSuccess }` — 브리프와 정확히 일치. 불일치 없음.
+- 상세의 `customer`는 `CustomerDetail`(모달 `Customer`의 슈퍼셋) → 구조적 호환, 그대로 전달. 새 매핑/권한 분기/fetch 함수 없음. 저장 경로는 모달 내부 `updateCustomer` 액션(목록과 동일 RBAC).
+- 탭-동기화 코드(L624-626)는 미변경.
+
+**Known Gaps**: 없음.
+
 ### Step — POS 큐 #1: 판매등록 고객패널 과거구매(legacy) 표시
 
 **상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, 2026-06-02)
