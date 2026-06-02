@@ -1636,11 +1636,15 @@ function POSPageInner() {
                       <p className="text-center text-slate-400 py-4">상담 이력이 없습니다.</p>
                     ) : history.consultations.map((c: any) => {
                       const text = typeof c.content === 'string' ? c.content : (c.content?.text || '-');
+                      // LEGACY 상담은 임포트일(created_at)이 아니라 실제 상담일(content.consulted_at) 우선 표시.
+                      const dispDate = (c.consultation_type === 'LEGACY' && c.content?.consulted_at)
+                        ? String(c.content.consulted_at).slice(0, 10)
+                        : String(c.created_at).slice(0, 10);
                       return (
                         <div key={c.id} className="border border-slate-100 rounded p-1.5 hover:bg-slate-50">
                           <div className="flex justify-between text-[10px] text-slate-400 mb-0.5">
                             <span className="font-medium text-slate-500">[{c.consultation_type || '기타'}]</span>
-                            <span>{String(c.created_at).slice(0, 10)}</span>
+                            <span>{dispDate}</span>
                           </div>
                           <p className="text-slate-700 whitespace-pre-wrap leading-snug">{text}</p>
                         </div>
