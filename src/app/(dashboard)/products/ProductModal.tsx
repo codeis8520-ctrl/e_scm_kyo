@@ -26,6 +26,7 @@ interface Product {
   is_taxable: boolean;
   track_inventory: boolean;
   is_phantom?: boolean;
+  pos_widget?: boolean;
   pack_child_id?: string | null;
   pack_child_qty?: number | null;
   image_url?: string | null;
@@ -65,6 +66,10 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
     track_inventory: product?.track_inventory
       ?? ((product?.product_type as ProductType) === 'SERVICE' ? false : true),
     is_phantom: product?.is_phantom ?? false,
+    // 판매등록 위젯 노출 — 편집: 기존값 우선 / 신규: 완제품&비세트만 기본 on
+    pos_widget: product?.pos_widget
+      ?? (((product?.product_type as ProductType) || 'FINISHED') === 'FINISHED'
+        && !(product?.is_phantom ?? false)),
     pack_child_id: product?.pack_child_id ?? null,
     pack_child_qty: product?.pack_child_qty ?? null,
     image_url: product?.image_url || null,
@@ -450,6 +455,23 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
               재고 관리 대상
               <span className="text-xs text-slate-400 ml-2">
                 해제 시 inventories/입출고 이력을 만들지 않음 (무형상품, 가상 항목 등에 적합)
+              </span>
+            </label>
+          </div>
+
+          {/* 판매등록 위젯 표시 여부 — 모든 유형에서 수동 토글 가능(세트도 on 가능) */}
+          <div className="flex items-center gap-2 p-3 bg-slate-50 border border-slate-200 rounded-md">
+            <input
+              type="checkbox"
+              id="pos_widget"
+              checked={!!formData.pos_widget}
+              onChange={e => setFormData({ ...formData, pos_widget: e.target.checked })}
+              className="w-4 h-4"
+            />
+            <label htmlFor="pos_widget" className="text-sm text-slate-700 flex-1 cursor-pointer">
+              판매등록 위젯 표시
+              <span className="text-xs text-slate-400 ml-2">
+                POS 판매등록 그리드에 노출 (해제해도 검색으로는 등록 가능)
               </span>
             </label>
           </div>

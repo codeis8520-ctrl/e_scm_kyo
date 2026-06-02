@@ -71,6 +71,12 @@ export async function createProduct(formData: FormData) {
   const isPhantom = rawPhantom == null ? false : rawPhantom === 'true';
   const finalTrackInventory = isPhantom ? false : trackInventory;
 
+  // 판매등록 위젯 노출 — 폼값 우선, 부재 시 규칙(FINISHED & 비-phantom) 폴백.
+  const rawPosWidget = formData.get('pos_widget');
+  const posWidget = rawPosWidget == null
+    ? (productType === 'FINISHED' && !isPhantom)
+    : rawPosWidget === 'true';
+
   // 박스 분해/재포장 — pack_child_id 와 pack_child_qty 는 짝으로만 의미. Phantom 과 배타.
   const rawPackChildId = formData.get('pack_child_id');
   const rawPackChildQty = formData.get('pack_child_qty');
@@ -97,13 +103,19 @@ export async function createProduct(formData: FormData) {
     description: (formData.get('description') as string) || null,
     track_inventory: finalTrackInventory,
     is_phantom: isPhantom,
+    pos_widget: posWidget,
     pack_child_id: finalPackChildId,
     pack_child_qty: finalPackChildId ? packChildQty : null,
   };
 
-  // 마이그 066/061/059 미적용 폴백 — 컬럼이 없으면 단계적으로 제거 후 재시도
+  // 마이그 071/066/061/059 미적용 폴백 — 컬럼이 없으면 단계적으로 제거 후 재시도
   let { data: newProduct, error } = await (supabase as any)
     .from('products').insert(productData).select().single();
+  if (error && /pos_widget/i.test(String(error.message))) {
+    delete productData.pos_widget;
+    const retry = await (supabase as any).from('products').insert(productData).select().single();
+    newProduct = retry.data; error = retry.error;
+  }
   if (error && /pack_child/i.test(String(error.message))) {
     delete productData.pack_child_id;
     delete productData.pack_child_qty;
@@ -187,6 +199,12 @@ export async function updateProduct(id: string, formData: FormData) {
   const isPhantom = rawPhantom == null ? undefined : rawPhantom === 'true';
   const finalTrackInventory = isPhantom === true ? false : trackInventory;
 
+  // 판매등록 위젯 노출 — 폼값 우선. 부재 시: product_type 명시되면 규칙(FINISHED & 비-phantom) 폴백, 아니면 미변경.
+  const rawPosWidget = formData.get('pos_widget');
+  const posWidget = rawPosWidget != null
+    ? rawPosWidget === 'true'
+    : (productType !== undefined ? (productType === 'FINISHED' && isPhantom !== true) : undefined);
+
   // 박스 분해/재포장 — pack_child_id / pack_child_qty 짝으로만 의미.
   const rawPackChildId = formData.get('pack_child_id');
   const rawPackChildQty = formData.get('pack_child_qty');
@@ -216,13 +234,19 @@ export async function updateProduct(id: string, formData: FormData) {
     description: (formData.get('description') as string) || null,
     ...(finalTrackInventory !== undefined ? { track_inventory: finalTrackInventory } : {}),
     ...(isPhantom !== undefined ? { is_phantom: isPhantom } : {}),
+    ...(posWidget !== undefined ? { pos_widget: posWidget } : {}),
     // pack_child_* 는 폼에 포함되어 있을 때만(=명시적으로 비우려는 의도 포함) 갱신
     ...(packChildIdPresent ? { pack_child_id: finalPackChildId, pack_child_qty: finalPackChildId ? packChildQty : null } : {}),
   };
 
-  // 마이그 066/061/059 미적용 폴백 — 단계적으로 컬럼 제거 후 재시도
+  // 마이그 071/066/061/059 미적용 폴백 — 단계적으로 컬럼 제거 후 재시도
   let res = await (supabase as any).from('products').update(productData).eq('id', id);
   let error = res.error;
+  if (error && /pos_widget/i.test(String(error.message))) {
+    delete productData.pos_widget;
+    res = await (supabase as any).from('products').update(productData).eq('id', id);
+    error = res.error;
+  }
   if (error && /pack_child/i.test(String(error.message))) {
     delete productData.pack_child_id;
     delete productData.pack_child_qty;

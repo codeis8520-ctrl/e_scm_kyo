@@ -1,50 +1,43 @@
-# Review Request — 레거시 판매데이터 정규화 2단계 (앱 read 리팩터)
+# Review Request — POS 판매등록 위젯 표시 속성 (pos_widget)
+Date: 2026-06-02
+Ready for Review: YES
 
-**Ready for Review: YES**
-**Build**: `npm run build` ✅ Compiled successfully (6.2s, 0 errors)
+## Files Changed
 
-## 변경 파일 (5)
+- `supabase/migrations/071_products_pos_widget.sql` (신규, 전체) — pos_widget boolean NOT NULL DEFAULT false 추가 + 백필(product_type='FINISHED' AND COALESCE(is_phantom,false)=false) + COMMENT. 인덱스 없음. **DB 미적용 — Arch 가 psycopg 로 적용·검증.**
 
-### 1. `src/lib/customer-analytics-actions.ts`
-- L57 주석: `legacy_purchases` → `legacy_orders`.
-- L66-68 (`getRfmAnalysis` legacyQ): `.from('legacy_purchases')` → `.from('legacy_orders')`. select 동일(customer_id, total_amount, ordered_at, branch_id).
-- L134 주석 + L143-145 (`getRepurchaseCycles` lq): 테이블명 교체. select 동일.
-- L220 주석 + L229-231 (`getChurnRiskCustomers` lq): 테이블명 교체. select 동일.
-- **무엇/왜**: legacy_orders 는 주문당 1행 → accumulate 의 count 가 자동으로 주문수가 됨 = F(빈도)·재구매·이탈 카운트 정확화(라인수 부풀림 버그픽스). M 은 헤더 total_amount(=라인합)이라 값 보존.
+- `src/app/(dashboard)/products/ProductModal.tsx`
+  - L29 — interface 에 `pos_widget?: boolean` 추가.
+  - L68-72 — formData 초기값: 편집=`product?.pos_widget` 우선, 신규=완제품&비세트→true.
+  - L460-476 — track_inventory 체크박스 바로 아래 "판매등록 위젯 표시" 체크박스(모든 product_type 노출, disabled 없음).
+  - 직렬화: 기존 `Object.entries(formData)` 루프(L312)가 boolean 을 `String(value)` 로 자동 append → 별도 코드 불필요.
 
-### 2. `src/app/api/customers/search/route.ts` (~L312-356)
-- L313-315 legacy fetch: `.from('legacy_purchases')` → `.from('legacy_orders')`. select(customer_id, ordered_at, total_amount) 동일.
-- L353 주석 갱신.
-- **반환 필드명 `legacy_purchase_count`(L366) 유지** — 의미만 라인수→주문수(Brief Flag). latestPurchase·legacyCount 로직 무변경.
+- `src/lib/actions.ts`
+  - createProduct L73-77 — `posWidget`: 폼값 우선, 부재 시 `productType==='FINISHED' && !isPhantom` 폴백.
+  - createProduct L102 — productData 에 `pos_widget: posWidget`.
+  - createProduct L107-112 — 마이그 071 미적용 폴백(`/pos_widget/` 매칭 시 delete 후 retry), 기존 pack_child/is_phantom/track_inventory 폴백 앞에 배치.
+  - updateProduct L188-192 — `posWidget`: 폼값 우선, 부재+product_type 명시 시 규칙 폴백, 그 외 undefined(미변경).
+  - updateProduct L221 — `...(posWidget !== undefined ? { pos_widget: posWidget } : {})`.
+  - updateProduct L228-232 — 마이그 071 미적용 delete-retry 폴백.
 
-### 3. `src/app/(dashboard)/customers/page.tsx`
-- L205 진입 head-count: `.from('legacy_purchases')` → `.from('legacy_orders')`. (`totalLegacy` = 총 주문수.) 뱃지 문구 "과거 구매 N건" 중립어라 코드 변경 없음.
+- `src/app/(dashboard)/pos/page.tsx`
+  - L349-368 — loadTier1 select 에 `pos_widget` 추가 + 2단 폴백(071 미적용→pos_widget 제거, 042 미적용→product_type 까지 제거). 기존 RAW/SUB in-memory 필터·productMap·로드 경로 무변경.
+  - L619-622 — filteredProducts 분기: `search.trim()` 있으면 name/code 매칭 전체, 없으면 `pos_widget===undefined || ===true`(컬럼 부재 폴백=전부 노출).
 
-### 4. `src/app/(dashboard)/pos/SalesListTab.tsx`
-- **변경 없음**(검토만). 뱃지 `과거 {c.legacy_purchase_count}건` 값은 search route 에서 옴 → 자동 주문수.
+- `src/lib/ai/schema.ts`
+  - L7 — products 라인 `pos_widget(bool, …)` 추가.
 
-### 5. `src/app/(dashboard)/customers/[id]/page.tsx` (메인 작업)
-- 타입 `LegacyPurchase` → `LegacyOrder` + `LegacyOrderItem`(L54~). recipient_name/phone/address 추가, legacy_order_items 배열.
-- state: `legacyPurchases`→`legacyOrders`/`setLegacyOrders`. 신규 `expandedLegacy` Set state(legacy 카드 전용 토글, sales 탭 expandedOrders 와 분리).
-- 신규 헬퍼 `toggleLegacy(orderId)` — toggleOrder 패턴 복제.
-- 페치(L216 주변): 중첩 select 1회 — `legacy_orders` + `branch:branches(name)` + `legacy_order_items(line_seq,item_code,item_text,option_text,quantity,total_amount)`. order desc, range(0,9999). 별도 IN 페치 없음.
-- 탭 라벨(L619): `legacyOrders.length`.
-- 렌더(과거구매 탭): 라인 테이블 → **주문 카드 목록**.
-  - 배너: 총 N건(주문) · 합계 = 헤더 total 합.
-  - 검색: channel/branch.name/branch_code_raw + 품목 item_text some 매칭.
-  - 카드 헤더(클릭=토글): 일자, 출고처(branch.name 뱃지/없으면 branch_code_raw/'-'), 매출처, 결제상태 뱃지, 주문합계, (N품목).
-  - 발송지 블록: `🚚 발송지: name · phone · address`(빈값 '-'), 셋 다 비면 '🚚 발송지 정보 없음'. **값 정제 안 함.**
-  - 펼침 시 품목 나열(line_seq 정렬): item_text(pre-wrap) + option_text + item_code(보조) + 수량 + 품목합계. 하단에 legacy_order_no mono.
-  - 빈 상태 메시지 유지.
+## Self-review
 
-### 부수 (표시 문구 일관)
-- `src/app/(dashboard)/customers/analytics/page.tsx:118` 안내문 `(legacy_purchases)` → `(legacy_orders)`. 기능 영향 없음.
-- **schema.ts 미변경** — 070 에서 이미 AI 스키마 동기화 완료.
+- **Richard 가 먼저 볼 지점**: pos select 폴백 순서. 071 미적용 시 첫 select 가 에러 → pos_widget 제거 재시도(product_type 유지) → 그래도 에러면 042 폴백. pos_widget 값이 row 에 없으면 `p.pos_widget === undefined` → 그리드 전부 노출(안전).
+- **모든 요구사항 구현 확인**: (1) 마이그 ✓ (2) UI 체크박스 모든 유형 노출 + 초기값 ✓ (3) actions 폼값 우선+규칙 폴백+미적용 폴백 ✓ (4) pos select+filteredProducts 분기+폴백, productMap/Enter 경로 보존 ✓ (5) schema.ts ✓.
+- **데이터 부재/실패 시 사용자 화면**: 마이그 071 미적용 환경에서도 POS 그리드는 전부 노출(기존 동작 유지), 제품 저장은 delete-retry 로 성공. raw 에러 노출 없음.
 
-## Self-review 답변
-- **Richard 가 먼저 볼 것**: 중첩 select FK 경로 정확성 → `legacy_order_items.order_id` FK(070) 존재로 `legacy_order_items(...)` 임베드 유효, `branch_id`→branches FK 로 `branch:branches(name)` 유효. 확인 완료.
-- **Brief 요구 전부 구현**: analytics 3곳 ✅ / search ✅ / page count ✅ / SalesListTab 검토(무변경) ✅ / 상세 카드+발송지+품목 ✅ / M 보존 ✅ / legacy_purchases 무손상(읽기만, ALTER/DROP 없음) ✅ / 앱 read `.from('legacy_purchases')` 잔존 0 (grep 확인).
-- **빈 데이터/실패 시**: legacyOrders=[] → "과거 구매 이력이 없습니다." / items=[] → "품목 정보가 없습니다." / 발송지 빈값 → '-' 또는 '발송지 정보 없음'. raw 에러 노출 없음.
+## Build
+`npm run build` → `✓ Compiled successfully in 7.5s`. 타입/문법 통과.
 
-## 미해결 질문
-없음.
+## Open Questions
+- 없음.
+
+## Out of Scope (logged in BUILD-LOG)
+- 없음 (legacy 이력 표시·포장 옵션화·legacy_* 테이블 미접촉).

@@ -4,7 +4,7 @@ export const DB_SCHEMA = `
 --- 지점·제품·재고 ---
 branches: id, name, code, channel(STORE/DEPT_STORE/ONLINE/EVENT), address, phone, is_active, is_headquarters, sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail
   ※ sender_*: 택배 보내는분 정보 (대한통운 엑셀 임포트용). 미입력 시 sender_name←"경옥채 "+name, sender_phone←phone, sender_address←address 로 폴백.
-products: id, name, code, barcode, unit, price(판매가), cost(원가), cost_source(MANUAL/BOM), product_type(FINISHED/RAW/SUB/SERVICE), track_inventory(bool), is_phantom(bool), pack_child_id(uuid|null), pack_child_qty(int|null), is_active
+products: id, name, code, barcode, unit, price(판매가), cost(원가), cost_source(MANUAL/BOM), product_type(FINISHED/RAW/SUB/SERVICE), track_inventory(bool), is_phantom(bool), pack_child_id(uuid|null), pack_child_qty(int|null), pos_widget(bool, POS 판매등록 위젯 그리드 노출 여부·검색 등록은 무관), is_active
   ※ pack_child_id / pack_child_qty (마이그 066): 박스 ↔ 소포장 수동 분해/재포장. 부모 SKU(박스) 가 자식 SKU(소포장)
     pack_child_qty 개를 담는다는 메타. 예: 침향 30(박스).pack_child_id=침향 10(소포장), pack_child_qty=3.
     재고 화면 "📦 분해/재포장" 버튼으로 사용자가 수동 호출 — reference_type='PACK_UNPACK' 으로 inventory_movements 기록.

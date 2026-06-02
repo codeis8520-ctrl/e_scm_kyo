@@ -346,13 +346,22 @@ function POSPageInner() {
 
     // ── Tier 1 — 즉시 화면 표시용 (products, branches, grades, users) ─────
     const loadTier1 = async () => {
-      // product_type 포함 시도 → 마이그 042 미적용 DB 폴백
+      // product_type + pos_widget 포함 시도 → 마이그 071/042 미적용 DB 폴백
       let productsRes: any = await supabase
         .from('products')
-        .select('id, name, code, barcode, price, unit, product_type')
+        .select('id, name, code, barcode, price, unit, product_type, pos_widget')
         .eq('is_active', true)
         .order('name');
       if (productsRes.error) {
+        // 마이그 071 미적용 — pos_widget 빼고 재시도 (product_type 은 유지)
+        productsRes = await supabase
+          .from('products')
+          .select('id, name, code, barcode, price, unit, product_type')
+          .eq('is_active', true)
+          .order('name');
+      }
+      if (productsRes.error) {
+        // 마이그 042 미적용 — product_type 까지 빼고 재시도
         productsRes = await supabase
           .from('products')
           .select('id, name, code, barcode, price, unit')
@@ -610,9 +619,11 @@ function POSPageInner() {
     if (editingDiscountId) editingDiscountRef.current?.focus();
   }, [editingDiscountId]);
 
-  const filteredProducts = products.filter(p =>
-    p.name.includes(search) || p.code.includes(search)
-  );
+  // 검색어 없으면 위젯 표시 제품(pos_widget===true)만 그리드, 검색 중이면 전체(세트 포함)에서 name/code 매칭.
+  // pos_widget 컬럼 부재(마이그 071 미적용) 폴백 = 전부 노출.
+  const filteredProducts = search.trim()
+    ? products.filter(p => p.name.includes(search) || p.code.includes(search))
+    : products.filter(p => p.pos_widget === undefined || p.pos_widget === true);
 
   // 매출처 검색 결과
   const isBranchLocked = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';

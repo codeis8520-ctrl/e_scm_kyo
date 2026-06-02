@@ -36,6 +36,15 @@ flat `legacy_purchases`(66,090 라인) → 주문 헤더 + 품목 분리.
 - `from('legacy_purchases')` 앱 read 잔존 0. build ✅. 독립 Richard 리뷰 APPROVED(Must Fix 0)
 - ⚠️ 프로세스: Architect 에이전트가 빌드까지 수행 → 독립 Reviewer 따로 돌려 담보함
 
+### POS 개선 — 판매등록 위젯 표시 속성 ✅ 적용+커밋+push
+- 마이그 071: `products.pos_widget` 컬럼 + 백필(완제품&비-phantom→true). 활성 위젯 63개.
+- ProductModal "판매등록 위젯 표시" 토글, actions create/update 폼값+규칙+폴백, pos/page 그리드=위젯만/검색=세트포함 전체, schema.ts 동기화.
+- TMT: Arch 브리프(파일쓰기 막혀 인라인→오케스트레이터 저장) → Bob 빌드 → 독립 Richard APPROVED(Must Fix 0).
+
+### POS 큐 (다음 후보)
+- **#1 POS 과거구매 이력** — 판매등록 고객패널에 legacy_orders 표시 + "이 주문 복사"(수령자/주소 자동, 품목 참고).
+- **#2b 포장 옵션화** — 쇼핑백/보자기(SUB 18종)를 옵션으로. 결정 필요: 유료라인 여부 / 항목별·주문별 / 대상목록.
+
 ## What's Next (정규화 프로그램 남은 스텝 — 한 번에 하나)
 
 1. **legacy_purchases 드롭** — 앱 read 0 확인됨. 백업/뷰 안전망 고려 후 테이블 제거(별도 마이그). AI schema.ts 에서도 제거.

@@ -6,6 +6,25 @@
 
 ## Completed Steps
 
+### Step — POS 판매등록 위젯 표시 속성 (pos_widget)
+
+**상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, 2026-06-02)
+
+**변경 파일 (5개)**:
+- 신규: `supabase/migrations/071_products_pos_widget.sql` — pos_widget boolean NOT NULL DEFAULT false + 백필(FINISHED & 비-phantom) + COMMENT. 인덱스 없음. **DB 적용은 Arch(psycopg)**.
+- 수정: `src/app/(dashboard)/products/ProductModal.tsx` — interface 에 pos_widget, formData 초기값(편집=기존값 / 신규=완제품&비세트→true), track_inventory 옆 "판매등록 위젯 표시" 체크박스(모든 유형 노출). 직렬화는 기존 formData 루프(L312)가 자동 처리.
+- 수정: `src/lib/actions.ts` — createProduct/updateProduct 에 pos_widget 폼값 우선 + 규칙(FINISHED&비phantom) 폴백 + 마이그 071 미적용 delete-retry 폴백.
+- 수정: `src/app/(dashboard)/pos/page.tsx` — loadTier1 select 에 pos_widget 추가(071/042 2단 폴백), filteredProducts 분기(검색어 없으면 pos_widget===true만, 검색 중이면 전체). 컬럼 부재(undefined)=전부 노출.
+- 수정: `src/lib/ai/schema.ts` — products 라인에 pos_widget 추가.
+
+**주요 결정**:
+- updateProduct 폴백: pos_widget 폼값 부재 시 product_type 명시되면 규칙 폴백, 아니면 undefined(미변경). 기존 conditional-spread 패턴 준수.
+- pos select 폴백을 2단계로 분리(071→042) — 컬럼 부재시 product_type 보존하면서도 안전 재시도.
+- build: ✓ Compiled successfully in 7.5s.
+
+**Known Gaps**: 없음 (범위 밖 항목 미접촉).
+
+
 ### Step — 레거시 판매데이터 정규화 1단계 (데이터층)
 
 **상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, 2026-06-02)
