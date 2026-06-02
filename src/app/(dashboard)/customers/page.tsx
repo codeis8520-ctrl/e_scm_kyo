@@ -95,6 +95,29 @@ function fmtShortDate(iso: string | null | undefined): string {
   return iso.slice(0, 10);
 }
 
+// 검색 키워드(콤마 분리 토큰)를 텍스트에서 노란 배경으로 하이라이팅.
+// 단일 캡처 그룹 split → 홀수 인덱스가 매칭 구간.
+function Highlight({ text, terms }: { text: string | null | undefined; terms: string[] }) {
+  if (text == null || text === '') return null;
+  const esc = terms
+    .map((t) => t.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .filter(Boolean);
+  if (esc.length === 0) return <>{text}</>;
+  const re = new RegExp(`(${esc.join('|')})`, 'gi');
+  const segs = text.split(re);
+  return (
+    <>
+      {segs.map((seg, i) =>
+        i % 2 === 1 ? (
+          <mark key={i} className="bg-yellow-200 text-inherit rounded-sm px-0.5">{seg}</mark>
+        ) : (
+          <span key={i}>{seg}</span>
+        )
+      )}
+    </>
+  );
+}
+
 export default function CustomersPage() {
   // Next.js 16: useSearchParams() 가 Suspense 경계 안에 있어야 prerender 가능.
   return (
@@ -189,6 +212,12 @@ function CustomersPageInner() {
     if (page > 1) p.set('page', String(page));
     return p.toString();
   }, [search, gradeFilter, hasConsult, sortKey, page]);
+
+  // 검색 키워드 하이라이팅용 토큰 (커밋된 검색어를 콤마 분리)
+  const searchTerms = useMemo(
+    () => search.split(',').map((t) => t.trim()).filter(Boolean),
+    [search]
+  );
 
   // 자동 포커스
   useEffect(() => {
@@ -415,11 +444,11 @@ function CustomersPageInner() {
                     href={listQs ? `/customers/${customer.id}?${listQs}` : `/customers/${customer.id}`}
                     className="font-medium text-slate-800 hover:text-blue-600 hover:underline"
                   >
-                    {customer.name}
+                    <Highlight text={customer.name} terms={searchTerms} />
                   </Link>
                   {customer.phone && (
                     <div className="text-xs text-slate-500 mt-0.5 truncate" title={customer.phone}>
-                      📞 {customer.phone}
+                      📞 <Highlight text={customer.phone} terms={searchTerms} />
                     </div>
                   )}
                   {customer.address && (
@@ -427,7 +456,7 @@ function CustomersPageInner() {
                       className="text-xs text-slate-500 mt-0.5 line-clamp-2 break-words"
                       title={customer.address}
                     >
-                      📍 {customer.address}
+                      📍 <Highlight text={customer.address} terms={searchTerms} />
                     </div>
                   )}
                   {!customer.is_active && (
@@ -471,7 +500,7 @@ function CustomersPageInner() {
                         className="text-sm text-slate-700 line-clamp-2 break-words"
                         title={consult.snippet || ''}
                       >
-                        {consult.snippet || <span className="text-slate-400">(내용 없음)</span>}
+                        {consult.snippet ? <Highlight text={consult.snippet} terms={searchTerms} /> : <span className="text-slate-400">(내용 없음)</span>}
                       </div>
                       {consult.consultant_name && (
                         <div className="text-[11px] text-slate-400">담당: {consult.consultant_name}</div>
