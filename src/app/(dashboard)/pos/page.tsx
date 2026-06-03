@@ -9,6 +9,7 @@ import { processPosCheckout, createCustomer } from '@/lib/actions';
 import { saveDraft, listDrafts, getDraft, deleteDraft, type DraftRow } from '@/lib/sales-draft-actions';
 import ReceiptModal from './ReceiptModal';
 import { kstTodayString } from '@/lib/date';
+import PageTabs from '@/components/PageTabs';
 
 const SalesListTab = dynamic(() => import('./SalesListTab'), {
   ssr: false,
@@ -1444,26 +1445,14 @@ function POSPageInner() {
       )}
 
       {/* 판매관리 상단 탭 */}
-      <div className="flex gap-1 border-b border-slate-200 items-center justify-between">
-        <div className="flex gap-1">
-          {([
-            { key: 'checkout' as MainTab, label: '판매 등록' },
-            { key: 'list' as MainTab, label: '판매 현황' },
-          ]).map(t => (
-            <button
-              key={t.key}
-              onClick={() => setMainTab(t.key)}
-              className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-                mainTab === t.key ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-
-        {/* 임시저장 / 불러오기 — 판매 등록 탭에서만 노출 */}
-        {mainTab === 'checkout' && (
+      <PageTabs
+        tabs={[
+          { key: 'checkout', label: '판매 등록' },
+          { key: 'list', label: '판매 현황' },
+        ]}
+        activeKey={mainTab}
+        onChange={(k) => setMainTab(k as MainTab)}
+        actions={mainTab === 'checkout' ? (
           <div className="flex gap-1.5 pb-1">
             {currentDraftId && (
               <span
@@ -1496,8 +1485,8 @@ function POSPageInner() {
               )}
             </button>
           </div>
-        )}
-      </div>
+        ) : undefined}
+      />
 
       {/* 판매 메타 헤더 (일자 · 매출처 · 출고처) */}
       {mainTab === 'checkout' && (

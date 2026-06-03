@@ -9,6 +9,7 @@ import { EVENT_TYPES, type TemplateMapping } from '@/lib/notification-event-type
 import { fmtDateTimeKST, fmtDateKST, kstDayStart, kstDayEnd, kstTodayString } from '@/lib/date';
 import KakaoAlimtalkPreview from '@/components/KakaoAlimtalkPreview';
 import NotificationTemplateClassifier from '@/components/notifications/NotificationTemplateClassifier';
+import PageTabs from '@/components/PageTabs';
 
 const TYPE_LABEL: Record<string, string> = { KAKAO: '알림톡', SMS: 'SMS' };
 const STATUS_LABEL: Record<string, string> = { sent: '발송완료', pending: '대기중', failed: '실패' };
@@ -148,25 +149,15 @@ export default function NotificationsPage() {
   return (
     <div className="space-y-6">
       {/* 헤더 */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex gap-1 border-b border-slate-200">
-          {([
-            { key: 'kakao' as const, label: '알림톡' },
-            { key: 'sms' as const, label: 'SMS' },
-            { key: 'templates' as const, label: '템플릿 관리' },
-          ]).map(t => (
-            <button
-              key={t.key}
-              onClick={() => handleTabChange(t.key)}
-              className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
-                activeTab === t.key ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-        {activeTab !== 'templates' && (
+      <PageTabs
+        tabs={[
+          { key: 'kakao', label: '알림톡' },
+          { key: 'sms', label: 'SMS' },
+          { key: 'templates', label: '템플릿 관리' },
+        ]}
+        activeKey={activeTab}
+        onChange={(k) => handleTabChange(k as typeof activeTab)}
+        actions={activeTab !== 'templates' ? (
           <div className="flex gap-2 flex-wrap">
             <button
               onClick={() => handleRunBatch('BIRTHDAY')}
@@ -188,8 +179,8 @@ export default function NotificationsPage() {
               + {activeTab === 'sms' ? 'SMS' : '알림톡'} 발송
             </button>
           </div>
-        )}
-      </div>
+        ) : undefined}
+      />
 
       {activeTab === 'templates' ? (
         <NotificationTemplateClassifier />

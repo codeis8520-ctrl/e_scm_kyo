@@ -15,6 +15,7 @@ import {
   getClosedPeriods,
 } from '@/lib/accounting-actions';
 import { fmtDateKST, kstTodayString } from '@/lib/date';
+import PageTabs from '@/components/PageTabs';
 
 type Tab = 'pl' | 'journal' | 'ledger' | 'manual' | 'vat' | 'gl_balance';
 
@@ -173,21 +174,11 @@ export default function AccountingPage() {
   return (
     <div className="space-y-5">
       {/* 탭 */}
-      <div className="overflow-x-auto">
-      <div className="flex gap-1 border-b border-slate-200 whitespace-nowrap">
-        {TABS.map(t => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={`px-5 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-              tab === t.key ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-      </div>
+      <PageTabs
+        tabs={TABS}
+        activeKey={tab}
+        onChange={(k) => setTab(k as Tab)}
+      />
 
       {/* ── 손익계산서 ── */}
       {tab === 'pl' && (

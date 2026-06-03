@@ -7,6 +7,7 @@ import CustomerModal from './CustomerModal';
 import CustomerImportModal from './CustomerImportModal';
 import { autoUpgradeCustomerGrades } from '@/lib/actions';
 import { createClient } from '@/lib/supabase/client';
+import PageTabs from '@/components/PageTabs';
 
 const GRADE_LABELS: Record<string, string> = { VVIP: 'VVIP', VIP: 'VIP', NORMAL: '일반' };
 const GRADE_BADGE: Record<string, string> = {
@@ -257,22 +258,14 @@ function CustomersPageInner() {
   return (
     <div className="space-y-4">
       {/* 탭 네비게이션 */}
-      <div className="flex gap-1 border-b border-slate-200">
-        {([
-          { key: 'list' as TabType, label: '고객 목록' },
-          { key: 'campaign' as TabType, label: '캠페인 관리' },
-        ]).map(t => (
-          <button
-            key={t.key}
-            onClick={() => setActiveTab(t.key)}
-            className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-              activeTab === t.key ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <PageTabs
+        tabs={[
+          { key: 'list', label: '고객 목록' },
+          { key: 'campaign', label: '캠페인 관리' },
+        ]}
+        activeKey={activeTab}
+        onChange={(k) => setActiveTab(k as TabType)}
+      />
 
       {activeTab === 'campaign' && <CampaignTab />}
 

@@ -6,6 +6,32 @@
 
 ## Completed Steps
 
+### 대시보드 헤더/탭 통일 — 배치 B (PageTabs 채택 6페이지)
+
+**상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, npm run build ✅ error/warning 0, 2026-06-03)
+
+**Goal**: 배치 A 신설 PageTabs를 나머지 6페이지에 채택. 순수 프레젠테이션 — 동작 회귀 0.
+
+**변경 파일 (6개, 서버액션/DB/schema.ts 변경 없음)**:
+- `customers/page.tsx` — import + list/campaign 탭 → PageTabs. onChange=setActiveTab만. URL ?tab= 동기화·listQs 미접촉.
+- `accounting/page.tsx` — import + 기존 TABS(6탭) 그대로 PageTabs. overflow 래퍼 제거(nav가 내장).
+- `trade/page.tsx` — import + credit/b2b_sales/b2b_partners 3탭 → PageTabs. actions 없음.
+- `notifications/page.tsx` — import + kakao/sms/templates 3탭 → PageTabs(onChange=handleTabChange 유지). 우측 배치버튼(생일/휴면/발송, activeTab!=='templates') → actions 슬롯(삼항 보존).
+- `reports/page.tsx` — import + REPORT_TABS 그대로 PageTabs. 우측 기간/날짜/채널/지점·조회·CSV·PDF → actions 슬롯.
+- `pos/page.tsx` — import + **최상단** checkout/list(MainTab) 탭만 PageTabs. 우측 임시저장/불러오기(mainTab==='checkout') → actions 슬롯. **내부 서브탭 미접촉**.
+
+**탭 key ↔ 패널 분기 (실제 코드 복사, 1:1 일치)**:
+- customers list/campaign · accounting pl/journal/ledger/vat/gl_balance/manual · trade credit/b2b_sales/b2b_partners · notifications kakao/sms/templates · reports sales/purchase/pl/trend/margin · pos checkout/list.
+
+**주요 결정**:
+- accounting/reports는 기존 TABS/REPORT_TABS 배열을 직접 전달(키 string 유니온 → PageTab[] 구조 호환).
+- 조건부 우측 액션(notifications/pos)은 삼항(false→undefined)로 슬롯 조건부 렌더 보존.
+- 시각 통일(의도): accounting/reports active 색 blue-500→blue-600, 패딩 표준화. 동작 무관.
+
+**Known Gaps**: 없음. (pos 내부 서브탭·customers URL 동기화 로직·서브/상세·schema.ts 스코프 외 미접촉.)
+
+---
+
 ### 대시보드 헤더/탭 통일 — 배치 A
 
 **상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, npm run build ✅ Compiled successfully in 5.7s, 2026-06-03)

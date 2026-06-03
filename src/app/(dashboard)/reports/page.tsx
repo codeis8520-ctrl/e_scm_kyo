@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { getMonthlyTrend, getProductMargins } from '@/lib/accounting-actions';
 import { fmtDateTimeKST, fmtDateKST, kstDayStart, kstDayEnd, kstTodayString } from '@/lib/date';
+import PageTabs from '@/components/PageTabs';
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -682,17 +683,11 @@ ${buildTable(['순위', '제품명', '판매수량', '판매금액'], productRow
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 sm:mb-6">
-        <div className="overflow-x-auto w-full sm:w-auto">
-        <div className="flex gap-1 border-b border-slate-200 whitespace-nowrap">
-          {REPORT_TABS.map(t => (
-            <button key={t.key} onClick={() => setReportTab(t.key)}
-              className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
-                reportTab === t.key ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500'
-              }`}>{t.label}</button>
-          ))}
-        </div>
-        </div>
+      <PageTabs
+        tabs={REPORT_TABS}
+        activeKey={reportTab}
+        onChange={(k) => setReportTab(k as ReportTab)}
+        actions={
         <div className="flex flex-wrap gap-2">
           <select
             value={period}
@@ -759,7 +754,8 @@ ${buildTable(['순위', '제품명', '판매수량', '판매금액'], productRow
             PDF
           </button>
         </div>
-      </div>
+        }
+      />
 
       {loading ? (
         <div className="text-center py-12 text-slate-400">로딩 중...</div>

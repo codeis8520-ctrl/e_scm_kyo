@@ -90,7 +90,7 @@ export default function BranchesPage() {
   return (
     <div className="card">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 sm:mb-6">
-        <h3 className="font-semibold text-lg">지점 목록</h3>
+        <div><h3 className="sr-only">지점 목록</h3></div>
         <button
           onClick={() => { setEditingBranch(null); setShowModal(true); }}
           className="btn-primary"

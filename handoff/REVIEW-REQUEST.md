@@ -1,35 +1,52 @@
-# Review Request — 대시보드 헤더/탭 통일 · 배치 A
+# Review Request — 대시보드 헤더/탭 통일 · 배치 B (PageTabs 채택 6페이지)
 Date: 2026-06-03
 Ready for Review: YES
 
 ## 개요
-공용 PageTabs(프레젠테이션 전용) 신설 + 5페이지 헤더 표준화. 순수 시각/구조만 — state/URL/핸들러/패널 분기 전부 미접촉. 서버액션·DB·src/lib/ai/schema.ts 변경 0.
+배치 A에서 신설한 공용 PageTabs를 나머지 6페이지에 채택. 순수 프레젠테이션 — state/URL/핸들러/패널 분기 전부 미접촉, onChange/activeKey에 연결만. 서버액션·DB·src/lib/ai/schema.ts 변경 0.
 
 ## Files Changed
-- `src/components/PageTabs.tsx` (신설, 1~41) — tabs/activeKey/onChange/actions props. 래퍼 flex justify-between border-b, nav role="tablist", 버튼 type/role="tab"/aria-selected, active=border-blue-600 text-blue-600. actions 있을 때만 우측 div 렌더. 브리프 구조·스타일·a11y 그대로.
-- `src/app/(dashboard)/production/page.tsx`
-  - L17 — `import PageTabs from '@/components/PageTabs'`.
-  - 기존 L316~358(h1 "생산 관리"+부제+우측 액션 3개 + 인라인 탭) → PageTabs 1개로 교체. tabs=[orders/bom/factories], activeKey={tab}, onChange={k=>setTab(k as 'orders'|'bom'|'factories')}. 우측 액션 3개(지점 select / BOM 조립 / +생산 지시[canIssueOrder])는 actions 슬롯으로 그대로 이동. 부제 생략.
-- `src/app/(dashboard)/shipping/page.tsx`
-  - L9 — import 추가.
-  - 기존 L910~929(h1 "배송 관리"+부제 + 탭) → PageTabs. tabs=[cafe24/manual/list], activeKey={activeTab}, onChange={k=>setActiveTab(k as TabType)}. actions 없음. 부제 생략.
-- `src/app/(dashboard)/system-codes/page.tsx`
+- `src/app/(dashboard)/customers/page.tsx`
+  - L10 — `import PageTabs from '@/components/PageTabs'`.
+  - L259~ — list/campaign 인라인 탭 `<div>` → PageTabs. onChange={(k)=>setActiveTab(k as TabType)} (기존과 동일, setActiveTab만). **URL ?tab= 동기화 useEffect·listQs 미접촉**.
+- `src/app/(dashboard)/accounting/page.tsx`
+  - L18 — import 추가.
+  - L175~ — 기존 TABS(6탭) 배열 그대로 PageTabs에 전달. onChange={(k)=>setTab(k as Tab)}. overflow-x-auto 래퍼 제거(PageTabs nav가 overflow-x-auto 내장).
+- `src/app/(dashboard)/trade/page.tsx`
+  - L5 — import 추가.
+  - L16~ — credit/b2b_sales/b2b_partners 3탭 → PageTabs. onChange={(k)=>setActiveTab(k as Tab)}. actions 없음.
+- `src/app/(dashboard)/notifications/page.tsx`
+  - L12 — import 추가.
+  - L150~ — kakao/sms/templates 3탭 → PageTabs. onChange={(k)=>handleTabChange(k as typeof activeTab)} (외부 전환 핸들러 유지). 우측 배치버튼(생일/휴면/+발송, activeTab!=='templates' 조건)은 actions 슬롯으로 이동 — 내부 버튼 본문/조건 미변경.
+- `src/app/(dashboard)/reports/page.tsx`
   - L7 — import 추가.
-  - 기존 L379~474(h1 "시스템 코드 관리" + 9개 인라인 버튼) → PageTabs(9탭, 순서·라벨 브리프 그대로). activeKey={activeTab}, onChange={k=>setActiveTab(k as typeof activeTab)}.
-- `src/app/(dashboard)/agent-memory/page.tsx` — L89 h1 className `text-xl font-bold text-slate-800` → `sr-only`. 텍스트/부제/버튼 유지.
-- `src/app/(dashboard)/agent-conversations/page.tsx` — L261 h1 className `text-2xl font-bold text-slate-800` → `sr-only`. 텍스트/부제 유지.
+  - L684~ — REPORT_TABS 그대로 PageTabs. onChange={(k)=>setReportTab(k as ReportTab)}. 우측 기간/날짜/채널/지점 셀렉트·조회·CSV·PDF 버튼 블록을 actions 슬롯으로 이동(본문 미변경).
+- `src/app/(dashboard)/pos/page.tsx`
+  - L12 — import 추가.
+  - L1446~ — **최상단** checkout/list(MainTab) 탭만 → PageTabs. onChange={(k)=>setMainTab(k as MainTab)}. 우측 임시저장/불러오기 블록(mainTab==='checkout' 조건)은 actions 슬롯으로 이동. **내부 서브탭(모달/패널) 절대 미접촉**.
+
+## 탭 key ↔ 패널 분기 1:1 일치 확인
+| 페이지 | tabs[].key | 패널 분기 |
+|---|---|---|
+| customers | list, campaign | activeTab === 'list'\|'campaign' |
+| accounting | pl, journal, ledger, vat, gl_balance, manual | tab === ... |
+| trade | credit, b2b_sales, b2b_partners | activeTab === ... |
+| notifications | kakao, sms, templates | activeTab === ... |
+| reports | sales, purchase, pl, trend, margin | reportTab === ... |
+| pos | checkout, list | mainTab === ... |
+
+(키는 전부 각 페이지 실제 코드에서 그대로 복사 — 오타 0)
 
 ## Self-Review
-- **Richard가 먼저 볼 곳**: 탭 키↔state 매핑, 캐스팅 타입, 패널 분기 보존. → tab/activeTab state 타입을 실제 코드에서 재확인(production L159, shipping L72/117, system-codes L162) 후 매핑. 패널 렌더 분기(`tab===`/`activeTab===`)는 전부 미접촉.
-- **브리프 요구사항**: PageTabs 신설 ✅ / 3페이지 h1·부제 제거+탭 교체 ✅ / production 액션 슬롯 이동 ✅ / 2페이지 sr-only ✅ / 예외·서브·pos 서브탭·schema.ts 미접촉 ✅.
-- **빈 데이터/실패**: 프레젠테이션 변경뿐 — 데이터 흐름·에러 핸들링 경로 무변경.
-- **시각 변화(의도됨)**: shipping/system-codes 기존 active색 blue-500 → 표준 blue-600 통일. 패딩 px-3→px-4(표준). 동작 무관.
+- 캐스팅: accounting/reports는 기존 TABS/REPORT_TABS 배열을 그대로 전달(키 타입이 string 유니온 → PageTab[] 구조 호환). 나머지는 리터럴 배열 + onChange에서 기존 state 타입으로 캐스팅.
+- 액션 슬롯 이동(reports/notifications/pos): 기존도 좌탭/우액션 justify-between 레이아웃이라 PageTabs(justify-between) 슬롯과 시각 동등. notifications/pos의 조건부 노출(activeTab!=='templates' / mainTab==='checkout')은 삼항으로 보존(false → undefined → 슬롯 미렌더).
+- 로직 변경 0: state/set함수/외부 전환 호출/URL 동기화 전부 그대로.
 
 ## Open Questions
-- system-codes onChange 캐스팅을 9-유니온 재기재 대신 `as typeof activeTab`로 처리(동일 타입). 동작 동일하나 명시적 유니온 선호 시 알려주세요.
+- 시각 통일(의도됨): accounting/reports 기존 active 색 blue-500 → 표준 blue-600. accounting 패딩 px-5→px-4, reports 패딩 py-2→py-2.5(PageTabs 표준). 동작 무관.
 
 ## Build
-`npm run build` → ✅ Compiled successfully in 5.7s. 에러/경고 0.
+- `npm run build` 통과 — error/warning 0. 6개 대상 라우트(/customers, /notifications, /pos, /reports, /trade, accounting 라우트) 모두 컴파일·프리렌더 정상.
 
 ## Out of Scope (logged in BUILD-LOG)
-- 없음. 배치 B 6페이지·URL 동기화 일반화·pos 서브탭은 스코프 외로 미접촉.
+- pos 내부 서브탭, customers URL 동기화 로직, 서브/상세 페이지, schema.ts — 미접촉.

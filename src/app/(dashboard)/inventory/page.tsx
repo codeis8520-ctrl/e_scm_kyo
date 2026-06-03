@@ -471,7 +471,7 @@ export default function InventoryPage() {
     <div className="card">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 sm:mb-6">
         <div className="flex items-center gap-3">
-          <h3 className="font-semibold text-lg">재고 현황</h3>
+          <h3 className="sr-only">재고 현황</h3>
           {lowCount > 0 && (
             <span className="px-2 py-0.5 text-xs font-medium bg-red-100 text-red-700 rounded-full">
               부족 {lowCount}건

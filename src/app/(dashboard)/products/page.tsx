@@ -229,7 +229,7 @@ export default function ProductsPage() {
     <div className="card">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 sm:mb-6">
         <div>
-          <h3 className="font-semibold text-lg">제품 목록</h3>
+          <h3 className="sr-only">제품 목록</h3>
           <p className="text-sm text-slate-400 mt-0.5">{filtered.length}개</p>
         </div>
         <div className="flex gap-2">
