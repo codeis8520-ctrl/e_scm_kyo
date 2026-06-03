@@ -745,6 +745,96 @@ sales_orders·inventories 등 핵심 거래 테이블은 삭제 불가.`,
       },
     },
   },
+  // ── 외상 수금 ─────────────────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'settle_credit_order',
+      description: `외상(미수금) 주문을 수금 처리. credit_settled=true로 전환하고 수금 분개(차변 현금/카드 ← 대변 외상매출금)를 자동 생성합니다.
+사용 예: "SA-GN-... 외상 수금 처리해줘 현금으로", "그 외상 카드로 받았어".
+주의: payment_method='credit' 이고 아직 수금되지 않은 주문만 가능.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          order_number: { type: 'string', description: '외상 주문번호 (예: SA-GN-20260408-ABCD)' },
+          method: { type: 'string', enum: ['cash', 'card', 'kakao', 'card_keyin'], description: '수금 수단 (현금/카드/카카오페이/카드수기)' },
+        },
+        required: ['order_number', 'method'],
+      },
+    },
+  },
+  // ── 외상 취소 (DANGEROUS) ─────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'cancel_credit_order',
+      description: `외상(미수금) 주문을 취소 (CANCELLED). 차감했던 재고 복원 + 적립 포인트 차감 + 외상매출금 분개 역분개까지 자동 처리합니다. 되돌릴 수 없는 작업입니다.
+사용 예: "그 외상 주문 잘못 등록했어 취소해줘".
+주의: 이미 수금 처리된 건은 취소 불가(환불 흐름 이용). payment_method='credit' 이고 미수금 상태만 가능.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          order_number: { type: 'string', description: '외상 주문번호 (예: SA-GN-20260408-ABCD)' },
+          reason: { type: 'string', description: '취소 사유 (필수)' },
+        },
+        required: ['order_number', 'reason'],
+      },
+    },
+  },
+  // ── 발주 취소 ─────────────────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'cancel_purchase_order',
+      description: `발주서를 취소 (CANCELLED). 초안(DRAFT) 또는 확정(CONFIRMED) 상태의 발주만 취소할 수 있습니다.
+사용 예: "PO-... 발주 취소해줘", "그 발주 잘못 넣었어".
+주의: 이미 입고(부분/전체)된 발주는 취소할 수 없습니다.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          order_number: { type: 'string', description: '발주번호 (예: PO-20260408-ABC)' },
+          reason: { type: 'string', description: '취소 사유 (선택, 표시용)' },
+        },
+        required: ['order_number'],
+      },
+    },
+  },
+  // ── 생산 취소 ─────────────────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'cancel_production_order',
+      description: `생산 지시서를 취소 (CANCELLED). 대기(PENDING) 또는 진행중(IN_PROGRESS) 상태만 취소할 수 있습니다. 본사 권한 전용.
+사용 예: "그 생산 지시 취소해줘".
+주의: 완료(COMPLETED)된 생산 지시는 취소할 수 없습니다.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          order_number: { type: 'string', description: '생산 지시번호' },
+          reason: { type: 'string', description: '취소 사유 (선택, 표시용)' },
+        },
+        required: ['order_number'],
+      },
+    },
+  },
+  // ── 안전재고 설정 ─────────────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'set_safety_stock',
+      description: `제품의 안전재고(safety_stock)를 설정. 지점명을 지정하면 해당 지점 한 곳만, 생략하면 본사는 전 지점 일괄·지점 직원은 본인 지점만 적용합니다.
+사용 예: "공진단 안전재고 10개로 설정해줘", "강남점 침향환 안전재고 5로".`,
+      parameters: {
+        type: 'object',
+        properties: {
+          product_name: { type: 'string', description: '제품명' },
+          safety_stock: { type: 'number', description: '안전재고 수량 (0 이상)' },
+          branch_name: { type: 'string', description: '대상 지점명 (선택). 생략 시 전 지점/본인 지점)' },
+        },
+        required: ['product_name', 'safety_stock'],
+      },
+    },
+  },
   // ── Phase B: 부분 입고 ────────────────────────────────────────────────────
   {
     type: 'function',
@@ -922,12 +1012,22 @@ export const WRITE_TOOLS = new Set([
   'bulk_update_product_costs',
   'delete_record',
   'cancel_sales_order',
+  'settle_credit_order',
+  'cancel_credit_order',
+  'cancel_purchase_order',
+  'cancel_production_order',
+  'set_safety_stock',
   // Phase B
   'refund_sales_order',
   'receive_purchase_order_partial',
   'update_shipment_tracking',
   'refresh_cafe24_token',
   'sync_cafe24_paid_orders',
+]);
+
+/** 되돌릴 수 없는 고위험 작업 — confirm 시 추가 경고 라인을 붙인다. */
+export const DANGEROUS_TOOLS = new Set<string>([
+  'cancel_credit_order',
 ]);
 
 // ─── Shared Helpers ──────────────────────────────────────────────────────────
@@ -1075,6 +1175,11 @@ export async function executeTool(
       case 'get_customer_consultations':return execGetCustomerConsultations(sb, args as any);
       case 'delete_record':            return execDeleteRecord(sb, args as any, ctx);
       case 'cancel_sales_order':       return execCancelSalesOrder(sb, args as any, ctx);
+      case 'settle_credit_order':      return execSettleCreditOrder(sb, args as any, ctx);
+      case 'cancel_credit_order':      return execCancelCreditOrder(sb, args as any, ctx);
+      case 'cancel_purchase_order':    return execCancelPurchaseOrder(sb, args as any, ctx);
+      case 'cancel_production_order':  return execCancelProductionOrder(sb, args as any, ctx);
+      case 'set_safety_stock':         return execSetSafetyStock(sb, args as any, ctx);
       // Phase B
       case 'refund_sales_order':       return execRefundSalesOrder(sb, args as any, ctx);
       case 'receive_purchase_order_partial': return execReceivePurchaseOrderPartial(sb, args as any, ctx);
@@ -3064,4 +3169,181 @@ async function execAnalyzeData(
   } catch (e: any) {
     return JSON.stringify({ error: `분석 실패: ${e?.message || '알 수 없는 오류'}` });
   }
+}
+
+// ── 외상 수금 ─────────────────────────────────────────────────────────────────
+async function execSettleCreditOrder(sb: any, args: {
+  order_number: string;
+  method: 'cash' | 'card' | 'kakao' | 'card_keyin';
+}, ctx: ToolContext): Promise<string> {
+  const { data: order } = await sb
+    .from('sales_orders')
+    .select('id, order_number, total_amount, credit_settled, branch:branches(id, name)')
+    .eq('order_number', args.order_number)
+    .eq('payment_method', 'credit')
+    .maybeSingle();
+  if (!order) return JSON.stringify({ error: `외상 주문 "${args.order_number}"을(를) 찾을 수 없습니다.` });
+  if (order.credit_settled) return JSON.stringify({ error: '이미 수금 처리된 주문입니다.' });
+
+  const denied = assertBranchAccess(ctx, order.branch?.id, order.branch?.name || '지점');
+  if (denied) return denied;
+
+  const { settleCreditOrder } = await import('@/lib/accounting-actions');
+  const res = await settleCreditOrder({ orderId: order.id, settledMethod: args.method });
+  if (!res.success) return JSON.stringify({ error: res.error || '외상 수금 처리에 실패했습니다.' });
+
+  const methodLabels: Record<string, string> = { cash: '현금', card: '카드', kakao: '카카오페이', card_keyin: '카드(수기)' };
+  return JSON.stringify({
+    성공: true,
+    주문번호: order.order_number,
+    수금액: `${Number(order.total_amount).toLocaleString()}원`,
+    수금수단: methodLabels[args.method] || args.method,
+  });
+}
+
+// ── 외상 취소 (DANGEROUS) ──────────────────────────────────────────────────────
+async function execCancelCreditOrder(sb: any, args: {
+  order_number: string;
+  reason: string;
+}, ctx: ToolContext): Promise<string> {
+  if (!args.reason?.trim()) return JSON.stringify({ error: '취소 사유는 필수입니다.' });
+
+  const { data: order } = await sb
+    .from('sales_orders')
+    .select('id, order_number, payment_method, credit_settled, status, branch:branches(id, name)')
+    .eq('order_number', args.order_number)
+    .maybeSingle();
+  if (!order) return JSON.stringify({ error: `주문 "${args.order_number}"을(를) 찾을 수 없습니다.` });
+  if (order.payment_method !== 'credit') return JSON.stringify({ error: '외상 결제 주문만 취소할 수 있습니다.' });
+  if (order.credit_settled) return JSON.stringify({ error: '이미 수금 처리된 주문은 취소할 수 없습니다. 환불 처리를 이용하세요.' });
+
+  const denied = assertBranchAccess(ctx, order.branch?.id, order.branch?.name || '지점');
+  if (denied) return denied;
+
+  const { cancelCreditOrder } = await import('@/lib/credit-actions');
+  const res = await cancelCreditOrder({ orderId: order.id, reason: args.reason, userId: ctx.userId });
+  if (res && 'error' in res && res.error) return JSON.stringify({ error: res.error });
+
+  return JSON.stringify({
+    성공: true,
+    주문번호: order.order_number,
+    사유: args.reason,
+    안내: '차감했던 재고를 복원하고, 적립 포인트를 차감했으며, 외상매출금 분개를 역분개했습니다.',
+  });
+}
+
+// ── 발주 취소 ─────────────────────────────────────────────────────────────────
+async function execCancelPurchaseOrder(sb: any, args: {
+  order_number: string;
+  reason?: string;
+}, ctx: ToolContext): Promise<string> {
+  const { data: po } = await sb
+    .from('purchase_orders')
+    .select('id, order_number, status, branch_id, branch:branches(name)')
+    .eq('order_number', args.order_number)
+    .maybeSingle();
+  if (!po) return JSON.stringify({ error: `발주서 "${args.order_number}"을(를) 찾을 수 없습니다.` });
+  if (!['DRAFT', 'CONFIRMED'].includes(po.status)) {
+    return JSON.stringify({ error: '초안 또는 확정 상태의 발주서만 취소할 수 있습니다.' });
+  }
+
+  const denied = assertBranchAccess(ctx, po.branch_id, po.branch?.name || '지점');
+  if (denied) return denied;
+
+  const { cancelPurchaseOrder } = await import('@/lib/purchase-actions');
+  const res = await cancelPurchaseOrder(po.id);
+  if ('error' in res && res.error) return JSON.stringify({ error: res.error });
+
+  return JSON.stringify({
+    성공: true,
+    발주번호: po.order_number,
+    사유: args.reason || undefined,
+  });
+}
+
+// ── 생산 취소 ─────────────────────────────────────────────────────────────────
+async function execCancelProductionOrder(sb: any, args: {
+  order_number: string;
+  reason?: string;
+}, ctx: ToolContext): Promise<string> {
+  const hqDenied = requireHq(ctx, '생산 지시 취소');
+  if (hqDenied) return hqDenied;
+
+  const { data: po } = await sb
+    .from('production_orders')
+    .select('id, order_number, status')
+    .eq('order_number', args.order_number)
+    .maybeSingle();
+  if (!po) return JSON.stringify({ error: `생산 지시서 "${args.order_number}"을(를) 찾을 수 없습니다.` });
+  if (!['PENDING', 'IN_PROGRESS'].includes(po.status)) {
+    return JSON.stringify({ error: '대기 또는 진행중 상태의 생산 지시만 취소할 수 있습니다.' });
+  }
+
+  const { cancelProductionOrder } = await import('@/lib/production-actions');
+  const res = await cancelProductionOrder(po.id);
+  if ('error' in res && res.error) return JSON.stringify({ error: res.error });
+
+  return JSON.stringify({
+    성공: true,
+    지시번호: po.order_number,
+    사유: args.reason || undefined,
+  });
+}
+
+// ── 안전재고 설정 ─────────────────────────────────────────────────────────────
+async function execSetSafetyStock(sb: any, args: {
+  product_name: string;
+  safety_stock: number;
+  branch_name?: string;
+}, ctx: ToolContext): Promise<string> {
+  if (args.safety_stock === undefined || args.safety_stock === null || args.safety_stock < 0) {
+    return JSON.stringify({ error: '안전재고는 0 이상의 숫자여야 합니다.' });
+  }
+
+  const product = await findProduct(sb, args.product_name);
+  if (!product) return JSON.stringify({ error: `제품 "${args.product_name}"을(를) 찾을 수 없습니다.` });
+
+  // 지점 지정(또는 staff) → 단건 적용
+  if (args.branch_name || isStaffRole(ctx.userRole)) {
+    const resolved = await resolveBranchForWrite(sb, ctx, args.branch_name);
+    if (!resolved.ok) return JSON.stringify({ error: resolved.error });
+
+    const { data: inv } = await sb
+      .from('inventories')
+      .select('id')
+      .eq('branch_id', resolved.branch.id)
+      .eq('product_id', product.id)
+      .maybeSingle();
+    if (!inv) return JSON.stringify({ error: `${resolved.branch.name}에 "${product.name}" 재고 행이 없습니다.` });
+
+    const { updateSafetyStock } = await import('@/lib/inventory-actions');
+    const res = await updateSafetyStock(inv.id, args.safety_stock);
+    if ('error' in res && res.error) return JSON.stringify({ error: res.error });
+
+    return JSON.stringify({
+      성공: true,
+      제품: product.name,
+      대상: resolved.branch.name,
+      안전재고: args.safety_stock,
+      영향행수: 1,
+    });
+  }
+
+  // HQ + 지점 미지정 → 전 지점 일괄
+  const { bulkUpdateSafetyStock } = await import('@/lib/inventory-actions');
+  const res = await bulkUpdateSafetyStock(product.id, args.safety_stock);
+  if ('error' in res && res.error) return JSON.stringify({ error: res.error });
+
+  const { count } = await sb
+    .from('inventories')
+    .select('id', { count: 'exact', head: true })
+    .eq('product_id', product.id);
+
+  return JSON.stringify({
+    성공: true,
+    제품: product.name,
+    대상: '전 지점',
+    안전재고: args.safety_stock,
+    영향행수: count ?? '전 지점',
+  });
 }

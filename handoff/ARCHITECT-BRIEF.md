@@ -1,51 +1,69 @@
-# Architect Brief — 고객 검색 개선 (Enter 검색 + 콤마 AND + 안내문구)
+# Architect Brief — Batch 1: AI 에이전트 mutating 도구 5종 + 위험도 인프라
 
 ## Goal
-고객 목록 검색이 타이핑 중에는 조회하지 않고 Enter/버튼에만 실행되며, 콤마로 구분한 여러 조건을 모두 만족(AND)하는 고객만 표시한다. 단일어 검색은 기존과 동일.
+AI 에이전트가 화면 없이 **외상 수금/취소·발주취소·생산취소·안전재고 설정**을 수행하고, 고위험 도구는 2차 확인을 거치는 `DANGEROUS_TOOLS` 인프라가 생긴다.
 
-## 범위
-- Bob: `src/app/(dashboard)/customers/page.tsx` (프론트), `src/app/api/customers/search/route.ts` 의 `fallbackSearch` (콤마 AND).
-- Arch(Bob 손대지 말 것): `supabase/migrations/073_customer_search_comma_and.sql` 신규 + DB 직접 적용. RPC 가 콤마 AND 메인 경로.
-- schema.ts 무관.
+## Build Order
 
-## 프론트 (page.tsx)
-1. state 분리(L113): `search` 유지=커밋된 검색어(초기 q). 신규 `searchInput`(초기 q) = 텍스트박스 값.
-2. 디바운스 useEffect(L157-174) 교체 — 타이핑 중 fetch 금지. debounceRef(L128) 제거. `search/gradeFilter/hasConsult/sortKey` 변경 시 즉시 fetch:
-   ```tsx
-   useEffect(() => {
-     const hasCondition = search.trim() !== '' || gradeFilter !== '' || hasConsult;
-     if (!hasCondition) { setCustomers([]); setTotal(0); setHasSearched(false); return; }
-     setPage(1); setHasSearched(true);
-     fetchCustomers(search, gradeFilter, 1, hasConsult, sortKey);
-   }, [search, gradeFilter, hasConsult, sortKey, fetchCustomers]);
-   ```
-3. input(L318-325): `value={searchInput}`, `onChange={(e)=>setSearchInput(e.target.value)}`, `onKeyDown={(e)=>{ if(e.key==='Enter'){ e.preventDefault(); setSearch(searchInput); } }}`.
-4. 돋보기 아이콘(L315-317) → `<button type="button" onClick={()=>setSearch(searchInput)} aria-label="검색">`(위치/스타일 유지).
-5. X 클리어(L326-335): 표시 조건 `searchInput`, onClick `()=>{ setSearchInput(''); setSearch(''); }`.
-6. placeholder(L321) `"검색어 입력 후 Enter — 여러 조건은 콤마(,)로 (예: 이장우, 청담)"`. 검색 input 컨테이너 아래 작은 회색 안내문구:
-   `<p className="text-xs text-slate-400 mt-1">Enter 또는 🔍로 검색 · 콤마(,)로 여러 조건을 묶으면 모두 만족하는 고객만 (예: 이장우, 청담)</p>`
-   레이아웃: 검색 `div.relative` 를 `flex-1 max-w-lg` wrapper 로 감싸 input div + 안내 p 세로 배치(셀렉트/체크박스 행 정렬 유지).
-7. 초기 q 복원: search·searchInput 초기값 둘 다 q → useEffect 자동 1회 fetch.
-8. URL 동기화(L182-192)/listQs(L195-203): `search` 그대로(수정 없음, 검증만).
+### 0) 위험도 인프라 — `DANGEROUS_TOOLS`
+- `src/lib/ai/tools.ts`: `WRITE_TOOLS` 선언(L898) 아래 export:
+  ```ts
+  export const DANGEROUS_TOOLS = new Set<string>([ 'cancel_credit_order' ]);
+  ```
+- `src/app/api/agent/route.ts`: confirm 분기(L290 `if (WRITE_TOOLS.has(toolName))` 내부, `buildConfirmDescription` 직후) `DANGEROUS_TOOLS.has(toolName)`이면 description 말미 경고 라인 append(`⚠️ 되돌릴 수 없는 작업입니다. 한 번 더 확인해주세요.`). import에 DANGEROUS_TOOLS 추가.
+- Flag: 별도 round-trip/새 pending 상태머신 만들지 말 것. confirm 구조·executeTool 호출부 변경 금지. 경고 라인 append만.
 
-## 백엔드 fallbackSearch (route.ts) — 콤마 AND (RPC 미적용/실패 폴백)
-1. `const tokens = q.split(',').map(t=>t.trim()).filter(Boolean);`
-2. 토큰 0개 → 기존 `q` 단일 처리(가드). 토큰 1개 → **기존 로직 그대로**(회귀 0, 분기).
-3. 토큰 ≥2 → 각 토큰의 매칭 customer id Set 구해 **교집합(AND)**. 기존 단일어 매칭(name/phone/phone2/email/address ilike + 숫자 + 제품명→주문→customer)을 `matchOneToken(token)→Set<id>` 로 추출 재사용. 교집합 id 들에 reasons/points/history/정렬/페이징 기존 흐름 적용.
+### 1) `settle_credit_order` (외상 수금) — `execSettleCreditOrder(sb,args,ctx)`
+- order_number로 sales_orders 조회(payment_method='credit', branch 조인). 없음/이미수금(credit_settled) 에러. `assertBranchAccess(ctx, order.branch.id,...)`.
+- `const { settleCreditOrder } = await import('@/lib/accounting-actions')` → `settleCreditOrder({ orderId: order.id, settledMethod: args.method })`.
+- 파라미터: order_number(req), method(req enum cash/card/kakao/card_keyin). 성공 JSON: 주문번호·수금액·수단.
 
-## Out of Scope
-legacy 임포터/포장/병합/POS, 검색 랭킹, RPC 파일(Arch 담당).
+### 2) `cancel_credit_order` (외상 취소, DANGEROUS) — `execCancelCreditOrder`
+- order_number로 조회+assertBranchAccess. `cancelCreditOrder({ orderId, reason: args.reason, userId: ctx.userId })` (credit-actions.ts:19, 내부 requireSession). 세션 의존 문제 시 액션 에러 surfacing.
+- 성공 JSON에 복원 재고·역분개 안내 명시. 파라미터: order_number(req), reason(req).
+
+### 3) `cancel_purchase_order` (발주 취소) — `execCancelPurchaseOrder`
+- purchase_orders order_number 조회(branch_id, status). DRAFT/CONFIRMED만(친절 에러 위해 선조회). `assertBranchAccess(ctx, po.branch_id,...)`. `cancelPurchaseOrder(po.id)` (bare id). reason은 표시용(액션 미사용).
+- 파라미터: order_number(req), reason(optional).
+
+### 4) `cancel_production_order` (생산 취소) — `execCancelProductionOrder`
+- `requireHq(ctx,'생산 지시 취소')`. production_orders order_number 조회. PENDING/IN_PROGRESS만. `cancelProductionOrder(po.id)` (bare id).
+- 파라미터: order_number(req), reason(optional).
+
+### 5) `set_safety_stock` (안전재고) — `execSetSafetyStock`
+- `findProduct(sb, args.product_name)`(L940). branch_name 있으면 `resolveBranchForWrite` → (branch_id,product_id) inventories 행 id → `updateSafetyStock(inventoryId, safety_stock)`. 없으면 staff=본인지점 단건, HQ=`bulkUpdateSafetyStock(product_id, safety_stock)` 전지점.
+- 파라미터: product_name(req), safety_stock(req number≥0), branch_name(optional). 성공 JSON: 제품·대상·값·영향행수.
+
+### 6) 공통 등록 (5개 전부)
+- AGENT_TOOLS 정의 추가(형식: cancel_sales_order L733 참고, 한국어 사용예).
+- WRITE_TOOLS Set에 5개 추가(L898).
+- executeTool switch(L1037~)에 5개 case.
+- buildConfirmDescription(route.ts L488 switch)에 5개 case(add('라벨',값) 패턴).
+- (선택) buildSuccessDetail(route.ts L450) settle/cancel 요약.
+
+### 7) AI Sync — schema.ts BUSINESS_RULES (필수)
+- `[자주 쓰는 패턴]`(L202)에 매핑 추가: 외상 수금→settle_credit_order / 외상 취소→cancel_credit_order / 발주 취소→cancel_purchase_order / 생산 취소→cancel_production_order / 안전재고 설정→set_safety_stock.
+- DB_SCHEMA 변경 없음(새 테이블/enum 없음).
+
+## Out of Scope (배치1 제외)
+- create_sales_order/POS 판매 → 배치2(서버 래퍼 createSimpleSalesOrder 신설 후). processPosCheckout 직접 호출 금지.
+- 캠페인·send_kakao·create_shipment·B2B·수동분개/마감·마스터 CRUD·엑셀임포트·삭제확장 → 배치2/3.
+- userRole 미지정 RBAC 정책·한 턴 다중쓰기 구조 변경 → 스코프 밖.
+- route.ts confirm 상태머신/pending_action 구조·DB 마이그 금지.
 
 ## Acceptance
-- 타이핑 중 `/api/customers/search` 호출 0건. Enter/🔍/필터변경에만 호출.
-- "이장우" 단일 = 기존과 동일(회귀 없음).
-- "이장우, 청담" → 이름 이장우 + 주소 청담 둘 다 만족하는 고객만.
-- X 버튼: 입력칸·결과 비고 빈 상태.
-- 상세 뒤로가기: q 복원 + 입력칸에 검색어 + 편집 가능.
-- 안내문구 표시, 셀렉트/체크박스 행 레이아웃 유지.
-- `npm run build` + `npm run lint` 통과.
+- `npm run build` 통과.
+- 5개 도구가 AGENT_TOOLS·WRITE_TOOLS·executeTool·buildConfirmDescription 전부 등록(누락 0).
+- DANGEROUS_TOOLS export + route.ts 경고 라인이 cancel_credit_order에만.
+- 핸들러: 미해결 식별자 한국어 에러, staff 권한위반 차단.
+- 시그니처 일치: cancelPurchaseOrder/cancelProductionOrder=bare id, settleCreditOrder={orderId,settledMethod}, cancelCreditOrder={orderId,reason,userId}.
+- schema.ts 패턴 5개 추가.
+- 보안: Richard 보안 리뷰 필수(RBAC·세션의존·역분개).
 
-## Flag (추측 금지)
-- 디바운스 완전 제거(setTimeout 검색 트리거 금지).
-- 단일 토큰 경로 기존 로직 보존(RPC/fallback 둘 다).
-- RPC 마이그 073 은 Bob 작성 금지(Arch).
+## 확인된 시그니처 (추측 금지)
+- settleCreditOrder({orderId, settledMethod:'cash'|'card'|'kakao'|'card_keyin'})→{success,error} (accounting-actions.ts:721)
+- cancelCreditOrder({orderId, reason?, userId?})→{error}|성공 (credit-actions.ts:19, 내부 requireSession)
+- cancelPurchaseOrder(id)→{error}|{success} DRAFT/CONFIRMED만 (purchase-actions.ts:297)
+- cancelProductionOrder(id)→{error}|{success} PENDING/IN_PROGRESS만 (production-actions.ts:599)
+- updateSafetyStock(inventoryId, safetyStock) / bulkUpdateSafetyStock(productId, safetyStock) (inventory-actions.ts:7/28)
+- RBAC: requireHq(ctx,label)/resolveBranchForWrite(sb,ctx,branchName)/assertBranchAccess(ctx,branchId,label) (tools.ts:978/990/1018)

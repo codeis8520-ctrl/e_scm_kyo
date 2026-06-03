@@ -6,6 +6,42 @@
 
 ## Completed Steps
 
+### Batch 1 — AI 에이전트 mutating 도구 5종 + DANGEROUS_TOOLS 인프라
+
+**상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, npm run build ✅, 2026-06-03)
+
+**Goal**: 에이전트가 외상 수금/취소·발주취소·생산취소·안전재고 설정을 수행. cancel_credit_order는 DANGEROUS_TOOLS로 2차 경고.
+
+**변경 파일 (3개, DB 변경 없음)**:
+- `src/lib/ai/tools.ts`
+  - AGENT_TOOLS: 5개 도구 정의 추가(cancel_sales_order 정의 직후).
+  - WRITE_TOOLS Set: 5개 등록.
+  - `export const DANGEROUS_TOOLS = new Set(['cancel_credit_order'])` 신설(WRITE_TOOLS 직후).
+  - executeTool switch: 5개 case.
+  - exec 핸들러 5종(파일 말미): execSettleCreditOrder / execCancelCreditOrder / execCancelPurchaseOrder / execCancelProductionOrder / execSetSafetyStock.
+- `src/app/api/agent/route.ts`
+  - import에 DANGEROUS_TOOLS 추가.
+  - confirm 분기: `description`을 const→let, DANGEROUS면 경고 라인 append(구조·executeTool 호출부 미변경).
+  - buildConfirmDescription: 5개 case(delete_record 직후, Phase B 앞).
+- `src/lib/ai/schema.ts`
+  - BUSINESS_RULES [자주 쓰는 패턴]에 5개 매핑 추가. DB_SCHEMA 변경 없음(새 테이블/enum 없음).
+
+**확인된 시그니처 (실제 파일 재확인 완료, 브리프와 일치)**:
+- settleCreditOrder({orderId, settledMethod})→{success,error} (accounting-actions.ts:721)
+- cancelCreditOrder({orderId, reason?, userId?})→{error}|성공 (credit-actions.ts:19, 내부 requireSession)
+- cancelPurchaseOrder(id) bare→{error}|{success} DRAFT/CONFIRMED (purchase-actions.ts:297)
+- cancelProductionOrder(id) bare→{error}|{success} PENDING/IN_PROGRESS (production-actions.ts:599)
+- updateSafetyStock(inventoryId, val) / bulkUpdateSafetyStock(productId, val) (inventory-actions.ts:7/28)
+
+**주요 결정**:
+- set_safety_stock: branch_name 지정 OR staff면 단건(inventories 행 id 조회 후 updateSafetyStock). HQ+미지정이면 bulkUpdateSafetyStock + count 별도 조회로 영향행수 표기.
+- 핸들러 선조회로 친절 에러(상태/식별자) 후 액션 호출 — 액션 자체 가드와 이중 방어.
+- cancel_production_order는 requireHq 가드(브리프 #4).
+
+**Known Gaps**: 없음 (스코프 내 모두 구현).
+
+---
+
 ### Step — 고객 검색 개선 (Enter 검색 + 콤마 AND + 안내문구)
 
 **상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, build ✅ / lint exit 0, 2026-06-02)

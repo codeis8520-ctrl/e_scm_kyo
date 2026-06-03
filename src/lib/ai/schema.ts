@@ -205,6 +205,11 @@ sales_orders.receipt_status: 품목 receipt_status 집계(우선순위 PARCEL_PL
 - "재고 부족" → get_low_stock
 - "전체 고객 등급 올려줘" → upgrade_customer_grades (확인 필요)
 - "VIP한테 문자" → bulk_send_sms(grade: "VIP", ...)
+- "외상 수금 처리해줘" → settle_credit_order(order_number, method) (확인 필요)
+- "외상 주문 취소해줘" → cancel_credit_order(order_number, reason) (확인 필요, 되돌릴 수 없음)
+- "발주 취소해줘" → cancel_purchase_order(order_number) (DRAFT/CONFIRMED만)
+- "생산 지시 취소해줘" → cancel_production_order(order_number) (PENDING/IN_PROGRESS만, 본사 전용)
+- "안전재고 N개로 설정" → set_safety_stock(product_name, safety_stock, branch_name?)
 
 [Phantom BOM(세트 상품) 운영 규칙]
 - products.is_phantom=true 제품은 "묶음 명칭일 뿐" 본인 재고 관리 대상이 아님.

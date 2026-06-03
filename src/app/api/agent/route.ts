@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { miniMaxClient, MiniMaxMessage, type TokenUsage } from '@/lib/ai/client';
-import { AGENT_TOOLS, WRITE_TOOLS, executeTool } from '@/lib/ai/tools';
+import { AGENT_TOOLS, WRITE_TOOLS, DANGEROUS_TOOLS, executeTool } from '@/lib/ai/tools';
 import { DB_SCHEMA, BUSINESS_RULES } from '@/lib/ai/schema';
 import { loadMemories, bumpMemoryUsage, extractMemory, extractMemoryFromWrite } from '@/lib/ai/memory';
 import { fmtKoreanDayKST } from '@/lib/date';
@@ -288,7 +288,10 @@ export async function POST(req: NextRequest) {
         args = sanitizeToolArgs(args);
 
         if (WRITE_TOOLS.has(toolName)) {
-          const description = buildConfirmDescription(toolName, args);
+          let description = buildConfirmDescription(toolName, args);
+          if (DANGEROUS_TOOLS.has(toolName)) {
+            description += '\n\n⚠️ 되돌릴 수 없는 작업입니다. 한 번 더 확인해주세요.';
+          }
           logConversation(db, {
             sessionId: body.session_id,
             userId: context?.userId,
@@ -654,6 +657,38 @@ function buildConfirmDescription(toolName: string, args: Record<string, any>): s
       lines.push('⚠️ 삭제 후 복구할 수 없습니다.');
       break;
     }
+    case 'settle_credit_order': {
+      const methodLabels: Record<string, string> = { cash: '현금', card: '카드', kakao: '카카오페이', card_keyin: '카드(수기)' };
+      lines.push('💵 외상 수금 처리 확인');
+      add('주문번호', args.order_number);
+      add('수금 수단', methodLabels[args.method] || args.method);
+      lines.push('• 미수금이 수금 완료로 전환되고 수금 분개가 자동 생성됩니다.');
+      break;
+    }
+    case 'cancel_credit_order':
+      lines.push('🚫 외상 주문 취소 확인');
+      add('주문번호', args.order_number);
+      add('사유', args.reason);
+      lines.push('⚠️ 재고 복원 + 적립 포인트 차감 + 외상매출금 역분개가 자동 처리됩니다.');
+      break;
+    case 'cancel_purchase_order':
+      lines.push('🚫 발주서 취소 확인');
+      add('발주번호', args.order_number);
+      add('사유', args.reason);
+      lines.push('• 초안/확정 상태의 발주만 취소됩니다.');
+      break;
+    case 'cancel_production_order':
+      lines.push('🚫 생산 지시 취소 확인');
+      add('지시번호', args.order_number);
+      add('사유', args.reason);
+      lines.push('• 대기/진행중 상태의 생산 지시만 취소됩니다.');
+      break;
+    case 'set_safety_stock':
+      lines.push('🎯 안전재고 설정 확인');
+      add('제품', args.product_name);
+      add('대상 지점', args.branch_name || '전 지점/본인 지점');
+      add('안전재고', `${args.safety_stock}개`);
+      break;
     // ── Phase B ─────────────────────────────────────────────────────────
     case 'refund_sales_order': {
       const reasonLabels: Record<string, string> = {
