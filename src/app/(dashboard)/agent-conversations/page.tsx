@@ -258,7 +258,7 @@ export default function AgentConversationsPage() {
       {/* 헤더 */}
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">AI 대화 기록</h1>
+          <h1 className="sr-only">AI 대화 기록</h1>
           <p className="text-xs text-slate-500 mt-0.5">
             {isSuperAdmin && scope === 'all' ? '전체 사용자' : `${userName || '본인'}`}의 에이전트 대화.
             {isSuperAdmin ? ' (본부대표는 전체 대화 조회 가능)' : ' (본인 대화만 표시)'}

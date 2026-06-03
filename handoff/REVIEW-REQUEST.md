@@ -1,32 +1,35 @@
-# Review Request — Batch 2b: AI 에이전트 배송 + B2B 도구 4종
+# Review Request — 대시보드 헤더/탭 통일 · 배치 A
 Date: 2026-06-03
 Ready for Review: YES
 
-## Summary
-에이전트에 4개 도구 추가(전부 기존 액션 래핑, DB 변경·신규 서버액션 없음):
-- create_shipment (DANGEROUS) — createShipment 래핑, source='STORE'/sender 자동/created_by=ctx.userId
-- create_b2b_sales_order (DANGEROUS) — createB2bSalesOrder 래핑, partner 인라인 조회, 단가 미지정 시 제품 정가
-- settle_b2b_order (WRITE) — order_number→UUID 선조회 후 settleB2bOrder
-- cancel_b2b_order (DANGEROUS) — order_number→UUID 선조회(settled>0 차단) 후 cancelB2bOrder
-
-`npm run build` ✅ Compiled successfully in 7.6s (에러·경고 0).
+## 개요
+공용 PageTabs(프레젠테이션 전용) 신설 + 5페이지 헤더 표준화. 순수 시각/구조만 — state/URL/핸들러/패널 분기 전부 미접촉. 서버액션·DB·src/lib/ai/schema.ts 변경 0.
 
 ## Files Changed
-- src/lib/ai/tools.ts:1039-1135 — AGENT_TOOLS 4개 도구 정의(analyze_data 앞). create_shipment는 sender_*/source 파라미터 비노출(핸들러가 채움).
-- src/lib/ai/tools.ts (WRITE_TOOLS/DANGEROUS_TOOLS) — WRITE +4, DANGEROUS +3(create_shipment/create_b2b_sales_order/cancel_b2b_order, settle 제외).
-- src/lib/ai/tools.ts (executeTool switch) — 4 case 추가. settle/cancel은 ctx 미전달(전표 단위, 아래 Open Questions 참조).
-- src/lib/ai/tools.ts (파일 끝) — execCreateShipment / execCreateB2bSalesOrder / execSettleB2bOrder / execCancelB2bOrder 핸들러 4종. 액션은 핸들러 내부 동적 import()(기존 컨벤션).
-- src/app/api/agent/route.ts (buildConfirmDescription) — 4 case 추가(send_campaign 직후, default 앞). DANGEROUS 2차경고는 L292 기존 분기 자동, 구조 미변경.
-- src/lib/ai/schema.ts — [자주 쓰는 패턴] +5줄, [B2B 거래] +6줄(상태흐름·납품·수금·취소), [배송] +1줄. DB_SCHEMA 무변경.
+- `src/components/PageTabs.tsx` (신설, 1~41) — tabs/activeKey/onChange/actions props. 래퍼 flex justify-between border-b, nav role="tablist", 버튼 type/role="tab"/aria-selected, active=border-blue-600 text-blue-600. actions 있을 때만 우측 div 렌더. 브리프 구조·스타일·a11y 그대로.
+- `src/app/(dashboard)/production/page.tsx`
+  - L17 — `import PageTabs from '@/components/PageTabs'`.
+  - 기존 L316~358(h1 "생산 관리"+부제+우측 액션 3개 + 인라인 탭) → PageTabs 1개로 교체. tabs=[orders/bom/factories], activeKey={tab}, onChange={k=>setTab(k as 'orders'|'bom'|'factories')}. 우측 액션 3개(지점 select / BOM 조립 / +생산 지시[canIssueOrder])는 actions 슬롯으로 그대로 이동. 부제 생략.
+- `src/app/(dashboard)/shipping/page.tsx`
+  - L9 — import 추가.
+  - 기존 L910~929(h1 "배송 관리"+부제 + 탭) → PageTabs. tabs=[cafe24/manual/list], activeKey={activeTab}, onChange={k=>setActiveTab(k as TabType)}. actions 없음. 부제 생략.
+- `src/app/(dashboard)/system-codes/page.tsx`
+  - L7 — import 추가.
+  - 기존 L379~474(h1 "시스템 코드 관리" + 9개 인라인 버튼) → PageTabs(9탭, 순서·라벨 브리프 그대로). activeKey={activeTab}, onChange={k=>setActiveTab(k as typeof activeTab)}.
+- `src/app/(dashboard)/agent-memory/page.tsx` — L89 h1 className `text-xl font-bold text-slate-800` → `sr-only`. 텍스트/부제/버튼 유지.
+- `src/app/(dashboard)/agent-conversations/page.tsx` — L261 h1 className `text-2xl font-bold text-slate-800` → `sr-only`. 텍스트/부제 유지.
 
-## 보안 리뷰 포인트 (발송·재무·재고 영향 — 필수)
-- create_shipment: sender_*/source LLM 비노출 확인. staff는 resolveBranchForWrite로 본인 지점 강제. 지점 phone 없으면 sender_phone=''.
-- create_b2b_sales_order: partner 인라인 `.or('name.ilike.%x%,code.eq.x')` — 미해결 시 한글 에러. RAW/SUB 차단·재고차감·분개는 액션 내부. 단가 미지정 시 products.price.
-- settle/cancel: order_number→UUID **선조회 후 UUID 전달**(액션에 order_number 직접 전달 안 함). 핸들러 친절 차단(SETTLED/CANCELLED/settled>0) + 액션 이중 방어.
+## Self-Review
+- **Richard가 먼저 볼 곳**: 탭 키↔state 매핑, 캐스팅 타입, 패널 분기 보존. → tab/activeTab state 타입을 실제 코드에서 재확인(production L159, shipping L72/117, system-codes L162) 후 매핑. 패널 렌더 분기(`tab===`/`activeTab===`)는 전부 미접촉.
+- **브리프 요구사항**: PageTabs 신설 ✅ / 3페이지 h1·부제 제거+탭 교체 ✅ / production 액션 슬롯 이동 ✅ / 2페이지 sr-only ✅ / 예외·서브·pos 서브탭·schema.ts 미접촉 ✅.
+- **빈 데이터/실패**: 프레젠테이션 변경뿐 — 데이터 흐름·에러 핸들링 경로 무변경.
+- **시각 변화(의도됨)**: shipping/system-codes 기존 active색 blue-500 → 표준 blue-600 통일. 패딩 px-3→px-4(표준). 동작 무관.
 
 ## Open Questions
-- settle/cancel 핸들러에 ToolContext(ctx) 미전달(switch에서 sb,args만). 전표는 지점 무관 단위라 본인지점 강제가 부적합하다 판단 — 액션의 requireSession에 의존. 본사/staff 모두 전표번호만 알면 수금/취소 가능. RBAC 강화가 필요하면 지적 바랍니다.
-- buildConfirmDescription은 브리프의 1줄 포맷 대신 기존 multi-line(lines.push/add) 스타일로 작성(파일 컨벤션 일치, 내용은 브리프 반영).
+- system-codes onChange 캐스팅을 9-유니온 재기재 대신 `as typeof activeTab`로 처리(동일 타입). 동작 동일하나 명시적 유니온 선호 시 알려주세요.
 
-## Out of Scope (logged in BUILD-LOG Known Gaps)
-- send_kakao 제외. B2B 단가표 연동·shipment 송장/SHIPPED 전환·deliveredAt 지정 미접촉.
+## Build
+`npm run build` → ✅ Compiled successfully in 5.7s. 에러/경고 0.
+
+## Out of Scope (logged in BUILD-LOG)
+- 없음. 배치 B 6페이지·URL 동기화 일반화·pos 서브탭은 스코프 외로 미접촉.

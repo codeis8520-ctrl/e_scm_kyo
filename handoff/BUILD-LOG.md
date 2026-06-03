@@ -6,6 +6,34 @@
 
 ## Completed Steps
 
+### 대시보드 헤더/탭 통일 — 배치 A
+
+**상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, npm run build ✅ Compiled successfully in 5.7s, 2026-06-03)
+
+**Goal**: 공용 PageTabs(프레젠테이션 전용) 신설 + 5페이지 헤더 표준화. 순수 시각/구조만 — 동작 회귀 0.
+
+**변경 파일 (6개, 서버액션/DB/schema.ts 변경 없음)**:
+- `src/components/PageTabs.tsx` (신설) — tabs/activeKey/onChange/actions. role=tablist/tab, aria-selected. 브리프 구조·스타일·a11y 그대로.
+- `src/app/(dashboard)/production/page.tsx` — import 추가, h1+부제+우측액션+인라인탭(L316~358) → PageTabs로 교체. 우측 액션 3개(지점 select/BOM 조립/+생산 지시)를 actions 슬롯으로 이동. onChange={k=>setTab(k as 'orders'|'bom'|'factories')} — 기존 state/타입 그대로.
+- `src/app/(dashboard)/shipping/page.tsx` — import 추가, h1+부제+탭(L910~929) → PageTabs. onChange={k=>setActiveTab(k as TabType)}. actions 없음.
+- `src/app/(dashboard)/system-codes/page.tsx` — import 추가, h1+9버튼 탭(L379~474) → PageTabs(9탭). onChange={k=>setActiveTab(k as typeof activeTab)} — 긴 유니온 직접 캐스팅 대신 typeof 사용(동일 타입, 동작 변화 없음).
+- `src/app/(dashboard)/agent-memory/page.tsx` — h1(L89) className → sr-only. 부제·버튼 유지.
+- `src/app/(dashboard)/agent-conversations/page.tsx` — h1(L261) className → sr-only. 부제 유지.
+
+**브리프 라인 vs 실제 코드 대조 (전부 일치)**:
+- production: tab state `'orders'|'bom'|'factories'`(L159), 헤더 L316~343/탭 L345~358 — 일치.
+- shipping: `type TabType='cafe24'|'manual'|'list'`(L72), activeTab(L117), 헤더 L910~913/탭 L915~929 — 일치. 기존 active색 blue-500→통일 표준 blue-600.
+- system-codes: activeTab 9-유니온(L162), 헤더 L379~381/탭 L383~474 — 일치. 기존 active색 blue-500→blue-600 통일, px-3→px-4(표준).
+- agent-memory h1 L89 / agent-conversations h1 L261 — 일치.
+
+**주요 결정**:
+- system-codes onChange 캐스팅은 9개 유니온을 다시 적는 대신 `as typeof activeTab` 사용 — 동일 타입, 유지보수 안전. (브리프 "as ..." 허용 범위 내)
+- 패널 렌더 분기(`tab===`/`activeTab===`) 전부 미접촉. URL 동기화·state·set함수 전부 그대로.
+
+**Known Gaps**: 없음. (배치 B 6페이지·URL 동기화 일반화·pos 서브탭은 스코프 외 — 미접촉 확인.)
+
+---
+
 ### Batch 2b — AI 에이전트 배송 + B2B 도구 4종
 
 **상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, npm run build ✅ Compiled successfully, 2026-06-03)

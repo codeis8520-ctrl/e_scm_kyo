@@ -86,7 +86,7 @@ export default function AgentMemoryPage() {
     <div className="space-y-5">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 sm:mb-6">
         <div>
-          <h1 className="text-xl font-bold text-slate-800">AI 에이전트 학습 메모리</h1>
+          <h1 className="sr-only">AI 에이전트 학습 메모리</h1>
           <p className="text-sm text-slate-500 mt-0.5">에이전트가 업무를 처리하며 자동으로 축적한 지식입니다. 비활성화하면 프롬프트에 주입되지 않습니다.</p>
         </div>
         <button onClick={clearInactive} className="btn-secondary text-sm py-1.5 px-3 text-red-600 shrink-0">

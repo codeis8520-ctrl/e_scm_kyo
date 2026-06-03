@@ -6,6 +6,7 @@ import { getShipments, createShipment, updateShipment, deleteShipment } from '@/
 import { refreshCafe24Token } from '@/lib/cafe24-actions';
 import * as XLSX from 'xlsx';
 import { fmtDateKST, kstTodayString } from '@/lib/date';
+import PageTabs from '@/components/PageTabs';
 
 interface Shipment {
   id: string;
@@ -907,26 +908,16 @@ export default function ShippingPage() {
   // ── 렌더링 ─────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-800">배송 관리</h1>
-        <p className="text-slate-500 text-sm mt-1">카페24 주문 및 매장 주문의 배송을 관리합니다.</p>
-      </div>
-
       {/* Tabs */}
-      <div className="border-b border-slate-200">
-        <nav className="flex gap-1">
-          {([
-            { key: 'cafe24', label: '카페24 주문' },
-            { key: 'manual', label: '직접 입력' },
-            { key: 'list', label: '배송 목록' },
-          ] as { key: TabType; label: string }[]).map(tab => (
-            <button key={tab.key} onClick={() => setActiveTab(tab.key)}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === tab.key ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}>{tab.label}</button>
-          ))}
-        </nav>
-      </div>
+      <PageTabs
+        tabs={[
+          { key: 'cafe24', label: '카페24 주문' },
+          { key: 'manual', label: '직접 입력' },
+          { key: 'list', label: '배송 목록' },
+        ]}
+        activeKey={activeTab}
+        onChange={k => setActiveTab(k as TabType)}
+      />
 
       {/* ── Tab: Cafe24 ──────────────────────────────────────────────────── */}
       {activeTab === 'cafe24' && (

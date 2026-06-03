@@ -14,6 +14,7 @@ import {
 } from '@/lib/oem-actions';
 import { createClient } from '@/lib/supabase/client';
 import { fmtDateKST } from '@/lib/date';
+import PageTabs from '@/components/PageTabs';
 import { buildCategoryInfo as buildCategoryInfoForOrders, sortedCategoryOptions as sortedCategoryOptionsForOrders, categoryOptionLabel, type CategoryRow as _CategoryRowOrders } from '@/lib/category-tree';
 
 type ProductType = 'FINISHED' | 'RAW' | 'SUB';
@@ -313,49 +314,39 @@ export default function ProductionPage() {
 
   return (
     <div className="space-y-6">
-      {/* 헤더 */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 sm:mb-6">
-        <div>
-          <h1 className="text-xl font-bold text-slate-800">생산 관리</h1>
-          <p className="text-sm text-slate-500">BOM 기반 생산 지시 및 재고 처리</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          {!isBranchUser && (
-            <select
-              value={selectedBranch}
-              onChange={e => setSelectedBranch(e.target.value)}
-              className="input text-sm py-1.5"
-              title="입고 지점 필터"
-            >
-              <option value="">전체 지점</option>
-              {branches.map((b: any) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}{b.is_headquarters ? ' (본사)' : ''}
-                </option>
-              ))}
-            </select>
-          )}
-          <button onClick={() => setTab('bom')} className="btn-secondary text-sm">BOM 조립</button>
-          {canIssueOrder && (
-            <button onClick={() => setShowNewOrderModal(true)} className="btn-primary text-sm">+ 생산 지시</button>
-          )}
-        </div>
-      </div>
-
       {/* 탭 */}
-      <div className="flex gap-1 border-b border-slate-200">
-        {(['orders', 'bom', 'factories'] as const).map(t => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
-              tab === t ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            {t === 'orders' ? '생산 지시 목록' : t === 'bom' ? 'BOM 목록' : 'OEM 공장'}
-          </button>
-        ))}
-      </div>
+      <PageTabs
+        tabs={[
+          { key: 'orders', label: '생산 지시 목록' },
+          { key: 'bom', label: 'BOM 목록' },
+          { key: 'factories', label: 'OEM 공장' },
+        ]}
+        activeKey={tab}
+        onChange={k => setTab(k as 'orders' | 'bom' | 'factories')}
+        actions={
+          <>
+            {!isBranchUser && (
+              <select
+                value={selectedBranch}
+                onChange={e => setSelectedBranch(e.target.value)}
+                className="input text-sm py-1.5"
+                title="입고 지점 필터"
+              >
+                <option value="">전체 지점</option>
+                {branches.map((b: any) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}{b.is_headquarters ? ' (본사)' : ''}
+                  </option>
+                ))}
+              </select>
+            )}
+            <button onClick={() => setTab('bom')} className="btn-secondary text-sm">BOM 조립</button>
+            {canIssueOrder && (
+              <button onClick={() => setShowNewOrderModal(true)} className="btn-primary text-sm">+ 생산 지시</button>
+            )}
+          </>
+        }
+      />
 
       {tab === 'orders' && (
         <>

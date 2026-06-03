@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { generateQrDataUrl } from '@/lib/qr-actions';
+import PageTabs from '@/components/PageTabs';
 import {
   createBranch, updateBranch, deleteBranch,
   createCustomerGrade, updateCustomerGrade, deleteCustomerGrade,
@@ -376,102 +377,21 @@ export default function SystemCodesPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-xl sm:text-2xl font-bold">시스템 코드 관리</h1>
-      </div>
-
-      <div className="flex gap-1 border-b border-slate-200 overflow-x-auto">
-        <button
-          onClick={() => setActiveTab('channels')}
-          className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
-            activeTab === 'channels'
-              ? 'border-blue-500 text-blue-600'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          채널 관리
-        </button>
-        <button
-          onClick={() => setActiveTab('branches')}
-          className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
-            activeTab === 'branches'
-              ? 'border-blue-500 text-blue-600'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          지점 관리
-        </button>
-        <button
-          onClick={() => setActiveTab('grades')}
-          className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
-            activeTab === 'grades'
-              ? 'border-blue-500 text-blue-600'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          고객 등급
-        </button>
-        <button
-          onClick={() => setActiveTab('tags')}
-          className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
-            activeTab === 'tags'
-              ? 'border-blue-500 text-blue-600'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          고객 태그
-        </button>
-        <button
-          onClick={() => setActiveTab('categories')}
-          className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
-            activeTab === 'categories'
-              ? 'border-blue-500 text-blue-600'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          카테고리
-        </button>
-        <button
-          onClick={() => setActiveTab('staff')}
-          className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
-            activeTab === 'staff'
-              ? 'border-blue-500 text-blue-600'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          직원 관리
-        </button>
-        <button
-          onClick={() => setActiveTab('campaign_types')}
-          className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
-            activeTab === 'campaign_types'
-              ? 'border-blue-500 text-blue-600'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          캠페인 유형
-        </button>
-        <button
-          onClick={() => setActiveTab('point_rates')}
-          className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
-            activeTab === 'point_rates'
-              ? 'border-blue-500 text-blue-600'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          지점별 적립율
-        </button>
-        <button
-          onClick={() => setActiveTab('permissions')}
-          className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
-            activeTab === 'permissions'
-              ? 'border-blue-500 text-blue-600'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          권한 관리
-        </button>
-      </div>
+      <PageTabs
+        tabs={[
+          { key: 'channels', label: '채널 관리' },
+          { key: 'branches', label: '지점 관리' },
+          { key: 'grades', label: '고객 등급' },
+          { key: 'tags', label: '고객 태그' },
+          { key: 'categories', label: '카테고리' },
+          { key: 'staff', label: '직원 관리' },
+          { key: 'campaign_types', label: '캠페인 유형' },
+          { key: 'point_rates', label: '지점별 적립율' },
+          { key: 'permissions', label: '권한 관리' },
+        ]}
+        activeKey={activeTab}
+        onChange={k => setActiveTab(k as typeof activeTab)}
+      />
 
       {activeTab === 'channels' && (
         <div className="card">

@@ -1,58 +1,52 @@
-# Architect Brief — Batch 2b: AI 에이전트 갭 메우기 (배송 + B2B)
+# Architect Brief — 대시보드 헤더/탭 통일 · 배치 A
 
 ## Goal
-에이전트가 (1) 배송 레코드 생성(create_shipment), (2) B2B 납품 등록(create_b2b_sales_order), (3) B2B 수금(settle_b2b_order), (4) B2B 납품 취소(cancel_b2b_order). send_kakao는 제외(Known Gaps).
+공용 PageTabs 컴포넌트 신설 + 중복 h1 3페이지 + 단일 h1 2페이지 헤더 표준화. 탭 전환·URL·딥링크 동작 회귀 0 — 시각/구조만.
 
-## 확인된 시그니처 (재확인 완료)
-- `createShipment(data: ShipmentInput)`→`{success}|{success:false,error}` (shipping-actions.ts:49). ShipmentInput 필수: source('CAFE24'|'STORE'), sender_name, sender_phone, recipient_name, recipient_phone, recipient_address. 선택: zipcode/detail, delivery_message, items_summary, branch_id, created_by, sales_order_id, cafe24_order_id. **단순 insert, 외부발송 없음**.
-- `createB2bSalesOrder({partnerId, branchId?, items:[{productId,quantity,unitPrice}], memo?, deliveredAt?})`→`{error}|{success,orderNumber}` (b2b-actions.ts:150). RAW/SUB 차단·재고차감(branchId 있을 때)·분개 자동.
-- `settleB2bOrder(orderId, amount, method?)`→`{error}|{success}` (b2b-actions.ts:311). orderId=UUID. method 'card'→1120 else 1110. SETTLED/CANCELLED 거부.
-- `cancelB2bOrder(orderId, reason?)`→`{error}|{success}` (b2b-actions.ts:376). UUID. settled_amount>0 거부. 재고 IN 복원.
-- `b2b_sales_orders`: order_number(B2B-YYYYMMDD-XXXX), partner_id, status, total_amount, settled_amount.
-- 헬퍼: findBranch/findProduct/findCustomer(tools.ts:1131~), requireHq/resolveBranchForWrite/assertBranchAccess. **findPartner 없음**→핸들러 인라인(b2b_partners name/code).
+## 절대 규칙 (Flag)
+- **순수 프레젠테이션만.** 서버액션·데이터·`src/lib/ai/schema.ts` 손대지 말 것.
+- **상태관리는 각 페이지 그대로.** PageTabs는 activeKey/onChange만. onChange는 기존 set함수 그대로 호출. URL 동기화 useEffect 손대지 말 것.
+- 예외 페이지(서브/상세: customers/analytics, inventory/count, purchases/suppliers·prices·[id], customers/[id], credit 등) **절대 건드리지 말 것.**
 
 ## Build Order
 
-### 1. tools.ts
-- AGENT_TOOLS 4종(analyze_data 앞, 2a 뒤):
-  - create_shipment: recipient_name(req), recipient_phone(req), recipient_address(req), recipient_zipcode?, recipient_address_detail?, delivery_message?, items_summary?, branch_name?. **sender/source 비노출**(핸들러가 채움).
-  - create_b2b_sales_order: partner(req, 명/code), items(req `[{product_name,quantity,unit_price?}]`), branch_name?, memo?.
-  - settle_b2b_order: order_number(req), amount(req), method?('card'|'cash').
-  - cancel_b2b_order: order_number(req), reason?.
-- WRITE_TOOLS +4. DANGEROUS_TOOLS +3: create_shipment, create_b2b_sales_order, cancel_b2b_order (settle 제외).
-- executeTool switch +4. import: b2b-actions(create/settle/cancel), shipping-actions(createShipment).
-- exec 핸들러:
-  - execCreateShipment(sb,ctx,args): branch_name 있으면 resolveBranchForWrite(staff 본인지점 강제)→branch_id. sender 기본값=branch 조회(name→sender_name, phone→sender_phone, 없으면 ''). source='STORE' 고정. created_by=ctx.userId. createShipment(input) 반환.
-  - execCreateB2bSalesOrder(sb,ctx,args): partner 인라인 `b2b_partners.select('id,name,code').or(name ilike/code eq).limit(1)` 못찾으면 에러. branch resolveBranchForWrite(옵션). items 각 product_name→findProduct, unit_price 미지정시 product.price, 하나라도 미해결 에러. createB2bSalesOrder({partnerId,branchId,items,memo}) 반환.
-  - execSettleB2bOrder(sb,args): b2b_sales_orders order_number→id 선조회(SETTLED/CANCELLED 친절 차단). settleB2bOrder(id, amount, method) 반환.
-  - execCancelB2bOrder(sb,args): order_number→id 선조회(settled_amount>0 친절 차단). cancelB2bOrder(id, reason) 반환.
+### 1. 신설 `src/components/PageTabs.tsx` (프레젠테이션 전용)
+```tsx
+export interface PageTab { key: string; label: string; }
+interface PageTabsProps { tabs: PageTab[]; activeKey: string; onChange: (key: string) => void; actions?: React.ReactNode; }
+```
+구조/스타일(표준 1종):
+- 래퍼 `<div className="flex items-center justify-between gap-3 border-b border-slate-200">`
+- nav `<nav role="tablist" className="flex gap-1 overflow-x-auto">`
+- 탭 버튼: type="button", role="tab", aria-selected={activeKey===t.key}, key, onClick={()=>onChange(t.key)}, className `px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap` + active `border-blue-600 text-blue-600` / inactive `border-transparent text-slate-500 hover:text-slate-700`.
+- actions 있으면 nav 뒤 `<div className="flex flex-wrap items-center gap-3 pb-2">{actions}</div>`.
 
-### 2. route.ts buildConfirmDescription(L491) — 4 case
-- create_shipment: "{recipient_name}님께 배송 레코드 생성 (주소: {recipient_address})."
-- create_b2b_sales_order: "거래처 '{partner}'에 {items.length}품목 B2B 납품 전표 등록 (재고차감·분개)."
-- settle_b2b_order: "납품 전표 {order_number}에 {amount}원 수금."
-- cancel_b2b_order: "납품 전표 {order_number} 취소 (재고 역복원)."
-- DANGEROUS 경고는 L292 기존 분기 자동(route 구조 미변경).
+### 2. production/page.tsx — h1 제거 + PageTabs
+- 헤더 L316~343(h1 "생산 관리"+부제 + 우측 액션: 지점 select, BOM 조립 버튼, +생산 지시[canIssueOrder]) + 탭 L345~358(`tab` 'orders'|'bom'|'factories') 전체 교체.
+- tabs=[{orders,'생산 지시 목록'},{bom,'BOM 목록'},{factories,'OEM 공장'}], activeKey={tab}, onChange={(k)=>setTab(k as ...)}, actions=기존 우측 액션 3개 그대로. 부제 생략.
 
-### 3. schema.ts (필수)
-- [자주 쓰는 패턴] 4줄: 배송 등록→create_shipment / 거래처 납품→create_b2b_sales_order(재고차감+분개) / 거래처 수금→settle_b2b_order / 납품 취소→cancel_b2b_order(수금 0건만).
-- B2B 룰 섹션 보강: 상태흐름(DELIVERED→PARTIALLY_SETTLED→SETTLED, CANCELLED), settled>0 취소불가, RAW/SUB 납품불가. shipments 1줄(STORE/CAFE24, SHIPPED 전환 시 알림톡).
-- DB_SCHEMA 변경 없음.
+### 3. shipping/page.tsx — h1 제거 + PageTabs
+- 헤더 L910~913(h1 "배송 관리"+부제) 제거 + 탭 L915~929(`activeTab` TabType cafe24|manual|list, active색 blue-500) 교체.
+- tabs=[{cafe24,'카페24 주문'},{manual,'직접 입력'},{list,'배송 목록'}], activeKey={activeTab}, onChange={(k)=>setActiveTab(k as TabType)}, actions 없음. 부제 생략.
 
-## Flag (추측 금지)
-- create_shipment sender_*/source는 LLM 인자 비노출, 핸들러가 branch에서 채움. branch.phone 없으면 sender_phone='' fallback.
-- settle/cancel 핸들러는 order_number→UUID 선조회 후 액션에 UUID 전달(액션은 UUID 받음).
-- B2B 단가 = 제품 price(getPartnerPrices 스코프 밖).
-- staff는 resolveBranchForWrite로 본인지점 강제.
+### 4. system-codes/page.tsx — h1 제거 + PageTabs
+- 헤더 L379~381(h1) 제거 + 탭 L383~474(9버튼, active blue-500) 교체.
+- tabs 순서: channels'채널 관리'/branches'지점 관리'/grades'고객 등급'/tags'고객 태그'/categories'카테고리'/staff'직원 관리'/campaign_types'캠페인 유형'/point_rates'지점별 적립율'/permissions'권한 관리'. activeKey={activeTab}, onChange={(k)=>setActiveTab(k as ...)}. 9탭 overflow-x-auto 확인.
 
-## Out of Scope (Known Gaps)
-- send_kakao: 제외(Solapi templateId/variableKeys를 LLM이 안전히 못 채움. 대량은 send_campaign 정식경로).
-- B2B 단가표 연동, shipment 송장/SHIPPED 전환, deliveredAt 지정.
+### 5. agent-memory/page.tsx — h1 sr-only
+- L89 h1 "AI 에이전트 학습 메모리" → `className="sr-only"`(텍스트 유지). L90 부제·L92~94 버튼 유지.
+
+### 6. agent-conversations/page.tsx — h1 sr-only
+- L261 h1 "AI 대화 기록" → `className="sr-only"`. L262~265 부제 유지.
+
+## Out of Scope (→ 배치 B / Known Gaps)
+- 배치 B 6페이지(pos/accounting/trade/customers/notifications/reports) PageTabs 채택.
+- URL 동기화 일반화(customers만 보유 — 변경 금지).
+- pos 내부 서브탭(L1754/L2477 등) 손대지 말 것.
 
 ## Acceptance
 - `npm run build` 통과.
-- AGENT_TOOLS 4 / WRITE_TOOLS 4 / DANGEROUS_TOOLS 3 / executeTool 4 case + 핸들러 4 + import.
-- route buildConfirmDescription 4 case. DANGEROUS 3종 2차경고 자동.
-- schema.ts 패턴 4 + B2B/shipments 룰. DB_SCHEMA 무변경.
-- 기존 createShipment/createB2bSalesOrder/settle/cancel 호출부(shipping/trade UI) diff 0.
-- 보안: 발송·재무·재고 → Richard 리뷰 필수.
+- production/shipping/system-codes: 상단 텍스트 제목 안 보임, 탭만. production 우측 액션 정상 표시·동작.
+- 탭 전환 클릭 시 기존과 동일 패널 전환. 활성 탭 = blue-600 통일.
+- agent-memory/agent-conversations: 화면 큰 제목 사라짐, DOM에 sr-only h1 존재.
+- 예외/서브 페이지 파일 변경 0건.
