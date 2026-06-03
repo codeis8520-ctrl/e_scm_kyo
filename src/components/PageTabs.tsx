@@ -17,7 +17,7 @@ interface PageTabsProps {
 export default function PageTabs({ tabs, activeKey, onChange, actions }: PageTabsProps) {
   return (
     <div className="flex items-center justify-between gap-3 border-b border-slate-200">
-      <nav role="tablist" className="flex gap-1 overflow-x-auto">
+      <nav role="tablist" className="flex flex-wrap gap-1">
         {tabs.map(t => (
           <button
             key={t.key}
