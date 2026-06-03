@@ -2437,6 +2437,71 @@ export async function processPosCheckout(payload: CheckoutPayload) {
   return { orderNumber, pointsEarned, stockUpdates };
 }
 
+// ============ Simple Sales Order (AI Agent) ============
+// 에이전트 단순 현장판매 전용. CheckoutPayload 를 조립해 processPosCheckout 에 위임만 한다.
+// 택배/분할/외상/할인은 미지원 — 입력 자체를 받지 않으므로 영구 미발생. POS 화면을 안내할 것.
+export async function createSimpleSalesOrder(input: {
+  branch_id: string;
+  branch_code: string;
+  branch_name: string;
+  branch_channel?: string;
+  customer_id?: string | null;
+  customer_grade?: string | null;
+  items: { product_id: string; name: string; price: number; quantity: number }[];
+  payment_method: 'cash' | 'card' | 'kakao';
+  use_points?: boolean;
+  user_id?: string | null;
+}): Promise<{ orderNumber?: string; pointsEarned?: number; error?: string }> {
+  if (!input.items || input.items.length === 0) {
+    return { error: '판매 품목이 없습니다.' };
+  }
+
+  const cart: CartItem[] = input.items.map((it) => ({
+    productId: it.product_id,
+    name: it.name,
+    price: it.price,
+    quantity: it.quantity,
+  }));
+
+  const finalAmount = cart.reduce((sum, c) => sum + c.price * c.quantity, 0);
+
+  // 포인트 사용: 회원이고 use_points 일 때만. 보유 잔액과 결제금액 중 작은 값.
+  let pointsToUse = 0;
+  const usePoints = !!input.use_points && !!input.customer_id;
+  if (usePoints && input.customer_id) {
+    const supabase = await createClient();
+    const { data: ph } = await (supabase as any)
+      .from('point_history')
+      .select('balance')
+      .eq('customer_id', input.customer_id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+    const balance = ph?.balance ?? 0;
+    pointsToUse = Math.min(balance, finalAmount);
+  }
+
+  const payload: CheckoutPayload = {
+    branchId: input.branch_id,
+    branchCode: input.branch_code,
+    branchName: input.branch_name,
+    branchChannel: input.branch_channel || '',
+    customerId: input.customer_id || null,
+    customerGrade: input.customer_grade || null,
+    gradePointRate: 1.0, // 서버 resolvePointRate 가 재해결(표시용 기본값)
+    cart,
+    totalAmount: finalAmount,
+    discountAmount: 0,
+    finalAmount,
+    paymentMethod: input.payment_method,
+    usePoints: usePoints && pointsToUse > 0,
+    pointsToUse,
+    userId: input.user_id || null,
+  };
+
+  return processPosCheckout(payload);
+}
+
 // ============ Product Files ============
 
 export async function addProductFile(

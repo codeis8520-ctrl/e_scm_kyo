@@ -730,6 +730,38 @@ function buildConfirmDescription(toolName: string, args: Record<string, any>): s
       add('기간', `${args.start_date} ~ ${args.end_date}`);
       lines.push('⚠️ 기간 내 결제완료 주문을 sales_orders에 일괄 upsert하고 매출 분개를 생성합니다.');
       break;
+    // ── Batch 2a: 판매 등록 + 캠페인 ────────────────────────────────────
+    case 'create_sales_order': {
+      const methodLabels: Record<string, string> = { cash: '현금', card: '카드', kakao: '카카오페이' };
+      lines.push('🧾 판매 등록 확인');
+      add('고객', args.customer_name || args.phone || '비회원');
+      add('지점', args.branch_name || '본인 지점');
+      if (Array.isArray(args.items)) {
+        lines.push('• 품목:');
+        (args.items as any[]).slice(0, 8).forEach(it => lines.push(`  - ${it.product_name} × ${it.quantity}개`));
+      }
+      add('결제수단', methodLabels[args.payment_method] || args.payment_method);
+      if (args.use_points) add('포인트 사용', '예');
+      break;
+    }
+    case 'create_campaign': {
+      const gradeLabel: Record<string, string> = { NORMAL: '일반', VIP: 'VIP', VVIP: 'VVIP', ALL: '전체' };
+      lines.push('📢 캠페인 생성 확인');
+      add('이름', args.name);
+      add('대상 등급', gradeLabel[args.target_grade] || args.target_grade || '전체');
+      add('지점', args.branch_name || '전체');
+      add('예약', args.scheduled_at);
+      break;
+    }
+    case 'activate_campaign':
+      lines.push('▶️ 캠페인 활성화 확인');
+      add('식별자', args.campaign_id || args.name);
+      break;
+    case 'send_campaign':
+      lines.push('📨 캠페인 발송 확인');
+      add('식별자', args.campaign_id || args.name);
+      lines.push('⚠️ 발송 대상 고객 다수에게 알림톡이 실제 전송됩니다 (정확한 대상수는 실행 결과 참조).');
+      break;
     default:
       return `⚠️ 작업 확인\n\n${JSON.stringify(args, null, 2)}`;
   }

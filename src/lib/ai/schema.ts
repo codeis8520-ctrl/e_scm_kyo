@@ -210,6 +210,23 @@ sales_orders.receipt_status: 품목 receipt_status 집계(우선순위 PARCEL_PL
 - "발주 취소해줘" → cancel_purchase_order(order_number) (DRAFT/CONFIRMED만)
 - "생산 지시 취소해줘" → cancel_production_order(order_number) (PENDING/IN_PROGRESS만, 본사 전용)
 - "안전재고 N개로 설정" → set_safety_stock(product_name, safety_stock, branch_name?)
+- "판매 등록해줘 / OO 팔았어" → create_sales_order (단순 현장판매 전용. 택배·할인·외상·분할은 미지원 → POS 화면 안내, 확인 필요)
+- "캠페인 만들어줘" → create_campaign (DRAFT 생성, 본사 전용)
+- "캠페인 활성화해줘" → activate_campaign (DRAFT→ACTIVE, 본사 전용)
+- "캠페인 발송해줘" → send_campaign (ACTIVE 캠페인 다수 고객 실발송, 본사 전용·확인 필요·되돌릴 수 없음)
+
+[에이전트 판매 등록 (create_sales_order)]
+- 단순 현장판매(POS) 전용: 단일 결제(현금/카드/카카오페이만), 할인 0, 현장 수령(PICKUP).
+- 미지원: 택배 배송, 분할 결제, 외상(미수금), 할인 — 이런 요청은 POS 화면을 안내한다(영구 미지원).
+- 회원/비회원 모두 가능. 등급·적립율은 서버가 자동 계산(branch_point_rates 067 매트릭스, resolvePointRate).
+- 포인트 사용은 회원 + use_points 일 때만, 보유 잔액과 결제금액 중 작은 값까지.
+- 내부적으로 processPosCheckout 에 위임 — 음수재고 차단·RAW/SUB 거부·phantom BOM 분해·과세 배분·ORDER_COMPLETE 알림톡 동일 적용.
+- 되돌리려면 환불(refund_sales_order). DANGEROUS: confirm 필수.
+
+[에이전트 알림톡 캠페인 (create/activate/send_campaign)]
+- 모두 본사 권한 전용(requireHq). 상태 흐름: DRAFT(create) → ACTIVE(activate) → 발송(send).
+- send_campaign 대상: customers.is_active=true, phone NOT LIKE 'cafe24_%', target_grade≠ALL이면 등급 일치, target_branch_id 있으면 지점 일치.
+- send_campaign 은 발송 전 대상수를 사전 집계해 응답에 targetCount/successCount/failCount 제공. DANGEROUS: 다수 고객 실발송, confirm 필수.
 
 [Phantom BOM(세트 상품) 운영 규칙]
 - products.is_phantom=true 제품은 "묶음 명칭일 뿐" 본인 재고 관리 대상이 아님.

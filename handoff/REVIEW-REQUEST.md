@@ -1,43 +1,34 @@
-# Review Request — Batch 1: AI 에이전트 mutating 도구 5종 + DANGEROUS_TOOLS
-
+# Review Request — Batch 2a: AI 에이전트 판매등록 + 캠페인 도구
 Date: 2026-06-03
 Ready for Review: YES
 
 ## Files Changed
+- `src/lib/actions.ts:2440-2507` — 신규 `createSimpleSalesOrder`: LLM 최소입력(branch/customer/items/payment_method/use_points)을 CheckoutPayload로 조립 후 **기존 processPosCheckout 위임만**. 미지원(택배/분할/외상/할인) 필드는 비움. payment_method cash/card/kakao만. 포인트는 회원+use_points일 때만 min(balance, finalAmount).
+- `src/lib/ai/tools.ts:950-1042` — AGENT_TOOLS 4종 정의(create_sales_order/create_campaign/activate_campaign/send_campaign), analyze_data 정의 앞.
+- `src/lib/ai/tools.ts:1027-1041` — WRITE_TOOLS +4, DANGEROUS_TOOLS +2(create_sales_order, send_campaign).
+- `src/lib/ai/tools.ts:1198-1203` — executeTool switch +4 case.
+- `src/lib/ai/tools.ts:3236-3441` — exec 핸들러 4종 + resolveCampaign 헬퍼(execCancelCreditOrder 직후). execCreateSalesOrder는 branch.code/channel 별도 조회 후 createSimpleSalesOrder 위임. execSendCampaign은 sendCampaignCore 조건을 복제한 count head:true 사전집계 후 sendCampaign 호출.
+- `src/app/api/agent/route.ts:733-768` — buildConfirmDescription +4 case. create_sales_order/send_campaign은 DANGEROUS 공통 경고가 호출부에서 append됨.
+- `src/lib/ai/schema.ts:213-217` — [자주 쓰는 패턴] +4줄.
+- `src/lib/ai/schema.ts:222-232` — 판매(POS)·캠페인 룰 2섹션. DB_SCHEMA 변경 없음.
 
-### src/lib/ai/tools.ts
-- AGENT_TOOLS (cancel_sales_order 정의 직후) — settle_credit_order / cancel_credit_order / cancel_purchase_order / cancel_production_order / set_safety_stock 정의 추가(한국어 사용예 포함).
-- WRITE_TOOLS Set — 5개 도구 등록.
-- `export const DANGEROUS_TOOLS = new Set(['cancel_credit_order'])` 신설(WRITE_TOOLS 직후).
-- executeTool switch — 5개 case 추가.
-- 파일 말미(execAnalyzeData 직후) — exec 핸들러 5종:
-  - execSettleCreditOrder: order_number+payment_method='credit' 조회, credit_settled/미존재 한국어 에러, assertBranchAccess, settleCreditOrder({orderId,settledMethod}). 성공 JSON: 주문번호·수금액·수금수단.
-  - execCancelCreditOrder: order_number 조회, payment_method/credit_settled 가드, assertBranchAccess, cancelCreditOrder({orderId,reason,userId:ctx.userId}). 성공 JSON에 재고복원·역분개 안내.
-  - execCancelPurchaseOrder: order_number 조회, DRAFT/CONFIRMED 선검증, assertBranchAccess, cancelPurchaseOrder(bare id). reason은 표시용.
-  - execCancelProductionOrder: requireHq, order_number 조회, PENDING/IN_PROGRESS 선검증, cancelProductionOrder(bare id).
-  - execSetSafetyStock: findProduct, branch_name지정 또는 staff면 resolveBranchForWrite→inventories 행 id→updateSafetyStock(단건); HQ+미지정이면 bulkUpdateSafetyStock+count 조회(전지점). safety_stock<0 한국어 에러.
+## Self-Review
+- **Richard가 먼저 볼 곳**: (1) processPosCheckout 호출부/시그니처 무변경 — diff 0. createSimpleSalesOrder는 신규 추가, 기존 POS UI 경로 미접촉. (2) send_campaign 사전집계 조건이 sendCampaignCore와 정확히 일치하는지(is_active, cafe24_% 제외, grade, branch_id). (3) DANGEROUS 2건 등록 및 confirm 경고.
+- **Brief 요구사항 전부 구현**: createSimpleSalesOrder(위임)·도구4·WRITE4·DANGEROUS2·executeTool4·confirm4·schema패턴4+룰. 미지원 입력 없음(택배/분할/외상/할인 필드 자체 미존재). requireHq 캠페인 3종. staff 지점 강제(resolveBranchForWrite).
+- **에러/빈입력 시 사용자에게 보이는 것**: 빈 품목→"판매 품목이 없습니다.", 미존재 제품→"제품 \"X\"을(를) 찾을 수 없습니다.", qty≤0→"\"X\" 수량이 올바르지 않습니다 (1개 이상).", 미존재 지점→resolveBranchForWrite 한글 에러, 캠페인 staff→"...은(는) 본사 권한이 필요합니다." 모두 한글, 내부 DB 용어 비노출.
 
-### src/app/api/agent/route.ts
-- import에 DANGEROUS_TOOLS 추가.
-- confirm 분기(WRITE_TOOLS.has 내부): description을 const→let, DANGEROUS_TOOLS.has(toolName)이면 경고 라인(`⚠️ 되돌릴 수 없는 작업입니다. 한 번 더 확인해주세요.`) append. pending_action/상태머신/executeTool 호출부 구조 미변경.
-- buildConfirmDescription switch(delete_record case 직후, Phase B 앞) — 5개 case(add() 패턴).
-
-### src/lib/ai/schema.ts
-- BUSINESS_RULES [자주 쓰는 패턴] — 5개 매핑 추가. DB_SCHEMA 변경 없음(새 테이블/enum 없음).
-
-## Self-review
-
-- **Richard가 먼저 볼 것**: cancelCreditOrder의 세션 의존(credit-actions.ts:19 내부 requireSession). 에이전트 라우트는 세션 쿠키 컨텍스트에서 실행되므로 정상 동작 예상. 실패 시 액션이 {error} 반환 → 핸들러가 surfacing(브리프 #2 허용).
-- **브리프 요구사항 전수 확인**: 5개 도구 × (AGENT_TOOLS·WRITE_TOOLS·executeTool·buildConfirmDescription) 전부 등록(grep count 1씩 확인). DANGEROUS_TOOLS export + 경고 라인 cancel_credit_order에만.
-- **빈 데이터/실패 시 사용자에게**: 미해결 식별자/상태위반은 전부 한국어 에러 JSON. staff 권한위반은 assertBranchAccess/requireHq가 한국어 에러 차단.
-- **시그니처 일치**: 실제 파일 5개 모두 재확인, 브리프와 100% 일치(불일치 없음). bare id 2종(purchase/production), 객체 인자 2종(settle/cancelCredit), inventory 2종 확인.
-
-## Build / 누락 검증
-- `npm run build` ✅ 통과 (compiled successfully, 전 라우트 정상).
-- grep 검증: 5개 도구가 AGENT_TOOLS(name)·WRITE_TOOLS·executeTool case·buildConfirmDescription case 각 1회씩 등록(누락 0). cancel_credit_order는 DANGEROUS_TOOLS에도 추가되어 WRITE_TOOLS grep 2회 카운트(정상).
+## Acceptance 대조
+- `npm run build` ✅ Compiled successfully (8.1s), 에러/경고 없음.
+- create_sales_order: 회원/비회원·cash/card/kakao·use_points 동작, 미존재 제품/지점/빈품목/qty≤0 한글 에러, 택배·할인 입력 불가(파라미터 부재), DANGEROUS 경고.
+- 캠페인 3종 requireHq. send_campaign 응답 대상수/성공건수/실패건수.
+- 기존 processPosCheckout 호출부(POS) 무변경.
+- schema.ts 반영, DB_SCHEMA 미변경.
+- grep 검증: AGENT_TOOLS 4 / executeTool 4 / WRITE_TOOLS 4 / confirm 4 / DANGEROUS 2 모두 확인.
 
 ## Open Questions
-- 없음. 보안 리뷰 포인트: (1) cancelCreditOrder 세션 의존, (2) set_safety_stock의 staff/HQ 분기 권한, (3) 역분개 흐름은 기존 액션 위임이라 신규 분개 로직 추가 없음.
+- 없음. 시그니처 전부 실제 파일에서 재확인했고 브리프와 일치.
 
-## Out of Scope (BUILD-LOG 기록)
-- 없음 (Known Gaps 0).
+## Out of Scope (logged in BUILD-LOG)
+- send_kakao / create_shipment / B2B 3종 → Batch 2b. 미접촉.
+- createSimpleSalesOrder 택배/분할/외상/할인 지원 → 영구 미지원.
+- processPosCheckout 리팩터 → 금지(위임만).

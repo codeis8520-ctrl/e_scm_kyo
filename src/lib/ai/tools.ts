@@ -947,6 +947,95 @@ sales_orders·inventories 등 핵심 거래 테이블은 삭제 불가.`,
       },
     },
   },
+  // ── 판매 등록 (DANGEROUS) ─────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'create_sales_order',
+      description: `단순 현장판매(POS) 주문을 등록. 회원/비회원 모두 가능하며 단일 결제(현금/카드/카카오페이)·할인 없음·현장 수령 전용입니다.
+사용 예: "강남점 공진단 2개 현금으로 판매 등록", "홍길동님 침향환 1개 카드로 팔았어 포인트 쓸게".
+미지원: 택배 배송, 분할 결제, 외상(미수금), 할인 — 이런 요청은 POS 화면을 안내하세요.
+등급·적립율은 서버가 자동 계산합니다. 되돌리려면 환불(refund_sales_order)을 이용하세요.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          customer_name: { type: 'string', description: '고객명 (선택). 없으면 비회원 판매' },
+          phone: { type: 'string', description: '고객 전화번호 (선택, 식별용)' },
+          branch_name: { type: 'string', description: '판매 지점명 (선택). 지점 직원은 본인 지점 강제' },
+          items: {
+            type: 'array',
+            description: '판매 품목 목록. 각 항목: {product_name, quantity}',
+            items: {
+              type: 'object',
+              properties: {
+                product_name: { type: 'string' },
+                quantity: { type: 'number' },
+              },
+              required: ['product_name', 'quantity'],
+            },
+          },
+          payment_method: { type: 'string', enum: ['cash', 'card', 'kakao'], description: '결제 수단 (현금/카드/카카오페이)' },
+          use_points: { type: 'boolean', description: '보유 포인트 사용 여부 (회원 한정, 기본 false)' },
+        },
+        required: ['items', 'payment_method'],
+      },
+    },
+  },
+  // ── 캠페인 생성 ────────────────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'create_campaign',
+      description: `알림톡 캠페인을 생성 (DRAFT 상태). 본사 권한 전용. 생성 후 activate_campaign 으로 활성화하고 send_campaign 으로 발송합니다.
+사용 예: "VIP 대상 봄맞이 캠페인 만들어줘", "강남점 고객한테 보낼 캠페인 생성".`,
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '캠페인 이름' },
+          description: { type: 'string', description: '캠페인 설명 (선택)' },
+          target_grade: { type: 'string', description: '대상 고객 등급 (NORMAL/VIP/VVIP/ALL). 기본 ALL' },
+          branch_name: { type: 'string', description: '대상 지점명 (선택). 지정 시 해당 지점 고객만' },
+          solapi_template_id: { type: 'string', description: '알림톡 템플릿 ID (선택)' },
+          template_content: { type: 'string', description: '알림톡 내용 (선택)' },
+          scheduled_at: { type: 'string', description: '예약 발송 일시 (선택, ISO)' },
+        },
+        required: ['name'],
+      },
+    },
+  },
+  // ── 캠페인 활성화 ──────────────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'activate_campaign',
+      description: `DRAFT 상태의 캠페인을 활성화(ACTIVE). 본사 권한 전용. 활성화해야 발송할 수 있습니다.
+사용 예: "봄맞이 캠페인 활성화해줘".`,
+      parameters: {
+        type: 'object',
+        properties: {
+          campaign_id: { type: 'string', description: '캠페인 ID (선택)' },
+          name: { type: 'string', description: '캠페인 이름 (campaign_id 미지정 시 DRAFT 1건 조회)' },
+        },
+      },
+    },
+  },
+  // ── 캠페인 발송 (DANGEROUS) ────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'send_campaign',
+      description: `ACTIVE 상태의 캠페인을 다수 고객에게 실제 발송. 본사 권한 전용. 되돌릴 수 없는 작업입니다.
+사용 예: "봄맞이 캠페인 발송해줘".
+주의: 발송 대상 고객 전원에게 알림톡이 실제 전송됩니다.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          campaign_id: { type: 'string', description: '캠페인 ID (선택)' },
+          name: { type: 'string', description: '캠페인 이름 (campaign_id 미지정 시 ACTIVE 1건 조회)' },
+        },
+      },
+    },
+  },
   // ── 범용 분석 쿼리 ────────────────────────────────────────────────────
   {
     type: 'function',
@@ -1023,11 +1112,18 @@ export const WRITE_TOOLS = new Set([
   'update_shipment_tracking',
   'refresh_cafe24_token',
   'sync_cafe24_paid_orders',
+  // Batch 2a: 판매 등록 + 캠페인
+  'create_sales_order',
+  'create_campaign',
+  'activate_campaign',
+  'send_campaign',
 ]);
 
 /** 되돌릴 수 없는 고위험 작업 — confirm 시 추가 경고 라인을 붙인다. */
 export const DANGEROUS_TOOLS = new Set<string>([
   'cancel_credit_order',
+  'create_sales_order',
+  'send_campaign',
 ]);
 
 // ─── Shared Helpers ──────────────────────────────────────────────────────────
@@ -1190,6 +1286,11 @@ export async function executeTool(
       case 'customer_segment_analysis':return execCustomerSegmentAnalysis(sb, args as any);
       case 'get_b2b_partners':         return execGetB2bPartners(sb, args as any);
       case 'analyze_data':            return execAnalyzeData(sb, args as any, ctx);
+      // Batch 2a: 판매 등록 + 캠페인
+      case 'create_sales_order':       return execCreateSalesOrder(sb, args as any, ctx);
+      case 'create_campaign':          return execCreateCampaign(sb, args as any, ctx);
+      case 'activate_campaign':        return execActivateCampaign(sb, args as any, ctx);
+      case 'send_campaign':            return execSendCampaign(sb, args as any, ctx);
       default: return JSON.stringify({ error: `알 수 없는 도구: ${toolName}` });
     }
   } catch (e: any) {
@@ -3229,6 +3330,213 @@ async function execCancelCreditOrder(sb: any, args: {
     주문번호: order.order_number,
     사유: args.reason,
     안내: '차감했던 재고를 복원하고, 적립 포인트를 차감했으며, 외상매출금 분개를 역분개했습니다.',
+  });
+}
+
+// ── 판매 등록 (DANGEROUS) ──────────────────────────────────────────────────────
+async function execCreateSalesOrder(sb: any, args: {
+  customer_name?: string;
+  phone?: string;
+  branch_name?: string;
+  items?: { product_name: string; quantity: number }[];
+  payment_method: 'cash' | 'card' | 'kakao';
+  use_points?: boolean;
+}, ctx: ToolContext): Promise<string> {
+  // 1) 판매 지점 (staff 본인 지점 강제)
+  const branchRes = await resolveBranchForWrite(sb, ctx, args.branch_name);
+  if (!branchRes.ok) return JSON.stringify({ error: branchRes.error });
+  const branch = branchRes.branch;
+
+  // 2) 품목 검증
+  if (!args.items || args.items.length === 0) {
+    return JSON.stringify({ error: '판매 품목이 없습니다.' });
+  }
+  const items: { product_id: string; name: string; price: number; quantity: number }[] = [];
+  for (const it of args.items) {
+    const qty = Number(it.quantity);
+    if (!qty || qty <= 0) {
+      return JSON.stringify({ error: `"${it.product_name}" 수량이 올바르지 않습니다 (1개 이상).` });
+    }
+    const product = await findProduct(sb, it.product_name);
+    if (!product) {
+      return JSON.stringify({ error: `제품 "${it.product_name}"을(를) 찾을 수 없습니다.` });
+    }
+    items.push({ product_id: product.id, name: product.name, price: product.price, quantity: qty });
+  }
+
+  // 3) 고객 (선택) — 못 찾으면 비회원으로 진행
+  let customerId: string | null = null;
+  let customerGrade: string | null = null;
+  let customerName = '비회원';
+  if (args.customer_name || args.phone) {
+    const customer = await findCustomer(sb, { customer_name: args.customer_name, phone: args.phone });
+    if (customer) {
+      customerId = customer.id;
+      customerGrade = customer.grade;
+      customerName = customer.name;
+    }
+  }
+
+  // 4) 지점 코드 확보 (resolveBranchForWrite/findBranch 미포함 — 핸들러서 별도 조회)
+  const { data: branchRow } = await sb.from('branches').select('code, channel').eq('id', branch.id).maybeSingle();
+
+  // 5) 위임
+  const { createSimpleSalesOrder } = await import('@/lib/actions');
+  const res = await createSimpleSalesOrder({
+    branch_id: branch.id,
+    branch_code: branchRow?.code || '',
+    branch_name: branch.name,
+    branch_channel: branchRow?.channel || '',
+    customer_id: customerId,
+    customer_grade: customerGrade,
+    items,
+    payment_method: args.payment_method,
+    use_points: args.use_points,
+    user_id: ctx.userId || null,
+  });
+  if (res.error) return JSON.stringify({ error: res.error });
+
+  const methodLabels: Record<string, string> = { cash: '현금', card: '카드', kakao: '카카오페이' };
+  const total = items.reduce((s, i) => s + i.price * i.quantity, 0);
+  return JSON.stringify({
+    성공: true,
+    주문번호: res.orderNumber,
+    지점: branch.name,
+    고객: customerName,
+    합계: `${total.toLocaleString()}원`,
+    결제수단: methodLabels[args.payment_method] || args.payment_method,
+    적립포인트: `${(res.pointsEarned ?? 0).toLocaleString()}P`,
+  });
+}
+
+// ── 캠페인 생성 ────────────────────────────────────────────────────────────────
+async function execCreateCampaign(sb: any, args: {
+  name: string;
+  description?: string;
+  target_grade?: string;
+  branch_name?: string;
+  solapi_template_id?: string;
+  template_content?: string;
+  scheduled_at?: string;
+}, ctx: ToolContext): Promise<string> {
+  const denied = requireHq(ctx, '캠페인 생성');
+  if (denied) return denied;
+
+  let targetBranchId: string | null = null;
+  if (args.branch_name) {
+    const branch = await findBranch(sb, args.branch_name);
+    if (!branch) return JSON.stringify({ error: `지점 "${args.branch_name}"을(를) 찾을 수 없습니다.` });
+    targetBranchId = branch.id;
+  }
+
+  const { createCampaign } = await import('@/lib/campaign-actions');
+  const res = await createCampaign({
+    name: args.name,
+    description: args.description,
+    target_grade: args.target_grade || 'ALL',
+    target_branch_id: targetBranchId,
+    solapi_template_id: args.solapi_template_id,
+    template_content: args.template_content,
+    scheduled_at: args.scheduled_at,
+  });
+  if (res.error || !res.data) return JSON.stringify({ error: res.error || '캠페인 생성에 실패했습니다.' });
+
+  return JSON.stringify({
+    성공: true,
+    캠페인ID: res.data.id,
+    이름: res.data.name,
+    상태: 'DRAFT',
+    대상등급: res.data.target_grade,
+    안내: '캠페인이 초안(DRAFT)으로 생성되었습니다. activate_campaign 으로 활성화한 뒤 send_campaign 으로 발송하세요.',
+  });
+}
+
+// 식별자(campaign_id 또는 name)로 특정 상태의 캠페인 1건을 찾는다.
+async function resolveCampaign(
+  sb: any,
+  args: { campaign_id?: string; name?: string },
+  status: string,
+): Promise<{ ok: true; id: string; name: string } | { ok: false; error: string }> {
+  if (args.campaign_id) {
+    const { data } = await sb.from('notification_campaigns').select('id, name, status').eq('id', args.campaign_id).maybeSingle();
+    if (!data) return { ok: false, error: '캠페인을 찾을 수 없습니다.' };
+    return { ok: true, id: data.id, name: data.name };
+  }
+  if (!args.name) return { ok: false, error: '캠페인 ID 또는 이름을 지정해주세요.' };
+  const { data } = await sb
+    .from('notification_campaigns')
+    .select('id, name')
+    .eq('status', status)
+    .ilike('name', `%${args.name}%`)
+    .limit(1)
+    .maybeSingle();
+  if (!data) return { ok: false, error: `${status} 상태의 캠페인 "${args.name}"을(를) 찾을 수 없습니다.` };
+  return { ok: true, id: data.id, name: data.name };
+}
+
+// ── 캠페인 활성화 ──────────────────────────────────────────────────────────────
+async function execActivateCampaign(sb: any, args: {
+  campaign_id?: string;
+  name?: string;
+}, ctx: ToolContext): Promise<string> {
+  const denied = requireHq(ctx, '캠페인 활성화');
+  if (denied) return denied;
+
+  const found = await resolveCampaign(sb, args, 'DRAFT');
+  if (!found.ok) return JSON.stringify({ error: found.error });
+
+  const { activateCampaign } = await import('@/lib/campaign-actions');
+  const res = await activateCampaign(found.id);
+  if (res.error) return JSON.stringify({ error: res.error });
+
+  return JSON.stringify({
+    성공: true,
+    캠페인: found.name,
+    상태: 'ACTIVE',
+    안내: '캠페인이 활성화되었습니다. send_campaign 으로 발송할 수 있습니다.',
+  });
+}
+
+// ── 캠페인 발송 (DANGEROUS) ────────────────────────────────────────────────────
+async function execSendCampaign(sb: any, args: {
+  campaign_id?: string;
+  name?: string;
+}, ctx: ToolContext): Promise<string> {
+  const denied = requireHq(ctx, '캠페인 발송');
+  if (denied) return denied;
+
+  const found = await resolveCampaign(sb, args, 'ACTIVE');
+  if (!found.ok) return JSON.stringify({ error: found.error });
+
+  // 대상수 사전집계 — sendCampaignCore 의 조건과 동일
+  const { data: campaign } = await sb
+    .from('notification_campaigns')
+    .select('target_grade, target_branch_id')
+    .eq('id', found.id)
+    .maybeSingle();
+  let countQuery = sb
+    .from('customers')
+    .select('id', { count: 'exact', head: true })
+    .eq('is_active', true)
+    .not('phone', 'like', 'cafe24_%');
+  if (campaign?.target_grade && campaign.target_grade !== 'ALL') {
+    countQuery = countQuery.eq('grade', campaign.target_grade);
+  }
+  if (campaign?.target_branch_id) {
+    countQuery = countQuery.eq('branch_id', campaign.target_branch_id);
+  }
+  const { count: targetCount } = await countQuery;
+
+  const { sendCampaign } = await import('@/lib/campaign-actions');
+  const res = await sendCampaign(found.id);
+  if (res.error) return JSON.stringify({ error: res.error });
+
+  return JSON.stringify({
+    성공: true,
+    캠페인: found.name,
+    대상수: targetCount ?? 0,
+    성공건수: res.successCount ?? 0,
+    실패건수: res.failCount ?? 0,
   });
 }
 

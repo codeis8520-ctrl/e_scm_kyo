@@ -1,4 +1,4 @@
-# Review Feedback — Batch 1: AI 에이전트 mutating 도구 5종 + DANGEROUS_TOOLS
+# Review Feedback — Batch 2a: AI 에이전트 판매등록 + 캠페인 도구
 Date: 2026-06-03
 Ready for Builder: YES
 
@@ -6,33 +6,10 @@ Ready for Builder: YES
 없음.
 
 ## Should Fix
-- tools.ts:1041 (findProduct, 기존 코드) — `.single()` 사용으로 product_name 이 2개 이상 제품에 매칭되면 에러→null→"제품을 찾을 수 없습니다"로 잘못 표시됨. set_safety_stock 도 이 헬퍼에 의존. **이번 배치에서 도입된 결함 아님**(모든 product 도구 공통). 수정은 별도 BUILD-LOG Known Gap 으로. 이번 단계 블로킹 아님.
+- `src/lib/ai/tools.ts:3422` — send_campaign 대상수 사전집계의 grade 조건이 `campaign?.target_grade && campaign.target_grade !== 'ALL'`로 truthy 가드를 포함. sendCampaignCore(campaign-send-core.ts:51)는 `campaign.target_grade !== 'ALL'`로 가드 없음. target_grade가 null이면 두 경로의 대상수가 갈림(핸들러는 등급필터 생략, core는 grade=null eq). 실무상 target_grade는 createCampaign 기본값 'ALL'로 non-null이라 차이 미발생이고, 표시용 집계라 실제 발송(core)은 영향 없음. 일치시키려면 truthy 가드 제거. 5분 미만 — 인라인 또는 BUILD-LOG.
 
 ## Escalate to Architect
 없음.
 
 ## Cleared
-AI 에이전트 mutating 도구 5종(settle/cancel_credit·cancel_purchase·cancel_production·set_safety_stock) + DANGEROUS_TOOLS 인프라를 리뷰함. 5개 점검 영역 전부 통과:
-
-1) **시그니처 정확성** — 5개 래핑 액션 실제 소스 대조 완료, 100% 일치:
-   - settleCreditOrder({orderId, settledMethod}) — accounting-actions.ts:721 ✅
-   - cancelCreditOrder({orderId, reason, userId}) — credit-actions.ts:19, 내부 requireSession ✅ (세션 실패 시 {error} 반환→핸들러 surfacing 정상)
-   - cancelPurchaseOrder(bare id) — purchase-actions.ts:297, DRAFT/CONFIRMED 가드 ✅
-   - cancelProductionOrder(bare id) — production-actions.ts:599, PENDING/IN_PROGRESS 가드 ✅
-   - updateSafetyStock(invId,val)/bulkUpdateSafetyStock(productId,val) — inventory-actions.ts:7/28 ✅
-   객체 인자 2종·bare id 2종·inventory 2종 형태 모두 정확.
-
-2) **RBAC/권한 우회** — 안전:
-   - settle/cancel_credit/cancel_purchase: order/po 의 실제 branch 조회 후 assertBranchAccess(staff면 ctx.branchId !== target → 한국어 에러 차단). 조회 전 권한검사 누락 없음(조회→가드→액션 순서).
-   - cancel_production: requireHq 를 lookup 보다 먼저 호출 → staff 즉시 차단.
-   - set_safety_stock: staff 는 항상 isStaffRole 분기로 단건 경로, resolveBranchForWrite 가 타 지점 branch_name 차단·본인 지점 강제. staff 전지점 bulk 도달 불가. bulk 는 HQ+미지정만.
-
-3) **DANGEROUS_TOOLS** — export 정상. route.ts:290-294 confirm 분기는 const→let + 경고 라인 append 만(cancel_credit_order 한정). pending_action/상태머신/executeTool 호출부 구조 미변경, 새 round-trip 없음. ✅
-
-4) **등록 완전성** — 5개 도구 AGENT_TOOLS·WRITE_TOOLS(L1015-1019)·executeTool switch(L1179-1183)·buildConfirmDescription(route.ts) 전부 1회씩 등록, 누락 0. WRITE_TOOLS 누락(=confirm 우회) 없음. ✅
-
-5) **상태/중복 가드** — settle: credit_settled 재수금 차단. cancel_credit: 미존재/non-credit/이미수금 가드(+액션 내부 CANCELLED 재취소 차단). cancel_purchase/production: 상태 화이트리스트 선검증 친절 에러. 부분상태는 래핑 액션 트랜잭션에 위임. ✅
-
-6) **AI Sync** — schema.ts [자주 쓰는 패턴] 5개 매핑 추가. DB_SCHEMA 변경 불필요 확인(새 테이블/enum 없음). ✅
-
-7) **범위 가드** — create_sales_order/캠페인/processPosCheckout/마이그 미접촉. confirm 흐름 구조 보존. ✅
+processPosCheckout 회귀 0(actions.ts diff는 +65 전부 신규 createSimpleSalesOrder, 기존 함수·CheckoutPayload·CartItem·POS 호출부 무변경), createSimpleSalesOrder는 미지원 필드(paymentSplits/shipping/shipFromBranchId/cashReceived/discount) 전부 비우고 위임만(외상·택배·할인 누출 불가, payment_method cash/card/kakao만, 포인트 회원+use_points min(balance,final)), create_sales_order 핸들러는 resolveBranchForWrite(staff 본인지점 강제)·findProduct 부분진행 없는 전체거부·qty≤0 거부·price=products.price(클라 입력가 불신)·branch.code 별도조회 정상, send_campaign 사전집계 조건이 sendCampaignCore와 일치(is_active·cafe24_% 제외·grade·branch_id)·sendCampaign(id) 시그니처, 4도구 AGENT_TOOLS/WRITE_TOOLS/executeTool/buildConfirmDescription 전부 등록(confirm 우회 없음)·DANGEROUS_TOOLS에 create_sales_order·send_campaign, requireHq 캠페인 3종(+campaign-actions 내부 requireHQ 이중방어), schema.ts 패턴4+룰2 동기화·DB_SCHEMA 무변경, 범위가드(send_kakao/create_shipment/B2B/마이그 미접촉) — 모두 통과.

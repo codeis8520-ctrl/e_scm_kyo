@@ -6,6 +6,38 @@
 
 ## Completed Steps
 
+### Batch 2a — AI 에이전트 판매등록 + 캠페인 도구 4종
+
+**상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, npm run build ✅, 2026-06-03)
+
+**Goal**: 에이전트가 (1) 단순 POS 판매 등록(create_sales_order, DANGEROUS), (2) 알림톡 캠페인 생성·활성화·발송(create/activate/send_campaign). send_campaign은 대상수 사전집계.
+
+**변경 파일 (4개, DB 변경 없음)**:
+- `src/lib/actions.ts` — 신규 `createSimpleSalesOrder`(processPosCheckout 직후). CheckoutPayload 조립 후 기존 processPosCheckout 위임만. 기존 함수·POS 호출부 diff 0.
+- `src/lib/ai/tools.ts`
+  - AGENT_TOOLS: 4개 도구 정의(analyze_data 정의 앞).
+  - WRITE_TOOLS +4, DANGEROUS_TOOLS +2(create_sales_order, send_campaign).
+  - executeTool switch +4 case.
+  - exec 핸들러 4종 + 헬퍼 resolveCampaign 1개(execCancelCreditOrder 직후): execCreateSalesOrder / execCreateCampaign / execActivateCampaign / execSendCampaign.
+- `src/app/api/agent/route.ts` — buildConfirmDescription +4 case(sync_cafe24_paid_orders 직후, default 앞).
+- `src/lib/ai/schema.ts` — [자주 쓰는 패턴] +4줄, 판매(POS)·캠페인 룰 2섹션(Phantom BOM 앞). DB_SCHEMA 변경 없음.
+
+**확인된 시그니처 (실제 파일 재확인 완료, 브리프와 일치)**:
+- processPosCheckout(payload: CheckoutPayload)→{orderNumber,pointsEarned,stockUpdates}|{error} (actions.ts:1956). CartItem(1892).
+- createCampaign(params)→{success,data:Campaign}|{error} DRAFT, requireHQ (campaign-actions.ts:80). Campaign.id/name/target_grade 존재(campaign-types.ts:59,60,74).
+- activateCampaign(id)→{success}|{error} DRAFT→ACTIVE (200). sendCampaign(id)→{success,successCount,failCount}|{error} requireHQ (259).
+- sendCampaignCore 대상조건: customers is_active=true, phone NOT LIKE 'cafe24_%', target_grade≠ALL→grade eq, target_branch_id→branch_id eq (campaign-send-core.ts:45-56) — exec 사전집계가 동일 조건 복제.
+- findBranch/findProduct/findCustomer/getPoints(tools.ts:1035-1057), requireHq/resolveBranchForWrite/assertBranchAccess(1078-1125) 재사용.
+
+**주요 결정**:
+- branch.code/channel: resolveBranchForWrite 시그니처 미변경, execCreateSalesOrder에서 `branches.select('code, channel')` 1회 보강 조회.
+- 캠페인 식별자(campaign_id|name) 해결을 resolveCampaign 헬퍼로 추출(activate=DRAFT, send=ACTIVE 상태 필터).
+- send_campaign 대상수: getPoints식 단건이 아닌 `count:'exact', head:true`로 집계(실데이터 전송 없음).
+
+**Known Gaps**: 없음.
+
+---
+
 ### Batch 1 — AI 에이전트 mutating 도구 5종 + DANGEROUS_TOOLS 인프라
 
 **상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, npm run build ✅, 2026-06-03)

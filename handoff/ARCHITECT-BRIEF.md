@@ -1,69 +1,72 @@
-# Architect Brief — Batch 1: AI 에이전트 mutating 도구 5종 + 위험도 인프라
+# Architect Brief — Batch 2a: AI 에이전트 판매등록 + 캠페인 도구
 
 ## Goal
-AI 에이전트가 화면 없이 **외상 수금/취소·발주취소·생산취소·안전재고 설정**을 수행하고, 고위험 도구는 2차 확인을 거치는 `DANGEROUS_TOOLS` 인프라가 생긴다.
+에이전트가 (1) 자연어로 단순 POS 판매 등록(create_sales_order), (2) 알림톡 캠페인 생성·활성화·발송(create_campaign/activate_campaign/send_campaign). 판매등록·발송은 DANGEROUS, send_campaign은 대상수 사전집계.
 
-## Build Order
+## 변경 파일 (4개, DB 변경 없음)
+- `src/lib/actions.ts` — 신규 `createSimpleSalesOrder` 1개 (기존 함수 미변경)
+- `src/lib/ai/tools.ts` — AGENT_TOOLS 4 + WRITE_TOOLS 4 + DANGEROUS_TOOLS 2 + executeTool case 4 + exec 핸들러 4
+- `src/app/api/agent/route.ts` — buildConfirmDescription case 4
+- `src/lib/ai/schema.ts` — BUSINESS_RULES [자주 쓰는 패턴] 4 + 판매/캠페인 룰
 
-### 0) 위험도 인프라 — `DANGEROUS_TOOLS`
-- `src/lib/ai/tools.ts`: `WRITE_TOOLS` 선언(L898) 아래 export:
-  ```ts
-  export const DANGEROUS_TOOLS = new Set<string>([ 'cancel_credit_order' ]);
-  ```
-- `src/app/api/agent/route.ts`: confirm 분기(L290 `if (WRITE_TOOLS.has(toolName))` 내부, `buildConfirmDescription` 직후) `DANGEROUS_TOOLS.has(toolName)`이면 description 말미 경고 라인 append(`⚠️ 되돌릴 수 없는 작업입니다. 한 번 더 확인해주세요.`). import에 DANGEROUS_TOOLS 추가.
-- Flag: 별도 round-trip/새 pending 상태머신 만들지 말 것. confirm 구조·executeTool 호출부 변경 금지. 경고 라인 append만.
+## A. `createSimpleSalesOrder` (actions.ts) — 먼저 구현
+위치: processPosCheckout 인근. CheckoutPayload/processPosCheckout/CartItem/resolvePointRate/ShippingInfo **미변경, 재사용만**.
+시그니처:
+```ts
+export async function createSimpleSalesOrder(input: {
+  branch_id: string; branch_code: string; branch_name: string; branch_channel?: string;
+  customer_id?: string|null; customer_grade?: string|null;
+  items: { product_id: string; name: string; price: number; quantity: number }[];
+  payment_method: 'cash'|'card'|'kakao'; use_points?: boolean; user_id?: string|null;
+}): Promise<{ orderNumber?: string; pointsEarned?: number; error?: string }>
+```
+구현(페이로드 조립 후 위임):
+1. items 비면 `{error:'판매 품목이 없습니다.'}`.
+2. cart: CartItem[] = items.map→`{productId,name,price,quantity}` (discount/orderOption/deliveryType/receiptDate 미설정=기본 PICKUP·할인0).
+3. totalAmount=finalAmount=Σ(price×quantity), discountAmount=0.
+4. 포인트: use_points && customer_id 일 때만. min(보유 balance, finalAmount). 비회원 false/0.
+5. CheckoutPayload 조립 — 미지원 필드 전부 비움: paymentSplits 미설정, shipping:null, shipFromBranchId 미설정, cashReceived 미설정. gradePointRate=1.0(서버 resolvePointRate 재계산).
+6. `return processPosCheckout(payload)` 결과 그대로.
+Flag: processPosCheckout 내장 로직(음수재고·RAW/SUB거부·phantom BOM·과세배분·ORDER_COMPLETE 알림톡) 재구현 금지, 위임만. payment_method 3종만(card_keyin/credit/cod/mixed 거부). 할인/택배/분할/외상 입력 없음→영구 미발생.
 
-### 1) `settle_credit_order` (외상 수금) — `execSettleCreditOrder(sb,args,ctx)`
-- order_number로 sales_orders 조회(payment_method='credit', branch 조인). 없음/이미수금(credit_settled) 에러. `assertBranchAccess(ctx, order.branch.id,...)`.
-- `const { settleCreditOrder } = await import('@/lib/accounting-actions')` → `settleCreditOrder({ orderId: order.id, settledMethod: args.method })`.
-- 파라미터: order_number(req), method(req enum cash/card/kakao/card_keyin). 성공 JSON: 주문번호·수금액·수단.
+## B. 도구 4종 (tools.ts)
+**B-1 create_sales_order** (DANGEROUS): params customer_name?/phone?/branch_name?/items[{product_name,quantity}](req)/payment_method(enum cash/card/kakao req)/use_points?. description에 미지원 명시(택배·분할·외상·할인→POS). exec `execCreateSalesOrder`:
+1. resolveBranchForWrite(sb,ctx,branch_name)→실패 error(staff 본인지점 강제).
+2. customer_name||phone 있으면 findCustomer→없으면 비회원 진행. 찾으면 id/grade.
+3. items 각 product_name→findProduct, 하나라도 못찾으면 error(부분진행 금지), quantity≤0 거부, price=products.price.
+4. branch.code 확보: `sb.from('branches').select('code').eq('id',branch.id)` 1회(resolveBranchForWrite 시그니처 변경 금지, 핸들러 보강).
+5. createSimpleSalesOrder({...}) 호출. 성공 시 {성공,주문번호,합계,적립포인트,고객}.
+**B-2 create_campaign**: params name(req)/description?/target_grade?(기본 ALL)/branch_name?/solapi_template_id?/template_content?/scheduled_at?. requireHq. branch_name→findBranch→target_branch_id. `createCampaign(params)`. DRAFT 안내.
+**B-3 activate_campaign**: params campaign_id|name(DRAFT 1건 조회). requireHq. `activateCampaign(id)`.
+**B-4 send_campaign** (DANGEROUS): params campaign_id|name(ACTIVE). requireHq. 캠페인 조회→**대상수 사전집계**(sendCampaignCore 조건: customers is_active=true, phone NOT LIKE 'cafe24_%', target_grade≠ALL→grade eq, target_branch_id→branch_id eq; count head:true)→`sendCampaign(id)`. 응답에 targetCount/successCount/failCount.
 
-### 2) `cancel_credit_order` (외상 취소, DANGEROUS) — `execCancelCreditOrder`
-- order_number로 조회+assertBranchAccess. `cancelCreditOrder({ orderId, reason: args.reason, userId: ctx.userId })` (credit-actions.ts:19, 내부 requireSession). 세션 의존 문제 시 액션 에러 surfacing.
-- 성공 JSON에 복원 재고·역분개 안내 명시. 파라미터: order_number(req), reason(req).
+## C. WRITE_TOOLS/DANGEROUS_TOOLS
+- WRITE_TOOLS +4: create_sales_order, create_campaign, activate_campaign, send_campaign.
+- DANGEROUS_TOOLS +2: create_sales_order, send_campaign.
 
-### 3) `cancel_purchase_order` (발주 취소) — `execCancelPurchaseOrder`
-- purchase_orders order_number 조회(branch_id, status). DRAFT/CONFIRMED만(친절 에러 위해 선조회). `assertBranchAccess(ctx, po.branch_id,...)`. `cancelPurchaseOrder(po.id)` (bare id). reason은 표시용(액션 미사용).
-- 파라미터: order_number(req), reason(optional).
+## D. route.ts buildConfirmDescription — case 4
+- create_sales_order: 🧾 판매 등록 / 고객·지점·품목(제품명×수량)·결제수단 (DANGEROUS 경고 공통 append).
+- create_campaign: 📢 캠페인 생성 / 이름·대상등급·지점·예약.
+- activate_campaign: ▶️ 활성화 / 식별자.
+- send_campaign: 📨 발송 / 식별자 + "다수 고객 실발송"(정확 대상수는 exec 응답 targetCount).
 
-### 4) `cancel_production_order` (생산 취소) — `execCancelProductionOrder`
-- `requireHq(ctx,'생산 지시 취소')`. production_orders order_number 조회. PENDING/IN_PROGRESS만. `cancelProductionOrder(po.id)` (bare id).
-- 파라미터: order_number(req), reason(optional).
+## E. schema.ts 동기화
+- [자주 쓰는 패턴] 4줄: 판매 등록→create_sales_order(택배·할인·외상 미지원→POS) / 캠페인 생성→create_campaign / 활성화→activate_campaign / 발송→send_campaign(다수 실발송).
+- 판매(POS) 룰: create_sales_order=단순 현장판매 전용(단일결제·할인0·현장수령), 택배/분할/외상/할인 미지원→POS 안내, 등급·적립율 서버 자동(067).
+- DB_SCHEMA 변경 없음.
 
-### 5) `set_safety_stock` (안전재고) — `execSetSafetyStock`
-- `findProduct(sb, args.product_name)`(L940). branch_name 있으면 `resolveBranchForWrite` → (branch_id,product_id) inventories 행 id → `updateSafetyStock(inventoryId, safety_stock)`. 없으면 staff=본인지점 단건, HQ=`bulkUpdateSafetyStock(product_id, safety_stock)` 전지점.
-- 파라미터: product_name(req), safety_stock(req number≥0), branch_name(optional). 성공 JSON: 제품·대상·값·영향행수.
-
-### 6) 공통 등록 (5개 전부)
-- AGENT_TOOLS 정의 추가(형식: cancel_sales_order L733 참고, 한국어 사용예).
-- WRITE_TOOLS Set에 5개 추가(L898).
-- executeTool switch(L1037~)에 5개 case.
-- buildConfirmDescription(route.ts L488 switch)에 5개 case(add('라벨',값) 패턴).
-- (선택) buildSuccessDetail(route.ts L450) settle/cancel 요약.
-
-### 7) AI Sync — schema.ts BUSINESS_RULES (필수)
-- `[자주 쓰는 패턴]`(L202)에 매핑 추가: 외상 수금→settle_credit_order / 외상 취소→cancel_credit_order / 발주 취소→cancel_purchase_order / 생산 취소→cancel_production_order / 안전재고 설정→set_safety_stock.
-- DB_SCHEMA 변경 없음(새 테이블/enum 없음).
-
-## Out of Scope (배치1 제외)
-- create_sales_order/POS 판매 → 배치2(서버 래퍼 createSimpleSalesOrder 신설 후). processPosCheckout 직접 호출 금지.
-- 캠페인·send_kakao·create_shipment·B2B·수동분개/마감·마스터 CRUD·엑셀임포트·삭제확장 → 배치2/3.
-- userRole 미지정 RBAC 정책·한 턴 다중쓰기 구조 변경 → 스코프 밖.
-- route.ts confirm 상태머신/pending_action 구조·DB 마이그 금지.
+## Out of Scope (→ 2b)
+send_kakao, create_shipment, B2B 3종. createSimpleSalesOrder 택배/분할/외상/할인 지원(영구 미지원). processPosCheckout 리팩터 금지.
 
 ## Acceptance
 - `npm run build` 통과.
-- 5개 도구가 AGENT_TOOLS·WRITE_TOOLS·executeTool·buildConfirmDescription 전부 등록(누락 0).
-- DANGEROUS_TOOLS export + route.ts 경고 라인이 cancel_credit_order에만.
-- 핸들러: 미해결 식별자 한국어 에러, staff 권한위반 차단.
-- 시그니처 일치: cancelPurchaseOrder/cancelProductionOrder=bare id, settleCreditOrder={orderId,settledMethod}, cancelCreditOrder={orderId,reason,userId}.
-- schema.ts 패턴 5개 추가.
-- 보안: Richard 보안 리뷰 필수(RBAC·세션의존·역분개).
+- create_sales_order: 회원/비회원·cash/card/kakao·use_points 동작, 미존재 제품/지점/빈품목/qty≤0 한글 에러, 택배·할인 입력 불가, DANGEROUS 경고.
+- 캠페인 3종 requireHq. send_campaign 응답 targetCount/successCount/failCount.
+- 기존 processPosCheckout 호출부(POS) 무변경.
+- schema.ts 반영, DB_SCHEMA 미변경. Richard 보안 리뷰 필수.
 
-## 확인된 시그니처 (추측 금지)
-- settleCreditOrder({orderId, settledMethod:'cash'|'card'|'kakao'|'card_keyin'})→{success,error} (accounting-actions.ts:721)
-- cancelCreditOrder({orderId, reason?, userId?})→{error}|성공 (credit-actions.ts:19, 내부 requireSession)
-- cancelPurchaseOrder(id)→{error}|{success} DRAFT/CONFIRMED만 (purchase-actions.ts:297)
-- cancelProductionOrder(id)→{error}|{success} PENDING/IN_PROGRESS만 (production-actions.ts:599)
-- updateSafetyStock(inventoryId, safetyStock) / bulkUpdateSafetyStock(productId, safetyStock) (inventory-actions.ts:7/28)
-- RBAC: requireHq(ctx,label)/resolveBranchForWrite(sb,ctx,branchName)/assertBranchAccess(ctx,branchId,label) (tools.ts:978/990/1018)
+## 확인된 시그니처
+- processPosCheckout(payload: CheckoutPayload)→{orderNumber,pointsEarned,stockUpdates}|{error} (actions.ts:1956). CartItem={productId,name,price,quantity,discount?,orderOption?,deliveryType?,receiptDate?}(1892).
+- createCampaign(params) requireHQ→{success,data}|{error} DRAFT (campaign-actions.ts:80). activateCampaign(id) DRAFT→ACTIVE(200). sendCampaign(id) requireHQ→{success,successCount,failCount}(259).
+- sendCampaignCore 대상: customers is_active=true, phone NOT LIKE 'cafe24_%', target_grade≠ALL→grade eq, target_branch_id→branch eq (campaign-send-core.ts:45-56).
+- findBranch/findProduct/findCustomer/getPoints(tools.ts:1035-1057), requireHq/resolveBranchForWrite/assertBranchAccess(1078-1125). findBranch/resolveBranchForWrite code 미포함→핸들러서 별도 조회. 핸들러 패턴: execSettleCreditOrder(3175) 모범.
