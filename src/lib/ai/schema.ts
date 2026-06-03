@@ -214,6 +214,10 @@ sales_orders.receipt_status: 품목 receipt_status 집계(우선순위 PARCEL_PL
 - "캠페인 만들어줘" → create_campaign (DRAFT 생성, 본사 전용)
 - "캠페인 활성화해줘" → activate_campaign (DRAFT→ACTIVE, 본사 전용)
 - "캠페인 발송해줘" → send_campaign (ACTIVE 캠페인 다수 고객 실발송, 본사 전용·확인 필요·되돌릴 수 없음)
+- "배송 등록해줘 / 이 주소로 배송건 만들어줘" → create_shipment (STORE 직접입력, 발송인·출처 자동, 확인 필요)
+- "거래처에 납품 등록해줘" → create_b2b_sales_order (재고차감+매출 분개, RAW/SUB 불가, 확인 필요)
+- "거래처 수금 처리해줘" → settle_b2b_order(order_number, amount, method?) (가산 수금, 확인 필요)
+- "납품 전표 취소해줘" → cancel_b2b_order(order_number, reason?) (재고 역복원, 수금 0건만, 확인 필요)
 
 [에이전트 판매 등록 (create_sales_order)]
 - 단순 현장판매(POS) 전용: 단일 결제(현금/카드/카카오페이만), 할인 0, 현장 수령(PICKUP).
@@ -239,6 +243,10 @@ sales_orders.receipt_status: 품목 receipt_status 집계(우선순위 PARCEL_PL
 - b2b_partners: 거래처(법인/도매), b2b_partner_prices: 거래처별 제품 단가표
 - b2b_sales_orders: B2B 납품, b2b_settlements: 수금/정산
 - B2B 매출 → 회계 계정 4130(B2B매출)
+- 상태 흐름: DELIVERED(납품) → PARTIALLY_SETTLED(일부 수금) → SETTLED(완납). 취소 시 CANCELLED.
+- 에이전트 납품(create_b2b_sales_order): RAW/SUB(원자재·부자재)는 납품 불가. 출고 지점 지정 시에만 재고 차감(음수 허용). 단가 미지정 시 제품 정가(products.price) 적용 — 거래처 단가표(getPartnerPrices)는 미연동(스코프 밖). 납품 즉시 외상매출금(1115)/B2B매출(4130)+부가세예수금(2151) 분개 자동.
+- 에이전트 수금(settle_b2b_order): 수금액 가산 → total 도달 시 SETTLED. method='card'→현금성자산 1120, else 현금 1110. SETTLED/CANCELLED 전표는 거부. order_number→UUID 선조회 후 처리.
+- 에이전트 취소(cancel_b2b_order): settled_amount>0(수금 진행 건)은 취소 불가. 취소 시 차감 재고를 IN으로 역복원. order_number→UUID 선조회 후 처리.
 
 [회계]
 - gl_accounts: 계정과목, journal_entries+journal_entry_lines: 분개
@@ -252,6 +260,7 @@ sales_orders.receipt_status: 품목 receipt_status 집계(우선순위 PARCEL_PL
 - status: PENDING→PRINTED→SHIPPED→DELIVERED (QUICK은 PRINTED 생략, SHIPPED부터 운영 일반적)
 - tracking_number 등록 + SHIPPED 전환 시 알림톡 자동 발송 (PARCEL 한정)
 - shipments.branch_id = 출고 지점(재고 차감 지점). POS 배송 주문에서 판매 지점(sales_orders.branch_id)과 다를 수 있음. "어느 지점에서 팔렸나"는 sales_orders.branch_id로, "어느 지점에서 나갔나"는 shipments.branch_id로 집계.
+- 에이전트 배송 등록(create_shipment): source는 STORE(직접입력) 고정, CAFE24는 자사몰 동기화 전용. 발송인(sender_name/phone)은 출고 지점 정보로 자동 채움(지점 phone 없으면 ''). 단순 insert만 — 외부 발송 없음. 송장번호 등록·SHIPPED 전환(알림톡 발송)은 update_shipment_tracking 별도 처리.
 
 [반품]
 - return_orders: 기존 sales_order 참조, 환불금액/포인트복원 포함

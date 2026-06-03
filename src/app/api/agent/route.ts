@@ -762,6 +762,39 @@ function buildConfirmDescription(toolName: string, args: Record<string, any>): s
       add('식별자', args.campaign_id || args.name);
       lines.push('⚠️ 발송 대상 고객 다수에게 알림톡이 실제 전송됩니다 (정확한 대상수는 실행 결과 참조).');
       break;
+    // ── Batch 2b: 배송 + B2B ────────────────────────────────────────────
+    case 'create_shipment':
+      lines.push('🚚 배송 레코드 생성 확인');
+      add('수령인', args.recipient_name);
+      add('전화', args.recipient_phone);
+      add('주소', args.recipient_address);
+      add('출고 지점', args.branch_name || '본인 지점');
+      lines.push('• 발송인 정보·출처(STORE)는 지점 정보로 자동 채워집니다.');
+      break;
+    case 'create_b2b_sales_order':
+      lines.push('🏢 B2B 납품 전표 등록 확인');
+      add('거래처', args.partner);
+      add('출고 지점', args.branch_name || '미지정(재고 차감 없음)');
+      if (Array.isArray(args.items)) {
+        lines.push('• 품목:');
+        (args.items as any[]).slice(0, 8).forEach(it =>
+          lines.push(`  - ${it.product_name} × ${it.quantity}개${it.unit_price ? ` @${Number(it.unit_price).toLocaleString()}원` : ''}`));
+      }
+      add('메모', args.memo);
+      lines.push('⚠️ 출고 지점 지정 시 재고가 차감되고, 매출 분개가 자동 생성됩니다.');
+      break;
+    case 'settle_b2b_order':
+      lines.push('💰 B2B 수금 처리 확인');
+      add('전표번호', args.order_number);
+      add('수금액', `${Number(args.amount).toLocaleString()}원`);
+      add('수금 수단', args.method === 'card' ? '카드' : '현금');
+      break;
+    case 'cancel_b2b_order':
+      lines.push('🚫 B2B 납품 취소 확인');
+      add('전표번호', args.order_number);
+      add('사유', args.reason);
+      lines.push('⚠️ 차감했던 재고를 복원(IN)합니다. 수금이 진행된 전표는 취소할 수 없습니다.');
+      break;
     default:
       return `⚠️ 작업 확인\n\n${JSON.stringify(args, null, 2)}`;
   }

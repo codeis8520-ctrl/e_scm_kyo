@@ -1,72 +1,58 @@
-# Architect Brief — Batch 2a: AI 에이전트 판매등록 + 캠페인 도구
+# Architect Brief — Batch 2b: AI 에이전트 갭 메우기 (배송 + B2B)
 
 ## Goal
-에이전트가 (1) 자연어로 단순 POS 판매 등록(create_sales_order), (2) 알림톡 캠페인 생성·활성화·발송(create_campaign/activate_campaign/send_campaign). 판매등록·발송은 DANGEROUS, send_campaign은 대상수 사전집계.
+에이전트가 (1) 배송 레코드 생성(create_shipment), (2) B2B 납품 등록(create_b2b_sales_order), (3) B2B 수금(settle_b2b_order), (4) B2B 납품 취소(cancel_b2b_order). send_kakao는 제외(Known Gaps).
 
-## 변경 파일 (4개, DB 변경 없음)
-- `src/lib/actions.ts` — 신규 `createSimpleSalesOrder` 1개 (기존 함수 미변경)
-- `src/lib/ai/tools.ts` — AGENT_TOOLS 4 + WRITE_TOOLS 4 + DANGEROUS_TOOLS 2 + executeTool case 4 + exec 핸들러 4
-- `src/app/api/agent/route.ts` — buildConfirmDescription case 4
-- `src/lib/ai/schema.ts` — BUSINESS_RULES [자주 쓰는 패턴] 4 + 판매/캠페인 룰
+## 확인된 시그니처 (재확인 완료)
+- `createShipment(data: ShipmentInput)`→`{success}|{success:false,error}` (shipping-actions.ts:49). ShipmentInput 필수: source('CAFE24'|'STORE'), sender_name, sender_phone, recipient_name, recipient_phone, recipient_address. 선택: zipcode/detail, delivery_message, items_summary, branch_id, created_by, sales_order_id, cafe24_order_id. **단순 insert, 외부발송 없음**.
+- `createB2bSalesOrder({partnerId, branchId?, items:[{productId,quantity,unitPrice}], memo?, deliveredAt?})`→`{error}|{success,orderNumber}` (b2b-actions.ts:150). RAW/SUB 차단·재고차감(branchId 있을 때)·분개 자동.
+- `settleB2bOrder(orderId, amount, method?)`→`{error}|{success}` (b2b-actions.ts:311). orderId=UUID. method 'card'→1120 else 1110. SETTLED/CANCELLED 거부.
+- `cancelB2bOrder(orderId, reason?)`→`{error}|{success}` (b2b-actions.ts:376). UUID. settled_amount>0 거부. 재고 IN 복원.
+- `b2b_sales_orders`: order_number(B2B-YYYYMMDD-XXXX), partner_id, status, total_amount, settled_amount.
+- 헬퍼: findBranch/findProduct/findCustomer(tools.ts:1131~), requireHq/resolveBranchForWrite/assertBranchAccess. **findPartner 없음**→핸들러 인라인(b2b_partners name/code).
 
-## A. `createSimpleSalesOrder` (actions.ts) — 먼저 구현
-위치: processPosCheckout 인근. CheckoutPayload/processPosCheckout/CartItem/resolvePointRate/ShippingInfo **미변경, 재사용만**.
-시그니처:
-```ts
-export async function createSimpleSalesOrder(input: {
-  branch_id: string; branch_code: string; branch_name: string; branch_channel?: string;
-  customer_id?: string|null; customer_grade?: string|null;
-  items: { product_id: string; name: string; price: number; quantity: number }[];
-  payment_method: 'cash'|'card'|'kakao'; use_points?: boolean; user_id?: string|null;
-}): Promise<{ orderNumber?: string; pointsEarned?: number; error?: string }>
-```
-구현(페이로드 조립 후 위임):
-1. items 비면 `{error:'판매 품목이 없습니다.'}`.
-2. cart: CartItem[] = items.map→`{productId,name,price,quantity}` (discount/orderOption/deliveryType/receiptDate 미설정=기본 PICKUP·할인0).
-3. totalAmount=finalAmount=Σ(price×quantity), discountAmount=0.
-4. 포인트: use_points && customer_id 일 때만. min(보유 balance, finalAmount). 비회원 false/0.
-5. CheckoutPayload 조립 — 미지원 필드 전부 비움: paymentSplits 미설정, shipping:null, shipFromBranchId 미설정, cashReceived 미설정. gradePointRate=1.0(서버 resolvePointRate 재계산).
-6. `return processPosCheckout(payload)` 결과 그대로.
-Flag: processPosCheckout 내장 로직(음수재고·RAW/SUB거부·phantom BOM·과세배분·ORDER_COMPLETE 알림톡) 재구현 금지, 위임만. payment_method 3종만(card_keyin/credit/cod/mixed 거부). 할인/택배/분할/외상 입력 없음→영구 미발생.
+## Build Order
 
-## B. 도구 4종 (tools.ts)
-**B-1 create_sales_order** (DANGEROUS): params customer_name?/phone?/branch_name?/items[{product_name,quantity}](req)/payment_method(enum cash/card/kakao req)/use_points?. description에 미지원 명시(택배·분할·외상·할인→POS). exec `execCreateSalesOrder`:
-1. resolveBranchForWrite(sb,ctx,branch_name)→실패 error(staff 본인지점 강제).
-2. customer_name||phone 있으면 findCustomer→없으면 비회원 진행. 찾으면 id/grade.
-3. items 각 product_name→findProduct, 하나라도 못찾으면 error(부분진행 금지), quantity≤0 거부, price=products.price.
-4. branch.code 확보: `sb.from('branches').select('code').eq('id',branch.id)` 1회(resolveBranchForWrite 시그니처 변경 금지, 핸들러 보강).
-5. createSimpleSalesOrder({...}) 호출. 성공 시 {성공,주문번호,합계,적립포인트,고객}.
-**B-2 create_campaign**: params name(req)/description?/target_grade?(기본 ALL)/branch_name?/solapi_template_id?/template_content?/scheduled_at?. requireHq. branch_name→findBranch→target_branch_id. `createCampaign(params)`. DRAFT 안내.
-**B-3 activate_campaign**: params campaign_id|name(DRAFT 1건 조회). requireHq. `activateCampaign(id)`.
-**B-4 send_campaign** (DANGEROUS): params campaign_id|name(ACTIVE). requireHq. 캠페인 조회→**대상수 사전집계**(sendCampaignCore 조건: customers is_active=true, phone NOT LIKE 'cafe24_%', target_grade≠ALL→grade eq, target_branch_id→branch_id eq; count head:true)→`sendCampaign(id)`. 응답에 targetCount/successCount/failCount.
+### 1. tools.ts
+- AGENT_TOOLS 4종(analyze_data 앞, 2a 뒤):
+  - create_shipment: recipient_name(req), recipient_phone(req), recipient_address(req), recipient_zipcode?, recipient_address_detail?, delivery_message?, items_summary?, branch_name?. **sender/source 비노출**(핸들러가 채움).
+  - create_b2b_sales_order: partner(req, 명/code), items(req `[{product_name,quantity,unit_price?}]`), branch_name?, memo?.
+  - settle_b2b_order: order_number(req), amount(req), method?('card'|'cash').
+  - cancel_b2b_order: order_number(req), reason?.
+- WRITE_TOOLS +4. DANGEROUS_TOOLS +3: create_shipment, create_b2b_sales_order, cancel_b2b_order (settle 제외).
+- executeTool switch +4. import: b2b-actions(create/settle/cancel), shipping-actions(createShipment).
+- exec 핸들러:
+  - execCreateShipment(sb,ctx,args): branch_name 있으면 resolveBranchForWrite(staff 본인지점 강제)→branch_id. sender 기본값=branch 조회(name→sender_name, phone→sender_phone, 없으면 ''). source='STORE' 고정. created_by=ctx.userId. createShipment(input) 반환.
+  - execCreateB2bSalesOrder(sb,ctx,args): partner 인라인 `b2b_partners.select('id,name,code').or(name ilike/code eq).limit(1)` 못찾으면 에러. branch resolveBranchForWrite(옵션). items 각 product_name→findProduct, unit_price 미지정시 product.price, 하나라도 미해결 에러. createB2bSalesOrder({partnerId,branchId,items,memo}) 반환.
+  - execSettleB2bOrder(sb,args): b2b_sales_orders order_number→id 선조회(SETTLED/CANCELLED 친절 차단). settleB2bOrder(id, amount, method) 반환.
+  - execCancelB2bOrder(sb,args): order_number→id 선조회(settled_amount>0 친절 차단). cancelB2bOrder(id, reason) 반환.
 
-## C. WRITE_TOOLS/DANGEROUS_TOOLS
-- WRITE_TOOLS +4: create_sales_order, create_campaign, activate_campaign, send_campaign.
-- DANGEROUS_TOOLS +2: create_sales_order, send_campaign.
+### 2. route.ts buildConfirmDescription(L491) — 4 case
+- create_shipment: "{recipient_name}님께 배송 레코드 생성 (주소: {recipient_address})."
+- create_b2b_sales_order: "거래처 '{partner}'에 {items.length}품목 B2B 납품 전표 등록 (재고차감·분개)."
+- settle_b2b_order: "납품 전표 {order_number}에 {amount}원 수금."
+- cancel_b2b_order: "납품 전표 {order_number} 취소 (재고 역복원)."
+- DANGEROUS 경고는 L292 기존 분기 자동(route 구조 미변경).
 
-## D. route.ts buildConfirmDescription — case 4
-- create_sales_order: 🧾 판매 등록 / 고객·지점·품목(제품명×수량)·결제수단 (DANGEROUS 경고 공통 append).
-- create_campaign: 📢 캠페인 생성 / 이름·대상등급·지점·예약.
-- activate_campaign: ▶️ 활성화 / 식별자.
-- send_campaign: 📨 발송 / 식별자 + "다수 고객 실발송"(정확 대상수는 exec 응답 targetCount).
-
-## E. schema.ts 동기화
-- [자주 쓰는 패턴] 4줄: 판매 등록→create_sales_order(택배·할인·외상 미지원→POS) / 캠페인 생성→create_campaign / 활성화→activate_campaign / 발송→send_campaign(다수 실발송).
-- 판매(POS) 룰: create_sales_order=단순 현장판매 전용(단일결제·할인0·현장수령), 택배/분할/외상/할인 미지원→POS 안내, 등급·적립율 서버 자동(067).
+### 3. schema.ts (필수)
+- [자주 쓰는 패턴] 4줄: 배송 등록→create_shipment / 거래처 납품→create_b2b_sales_order(재고차감+분개) / 거래처 수금→settle_b2b_order / 납품 취소→cancel_b2b_order(수금 0건만).
+- B2B 룰 섹션 보강: 상태흐름(DELIVERED→PARTIALLY_SETTLED→SETTLED, CANCELLED), settled>0 취소불가, RAW/SUB 납품불가. shipments 1줄(STORE/CAFE24, SHIPPED 전환 시 알림톡).
 - DB_SCHEMA 변경 없음.
 
-## Out of Scope (→ 2b)
-send_kakao, create_shipment, B2B 3종. createSimpleSalesOrder 택배/분할/외상/할인 지원(영구 미지원). processPosCheckout 리팩터 금지.
+## Flag (추측 금지)
+- create_shipment sender_*/source는 LLM 인자 비노출, 핸들러가 branch에서 채움. branch.phone 없으면 sender_phone='' fallback.
+- settle/cancel 핸들러는 order_number→UUID 선조회 후 액션에 UUID 전달(액션은 UUID 받음).
+- B2B 단가 = 제품 price(getPartnerPrices 스코프 밖).
+- staff는 resolveBranchForWrite로 본인지점 강제.
+
+## Out of Scope (Known Gaps)
+- send_kakao: 제외(Solapi templateId/variableKeys를 LLM이 안전히 못 채움. 대량은 send_campaign 정식경로).
+- B2B 단가표 연동, shipment 송장/SHIPPED 전환, deliveredAt 지정.
 
 ## Acceptance
 - `npm run build` 통과.
-- create_sales_order: 회원/비회원·cash/card/kakao·use_points 동작, 미존재 제품/지점/빈품목/qty≤0 한글 에러, 택배·할인 입력 불가, DANGEROUS 경고.
-- 캠페인 3종 requireHq. send_campaign 응답 targetCount/successCount/failCount.
-- 기존 processPosCheckout 호출부(POS) 무변경.
-- schema.ts 반영, DB_SCHEMA 미변경. Richard 보안 리뷰 필수.
-
-## 확인된 시그니처
-- processPosCheckout(payload: CheckoutPayload)→{orderNumber,pointsEarned,stockUpdates}|{error} (actions.ts:1956). CartItem={productId,name,price,quantity,discount?,orderOption?,deliveryType?,receiptDate?}(1892).
-- createCampaign(params) requireHQ→{success,data}|{error} DRAFT (campaign-actions.ts:80). activateCampaign(id) DRAFT→ACTIVE(200). sendCampaign(id) requireHQ→{success,successCount,failCount}(259).
-- sendCampaignCore 대상: customers is_active=true, phone NOT LIKE 'cafe24_%', target_grade≠ALL→grade eq, target_branch_id→branch eq (campaign-send-core.ts:45-56).
-- findBranch/findProduct/findCustomer/getPoints(tools.ts:1035-1057), requireHq/resolveBranchForWrite/assertBranchAccess(1078-1125). findBranch/resolveBranchForWrite code 미포함→핸들러서 별도 조회. 핸들러 패턴: execSettleCreditOrder(3175) 모범.
+- AGENT_TOOLS 4 / WRITE_TOOLS 4 / DANGEROUS_TOOLS 3 / executeTool 4 case + 핸들러 4 + import.
+- route buildConfirmDescription 4 case. DANGEROUS 3종 2차경고 자동.
+- schema.ts 패턴 4 + B2B/shipments 룰. DB_SCHEMA 무변경.
+- 기존 createShipment/createB2bSalesOrder/settle/cancel 호출부(shipping/trade UI) diff 0.
+- 보안: 발송·재무·재고 → Richard 리뷰 필수.

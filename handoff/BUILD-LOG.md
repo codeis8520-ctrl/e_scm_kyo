@@ -6,6 +6,39 @@
 
 ## Completed Steps
 
+### Batch 2b — AI 에이전트 배송 + B2B 도구 4종
+
+**상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, npm run build ✅ Compiled successfully, 2026-06-03)
+
+**Goal**: 에이전트가 (1) 배송 레코드 생성(create_shipment, DANGEROUS), (2) B2B 납품 등록(create_b2b_sales_order, DANGEROUS), (3) B2B 수금(settle_b2b_order, WRITE), (4) B2B 납품 취소(cancel_b2b_order, DANGEROUS). send_kakao 제외. DB 변경/신규 서버액션 없음 — 전부 기존 액션 래핑.
+
+**변경 파일 (3개, DB 변경 없음)**:
+- `src/lib/ai/tools.ts`
+  - AGENT_TOOLS: 4개 도구 정의(analyze_data 정의 앞). create_shipment는 sender_*/source 비노출.
+  - WRITE_TOOLS +4, DANGEROUS_TOOLS +3(create_shipment / create_b2b_sales_order / cancel_b2b_order — settle 제외).
+  - executeTool switch +4 case.
+  - exec 핸들러 4종(파일 끝, execSetSafetyStock 직후): execCreateShipment / execCreateB2bSalesOrder / execSettleB2bOrder / execCancelB2bOrder.
+- `src/app/api/agent/route.ts` — buildConfirmDescription +4 case(send_campaign 직후, default 앞). DANGEROUS 2차경고는 L292 기존 분기 자동(구조 미변경).
+- `src/lib/ai/schema.ts` — [자주 쓰는 패턴] +5줄(배송 1 + B2B 4), B2B 룰 +6줄(상태흐름/납품/수금/취소), 배송 룰 +1줄. DB_SCHEMA 변경 없음.
+
+**확인된 시그니처 (실제 파일 재확인 완료, 브리프와 일치)**:
+- createShipment(data: ShipmentInput)→{success}|{success:false,error} (shipping-actions.ts:49). 단순 insert.
+- createB2bSalesOrder({partnerId,branchId?,items:[{productId,quantity,unitPrice}],memo?,deliveredAt?})→{error}|{success,orderNumber} (b2b-actions.ts:150).
+- settleB2bOrder(orderId,amount,method?)→{error}|{success,newStatus} (b2b-actions.ts:311). orderId=UUID.
+- cancelB2bOrder(orderId,reason?)→{error}|{success} (b2b-actions.ts:376). UUID, settled_amount>0 거부.
+- findProduct/resolveBranchForWrite/isStaffRole 재사용. findPartner 없음 → execCreateB2bSalesOrder 인라인(b2b_partners name ilike / code eq).
+
+**구현 결정**:
+- 액션 import는 핸들러 내부 동적 import() — 파일 전반 기존 컨벤션(execCreateCampaign·execSettleCreditOrder 등과 동일). 정적 top import 미사용.
+- settle/cancel은 order_number→UUID 선조회 후 UUID 전달(액션에 order_number 직접 전달 안 함). 핸들러에서 SETTLED/CANCELLED·settled>0 친절 차단(액션도 동일 방어 — 이중 방어).
+- create_shipment sender: 출고지점 name/phone 자동(지점 phone 없으면 '') / source='STORE' 고정 / created_by=ctx.userId.
+- B2B 단가: unit_price 미지정 시 products.price(거래처 단가표 미연동, 스코프 밖).
+- staff RBAC: resolveBranchForWrite로 본인 지점 강제(create_shipment·create_b2b_sales_order). settle/cancel은 전표 단위라 지점 강제 미적용(액션의 requireSession 의존).
+
+**Known Gaps (스코프 밖, 브리프 명시)**:
+- send_kakao: 제외(Solapi templateId/variableKeys를 LLM이 안전히 못 채움. 대량은 send_campaign 정식경로).
+- B2B 거래처 단가표(getPartnerPrices) 연동, shipment 송장/SHIPPED 전환, deliveredAt 지정 — 전부 미접촉.
+
 ### Batch 2a — AI 에이전트 판매등록 + 캠페인 도구 4종
 
 **상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, npm run build ✅, 2026-06-03)

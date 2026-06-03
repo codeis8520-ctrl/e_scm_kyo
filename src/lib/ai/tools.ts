@@ -1036,6 +1036,96 @@ sales_orders·inventories 등 핵심 거래 테이블은 삭제 불가.`,
       },
     },
   },
+  // ── 배송 레코드 생성 (DANGEROUS) ──────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'create_shipment',
+      description: `직접 입력(STORE) 배송 레코드를 생성. 송장 발송 없이 배송 정보(수령지)를 등록만 합니다.
+사용 예: "홍길동님 배송 등록해줘 주소는 ...", "이 주소로 배송건 만들어줘".
+주의: 발송인 정보와 출처는 시스템이 지점 정보로 자동 채웁니다. 송장번호·발송은 별도 처리(update_shipment_tracking)입니다.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          recipient_name: { type: 'string', description: '수령인 이름' },
+          recipient_phone: { type: 'string', description: '수령인 전화번호' },
+          recipient_address: { type: 'string', description: '수령지 주소' },
+          recipient_zipcode: { type: 'string', description: '우편번호 (선택)' },
+          recipient_address_detail: { type: 'string', description: '상세주소 (선택)' },
+          delivery_message: { type: 'string', description: '배송 메시지 (선택)' },
+          items_summary: { type: 'string', description: '배송 품목 요약 (선택)' },
+          branch_name: { type: 'string', description: '출고 지점명 (선택, 발송인 정보 자동 채움)' },
+        },
+        required: ['recipient_name', 'recipient_phone', 'recipient_address'],
+      },
+    },
+  },
+  // ── B2B 납품 전표 등록 (DANGEROUS) ────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'create_b2b_sales_order',
+      description: `거래처(B2B)에 납품 전표를 등록. 재고 차감(출고 지점 지정 시)과 매출 분개가 자동 생성됩니다. RAW/SUB(원자재·부자재)는 납품 불가.
+사용 예: "OO상사에 경옥고 10개 납품 등록해줘", "거래처 ABC에 납품 전표 만들어줘".`,
+      parameters: {
+        type: 'object',
+        properties: {
+          partner: { type: 'string', description: '거래처명 또는 거래처 코드' },
+          items: {
+            type: 'array',
+            description: '납품 품목 목록',
+            items: {
+              type: 'object',
+              properties: {
+                product_name: { type: 'string', description: '제품명' },
+                quantity: { type: 'number', description: '수량' },
+                unit_price: { type: 'number', description: '단가 (선택, 미지정 시 제품 정가 적용)' },
+              },
+              required: ['product_name', 'quantity'],
+            },
+          },
+          branch_name: { type: 'string', description: '출고 지점명 (선택, 지정 시 재고 차감)' },
+          memo: { type: 'string', description: '메모 (선택)' },
+        },
+        required: ['partner', 'items'],
+      },
+    },
+  },
+  // ── B2B 수금 처리 ────────────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'settle_b2b_order',
+      description: `거래처 납품 전표에 대한 수금(정산)을 처리. 수금액만큼 외상매출금이 회수되고 수금 분개가 자동 생성됩니다. 전액 수금 시 SETTLED로 전환됩니다.
+사용 예: "납품전표 B2B-20260601-XXXX 50만원 수금 처리해줘".`,
+      parameters: {
+        type: 'object',
+        properties: {
+          order_number: { type: 'string', description: '납품 전표번호 (B2B-YYYYMMDD-XXXX)' },
+          amount: { type: 'number', description: '수금액 (원)' },
+          method: { type: 'string', description: "수금 수단 ('card' 또는 'cash'). 기본 cash" },
+        },
+        required: ['order_number', 'amount'],
+      },
+    },
+  },
+  // ── B2B 납품 취소 (DANGEROUS) ─────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'cancel_b2b_order',
+      description: `거래처 납품 전표를 취소. 차감했던 재고를 복원(IN)합니다. 수금이 1건이라도 진행된 전표는 취소할 수 없습니다.
+사용 예: "납품전표 B2B-20260601-XXXX 취소해줘".`,
+      parameters: {
+        type: 'object',
+        properties: {
+          order_number: { type: 'string', description: '납품 전표번호 (B2B-YYYYMMDD-XXXX)' },
+          reason: { type: 'string', description: '취소 사유 (선택)' },
+        },
+        required: ['order_number'],
+      },
+    },
+  },
   // ── 범용 분석 쿼리 ────────────────────────────────────────────────────
   {
     type: 'function',
@@ -1117,6 +1207,11 @@ export const WRITE_TOOLS = new Set([
   'create_campaign',
   'activate_campaign',
   'send_campaign',
+  // Batch 2b: 배송 + B2B
+  'create_shipment',
+  'create_b2b_sales_order',
+  'settle_b2b_order',
+  'cancel_b2b_order',
 ]);
 
 /** 되돌릴 수 없는 고위험 작업 — confirm 시 추가 경고 라인을 붙인다. */
@@ -1124,6 +1219,10 @@ export const DANGEROUS_TOOLS = new Set<string>([
   'cancel_credit_order',
   'create_sales_order',
   'send_campaign',
+  // Batch 2b: 재고차감·재무 영향 (settle은 제외 — 수금은 가산이라 비파괴적)
+  'create_shipment',
+  'create_b2b_sales_order',
+  'cancel_b2b_order',
 ]);
 
 // ─── Shared Helpers ──────────────────────────────────────────────────────────
@@ -1291,6 +1390,11 @@ export async function executeTool(
       case 'create_campaign':          return execCreateCampaign(sb, args as any, ctx);
       case 'activate_campaign':        return execActivateCampaign(sb, args as any, ctx);
       case 'send_campaign':            return execSendCampaign(sb, args as any, ctx);
+      // Batch 2b: 배송 + B2B
+      case 'create_shipment':          return execCreateShipment(sb, args as any, ctx);
+      case 'create_b2b_sales_order':   return execCreateB2bSalesOrder(sb, args as any, ctx);
+      case 'settle_b2b_order':         return execSettleB2bOrder(sb, args as any);
+      case 'cancel_b2b_order':         return execCancelB2bOrder(sb, args as any);
       default: return JSON.stringify({ error: `알 수 없는 도구: ${toolName}` });
     }
   } catch (e: any) {
@@ -3653,5 +3757,182 @@ async function execSetSafetyStock(sb: any, args: {
     대상: '전 지점',
     안전재고: args.safety_stock,
     영향행수: count ?? '전 지점',
+  });
+}
+
+// ── 배송 레코드 생성 (DANGEROUS) ────────────────────────────────────────────────
+async function execCreateShipment(sb: any, args: {
+  recipient_name: string;
+  recipient_phone: string;
+  recipient_address: string;
+  recipient_zipcode?: string;
+  recipient_address_detail?: string;
+  delivery_message?: string;
+  items_summary?: string;
+  branch_name?: string;
+}, ctx: ToolContext): Promise<string> {
+  if (!args.recipient_name?.trim()) return JSON.stringify({ error: '수령인 이름은 필수입니다.' });
+  if (!args.recipient_phone?.trim()) return JSON.stringify({ error: '수령인 전화번호는 필수입니다.' });
+  if (!args.recipient_address?.trim()) return JSON.stringify({ error: '수령지 주소는 필수입니다.' });
+
+  // 발송인 정보·출처는 LLM 비노출 — 지점 정보로 자동 채움. staff는 본인 지점 강제.
+  let branchId: string | undefined;
+  let senderName = '';
+  let senderPhone = '';
+  if (args.branch_name || isStaffRole(ctx.userRole)) {
+    const resolved = await resolveBranchForWrite(sb, ctx, args.branch_name);
+    if (!resolved.ok) return JSON.stringify({ error: resolved.error });
+    branchId = resolved.branch.id;
+    const { data: branch } = await sb.from('branches').select('name, phone').eq('id', resolved.branch.id).maybeSingle();
+    senderName = branch?.name || '';
+    senderPhone = branch?.phone || '';
+  }
+
+  const { createShipment } = await import('@/lib/shipping-actions');
+  const res = await createShipment({
+    source: 'STORE',
+    sender_name: senderName,
+    sender_phone: senderPhone,
+    recipient_name: args.recipient_name,
+    recipient_phone: args.recipient_phone,
+    recipient_address: args.recipient_address,
+    recipient_zipcode: args.recipient_zipcode,
+    recipient_address_detail: args.recipient_address_detail,
+    delivery_message: args.delivery_message,
+    items_summary: args.items_summary,
+    branch_id: branchId,
+    created_by: ctx.userId,
+  });
+  if (!res.success) return JSON.stringify({ error: res.error || '배송 레코드 생성에 실패했습니다.' });
+
+  return JSON.stringify({
+    성공: true,
+    수령인: args.recipient_name,
+    수령지: args.recipient_address,
+    출고지점: senderName || '미지정',
+    안내: '배송 레코드를 생성했습니다. 송장번호 등록·발송은 별도로 처리하세요(update_shipment_tracking).',
+  });
+}
+
+// ── B2B 납품 전표 등록 (DANGEROUS) ──────────────────────────────────────────────
+async function execCreateB2bSalesOrder(sb: any, args: {
+  partner: string;
+  items: Array<{ product_name: string; quantity: number; unit_price?: number }>;
+  branch_name?: string;
+  memo?: string;
+}, ctx: ToolContext): Promise<string> {
+  if (!args.partner?.trim()) return JSON.stringify({ error: '거래처명 또는 코드는 필수입니다.' });
+  if (!Array.isArray(args.items) || args.items.length === 0) {
+    return JSON.stringify({ error: '납품 품목을 1개 이상 지정해주세요.' });
+  }
+
+  // 거래처 인라인 조회 (findPartner 헬퍼 없음) — 이름(ilike) 또는 코드(eq)
+  const { data: partner } = await sb
+    .from('b2b_partners')
+    .select('id, name, code')
+    .or(`name.ilike.%${args.partner}%,code.eq.${args.partner}`)
+    .limit(1)
+    .maybeSingle();
+  if (!partner) return JSON.stringify({ error: `거래처 "${args.partner}"을(를) 찾을 수 없습니다.` });
+
+  // 출고 지점 (선택) — 지정 또는 staff면 본인 지점 강제
+  let branchId: string | undefined;
+  if (args.branch_name || isStaffRole(ctx.userRole)) {
+    const resolved = await resolveBranchForWrite(sb, ctx, args.branch_name);
+    if (!resolved.ok) return JSON.stringify({ error: resolved.error });
+    branchId = resolved.branch.id;
+  }
+
+  // 품목 해결: product_name→제품, unit_price 미지정 시 제품 정가
+  const items: Array<{ productId: string; quantity: number; unitPrice: number }> = [];
+  for (const it of args.items) {
+    if (!it.product_name?.trim()) return JSON.stringify({ error: '제품명이 비어있는 품목이 있습니다.' });
+    if (!it.quantity || it.quantity <= 0) return JSON.stringify({ error: `"${it.product_name}" 수량은 1 이상이어야 합니다.` });
+    const product = await findProduct(sb, it.product_name);
+    if (!product) return JSON.stringify({ error: `제품 "${it.product_name}"을(를) 찾을 수 없습니다.` });
+    const unitPrice = it.unit_price ?? Number(product.price) ?? 0;
+    items.push({ productId: product.id, quantity: it.quantity, unitPrice });
+  }
+
+  const { createB2bSalesOrder } = await import('@/lib/b2b-actions');
+  const res = await createB2bSalesOrder({
+    partnerId: partner.id,
+    branchId,
+    items,
+    memo: args.memo,
+  });
+  if ('error' in res && res.error) return JSON.stringify({ error: res.error });
+
+  const total = items.reduce((s, i) => s + i.quantity * i.unitPrice, 0);
+  return JSON.stringify({
+    성공: true,
+    전표번호: (res as any).orderNumber,
+    거래처: partner.name,
+    품목수: items.length,
+    총액: `${total.toLocaleString()}원`,
+    재고차감: branchId ? '적용' : '미적용(출고지점 미지정)',
+    안내: '납품 전표를 등록하고 매출 분개를 자동 생성했습니다.',
+  });
+}
+
+// ── B2B 수금 처리 ───────────────────────────────────────────────────────────────
+async function execSettleB2bOrder(sb: any, args: {
+  order_number: string;
+  amount: number;
+  method?: string;
+}): Promise<string> {
+  if (!args.order_number?.trim()) return JSON.stringify({ error: '납품 전표번호는 필수입니다.' });
+  if (!args.amount || args.amount <= 0) return JSON.stringify({ error: '수금액은 0보다 커야 합니다.' });
+
+  // 전표번호 → UUID 선조회 (액션은 UUID를 받음)
+  const { data: order } = await sb
+    .from('b2b_sales_orders')
+    .select('id, order_number, status, total_amount, settled_amount')
+    .eq('order_number', args.order_number)
+    .maybeSingle();
+  if (!order) return JSON.stringify({ error: `납품 전표 "${args.order_number}"을(를) 찾을 수 없습니다.` });
+  if (order.status === 'SETTLED') return JSON.stringify({ error: '이미 정산 완료된 전표입니다.' });
+  if (order.status === 'CANCELLED') return JSON.stringify({ error: '취소된 전표는 수금할 수 없습니다.' });
+
+  const { settleB2bOrder } = await import('@/lib/b2b-actions');
+  const res = await settleB2bOrder(order.id, args.amount, args.method);
+  if ('error' in res && res.error) return JSON.stringify({ error: res.error });
+
+  const methodLabels: Record<string, string> = { card: '카드', cash: '현금' };
+  return JSON.stringify({
+    성공: true,
+    전표번호: order.order_number,
+    수금액: `${Number(args.amount).toLocaleString()}원`,
+    수금수단: methodLabels[args.method || 'cash'] || args.method || '현금',
+    상태: (res as any).newStatus || undefined,
+  });
+}
+
+// ── B2B 납품 취소 (DANGEROUS) ───────────────────────────────────────────────────
+async function execCancelB2bOrder(sb: any, args: {
+  order_number: string;
+  reason?: string;
+}): Promise<string> {
+  if (!args.order_number?.trim()) return JSON.stringify({ error: '납품 전표번호는 필수입니다.' });
+
+  // 전표번호 → UUID 선조회 (액션은 UUID를 받음)
+  const { data: order } = await sb
+    .from('b2b_sales_orders')
+    .select('id, order_number, status, settled_amount')
+    .eq('order_number', args.order_number)
+    .maybeSingle();
+  if (!order) return JSON.stringify({ error: `납품 전표 "${args.order_number}"을(를) 찾을 수 없습니다.` });
+  if (order.status === 'CANCELLED') return JSON.stringify({ error: '이미 취소된 전표입니다.' });
+  if (Number(order.settled_amount) > 0) return JSON.stringify({ error: '수금이 진행된 전표는 취소할 수 없습니다.' });
+
+  const { cancelB2bOrder } = await import('@/lib/b2b-actions');
+  const res = await cancelB2bOrder(order.id, args.reason);
+  if ('error' in res && res.error) return JSON.stringify({ error: res.error });
+
+  return JSON.stringify({
+    성공: true,
+    전표번호: order.order_number,
+    사유: args.reason || undefined,
+    안내: '납품 전표를 취소하고 차감했던 재고를 복원(IN)했습니다.',
   });
 }
