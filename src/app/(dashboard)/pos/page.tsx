@@ -887,7 +887,7 @@ function POSPageInner() {
           .select('id, legacy_order_no, ordered_at, channel_text, branch_code_raw, recipient_name, recipient_phone, recipient_address, payment_status, total_amount, source_file, branch:branches(name), legacy_order_items(line_seq, item_code, item_text, option_text, quantity, total_amount)')
           .eq('customer_id', customerId)
           .order('ordered_at', { ascending: false })
-          .limit(50),
+          .limit(500),
       ]);
       const orders = (ordersRes.data || []) as any[];
       const totalLtv = orders
