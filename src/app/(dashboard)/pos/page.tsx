@@ -550,9 +550,15 @@ function POSPageInner() {
       setSelectedBranch(src.branch_id);
       setShipFromBranchId(src.branch_id);
     }
-    // 고객
+    // 고객 — 인메모리 목록(Tier3 지연 로드)에 없으면 id로 직접 조회 후 선택
     if (src.customer_id) {
-      const cust = customers.find(c => c.id === src.customer_id);
+      let cust = customers.find(c => c.id === src.customer_id) as Customer | undefined;
+      if (!cust) {
+        const { data: cRow } = await sb.from('customers')
+          .select('id, name, phone, phone2, address, grade')
+          .eq('id', src.customer_id).maybeSingle();
+        if (cRow) cust = cRow as Customer;
+      }
       if (cust) await selectCustomer(cust);
     }
     // 카트 — 원본의 deliveryType 유지
@@ -625,9 +631,15 @@ function POSPageInner() {
       setSelectedBranch(src.branch_id);
       setShipFromBranchId(src.branch_id);
     }
-    // 고객
+    // 고객 — 인메모리 목록(Tier3 지연 로드)에 없으면 id로 직접 조회 후 선택
     if (src.customer_id) {
-      const cust = customers.find(c => c.id === src.customer_id);
+      let cust = customers.find(c => c.id === src.customer_id) as Customer | undefined;
+      if (!cust) {
+        const { data: cRow } = await sb.from('customers')
+          .select('id, name, phone, phone2, address, grade')
+          .eq('id', src.customer_id).maybeSingle();
+        if (cRow) cust = cRow as Customer;
+      }
       if (cust) await selectCustomer(cust);
     }
 
