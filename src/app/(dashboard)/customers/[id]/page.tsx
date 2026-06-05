@@ -228,12 +228,25 @@ export default function CustomerDetailPage() {
       supabase.from('branches').select('id, name').eq('is_active', true),
       supabase.from('users').select('id, name').eq('is_active', true),
       supabase.from('point_history').select('balance').eq('customer_id', customerId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
-      supabase
-        .from('legacy_orders')
-        .select('id, legacy_order_no, ordered_at, channel_text, branch_code_raw, recipient_name, recipient_phone, recipient_address, payment_status, total_amount, source_file, branch:branches(name), legacy_order_items(line_seq, item_code, item_text, option_text, quantity, total_amount)')
-        .eq('customer_id', customerId)
-        .order('ordered_at', { ascending: false })
-        .range(0, 9999),
+      // legacy_orders 는 PostgREST db-max-rows(기본 1000) 캡 때문에 .range(0,9999) 로도
+      // 1000건에서 잘린다. 1000건씩 페이지네이션해 전량 로드 (헤비 계정 집계 불일치 방지).
+      (async () => {
+        const PAGE = 1000;
+        let all: any[] = [];
+        for (let from = 0; ; from += PAGE) {
+          const { data } = await supabase
+            .from('legacy_orders')
+            .select('id, legacy_order_no, ordered_at, channel_text, branch_code_raw, recipient_name, recipient_phone, recipient_address, payment_status, total_amount, source_file, branch:branches(name), legacy_order_items(line_seq, item_code, item_text, option_text, quantity, total_amount)')
+            .eq('customer_id', customerId)
+            .order('ordered_at', { ascending: false })
+            .order('legacy_order_no', { ascending: false })
+            .range(from, from + PAGE - 1);
+          if (!data?.length) break;
+          all = all.concat(data);
+          if (data.length < PAGE) break;
+        }
+        return { data: all };
+      })(),
     ]) as any;
 
     if (customerRes.data) {

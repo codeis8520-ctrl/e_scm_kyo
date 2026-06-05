@@ -40,37 +40,52 @@ function getSegment(r: number, f: number, m: number): RfmSegment {
   return 'lost';
 }
 
+// PostgREST db-max-rows(기본 1000) 캡 우회 — 1000건씩 끊어 전량 로드.
+// build(from,to): .range(from,to) 까지 적용된 쿼리를 반환해야 함.
+async function fetchAll<T = any>(build: (from: number, to: number) => any): Promise<T[]> {
+  const PAGE = 1000;
+  const all: T[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data } = await build(from, from + PAGE - 1);
+    if (!data?.length) break;
+    all.push(...(data as T[]));
+    if (data.length < PAGE) break;
+  }
+  return all;
+}
+
 // ─── RFM 전체 분석 ────────────────────────────────────────────────────────────
 
 export async function getRfmAnalysis(branchId?: string) {
   const sb = await createClient() as any;
   const now = new Date();
 
-  // 활성 고객 전체
-  const { data: customers } = await sb
+  // 활성 고객 전체 (1000캡 우회 — 페이지네이션)
+  const customers = await fetchAll((f, t) => sb
     .from('customers')
     .select('id, name, phone, grade')
-    .eq('is_active', true);
+    .eq('is_active', true)
+    .range(f, t));
 
-  if (!customers?.length) return { data: [], segmentSummary: [] };
+  if (!customers.length) return { data: [], segmentSummary: [] };
 
   // 모든 완료 주문 (고객 연결된 것만) — sales_orders + legacy_orders 통합
-  let ordersQ = sb
-    .from('sales_orders')
-    .select('customer_id, total_amount, ordered_at, branch_id')
-    .eq('status', 'COMPLETED')
-    .not('customer_id', 'is', null)
-    .range(0, 99999);
-  if (branchId) ordersQ = ordersQ.eq('branch_id', branchId);
-
-  let legacyQ = sb
-    .from('legacy_orders')
-    .select('customer_id, total_amount, ordered_at, branch_id')
-    .not('customer_id', 'is', null)
-    .range(0, 99999);
-  if (branchId) legacyQ = legacyQ.eq('branch_id', branchId);
-
-  const [{ data: orders }, { data: legacyOrders }] = await Promise.all([ordersQ, legacyQ]);
+  const [orders, legacyOrders] = await Promise.all([
+    fetchAll((f, t) => {
+      let q = sb.from('sales_orders')
+        .select('customer_id, total_amount, ordered_at, branch_id')
+        .eq('status', 'COMPLETED').not('customer_id', 'is', null).range(f, t);
+      if (branchId) q = q.eq('branch_id', branchId);
+      return q;
+    }),
+    fetchAll((f, t) => {
+      let q = sb.from('legacy_orders')
+        .select('customer_id, total_amount, ordered_at, branch_id')
+        .not('customer_id', 'is', null).range(f, t);
+      if (branchId) q = q.eq('branch_id', branchId);
+      return q;
+    }),
+  ]);
 
   // 고객별 집계 — sales_orders + legacy 합산
   const orderMap = new Map<string, { totalAmount: number; count: number; lastDate: string; firstDate: string }>();
@@ -132,22 +147,23 @@ export async function getRepurchaseCycles(branchId?: string) {
   const sb = await createClient() as any;
 
   // sales_orders + legacy_orders 통합 페치 (legacy_orders 는 주문당 1행 → count=주문수)
-  let q = sb
-    .from('sales_orders')
-    .select('customer_id, ordered_at, branch_id')
-    .eq('status', 'COMPLETED')
-    .not('customer_id', 'is', null)
-    .range(0, 99999);
-  if (branchId) q = q.eq('branch_id', branchId);
-
-  let lq = sb
-    .from('legacy_orders')
-    .select('customer_id, ordered_at, branch_id')
-    .not('customer_id', 'is', null)
-    .range(0, 99999);
-  if (branchId) lq = lq.eq('branch_id', branchId);
-
-  const [{ data: orders }, { data: legacyOrders }] = await Promise.all([q, lq]);
+  // 1000캡 우회 — 페이지네이션
+  const [orders, legacyOrders] = await Promise.all([
+    fetchAll((f, t) => {
+      let q = sb.from('sales_orders')
+        .select('customer_id, ordered_at, branch_id')
+        .eq('status', 'COMPLETED').not('customer_id', 'is', null).range(f, t);
+      if (branchId) q = q.eq('branch_id', branchId);
+      return q;
+    }),
+    fetchAll((f, t) => {
+      let q = sb.from('legacy_orders')
+        .select('customer_id, ordered_at, branch_id')
+        .not('customer_id', 'is', null).range(f, t);
+      if (branchId) q = q.eq('branch_id', branchId);
+      return q;
+    }),
+  ]);
 
   // 고객별 주문 날짜 배열
   const customerOrders = new Map<string, string[]>();
@@ -218,22 +234,23 @@ export async function getChurnRiskCustomers(branchId?: string) {
   const cutoff = kstDaysAgoStart(60);
 
   // sales_orders + legacy_orders 통합 (legacy_orders 는 주문당 1행 → count=주문수)
-  let q = sb
-    .from('sales_orders')
-    .select('customer_id, ordered_at, total_amount, branch_id')
-    .eq('status', 'COMPLETED')
-    .not('customer_id', 'is', null)
-    .range(0, 99999);
-  if (branchId) q = q.eq('branch_id', branchId);
-
-  let lq = sb
-    .from('legacy_orders')
-    .select('customer_id, ordered_at, total_amount, branch_id')
-    .not('customer_id', 'is', null)
-    .range(0, 99999);
-  if (branchId) lq = lq.eq('branch_id', branchId);
-
-  const [{ data: orders }, { data: legacyOrders }] = await Promise.all([q, lq]);
+  // 1000캡 우회 — 페이지네이션
+  const [orders, legacyOrders] = await Promise.all([
+    fetchAll((f, t) => {
+      let q = sb.from('sales_orders')
+        .select('customer_id, ordered_at, total_amount, branch_id')
+        .eq('status', 'COMPLETED').not('customer_id', 'is', null).range(f, t);
+      if (branchId) q = q.eq('branch_id', branchId);
+      return q;
+    }),
+    fetchAll((f, t) => {
+      let q = sb.from('legacy_orders')
+        .select('customer_id, ordered_at, total_amount, branch_id')
+        .not('customer_id', 'is', null).range(f, t);
+      if (branchId) q = q.eq('branch_id', branchId);
+      return q;
+    }),
+  ]);
 
   // 고객별 마지막 구매일 & 구매 횟수 & LTV
   const customerMap = new Map<string, { lastDate: string; count: number; totalAmount: number }>();
