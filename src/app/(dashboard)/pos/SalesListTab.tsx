@@ -62,6 +62,8 @@ interface OrderRow {
   payment_info?: string | null;
   branch: { id: string; name: string } | null;
   customer: { id: string; name: string; phone: string } | null;
+  buyer_name?: string | null;   // 자사몰 주문자 스냅샷 (customer 미연결 시 표시)
+  buyer_phone?: string | null;
   handler?: { id: string; name: string } | null;
   items: OrderItem[];
   shipments?: ShipmentRow[];
@@ -187,6 +189,7 @@ export default function SalesListTab() {
         receipt_status, receipt_date, approval_status, payment_info,
         branch:branches(id, name),
         customer:customers(id, name, phone),
+        buyer_name, buyer_phone,
         handler:users!sales_orders_ordered_by_fkey(id, name),
         items:sales_order_items(id, quantity, unit_price, total_price, order_option, product:products(id, name, code))
       ` : `
@@ -195,6 +198,7 @@ export default function SalesListTab() {
         approval_no, card_info,
         branch:branches(id, name),
         customer:customers(id, name, phone),
+        buyer_name, buyer_phone,
         items:sales_order_items(id, quantity, unit_price, total_price, product:products(id, name, code))
       `;
       let q = sb.from('sales_orders').select(baseSelect)
@@ -321,6 +325,8 @@ export default function SalesListTab() {
           o.order_number?.toLowerCase().includes(mainQ) ||
           o.customer?.name?.toLowerCase().includes(mainQ) ||
           (mainDigits && o.customer?.phone?.replace(/[^0-9]/g, '').includes(mainDigits)) ||
+          o.buyer_name?.toLowerCase().includes(mainQ) ||
+          (mainDigits && o.buyer_phone?.replace(/[^0-9]/g, '').includes(mainDigits)) ||
           o.memo?.toLowerCase().includes(mainQ);
         if (!hit) return false;
       }
@@ -773,6 +779,14 @@ export default function SalesListTab() {
                         <div>
                           <p className="font-medium text-sm">{o.customer.name}</p>
                           <p className="text-[11px] text-slate-400">{o.customer.phone}</p>
+                        </div>
+                      ) : (o.buyer_name || o.buyer_phone) ? (
+                        <div title="자사몰 주문자 (고객 미연결)">
+                          <p className="font-medium text-sm">
+                            {o.buyer_name || '-'}
+                            <span className="ml-1 text-[10px] px-1 rounded bg-slate-100 text-slate-500 align-middle">자사몰</span>
+                          </p>
+                          <p className="text-[11px] text-slate-400">{o.buyer_phone || ''}</p>
                         </div>
                       ) : <span className="text-slate-300 text-xs">비회원</span>}
                     </td>
@@ -1316,7 +1330,8 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
               receipt_status, receipt_date, approval_status, payment_info,
               handler:users!sales_orders_ordered_by_fkey(id, name),
               branch:branches(id, name),
-              customer:customers(id, name, phone)
+              customer:customers(id, name, phone),
+              buyer_name, buyer_phone
             `)
             .eq('id', orderId).single();
           if (!full.error) return full;
@@ -1327,7 +1342,8 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
               payment_method, points_earned, points_used, credit_settled, memo,
               approval_no, card_info,
               branch:branches(id, name),
-              customer:customers(id, name, phone)
+              customer:customers(id, name, phone),
+              buyer_name, buyer_phone
             `)
             .eq('id', orderId).single();
         })(),
@@ -1463,6 +1479,11 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
                   <Link href={`/customers/${order.customer.id}`} className="text-blue-600 hover:underline">
                     {order.customer.name} <span className="text-xs text-slate-400">{order.customer.phone}</span>
                   </Link>
+                ) : (order.buyer_name || order.buyer_phone) ? (
+                  <span title="자사몰 주문자 (고객 미연결)">
+                    {order.buyer_name || '-'} <span className="text-xs text-slate-400">{order.buyer_phone || ''}</span>
+                    <span className="ml-1 text-[10px] px-1 rounded bg-slate-100 text-slate-500">자사몰</span>
+                  </span>
                 ) : <span className="text-slate-400">비회원</span>}
               </div>
               <div>

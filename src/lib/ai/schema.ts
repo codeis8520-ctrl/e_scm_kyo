@@ -51,7 +51,8 @@ legacy_order_items(마이그 070): id, order_id(→legacy_orders ON DELETE CASCA
   ※ 라인아이템 단위(66,090). UNIQUE(order_id, line_seq).
 
 --- 판매(POS) ---
-sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, ordered_by(담당자), total_amount, discount_amount, points_used, points_earned, payment_method(cash/card/card_keyin/kakao/credit/cod/mixed), credit_settled(bool), credit_settled_at, credit_settled_method, memo, status(COMPLETED/CANCELLED/REFUNDED/PARTIALLY_REFUNDED), ordered_at, receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date, approval_status(COMPLETED/CARD_PENDING/UNSETTLED), payment_info, taxable_amount, exempt_amount, vat_amount
+sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, buyer_name, buyer_phone, ordered_by(담당자), total_amount, discount_amount, points_used, points_earned, payment_method(cash/card/card_keyin/kakao/credit/cod/mixed), credit_settled(bool), credit_settled_at, credit_settled_method, memo, status(COMPLETED/CANCELLED/REFUNDED/PARTIALLY_REFUNDED), ordered_at, receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date, approval_status(COMPLETED/CARD_PENDING/UNSETTLED), payment_info, taxable_amount, exempt_amount, vat_amount
+  ※ buyer_name/buyer_phone: 자사몰(카페24) 주문자 스냅샷(마이그 074). customer_id 연결과 무관하게 보존 — customer_id=NULL이어도 주문자명/전화 표시(판매현황 "비회원" 방지). 고객 분석·집계는 여전히 customer_id 기준.
   ※ status=CANCELLED 처리 경로 2가지: (a) 외상 미수금 → cancelCreditOrder, (b) 그 외 결제수단 → cancelSalesOrder. 둘 다 재고 복원 + 포인트 적립/사용 환원 + 매출 분개 역분개. inventory_movements.reference_type='SALE_CANCEL' 또는 'CREDIT_CANCEL'. journal_entries.source_type='SALE_CANCEL' 또는 'CREDIT_CANCEL'(+reversal_of=원본 분개 ID).
   ※ "취소 vs 환불" 구분: 취소는 거래 자체를 무름(잘못 등록), 환불은 매출 발생 후 반품(return_orders 생성).
   ※ receipt_status=수령현황(수령완료/방문예정/퀵예정/택배예정). 기본 RECEIVED. 배송 활성 시 PARCEL_PLANNED/QUICK_PLANNED 자동 지정.
@@ -253,6 +254,12 @@ sales_orders.receipt_status: 품목 receipt_status 집계(우선순위 PARCEL_PL
 - POS/매입/생산/반품/B2B 이벤트마다 분개 자동 생성
 - VAT: 공급가=price÷1.1, 부가세=price×10/110
 - accounting_period_closes: 월 마감 후 해당 기간 수정 차단
+
+[자사몰(카페24) 매출 동기화 — 주문자 고객 등록]
+- 카페24 결제완료 주문 동기화 시 주문자(orderer)를 sales_orders.buyer_name/buyer_phone 에 항상 스냅샷 저장 → 판매현황에서 customer_id 없어도 주문자명/전화 표시(과거 "비회원" 노출 해소).
+- 고객 연결/생성(webhook.ts linkOrCreateCustomer): ①cafe24_member_id 일치 → 연결 ②전화(대시포맷) 일치 → 기존/레거시 고객 연결 + member_id 백필 ③결제완료(paid)면 신규 customers 생성(source='CAFE24', ON CONFLICT(phone) DO NOTHING — 기존 행 비파괴). 미결제·이름/전화 없는 게스트는 customer_id=NULL 유지.
+- 레거시 임포트 고객과 중복 방지 핵심 = 전화 대시포맷(010-XXXX-XXXX) ON CONFLICT(phone) 매칭. 정규화는 숫자만 추출 후 11자리.
+- 적용 시점: 2026-06 이후 신규 동기화분만. 기존 자사몰 비회원 주문(customer_id=NULL)은 소급 미적용.
 
 [배송]
 - shipments: source=CAFE24(자사몰)/STORE(직접입력)

@@ -107,7 +107,9 @@ export class Cafe24Client {
       return { success: false, data: null as any, error: { code: 'NOT_AUTHENTICATED', message: 'No access token' } };
     }
     const shopNo = process.env.CAFE24_SHOP_NO ?? '1';
-    const url = `https://${this.mallId}.cafe24api.com/api/v2/admin/orders/${orderNo}?shop_no=${shopNo}&embed=items`;
+    // embed=buyer: 주문자(orderer) 이름·전화 확보 (고객 dedup·스냅샷용)
+    // embed=receivers: 폴백용(자가구매 시 수령자=주문자)
+    const url = `https://${this.mallId}.cafe24api.com/api/v2/admin/orders/${orderNo}?shop_no=${shopNo}&embed=items,buyer,receivers`;
     try {
       const res = await fetch(url, {
         headers: {
