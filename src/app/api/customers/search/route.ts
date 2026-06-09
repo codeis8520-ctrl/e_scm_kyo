@@ -8,6 +8,7 @@ const FIELD_LABELS: Record<string, string> = {
   email: '이메일',
   address: '주소',
   product: '구매제품',
+  shipping: '발송지',
 };
 
 type SortKey = 'recent' | 'recent_consult' | 'recent_purchase' | 'name';
@@ -152,7 +153,7 @@ async function matchOneToken(supabase: any, token: string): Promise<Set<string>>
 
   const sQ = token.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
-  const [directRows, productCustomerIds] = await Promise.all([
+  const [directRows, productCustomerIds, shippingIds] = await Promise.all([
     (async () => {
       const orFilters = [
         `name.ilike."%${sQ}%"`,
@@ -173,11 +174,38 @@ async function matchOneToken(supabase: any, token: string): Promise<Set<string>>
       return (data || []) as any[];
     })(),
     findProductCustomerIds(supabase, token),
+    findShippingCustomerIds(supabase, token),
   ]);
 
   const ids = new Set<string>();
   for (const c of directRows) ids.add(c.id);
   for (const id of productCustomerIds.keys()) ids.add(id);
+  for (const id of shippingIds) ids.add(id);
+  return ids;
+}
+
+// 발송지(수령자) 매칭 → customer id 집합 (단일 토큰). RPC 폴백 경로용.
+// 과거구매(legacy_orders) + 구매이력 배송(shipments) 의 수령자 이름/전화/주소.
+async function findShippingCustomerIds(supabase: any, token: string): Promise<Set<string>> {
+  const ids = new Set<string>();
+  const sQ = token.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const digits = token.replace(/[^0-9]/g, '');
+
+  const or = [`recipient_name.ilike."%${sQ}%"`, `recipient_address.ilike."%${sQ}%"`];
+  if (digits.length >= 3) or.push(`recipient_phone.ilike."%${digits}%"`);
+
+  const [legacyRes, shipRes] = await Promise.all([
+    supabase.from('legacy_orders').select('customer_id').not('customer_id', 'is', null).or(or.join(',')).limit(3000),
+    supabase.from('shipments').select('sales_order_id').or(or.join(',')).limit(500),
+  ]);
+  for (const r of (legacyRes.data || []) as any[]) if (r.customer_id) ids.add(r.customer_id);
+
+  const soIds = [...new Set(((shipRes.data || []) as any[]).map((r: any) => r.sales_order_id).filter(Boolean))];
+  if (soIds.length) {
+    const { data: so } = await supabase
+      .from('sales_orders').select('customer_id').in('id', soIds.slice(0, 500)).not('customer_id', 'is', null);
+    for (const r of (so || []) as any[]) if (r.customer_id) ids.add(r.customer_id);
+  }
   return ids;
 }
 
