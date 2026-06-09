@@ -103,8 +103,11 @@ function formatPhoneDashed(digits: string | null): string | null {
 //   2) 전화(대시 포맷) 일치 → 기존 고객(레거시 포함) 연결 + member_id 백필
 //   3) allowCreate(결제완료)면 신규 생성 — ON CONFLICT DO NOTHING 으로 기존 필드 절대 미수정
 // 연결되면 sales_orders.customer_id 갱신. 반환: 최종 customer_id(없으면 null).
-async function linkOrCreateCustomer(params: {
-  orderId: string;
+//
+// 매칭 기준 = 이름 AND 전화. 전화만 같고 이름이 다르면(가족 공유번호 등) 연결하지 않고
+// customer_id=null 유지(스냅샷으로 표시) — 엉뚱한 사람에게 매출 귀속 방지.
+export async function linkOrCreateCustomer(params: {
+  orderId: string | null;          // null이면 customer만 해석하고 주문 업데이트는 생략
   buyerName: string | null;
   buyerPhone: string | null;
   memberId: string | null;
@@ -120,9 +123,10 @@ async function linkOrCreateCustomer(params: {
     const { data } = await sb.from('customers').select('id').eq('cafe24_member_id', memberId).maybeSingle();
     if (data) customerId = data.id;
   }
-  // 2) phone (기존/레거시 고객) — 찾으면 member_id 백필
-  if (!customerId && formatted) {
-    const { data } = await sb.from('customers').select('id, cafe24_member_id').eq('phone', formatted).maybeSingle();
+  // 2) 이름 AND 전화 일치 (기존/레거시 고객) — 찾으면 member_id 백필
+  if (!customerId && formatted && buyerName) {
+    const { data } = await sb.from('customers')
+      .select('id, cafe24_member_id').eq('phone', formatted).eq('name', buyerName).maybeSingle();
     if (data) {
       customerId = data.id;
       if (memberId && !data.cafe24_member_id) {
@@ -131,13 +135,15 @@ async function linkOrCreateCustomer(params: {
     }
   }
   // 3) 신규 생성 (결제완료 + 이름·전화 모두 있을 때만). DO NOTHING → 기존 행 비파괴.
+  //    재조회 후 name 까지 일치할 때만 채택 → 전화가 타인 소유면 연결 안 함(null 유지).
   if (!customerId && allowCreate && formatted && buyerName) {
     await sb.from('customers').upsert(
       { name: buyerName, phone: formatted, cafe24_member_id: memberId || null, source: 'CAFE24', is_active: true },
       { onConflict: 'phone', ignoreDuplicates: true }
     );
-    const { data: created } = await sb.from('customers').select('id, cafe24_member_id').eq('phone', formatted).maybeSingle();
-    if (created) {
+    const { data: created } = await sb.from('customers')
+      .select('id, name, cafe24_member_id').eq('phone', formatted).maybeSingle();
+    if (created && created.name === buyerName) {
       customerId = created.id;
       if (memberId && !created.cafe24_member_id) {
         await sb.from('customers').update({ cafe24_member_id: memberId }).eq('id', created.id);
@@ -145,10 +151,30 @@ async function linkOrCreateCustomer(params: {
     }
   }
 
-  if (customerId) {
+  if (customerId && orderId) {
     await sb.from('sales_orders').update({ customer_id: customerId }).eq('id', orderId);
   }
   return customerId;
+}
+
+// 카페24 주문 객체 → 주문자 스냅샷/결제여부 추출 (handleOrderCreated · 백필 공용).
+export function extractBuyerInfo(cafe24Order: any): {
+  buyerName: string | null;
+  buyerPhone: string | null;
+  memberId: string | null;
+  isPaid: boolean;
+} {
+  const co = cafe24Order ?? {};
+  const buyerObj = co.buyer ?? {};
+  const recvObj = Array.isArray(co.receivers) ? (co.receivers[0] ?? {}) : {};
+  const buyerName: string | null =
+    (buyerObj.name ?? co.billing_name ?? co.orderer_name ?? recvObj.name ?? '').toString().trim() || null;
+  const buyerPhone: string | null =
+    (buyerObj.cellphone ?? buyerObj.phone ?? co.orderer_cellphone ?? co.orderer_phone ?? recvObj.cellphone ?? recvObj.phone ?? '').toString().trim() || null;
+  const memberId: string | null = (co.member_id ?? '').toString().trim() || null;
+  const isPaid =
+    co.paid === 'T' || !!co.payment_date || ['F', 'M', 'A', 'B'].includes(String(co.order_status ?? ''));
+  return { buyerName, buyerPhone, memberId, isPaid };
 }
 
 async function handleOrderCreated(
@@ -200,16 +226,7 @@ async function handleOrderCreated(
   //     전화 대시포맷 ON CONFLICT(phone) 로 매칭, 기존 행은 절대 수정/덮어쓰지 않음.
   //   - 미결제/이름·전화 없는 게스트 주문은 customer_id=null 유지(스냅샷만).
   // ──────────────────────────────────────────────────────────────────────
-  const co = cafe24Order as any;
-  const buyerObj = co.buyer ?? {};
-  const recvObj = Array.isArray(co.receivers) ? (co.receivers[0] ?? {}) : {};
-  const buyerName: string | null =
-    (buyerObj.name ?? co.billing_name ?? co.orderer_name ?? recvObj.name ?? '').toString().trim() || null;
-  const buyerPhone: string | null =
-    (buyerObj.cellphone ?? buyerObj.phone ?? co.orderer_cellphone ?? co.orderer_phone ?? recvObj.cellphone ?? recvObj.phone ?? '').toString().trim() || null;
-  // 결제완료 판정: paid 플래그 / 결제일 / 결제후 상태(F결제완료,M배송준비,A배송중,B배송완료)
-  const isPaid =
-    co.paid === 'T' || !!co.payment_date || ['F', 'M', 'A', 'B'].includes(String(co.order_status ?? ''));
+  const { buyerName, buyerPhone } = extractBuyerInfo(cafe24Order);
 
   const { data: existingOrder } = await getSupabase()
     .from('sales_orders')
@@ -283,13 +300,13 @@ async function handleOrderCreated(
 
   await logSyncEvent('order_created', orderNo.toString(), cafe24Order, 'success');
 
-  // 주문자 → 고객 연결/생성 (결제완료 주문만 신규 생성; 기존/레거시는 항상 연결)
+  // 주문자 → 기존 고객 자동 "연결"만 (자동 생성 안 함 — 미등록은 배송탭에서 수동 등록).
   await linkOrCreateCustomer({
     orderId: newOrder.id,
     buyerName,
     buyerPhone,
     memberId: memberId || null,
-    allowCreate: isPaid,
+    allowCreate: false,
   });
 
   return { success: true, message: 'Order created successfully', orderId: newOrder.id };
@@ -336,7 +353,7 @@ async function handleOrderPaid(
         buyerName: full.buyer_name,
         buyerPhone: full.buyer_phone,
         memberId: null,
-        allowCreate: true,
+        allowCreate: false,   // 자동 생성 안 함 — 기존 고객 연결만
       });
     }
   } catch {

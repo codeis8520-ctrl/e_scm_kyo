@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import ReceiptModal from './ReceiptModal';
 import RefundModal from './RefundModal';
-import { fmtDateKST, kstTodayString, kstDayStart, kstDayEnd } from '@/lib/date';
+import { fmtDateKST, fmtTimeKST, fmtDateTimeKST, kstTodayString, kstDayStart, kstDayEnd } from '@/lib/date';
 import { cancelSalesOrder } from '@/lib/sales-cancel-actions';
 
 function getCookie(name: string): string | null {
@@ -400,7 +400,7 @@ export default function SalesListTab() {
     const map = new Map<string, { count: number; total: number }>();
     for (const o of filtered) {
       if (['CANCELLED', 'REFUNDED'].includes(o.status)) continue;
-      const d = (o.ordered_at || '').slice(0, 10);
+      const d = fmtDateKST(o.ordered_at);   // KST 기준 일자 그룹핑(UTC 슬라이스 금지)
       const cur = map.get(d) || { count: 0, total: 0 };
       cur.count += 1;
       cur.total += o.total_amount || 0;
@@ -429,7 +429,7 @@ export default function SalesListTab() {
       const itemLabel = itemNames.slice(0, 3).join(' / ') + (itemNames.length > 3 ? ` 외 ${itemNames.length - 3}` : '');
       const totalQty = (o.items || []).reduce((s, it) => s + (it.quantity || 0), 0);
       return [
-        (o.ordered_at || '').slice(0, 10),
+        fmtDateKST(o.ordered_at),
         RECEIPT_STATUS_LABEL[o.receipt_status || 'RECEIVED'] || '',
         o.receipt_date || '',
         o.branch?.name || '',
@@ -752,8 +752,8 @@ export default function SalesListTab() {
                     className={`cursor-pointer hover:bg-slate-50 ${isCancelled || isRefunded ? 'opacity-60' : ''}`}
                   >
                     <td className="text-xs text-slate-600 whitespace-nowrap align-top">
-                      <p>{(o.ordered_at || '').slice(0, 10)}</p>
-                      <p className="text-[10px] text-slate-400">{(o.ordered_at || '').slice(11, 16)}</p>
+                      <p>{fmtDateKST(o.ordered_at)}</p>
+                      <p className="text-[10px] text-slate-400">{fmtTimeKST(o.ordered_at)}</p>
                     </td>
                     <td className="whitespace-nowrap align-top">
                       <span className={`badge text-[10px] ${RECEIPT_STATUS_BADGE[receiptKey] || 'bg-slate-100 text-slate-600'}`}>
@@ -1463,7 +1463,7 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div>
                 <p className="text-[11px] text-slate-500">일시</p>
-                <p>{(order.ordered_at || '').slice(0, 19).replace('T', ' ')}</p>
+                <p>{fmtDateTimeKST(order.ordered_at)}</p>
               </div>
               <div>
                 <p className="text-[11px] text-slate-500">매출처</p>

@@ -46,6 +46,8 @@ interface Cafe24OrderForShipping {
   order_date: string;
   orderer_name: string;
   orderer_phone: string;
+  orderer_email: string;
+  orderer_address: string;
   recipient_name: string;
   recipient_phone: string;
   recipient_address: string;
@@ -54,6 +56,8 @@ interface Cafe24OrderForShipping {
   total_price: number;
   already_added: boolean;
   cafe24_status: string;
+  // 우리 고객DB 매칭 (이름 AND 전화). 매칭되면 그 고객, 아니면 null(미등록)
+  customer_match: { id: string; name: string } | null;
 }
 
 // 카페24 매장 발송지(출고지) — 모든 주문에 동일하게 적용
@@ -121,7 +125,7 @@ async function fetchDefaultSender(base: string, headers: Record<string, string>)
   };
 }
 
-const DEMO_ORDERS: Omit<Cafe24OrderForShipping, 'already_added'>[] = [
+const DEMO_ORDERS: Omit<Cafe24OrderForShipping, 'already_added' | 'orderer_email' | 'orderer_address' | 'customer_match'>[] = [
   {
     cafe24_order_id: 'CAFE24-2024-0001',
     order_date: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
@@ -186,7 +190,13 @@ export async function GET(request: NextRequest) {
   const mallId = process.env.CAFE24_MALL_ID;
 
   if (!mallId) {
-    const orders = DEMO_ORDERS.map(o => ({ ...o, already_added: existingIds.has(o.cafe24_order_id) }));
+    const orders = DEMO_ORDERS.map(o => ({
+      ...o,
+      already_added: existingIds.has(o.cafe24_order_id),
+      orderer_email: '',
+      orderer_address: o.recipient_address,
+      customer_match: null as { id: string; name: string } | null,
+    }));
     const default_sender: Cafe24DefaultSender = {
       source: null,
       name: '데모 발송자', phone: '02-0000-0000',
@@ -265,6 +275,7 @@ export async function GET(request: NextRequest) {
 
         const detailOrder = detail?.order ?? null;
         const receiver = recvData?.receivers?.[0] ?? null;
+        const buyer = detailOrder?.buyer ?? {};
         const items: any[] = detailOrder?.items ?? [];
 
         const itemsSummary = items.length > 0
@@ -286,11 +297,15 @@ export async function GET(request: NextRequest) {
           || detailOrder?.order_status
           || (o.canceled === 'T' ? 'C' : o.paid === 'T' ? 'F' : 'N');
 
+        const buyerAddr = [buyer?.address1, buyer?.address2].filter(Boolean).join(' ');
         return {
           cafe24_order_id: orderId,
           order_date: (o.order_date ?? '').split('T')[0],
-          orderer_name: o.billing_name ?? detailOrder?.billing_name ?? '',
-          orderer_phone: receiver?.cellphone ?? receiver?.phone ?? '',
+          // 주문자(orderer): buyer 임베드 우선, 폴백 billing_name/수령자
+          orderer_name: buyer?.name ?? o.billing_name ?? detailOrder?.billing_name ?? '',
+          orderer_phone: buyer?.cellphone ?? buyer?.phone ?? receiver?.cellphone ?? receiver?.phone ?? '',
+          orderer_email: buyer?.email ?? detailOrder?.member_email ?? '',
+          orderer_address: buyerAddr || address,
           recipient_name: receiver?.name ?? '',
           recipient_phone: receiver?.cellphone ?? receiver?.phone ?? '',
           recipient_address: address,
@@ -307,9 +322,31 @@ export async function GET(request: NextRequest) {
           total_price: Number(o.payment_amount ?? detailOrder?.payment_amount ?? 0),
           already_added: existingIds.has(orderId),
           cafe24_status: rawStatus,
+          customer_match: null as { id: string; name: string } | null,
         };
       })
     );
+
+    // 우리 고객DB 매칭 (이름 AND 전화). customers.phone 은 대시포맷 저장.
+    const digitsOf = (s: string) => (s || '').replace(/\D/g, '');
+    const toDashed = (s: string) => {
+      const d = digitsOf(s);
+      if (d.length === 11) return `${d.slice(0, 3)}-${d.slice(3, 7)}-${d.slice(7)}`;
+      if (d.length === 10) return `${d.slice(0, 3)}-${d.slice(3, 6)}-${d.slice(6)}`;
+      return '';
+    };
+    const dashedPhones = [...new Set(orders.map(o => toDashed(o.orderer_phone)).filter(Boolean))];
+    if (dashedPhones.length > 0) {
+      const { data: custs } = await supabase
+        .from('customers').select('id, name, phone').in('phone', dashedPhones);
+      const byKey = new Map<string, { id: string; name: string }>();
+      for (const c of (custs ?? []) as any[]) {
+        byKey.set(`${digitsOf(c.phone)}|${c.name}`, { id: c.id, name: c.name });
+      }
+      for (const o of orders) {
+        o.customer_match = byKey.get(`${digitsOf(o.orderer_phone)}|${o.orderer_name}`) ?? null;
+      }
+    }
 
     // 매장 발송지(출고지)는 이제 우리 시스템(branches.sender_*)에서 관리하므로
     // Cafe24 측에서 가져올 필요 없음. 응답에는 null 유지(클라이언트 호환).

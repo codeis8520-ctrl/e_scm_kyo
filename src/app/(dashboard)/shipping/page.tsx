@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { getShipments, createShipment, updateShipment, deleteShipment } from '@/lib/shipping-actions';
-import { refreshCafe24Token } from '@/lib/cafe24-actions';
+import { refreshCafe24Token, registerCafe24Customers } from '@/lib/cafe24-actions';
 import * as XLSX from 'xlsx';
 import { fmtDateKST, kstTodayString } from '@/lib/date';
 import PageTabs from '@/components/PageTabs';
@@ -32,6 +32,8 @@ interface Cafe24OrderForShipping {
   order_date: string;
   orderer_name: string;
   orderer_phone: string;
+  orderer_email?: string;
+  orderer_address?: string;
   recipient_name: string;
   recipient_phone: string;
   recipient_address: string;
@@ -40,6 +42,7 @@ interface Cafe24OrderForShipping {
   total_price: number;
   already_added: boolean;
   cafe24_status: string;
+  customer_match?: { id: string; name: string } | null;
 }
 
 const CAFE24_STATUS_LABEL: Record<string, string> = {
@@ -133,6 +136,9 @@ export default function ShippingPage() {
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
   const [addingOrders, setAddingOrders] = useState(false);
   const [addError, setAddError] = useState('');
+  const [custSelected, setCustSelected] = useState<Set<string>>(new Set());
+  const [registering, setRegistering] = useState(false);
+  const [registerMsg, setRegisterMsg] = useState('');
   // 카페24 매장 발송지(출고지) — 모든 카페24 주문에 공통 적용
   const [cafe24DefaultSender, setCafe24DefaultSender] = useState<{
     source: 'shippingorigins' | 'store' | null;
@@ -694,7 +700,7 @@ export default function ShippingPage() {
   // ── Cafe24 탭 핸들러 ──────────────────────────────────────────────────────
   const handleLoadCafe24Orders = async () => {
     if (!startDate || !endDate) return;
-    setCafe24Loading(true); setCafe24Error(''); setSelectedOrders(new Set());
+    setCafe24Loading(true); setCafe24Error(''); setSelectedOrders(new Set()); setCustSelected(new Set()); setRegisterMsg('');
     try {
       const res = await fetch(`/api/cafe24/orders?start_date=${startDate}&end_date=${endDate}`);
       if (!res.ok) throw new Error('불러오기 실패');
@@ -719,6 +725,36 @@ export default function ShippingPage() {
 
   const toggleOrderSelect = (id: string) =>
     setSelectedOrders(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  // ── 주문자 고객 등록(미등록만) ──────────────────────────────────────────
+  const toggleCustSelect = (id: string) =>
+    setCustSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  const handleRegisterCustomers = async () => {
+    if (custSelected.size === 0) return;
+    setRegistering(true); setRegisterMsg('');
+    try {
+      const items = cafe24Orders
+        .filter(o => custSelected.has(o.cafe24_order_id) && !o.customer_match)
+        .map(o => ({
+          cafe24_order_id: o.cafe24_order_id,
+          name: o.orderer_name,
+          phone: o.orderer_phone,
+          address: o.orderer_address || o.recipient_address,
+          email: o.orderer_email,
+        }));
+      const res = await registerCafe24Customers(items);
+      setRegisterMsg(res.message || (res.success ? '완료' : '실패'));
+      if (res.success) {
+        setCustSelected(new Set());
+        await handleLoadCafe24Orders();  // 매칭 상태 새로고침
+      }
+    } catch (e: any) {
+      setRegisterMsg(e.message ?? '고객 등록 중 오류');
+    } finally {
+      setRegistering(false);
+    }
+  };
 
   const handleAddSelectedOrders = async () => {
     if (selectedOrders.size === 0) return;
@@ -992,7 +1028,12 @@ export default function ShippingPage() {
               <div className="flex items-center justify-between p-4 border-b border-slate-100">
                 <span className="text-sm text-slate-600">총 {filteredCafe24Orders.length}건 {filteredCafe24Orders.length !== cafe24Orders.length && <span className="text-slate-400">(전체 {cafe24Orders.length}건)</span>}</span>
                 <div className="flex items-center gap-3">
+                  {registerMsg && <span className="text-emerald-600 text-sm">{registerMsg}</span>}
                   {addError && <span className="text-red-500 text-sm">{addError}</span>}
+                  <button className="btn-secondary" onClick={handleRegisterCustomers} disabled={custSelected.size === 0 || registering}
+                    title="선택한 미등록 주문자를 고객으로 등록하고 해당 주문에 연결">
+                    {registering ? '등록 중...' : `주문자 고객 등록 (${custSelected.size}건)`}
+                  </button>
                   <button className="btn-primary" onClick={handleAddSelectedOrders} disabled={selectedOrders.size === 0 || addingOrders}>
                     {addingOrders ? '추가 중...' : `선택한 주문 배송 추가 (${selectedOrders.size}건)`}
                   </button>
@@ -1011,7 +1052,7 @@ export default function ShippingPage() {
                         title={cafe24SelectableIds.length === 0 ? '선택 가능한 주문이 없습니다' : '필터된 주문 모두 선택/해제'}
                       />
                     </th>
-                    <th>주문일</th><th>주문자</th><th>수령자</th><th>주소</th><th>배송메모</th><th>품목</th><th>금액</th><th>카페24 상태</th><th></th>
+                    <th>주문일</th><th>주문자</th><th>고객</th><th>수령자</th><th>주소</th><th>배송메모</th><th>품목</th><th>금액</th><th>카페24 상태</th><th></th>
                   </tr></thead>
                   <tbody>
                     {filteredCafe24Orders.map(order => (
@@ -1019,6 +1060,20 @@ export default function ShippingPage() {
                         <td><input type="checkbox" checked={selectedOrders.has(order.cafe24_order_id)} onChange={() => toggleOrderSelect(order.cafe24_order_id)} disabled={order.already_added} className="w-4 h-4" /></td>
                         <td className="text-sm text-slate-600 whitespace-nowrap">{order.order_date?.slice(0, 10)}</td>
                         <td className="text-sm"><div>{order.orderer_name}</div><div className="text-slate-400 text-xs">{order.orderer_phone}</div></td>
+                        <td className="text-sm whitespace-nowrap">
+                          {order.customer_match ? (
+                            <span className="inline-flex items-center gap-1 text-emerald-700 text-xs px-1.5 py-0.5 rounded bg-emerald-50" title="우리 고객DB에 등록됨(이름+전화 일치)">
+                              ✓ 고객
+                            </span>
+                          ) : (order.orderer_name && order.orderer_phone) ? (
+                            <label className="inline-flex items-center gap-1 text-xs text-slate-500 cursor-pointer" title="체크 후 '주문자 고객 등록'으로 등록">
+                              <input type="checkbox" className="w-3.5 h-3.5"
+                                checked={custSelected.has(order.cafe24_order_id)}
+                                onChange={() => toggleCustSelect(order.cafe24_order_id)} />
+                              미등록
+                            </label>
+                          ) : <span className="text-slate-300 text-xs">-</span>}
+                        </td>
                         <td className="text-sm"><div>{order.recipient_name}</div><div className="text-slate-400 text-xs">{order.recipient_phone}</div></td>
                         <td className="text-sm text-slate-600 max-w-[220px]">
                           <TruncatedCell text={order.recipient_address} className="text-slate-600" />

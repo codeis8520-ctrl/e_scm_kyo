@@ -255,11 +255,11 @@ sales_orders.receipt_status: 품목 receipt_status 집계(우선순위 PARCEL_PL
 - VAT: 공급가=price÷1.1, 부가세=price×10/110
 - accounting_period_closes: 월 마감 후 해당 기간 수정 차단
 
-[자사몰(카페24) 매출 동기화 — 주문자 고객 등록]
-- 카페24 결제완료 주문 동기화 시 주문자(orderer)를 sales_orders.buyer_name/buyer_phone 에 항상 스냅샷 저장 → 판매현황에서 customer_id 없어도 주문자명/전화 표시(과거 "비회원" 노출 해소).
-- 고객 연결/생성(webhook.ts linkOrCreateCustomer): ①cafe24_member_id 일치 → 연결 ②전화(대시포맷) 일치 → 기존/레거시 고객 연결 + member_id 백필 ③결제완료(paid)면 신규 customers 생성(source='CAFE24', ON CONFLICT(phone) DO NOTHING — 기존 행 비파괴). 미결제·이름/전화 없는 게스트는 customer_id=NULL 유지.
-- 레거시 임포트 고객과 중복 방지 핵심 = 전화 대시포맷(010-XXXX-XXXX) ON CONFLICT(phone) 매칭. 정규화는 숫자만 추출 후 11자리.
-- 적용 시점: 2026-06 이후 신규 동기화분만. 기존 자사몰 비회원 주문(customer_id=NULL)은 소급 미적용.
+[자사몰(카페24) 매출 동기화 — 주문자 고객 표시/등록]
+- 동기화 시 주문자(orderer)를 sales_orders.buyer_name/buyer_phone 에 항상 스냅샷 저장 → 판매현황에서 customer_id 없어도 주문자명/전화 표시(과거 "비회원" 노출 해소).
+- sync(webhook.ts linkOrCreateCustomer)는 **기존 고객 자동 "연결"만** 함: ①cafe24_member_id 일치 ②이름 AND 전화(대시포맷) 일치 → 연결(+member_id 백필). **자동 "생성"은 안 함**(allowCreate=false).
+- 모르는 주문자 고객 등록은 **수동**: 배송 카페24 주문탭에서 (이름+전화) 매칭으로 "✓고객/미등록" 표시 → 미등록 체크 후 registerCafe24Customers(cafe24-actions)로 고객 생성(이름+전화+주소+이메일, source='CAFE24', phone 충돌 시 스킵) + 해당 sales_order.customer_id 연결.
+- 매칭/중복 기준 = 이름 AND 전화. 전화만 같고 이름 다르면 연결/등록 안 함(오귀속 방지). customers.phone UNIQUE·대시포맷(010-XXXX-XXXX).
 
 [배송]
 - shipments: source=CAFE24(자사몰)/STORE(직접입력)
