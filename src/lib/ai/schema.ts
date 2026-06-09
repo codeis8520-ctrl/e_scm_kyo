@@ -27,6 +27,7 @@ inventory_movements: id, branch_id, product_id, movement_type(IN/OUT/ADJUST/TRAN
 
 --- 고객·CRM ---
 customers: id, name, phone, phone2(제2 연락처(정규화)), email, grade(NORMAL/VIP/VVIP), primary_branch_id, address, health_note, is_active
+  ※ 동명이인으로 쪼개진(1인 다번호) 고객 병합: merge_customers(대표,보조) RPC — 보조의 모든 참조(주문·구매·상담 등)를 대표로 이전 후 보조 삭제, 보조 번호는 대표 phone2 에 보존. UI: 고객 상세 "고객 병합". point_history balance 는 재계산 안 함.
 customer_grades: code(NORMAL/VIP/VVIP), name, point_rate(1%/2%/3%), is_active
 branch_point_rates(마이그 067): id, branch_id→branches, grade_id→customer_grades, point_rate(0~100), is_active. UNIQUE(branch_id, grade_id).
   ※ 지점×등급 적립율 오버라이드 매트릭스. (branch_id, grade_id) 행이 있고 is_active=true 면 그 point_rate, 없거나 비활성이면 customer_grades.point_rate 사용.

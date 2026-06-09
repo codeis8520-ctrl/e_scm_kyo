@@ -6,6 +6,7 @@ import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { formatPhone } from '@/lib/validators';
 import { settleCreditOrder } from '@/lib/accounting-actions';
+import { mergeCustomers } from '@/lib/actions';
 import { fmtDateTimeKST, fmtDateKST, fmtKoreanMonthKST, kstDayStart, kstDayEnd } from '@/lib/date';
 import CustomerModal from '../CustomerModal';
 
@@ -179,6 +180,7 @@ export default function CustomerDetailPage() {
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
+  const [showMergeModal, setShowMergeModal] = useState(false);
 
   const [activePeriod, setActivePeriod] = useState(1);
   const [purchaseDateRange, setPurchaseDateRange] = useState(() => getDateRange(1));
@@ -541,6 +543,10 @@ export default function CustomerDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button onClick={() => setShowMergeModal(true)} className="btn-secondary text-sm"
+            title="동명이인으로 쪼개진 같은 고객을 이 고객으로 합칩니다">
+            고객 병합
+          </button>
           <span className={`px-3 py-1 rounded-full text-sm font-medium ${GRADE_COLORS[customer.grade] || ''}`}>
             {GRADE_LABELS[customer.grade] || customer.grade}
           </span>
@@ -1321,6 +1327,133 @@ export default function CustomerDetailPage() {
           onSuccess={() => { setShowEditModal(false); fetchData(); }}
         />
       )}
+
+      {showMergeModal && (
+        <MergeModal
+          primary={{ id: customer.id, name: customer.name, phone: customer.phone, phone2: customer.phone2 }}
+          onClose={() => setShowMergeModal(false)}
+          onMerged={() => { setShowMergeModal(false); fetchData(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── 고객 병합 모달 — 현재(대표) 고객에 다른(보조) 고객을 합침 ──────────────────
+function MergeModal({
+  primary, onClose, onMerged,
+}: {
+  primary: { id: string; name: string; phone: string; phone2: string | null };
+  onClose: () => void;
+  onMerged: () => void;
+}) {
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState<{ id: string; name: string; phone: string; phone2: string | null }[]>([]);
+  const [picked, setPicked] = useState<{ id: string; name: string; phone: string; phone2: string | null } | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const runSearch = async () => {
+    const term = q.trim().replace(/[,()%*'"]/g, ' ').trim();
+    if (!term) { setResults([]); return; }
+    setSearching(true); setErr('');
+    try {
+      const sb = createClient();
+      const { data } = await sb
+        .from('customers')
+        .select('id, name, phone, phone2')
+        .or(`name.ilike.%${term}%,phone.ilike.%${term}%,phone2.ilike.%${term}%`)
+        .neq('id', primary.id)
+        .limit(20);
+      setResults((data as any) || []);
+      setPicked(null);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const doMerge = async () => {
+    if (!picked) return;
+    // 양쪽 모두 포인트 이력이 있으면 병합 후 잔액(running balance)이 어긋날 수 있어 경고
+    let pointsWarn = '';
+    try {
+      const sb = createClient();
+      const [pri, sec] = await Promise.all([
+        sb.from('point_history').select('id', { count: 'exact', head: true }).eq('customer_id', primary.id),
+        sb.from('point_history').select('id', { count: 'exact', head: true }).eq('customer_id', picked.id),
+      ]);
+      if ((pri.count || 0) > 0 && (sec.count || 0) > 0) {
+        pointsWarn = `⚠️ 두 고객 모두 포인트 이력이 있습니다. 병합 후 적립 잔액이 어긋날 수 있으니 병합 후 포인트를 확인/조정하세요.\n\n`;
+      }
+    } catch { /* 포인트 체크 실패는 병합을 막지 않음 */ }
+
+    if (!confirm(
+      pointsWarn +
+      `'${picked.name}' (${formatPhone(picked.phone)}) 를\n'${primary.name}' (${formatPhone(primary.phone)}) 로 병합합니다.\n\n` +
+      `· 선택 고객의 주문·구매·상담 이력이 모두 현재 고객으로 이전됩니다.\n` +
+      `· 선택 고객(${formatPhone(picked.phone)})은 삭제되고, 그 번호는 현재 고객의 전화번호2에 보존됩니다.\n` +
+      `· 되돌릴 수 없습니다. 계속할까요?`
+    )) return;
+    setBusy(true); setErr('');
+    const res = await mergeCustomers(primary.id, picked.id);
+    setBusy(false);
+    if ((res as any).error) { setErr((res as any).error); return; }
+    onMerged();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50">
+      <div className="bg-white w-full max-w-lg mx-4 sm:mx-auto max-h-[90vh] overflow-y-auto rounded-t-xl sm:rounded-xl p-4 sm:p-6">
+        <div className="flex justify-between items-center mb-1">
+          <h2 className="text-lg font-bold">고객 병합</h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">✕</button>
+        </div>
+        <p className="text-sm text-slate-500 mb-4">
+          <b className="text-slate-700">{primary.name}</b> ({formatPhone(primary.phone)}) 로 합칠 <b>같은 사람의 다른 레코드</b>를 찾아 선택하세요.
+        </p>
+
+        <div className="flex gap-2 mb-3">
+          <input
+            value={q}
+            onChange={e => setQ(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') runSearch(); }}
+            placeholder="이름 또는 전화번호로 검색"
+            className="input flex-1"
+            autoFocus
+          />
+          <button onClick={runSearch} className="btn-secondary" disabled={searching}>
+            {searching ? '검색…' : '검색'}
+          </button>
+        </div>
+
+        <div className="space-y-1 max-h-64 overflow-y-auto mb-4">
+          {results.length === 0 ? (
+            <p className="text-center text-slate-400 text-sm py-6">검색 결과가 여기에 표시됩니다.</p>
+          ) : results.map(r => (
+            <label key={r.id}
+              className={`flex items-center gap-3 p-2 rounded-lg border cursor-pointer ${picked?.id === r.id ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:bg-slate-50'}`}>
+              <input type="radio" name="mergeTarget" checked={picked?.id === r.id} onChange={() => setPicked(r)} />
+              <div className="text-sm">
+                <div className="font-medium">{r.name}</div>
+                <div className="text-slate-400 text-xs">
+                  {formatPhone(r.phone)}{r.phone2 && ` · ${formatPhone(r.phone2)}`}
+                </div>
+              </div>
+            </label>
+          ))}
+        </div>
+
+        {err && <p className="text-red-500 text-sm mb-2">{err}</p>}
+
+        <div className="flex gap-2">
+          <button onClick={onClose} className="btn-secondary flex-1">취소</button>
+          <button onClick={doMerge} disabled={!picked || busy}
+            className="btn-primary flex-1 disabled:opacity-50">
+            {busy ? '병합 중…' : '현재 고객으로 병합'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

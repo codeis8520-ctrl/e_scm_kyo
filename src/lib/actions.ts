@@ -960,6 +960,25 @@ export async function deleteCustomer(id: string) {
   return { success: true };
 }
 
+// ─── 고객 병합 (동명이인 분리 → 1인 통합) ─────────────────────────────────────
+//   보조(secondary)의 모든 참조를 대표(primary)로 이전 후 보조 삭제 (원자적 RPC).
+//   보조 전화번호는 대표 phone2 에 보존. point_history balance 는 재계산 안 함.
+export async function mergeCustomers(primaryId: string, secondaryId: string) {
+  if (!primaryId || !secondaryId) return { error: '대표/보조 고객을 모두 지정하세요' };
+  if (primaryId === secondaryId) return { error: '같은 고객끼리는 병합할 수 없습니다' };
+
+  const supabase = await createClient();
+  const { data, error } = await (supabase as any).rpc('merge_customers', {
+    p_primary: primaryId,
+    p_secondary: secondaryId,
+  });
+  if (error) return { error: error.message };
+
+  revalidatePath('/customers');
+  revalidatePath(`/customers/${primaryId}`);
+  return { success: true, ...(data || {}) };
+}
+
 // ============ Inventory ============
 
 export async function getInventory(branchId?: string, search?: string) {
