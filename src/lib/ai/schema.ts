@@ -56,6 +56,7 @@ sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, buyer_n
   ※ buyer_name/buyer_phone: 자사몰(카페24) 주문자 스냅샷(마이그 074). customer_id 연결과 무관하게 보존 — customer_id=NULL이어도 주문자명/전화 표시(판매현황 "비회원" 방지). 고객 분석·집계는 여전히 customer_id 기준.
   ※ status=CANCELLED 처리 경로 2가지: (a) 외상 미수금 → cancelCreditOrder, (b) 그 외 결제수단 → cancelSalesOrder. 둘 다 재고 복원 + 포인트 적립/사용 환원 + 매출 분개 역분개. inventory_movements.reference_type='SALE_CANCEL' 또는 'CREDIT_CANCEL'. journal_entries.source_type='SALE_CANCEL' 또는 'CREDIT_CANCEL'(+reversal_of=원본 분개 ID).
   ※ "취소 vs 환불" 구분: 취소는 거래 자체를 무름(잘못 등록), 환불은 매출 발생 후 반품(return_orders 생성).
+  ※ 전표 수정(수령 전 품목 추가/삭제): status=COMPLETED & receipt_status≠RECEIVED 전표에 한해 품목 추가/삭제 가능(addSalesOrderItem/removeSalesOrderItem). 즉시 total_amount/taxable/exempt/vat·적립포인트·재고가 재계산됨. 재고 movement reference_type='SALE_REVISE_ADD'(차감,OUT)/'SALE_REVISE_REMOVE'(복원,IN), phantom은 'PHANTOM_DECOMPOSE'. 결제 차액은 sales_order_payments 1행(memo='전표 수정 자동 추가결제/부분환불'). 매출 분개는 차액분만 추가(journal_entries.source_type='SALE_REVISE', orderNumber 'REVISE-...'). 적립포인트 차액은 point_history type='adjust'(description='전표 수정 적립 조정'). 주문할인(discount_amount) 재배분은 없음(기존값 유지). 수령완료/마지막 품목 삭제는 거부.
   ※ receipt_status=수령현황(수령완료/방문예정/퀵예정/택배예정). 기본 RECEIVED. 배송 활성 시 PARCEL_PLANNED/QUICK_PLANNED 자동 지정.
   ※ approval_status=결제 승인 라이프사이클(status와 직교). card_keyin→CARD_PENDING, credit→UNSETTLED 자동 추론 가능.
   ※ payment_info=레거시 자유기입 컬럼(2026-04 UI 제거). 신규 입력 없음. 과거 데이터 조회만 노출.
@@ -70,6 +71,7 @@ sales_order_items: id, sales_order_id, product_id, quantity, unit_price, discoun
   ※ shipments.items_summary는 PICKUP 제외, PARCEL/QUICK 품목만 요약.
 sales_order_payments: id, sales_order_id, payment_method, amount, approval_no, card_info, memo, paid_at, created_by
   ※ 한 주문의 다중 결제(분할). 합계<총액이면 잔액=외상. payment_method='mixed'면 세부는 이 테이블에.
+  ※ amount 음수=환불(전표 수정 부분환불, 마이그078). Σ amount=순수금액. payment_method enum: cash|card|card_keyin|kakao|credit|cod|mixed.
 sales_order_drafts(마이그 060): id, branch_id, customer_id, customer_snapshot(jsonb), cart_items(jsonb), delivery_info(jsonb), payment_info(jsonb), meta_info(jsonb), memo, title, total_amount, item_count, created_by, created_at, updated_at
   ※ POS 결제 직전 상태 통째 저장 → 나중에 다시 불러와 이어 작성하는 임시 슬롯.
   ※ 결제 완료(processPosCheckout) 시 currentDraftId가 있으면 자동 삭제.

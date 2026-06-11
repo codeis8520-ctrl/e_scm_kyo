@@ -8,6 +8,7 @@ import ReceiptModal from './ReceiptModal';
 import RefundModal from './RefundModal';
 import { fmtDateKST, fmtTimeKST, fmtDateTimeKST, kstTodayString, kstDayStart, kstDayEnd } from '@/lib/date';
 import { cancelSalesOrder } from '@/lib/sales-cancel-actions';
+import { addSalesOrderItem, removeSalesOrderItem } from '@/lib/sales-revise-actions';
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -1056,6 +1057,15 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
   const [markingReceipt, setMarkingReceipt] = useState(false);
+  // 수령 전 전표 품목 추가/삭제
+  const [revising, setRevising] = useState(false);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [productOptions, setProductOptions] = useState<{ id: string; name: string; code?: string; price?: number }[]>([]);
+  const [addProductId, setAddProductId] = useState('');
+  const [addQty, setAddQty] = useState('1');
+  const [addPrice, setAddPrice] = useState('');
+  const [addOption, setAddOption] = useState('');
+  const [addDeliveryType, setAddDeliveryType] = useState<'PICKUP' | 'PARCEL' | 'QUICK'>('PICKUP');
 
   const handleCancelSale = async () => {
     if (!order) return;
@@ -1315,12 +1325,10 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
     }
   };
 
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      setLoading(true);
-      const sb = createClient() as any;
-      const [ordRes, itemRes, payRes, shipRes] = await Promise.all([
+  const loadDetail = useCallback(async (showSpinner: boolean) => {
+    if (showSpinner) setLoading(true);
+    const sb = createClient() as any;
+    const [ordRes, itemRes, payRes, shipRes] = await Promise.all([
         (async () => {
           const full = await sb.from('sales_orders')
             .select(`
@@ -1401,16 +1409,82 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
             .eq('sales_order_id', orderId).maybeSingle();
           return fallback.error ? { data: null } : fallback;
         })(),
-      ]);
-      if (!active) return;
-      setOrder(ordRes.data || null);
-      setItems((itemRes.data as any[]) || []);
-      setPayments((payRes.data as any[]) || []);
-      setShipment(shipRes.data || null);
-      setLoading(false);
-    })();
-    return () => { active = false; };
+    ]);
+    setOrder(ordRes.data || null);
+    setItems((itemRes.data as any[]) || []);
+    setPayments((payRes.data as any[]) || []);
+    setShipment(shipRes.data || null);
+    if (showSpinner) setLoading(false);
   }, [orderId]);
+
+  useEffect(() => {
+    loadDetail(true);
+  }, [loadDetail]);
+
+  // 수령 전 전표만 품목 추가/삭제 가능 (status=COMPLETED + receipt_status 존재 + ≠RECEIVED)
+  const editable = order?.status === 'COMPLETED' && !!order?.receipt_status && order.receipt_status !== 'RECEIVED';
+  // 삭제 가능한(아직 미수령) 품목 수 — 마지막 1개 비활성 판단용
+  const deletableCount = items.filter(it => (it.receipt_status || 'RECEIVED') !== 'RECEIVED').length;
+
+  // 활성 제품 목록 지연 로드 — '+ 품목 추가' 폼을 처음 열 때만
+  const openAddForm = async () => {
+    setShowAddForm(true);
+    if (productOptions.length === 0) {
+      const sb = createClient() as any;
+      let res = await sb.from('products').select('id, name, code, price').eq('is_active', true).order('name');
+      if (res.error) res = await sb.from('products').select('id, name, code').eq('is_active', true).order('name');
+      if (res.error) res = await sb.from('products').select('id, name, code').order('name');
+      setProductOptions((res.data as any[]) || []);
+    }
+  };
+
+  const handleAddItem = async () => {
+    if (revising || !order) return;
+    const qty = Number(addQty);
+    const price = Number(addPrice);
+    if (!addProductId) { alert('제품을 선택해주세요.'); return; }
+    if (!Number.isFinite(qty) || qty <= 0) { alert('수량을 올바르게 입력해주세요.'); return; }
+    if (!Number.isFinite(price) || price < 0) { alert('단가를 올바르게 입력해주세요.'); return; }
+    setRevising(true);
+    try {
+      const res = await addSalesOrderItem({
+        orderId: order.id,
+        productId: addProductId,
+        quantity: qty,
+        unitPrice: price,
+        orderOption: addOption.trim() || null,
+        deliveryType: addDeliveryType,
+      });
+      if (res.error) { alert('품목 추가 실패: ' + res.error); return; }
+      if (res.delta && res.delta !== 0) {
+        alert(`결제 차액 ₩${Math.abs(res.delta).toLocaleString()} 가 ${res.delta > 0 ? '추가결제' : '부분환불'}로 기록되었습니다.\n카드/단말기 정산은 별도로 처리하세요.`);
+      }
+      // 폼 초기화 + 재조회
+      setAddProductId(''); setAddQty('1'); setAddPrice(''); setAddOption(''); setAddDeliveryType('PICKUP');
+      setShowAddForm(false);
+      await loadDetail(false);
+      onChanged();
+    } finally {
+      setRevising(false);
+    }
+  };
+
+  const handleRemoveItem = async (itemId: string) => {
+    if (revising || !order) return;
+    if (!confirm('이 품목을 삭제하시겠습니까?\n재고가 복원되고 결제 차액이 기록됩니다.')) return;
+    setRevising(true);
+    try {
+      const res = await removeSalesOrderItem({ orderId: order.id, itemId });
+      if (res.error) { alert('품목 삭제 실패: ' + res.error); return; }
+      if (res.delta && res.delta !== 0) {
+        alert(`결제 차액 ₩${Math.abs(res.delta).toLocaleString()} 가 ${res.delta > 0 ? '추가결제' : '부분환불'}로 기록되었습니다.\n카드/단말기 정산은 별도로 처리하세요.`);
+      }
+      await loadDetail(false);
+      onChanged();
+    } finally {
+      setRevising(false);
+    }
+  };
 
   const handleReprint = () => {
     if (!order) return;
@@ -1617,6 +1691,16 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
                                 </button>
                               )}
                             </div>
+                            {editable && itemRStatus !== 'RECEIVED' && (
+                              <button
+                                onClick={() => handleRemoveItem(it.id)}
+                                disabled={revising || deletableCount <= 1}
+                                className="text-[10px] px-1.5 py-0.5 rounded border border-rose-300 text-rose-700 hover:bg-rose-50 disabled:opacity-40 mt-0.5"
+                                title={deletableCount <= 1 ? '전표의 마지막 품목은 삭제할 수 없습니다 (판매 취소 사용)' : '이 품목을 삭제하고 재고·결제 차액을 정리합니다'}
+                              >
+                                🗑 삭제
+                              </button>
+                            )}
                             {it.receipt_date && (
                               <p className="text-[10px] text-slate-400 mt-0.5">{it.receipt_date}</p>
                             )}
@@ -1630,6 +1714,80 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
                   </tbody>
                 </table>
               </div>
+
+              {/* 수령 전 전표: 품목 추가 */}
+              {editable && (
+                <div className="mt-2">
+                  {!showAddForm ? (
+                    <button
+                      onClick={openAddForm}
+                      className="text-xs px-2.5 py-1.5 rounded border border-blue-300 text-blue-700 hover:bg-blue-50"
+                    >
+                      + 품목 추가
+                    </button>
+                  ) : (
+                    <div className="p-3 border border-blue-200 rounded-md bg-blue-50/40 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-semibold text-blue-700">품목 추가</p>
+                        <button onClick={() => setShowAddForm(false)} className="text-slate-400 hover:text-slate-600 text-sm">✕</button>
+                      </div>
+                      <select
+                        value={addProductId}
+                        onChange={e => {
+                          setAddProductId(e.target.value);
+                          const p = productOptions.find(o => o.id === e.target.value);
+                          if (p && p.price != null && addPrice === '') setAddPrice(String(p.price));
+                        }}
+                        className="w-full text-sm border border-slate-300 rounded px-2 py-1.5"
+                      >
+                        <option value="">제품 선택...</option>
+                        {productOptions.map(p => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}{p.code ? ` (${p.code})` : ''}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <label className="text-[10px] text-slate-500">수량</label>
+                          <input type="number" min={1} value={addQty} onChange={e => setAddQty(e.target.value)}
+                            className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-slate-500">단가</label>
+                          <input type="number" min={0} value={addPrice} onChange={e => setAddPrice(e.target.value)}
+                            className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-slate-500">배송</label>
+                          <select value={addDeliveryType} onChange={e => setAddDeliveryType(e.target.value as any)}
+                            className="w-full text-sm border border-slate-300 rounded px-2 py-1">
+                            <option value="PICKUP">🏠 현장</option>
+                            <option value="PARCEL">📦 택배</option>
+                            <option value="QUICK">🛵 퀵</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-500">주문 옵션 (선택)</label>
+                        <input type="text" value={addOption} onChange={e => setAddOption(e.target.value)}
+                          placeholder="예: 선물포장"
+                          className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                      </div>
+                      <p className="text-[10px] text-slate-500">
+                        추가 시 재고가 차감되고 결제 차액이 자동 기록됩니다. 카드/단말기 정산은 별도 처리하세요.
+                      </p>
+                      <button
+                        onClick={handleAddItem}
+                        disabled={revising}
+                        className="w-full py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                      >
+                        {revising ? '처리 중...' : '품목 추가'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* 결제 */}

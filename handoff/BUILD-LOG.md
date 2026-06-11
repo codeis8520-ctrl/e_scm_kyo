@@ -4,6 +4,66 @@
 
 ---
 
+## ACTIVE SPRINT — 수령 전 전표 품목 추가/삭제 + 방문↔택배 전환 (2026-06-11)
+
+전체 3스텝. ARCHITECT-BRIEF.md는 **현재 스텝만** 담는다.
+- Step 1 (브리핑 완료): 품목 추가/삭제 서버액션 + 공용 재계산 헬퍼 + 드로어 UI. shipments 미접촉.
+- Step 2 (대기): 품목 delivery_type 전환 + order receipt_status 재집계.
+- Step 3 (대기): 방문↔택배 양방향 = shipment 생성/void + 수령자·주소 입력.
+
+### Step 1 — 잠긴 결정 (Locked)
+- 수정 허용 조건: `status==='COMPLETED' && receipt_status NOT IN (RECEIVED, null)`. receipt_status 없음=수정불가(레거시 안전).
+- 재계산 범위: total_amount(할인전 총액)·과세/면세/VAT 스냅샷·적립포인트(차액 adjust)·재고(OUT/IN, phantom 분해 포함).
+- 결제 차액: sales_order_payments 1행(+추가결제/−부분환불). **PG/카드 단말기 연동 없음** — DB기록+수기안내만.
+- 매출 분개: 역분개+재분개가 아니라 **차액분만 추가 분개**(sourceType 'SALE_REVISE', 미지원 시 'SALE' 폴백, 부호로 흡수). 분개 실패는 경고만.
+- 재고 지점: shipment.branch_id 있으면 그 값, 없으면 order.branch_id.
+- 삭제 가드: 수령된 품목 삭제 거부, 마지막 1품목 삭제 거부(→판매취소 유도).
+- 신규 reference_type: SALE_REVISE_ADD / SALE_REVISE_REMOVE. 신규 journal sourceType: SALE_REVISE. → ai/schema.ts BUSINESS_RULES 동기화 필수(CLAUDE.md 절대규칙).
+
+### Step 1 — 리뷰 Round 1 Must Fix 대응 (Arch 결정, 2026-06-11)
+- **결제 차액 표현 = Option B(제약 완화, 음수=환불).** 근거: `SalesListTab.tsx:1513-1514`가 `totalPaid=Σ amount`로 외상 잔액(`total - discount - Σ`)을 계산하는 유일한 합산 소비자다. abs 저장은 환불 시 totalPaid를 부풀려 잔액을 왜곡 → 음수 부호 보존이 정답. abs 옵션 기각.
+- **마이그 078 작성(Arch 소유)**: `supabase/migrations/078_sales_payments_allow_refund.sql` — (1) `amount>=0` CHECK 제거(음수 허용), (2) child `payment_method` CHECK에 'mixed' 추가(045 누락분 — mixed 원주문 대표결제수단 insert 통과). Arch가 Supabase 적용 책임.
+- **Bob 코드 수정 지시(브리프 amendment 작성됨)**: recordPaymentDelta는 amount 부호 보존(abs 금지) + insert 실패를 호출자로 전파(조용한 `console.error` 삼킴 제거 — Must Fix 본질). isMissingColumnError(42703) 폴백만 유지.
+- Open Question 2(mixed/null→cash 분개 귀속): 분개 수금계정은 현금 단순화 유지, 이번 범위 밖 — 아래 Known Gaps + Project Owner 회계정책 확인 대상.
+
+### Step 1 — Known Gaps (범위 밖, 추후)
+- 주문 할인(discount_amount) 재배분 없음 — 기존값 유지.
+- 동시 편집 락 없음(단일 사용자 가정).
+- 실제 카드 취소/추가승인 자동화 없음.
+- 에이전트 tools.ts 신규 도구 미추가(화면 전용 액션).
+- shipments·delivery_type 전환은 Step 2/3.
+
+### Step 1 — 빌드 완료 (Bob, 2026-06-11)
+
+**상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, `npm run build` ✅ Compiled successfully, error/warning 0)
+
+**변경 파일 (3개, DB/마이그 변경 없음 — 기존 테이블만 사용)**:
+- 신규 `src/lib/sales-revise-actions.ts` — `addSalesOrderItem`/`removeSalesOrderItem` 2개 서버액션 + 공용 헬퍼(loadEditableOrder 가드, resolveStockBranchId, loadProductMeta·loadPhantomBom 폴백, adjustStock/applyStockForItem 재고증감+phantom분해, recalcSalesOrderTotals 핵심 재계산, recordPaymentDelta, recordJournalDelta). processPosCheckout/cancelSalesOrder의 컬럼-누락 방어(42703→optional 제거 재시도) 패턴 동일 적용.
+- `src/app/(dashboard)/pos/SalesListTab.tsx` — import 2개; useEffect loadDetail을 useCallback(showSpinner)로 추출(추가/삭제 후 재조회용); editable/deletableCount 계산; 품목 행에 '🗑 삭제' 버튼(미수령행만, 마지막1행 비활성); 품목 테이블 하단 '+ 품목 추가' 인라인 폼(활성제품 셀렉트+수량/단가/배송/옵션); 차액 alert 안내. 기존 markReceiptCompleted/revert/changeDeliveryType/markItemReceived 미접촉.
+- `src/lib/ai/schema.ts` — BUSINESS_RULES sales_orders 섹션에 "전표 수정(수령 전 품목 추가/삭제)" 1줄 + 신규 reference_type(SALE_REVISE_ADD/REMOVE)·sourceType(SALE_REVISE)·point_history adjust 사유 명시. DB_SCHEMA 컬럼 변경 없음.
+
+**주요 결정**:
+- 매출 분개: `createSaleJournal` sourceType는 free-text column(source_type)에 그대로 기록되고 분기 의존 없음을 grep 확인 → 'SALE_REVISE' 직접 사용(폴백 불필요). 차액분만 추가 분개, delta=0 skip, try/catch 경고만.
+- 재고 지점: shipments.branch_id가 order.branch_id와 다르면 우선, 없으면 order.branch_id(processPosCheckout stockBranchId 의미 일치).
+- 결제 차액: 대표결제수단(mixed/null→cash 폴백)으로 sales_order_payments 1행. delta=0이면 결제·분개 모두 skip(Acceptance #5).
+- 적립포인트: order.point_rate_applied(없으면 1.0) 기준 newEarned 재산정 후 (newEarned − 기존 points_earned) 차액만 point_history adjust.
+- removeSalesOrderItem: 제품 메타 조회 실패해도 track=true 기본값으로 복원 진행(재고 누락 방지).
+
+**Known Gaps (이번 스코프 밖)**: 위 [Step 1 — Known Gaps] 동일 — discount_amount 재배분 없음, 동시편집 락 없음, 실제 카드취소 자동화 없음, 에이전트 tools.ts 도구 없음, shipments/delivery_type 전환은 Step 2/3.
+- (Open Question 2, Richard·Arch 확인) 분할결제('mixed') 전표 차액의 **분개 수금계정**은 현금(1110) 단순화 유지 — `representativePaymentMethod`는 분개용으로 mixed→cash. 회계정책 판단은 범위 밖. 단 `sales_order_payments.payment_method`는 'mixed' 보존(078).
+
+### Step 1 — AMENDMENT 빌드 완료 (Bob, 2026-06-11) — Must Fix 1건 대응
+
+**상태**: 🔵 재리뷰 대기 (REVIEW-REQUEST 갱신, `npm run build` ✅ Compiled successfully)
+
+Arch 결정 Option B(부호 보존). 마이그 078(`amount≥0` 제약 제거 + child CHECK 'mixed' 추가)은 Arch 소유 — Bob 미접촉.
+
+**변경 파일 (2개)**:
+- `src/lib/sales-revise-actions.ts` — `recordPaymentDelta`: ① amount 부호 보존(음수=부분환불, abs 미사용) ② 조용한 실패 제거 → insert 실패 시 `{ error }` 전파(42703 폴백만 유지, 23514 등은 삼키지 않음) ③ `paymentRecordMethod` 신규(child CHECK 허용목록 검증, 'mixed' 보존·null/목록밖만 'cash'). 두 호출부(addSalesOrderItem/removeSalesOrderItem)에서 `payRes.error` 시 즉시 `{ error }` 반환 → 재고·분개 조정 후 결제장부 누락 정합성 깨짐 차단.
+- `src/lib/ai/schema.ts` — sales_order_payments 주석에 amount 음수=환불·Σ=순수금액·payment_method enum('mixed' 포함) 1줄 추가.
+
+---
+
 ## Completed Steps
 
 ### 대시보드 헤더/탭 통일 — 배치 B (PageTabs 채택 6페이지)

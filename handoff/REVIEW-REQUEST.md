@@ -1,52 +1,53 @@
-# Review Request — 대시보드 헤더/탭 통일 · 배치 B (PageTabs 채택 6페이지)
-Date: 2026-06-03
+# Review Request — Step 1 (수령 전 전표 품목 추가/삭제)
+Date: 2026-06-11
 Ready for Review: YES
 
-## 개요
-배치 A에서 신설한 공용 PageTabs를 나머지 6페이지에 채택. 순수 프레젠테이션 — state/URL/핸들러/패널 분기 전부 미접촉, onChange/activeKey에 연결만. 서버액션·DB·src/lib/ai/schema.ts 변경 0.
+빌드: `npm run build` ✅ Compiled successfully, error/warning 0.
+
+## AMENDMENT 적용 (2026-06-11) — 리뷰 Must Fix 1건 대응
+Arch 결정 Option B(부호 보존, 마이그 078로 amount≥0 제약 제거 + 'mixed' 허용). 마이그 파일은 Arch 소유 — 미접촉.
+- `src/lib/sales-revise-actions.ts:294-330` `recordPaymentDelta` 재작성:
+  - amount **부호 보존**(음수=부분환불). abs 미사용.
+  - **조용한 실패 제거**: insert 실패 시 `{ error }` 반환(전파). 42703(레거시 컬럼 누락)만 폴백 재시도, 그 외(23514 제약위반 포함) 삼키지 않음.
+  - `paymentRecordMethod` 신규: child CHECK 허용목록(078 후 'mixed' 포함) 검증 → 'mixed'는 보존, null/목록밖만 'cash'. (분개용 `representativePaymentMethod`는 mixed→cash 단순화로 분리 유지.)
+- `src/lib/sales-revise-actions.ts:419-420, 494-495` 두 호출부: `recordPaymentDelta` 에러 시 즉시 `{ error }` 반환(재고·분개 후 결제장부 누락 정합성 깨짐 차단).
+- `src/lib/ai/schema.ts:74` sales_order_payments 주석: amount 음수=환불·Σ=순수금액·payment_method enum('mixed' 포함) 추가.
 
 ## Files Changed
-- `src/app/(dashboard)/customers/page.tsx`
-  - L10 — `import PageTabs from '@/components/PageTabs'`.
-  - L259~ — list/campaign 인라인 탭 `<div>` → PageTabs. onChange={(k)=>setActiveTab(k as TabType)} (기존과 동일, setActiveTab만). **URL ?tab= 동기화 useEffect·listQs 미접촉**.
-- `src/app/(dashboard)/accounting/page.tsx`
-  - L18 — import 추가.
-  - L175~ — 기존 TABS(6탭) 배열 그대로 PageTabs에 전달. onChange={(k)=>setTab(k as Tab)}. overflow-x-auto 래퍼 제거(PageTabs nav가 overflow-x-auto 내장).
-- `src/app/(dashboard)/trade/page.tsx`
-  - L5 — import 추가.
-  - L16~ — credit/b2b_sales/b2b_partners 3탭 → PageTabs. onChange={(k)=>setActiveTab(k as Tab)}. actions 없음.
-- `src/app/(dashboard)/notifications/page.tsx`
-  - L12 — import 추가.
-  - L150~ — kakao/sms/templates 3탭 → PageTabs. onChange={(k)=>handleTabChange(k as typeof activeTab)} (외부 전환 핸들러 유지). 우측 배치버튼(생일/휴면/+발송, activeTab!=='templates' 조건)은 actions 슬롯으로 이동 — 내부 버튼 본문/조건 미변경.
-- `src/app/(dashboard)/reports/page.tsx`
-  - L7 — import 추가.
-  - L684~ — REPORT_TABS 그대로 PageTabs. onChange={(k)=>setReportTab(k as ReportTab)}. 우측 기간/날짜/채널/지점 셀렉트·조회·CSV·PDF 버튼 블록을 actions 슬롯으로 이동(본문 미변경).
-- `src/app/(dashboard)/pos/page.tsx`
-  - L12 — import 추가.
-  - L1446~ — **최상단** checkout/list(MainTab) 탭만 → PageTabs. onChange={(k)=>setMainTab(k as MainTab)}. 우측 임시저장/불러오기 블록(mainTab==='checkout' 조건)은 actions 슬롯으로 이동. **내부 서브탭(모달/패널) 절대 미접촉**.
 
-## 탭 key ↔ 패널 분기 1:1 일치 확인
-| 페이지 | tabs[].key | 패널 분기 |
-|---|---|---|
-| customers | list, campaign | activeTab === 'list'\|'campaign' |
-| accounting | pl, journal, ledger, vat, gl_balance, manual | tab === ... |
-| trade | credit, b2b_sales, b2b_partners | activeTab === ... |
-| notifications | kakao, sms, templates | activeTab === ... |
-| reports | sales, purchase, pl, trend, margin | reportTab === ... |
-| pos | checkout, list | mainTab === ... |
+### 1. `src/lib/sales-revise-actions.ts` (신규, 전체)
+- L31-36 `isMissingColumnError` — 42703 / "column does not exist" 판별 헬퍼.
+- L39-58 `loadEditableOrder` — 공통 가드: 주문 fetch + status===COMPLETED + receipt_status≠RECEIVED(null/없음도 차단) 검증.
+- L62-70 `resolveStockBranchId` — shipment.branch_id가 order.branch_id와 다르면 우선, 없으면 order.branch_id.
+- L73-107 `loadProductMeta` — 제품 name/is_taxable/product_type/track_inventory/is_phantom 조회(4단 폴백) + RAW/SUB 거부.
+- L110-117 `loadPhantomBom` — phantom BOM 구성품 조회.
+- L120-156 `adjustStock`/`applyStockForItem` — 재고 OUT/IN 증감 + inventory_movements 기록, phantom이면 BOM 분해(PHANTOM_DECOMPOSE), track=false면 skip.
+- L186-292 `recalcSalesOrderTotals` — **핵심**: 남은 items 재조회 → total_amount(할인전)·과세/면세/VAT 비례배분 스냅샷·적립포인트 차액 adjust·sales_orders update(optional 컬럼 방어). deltaFinal/deltaTaxable 반환.
+- L295-311 `recordPaymentDelta` — delta≠0이면 sales_order_payments 1행(+추가결제/−부분환불, 대표결제수단).
+- L314-345 `recordJournalDelta` — delta≠0이면 createSaleJournal(sourceType='SALE_REVISE', orderNumber 'REVISE-...', try/catch 경고만).
+- L350-426 `addSalesOrderItem` — 가드→제품메타(RAW/SUB·phantom BOM 없음 거부)→item insert(optional 방어)→재고 OUT→재계산→결제/분개 차액→audit→revalidate.
+- L431-498 `removeSalesOrderItem` — 가드+소속확인+수령됨/마지막1개 삭제 거부→재고 IN→item delete→재계산→결제/분개 차액→audit→revalidate.
 
-(키는 전부 각 페이지 실제 코드에서 그대로 복사 — 오타 0)
+### 2. `src/app/(dashboard)/pos/SalesListTab.tsx`
+- L11 — `addSalesOrderItem`, `removeSalesOrderItem` import.
+- L1060-1070 — 품목 추가/삭제용 state(revising, showAddForm, productOptions, addProductId/Qty/Price/Option/DeliveryType).
+- L1328-1410 — 기존 useEffect 데이터 로드를 `loadDetail = useCallback(showSpinner)`로 추출(추가/삭제 후 `loadDetail(false)` 재조회). useEffect는 `loadDetail(true)` 호출만.
+- L1424-1487 — `editable`/`deletableCount` 계산 + `openAddForm`(활성제품 지연로드)/`handleAddItem`/`handleRemoveItem` 핸들러(차액 alert 포함).
+- L1693-1701 — 품목 행 수령 셀에 '🗑 삭제' 버튼(editable & 미수령 행만, deletableCount≤1이면 비활성).
+- L1717-1795 — 품목 테이블 하단 '+ 품목 추가' 인라인 폼(제품 셀렉트 + 수량/단가/배송/옵션 + 안내문 + 추가 버튼).
 
-## Self-Review
-- 캐스팅: accounting/reports는 기존 TABS/REPORT_TABS 배열을 그대로 전달(키 타입이 string 유니온 → PageTab[] 구조 호환). 나머지는 리터럴 배열 + onChange에서 기존 state 타입으로 캐스팅.
-- 액션 슬롯 이동(reports/notifications/pos): 기존도 좌탭/우액션 justify-between 레이아웃이라 PageTabs(justify-between) 슬롯과 시각 동등. notifications/pos의 조건부 노출(activeTab!=='templates' / mainTab==='checkout')은 삼항으로 보존(false → undefined → 슬롯 미렌더).
-- 로직 변경 0: state/set함수/외부 전환 호출/URL 동기화 전부 그대로.
+### 3. `src/lib/ai/schema.ts`
+- sales_orders BUSINESS_RULES 섹션에 "전표 수정(수령 전 품목 추가/삭제)" 1줄 추가 — 신규 reference_type(SALE_REVISE_ADD/REMOVE)·sourceType(SALE_REVISE)·point_history adjust 사유 명시. DB_SCHEMA 컬럼 변경 없음.
+
+## Self-review 답변
+- **Richard가 먼저 지적할 것**: (a) recalc에 넘기는 `order`가 mutation 전 스냅샷인지 — 맞다(guard에서 insert/delete 이전에 fetch). (b) sourceType 'SALE_REVISE' 미지원 폴백 — createSaleJournal이 source_type를 free-text로 그대로 쓰고 분기 의존 없음을 grep 확인, 폴백 불필요(부호로 충분). (c) loadDetail 추출 후 stale-state guard 제거 — React가 언마운트 setState를 no-op 처리하므로 안전, 데드 active 플래그 제거.
+- **Brief 요구사항**: A(액션2+헬퍼+결제/분개/포인트/재고) ✅, B(드로어 삭제버튼+추가폼+차액alert, 기존 수령로직 미접촉) ✅, C(schema.ts 동기화, tools.ts 미추가) ✅.
+- **빈/실패 시 사용자 노출**: 모든 액션 에러는 한글 메시지로 `{ error }` 반환 → UI alert. raw DB 에러 비노출(품목 추가/삭제 실패는 일반화 문구).
 
 ## Open Questions
-- 시각 통일(의도됨): accounting/reports 기존 active 색 blue-500 → 표준 blue-600. accounting 패딩 px-5→px-4, reports 패딩 py-2→py-2.5(PageTabs 표준). 동작 무관.
+- 추가 폼의 단가 자동채움은 `addPrice === ''`일 때만(제품 변경 시 기존 입력 보존). 매번 덮어쓰길 원하면 변경 가능 — 현 동작 의도적.
+- 결제 차액 기록 시 대표결제수단이 'mixed'/null이면 'cash'로 폴백(분개 수금계정 결정용). 분할결제 전표의 차액 귀속 방식은 단순화 — 의도 확인 바람.
 
-## Build
-- `npm run build` 통과 — error/warning 0. 6개 대상 라우트(/customers, /notifications, /pos, /reports, /trade, accounting 라우트) 모두 컴파일·프리렌더 정상.
-
-## Out of Scope (logged in BUILD-LOG)
-- pos 내부 서브탭, customers URL 동기화 로직, 서브/상세 페이지, schema.ts — 미접촉.
+## Out of Scope (BUILD-LOG Known Gaps)
+- 주문 할인(discount_amount) 재배분 없음 — 기존값 유지(Project Owner 확정).
+- shipments 생성/void·delivery_type 전환(Step 2/3), 동시편집 락, 실제 PG/카드 취소 자동화, 에이전트 tools.ts 도구 — 전부 미접촉.
