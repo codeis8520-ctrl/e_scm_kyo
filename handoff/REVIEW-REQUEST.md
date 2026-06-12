@@ -1,27 +1,30 @@
-# Review Request — Step 1: CJ/선택 엑셀 발송지 모달 제거 + 행별 자동 해결
+# Review Request — Step 1: 지점 매출 비교 서브뷰
 Date: 2026-06-12
 Ready for Review: YES
 
-빌드: `npm run build` ✅ Compiled successfully, error/warning 0, /shipping 정상 컴파일.
-grep 검증: `pickerForm`/`pickerBranchId`/`showSenderPicker`/`confirmSenderAndExport`/`doExportSelectedToExcel`/`lastSenderBranchId` 참조 **0건**.
-
 ## Files Changed
-모두 `src/app/(dashboard)/shipping/page.tsx` (단일 파일, DB/마이그/schema.ts 변경 없음):
-- `:15,20` — `Shipment` interface에 `branch_id`/`sender_address_detail`/`sender_zipcode` 추가.
-- `:228` — `branchSenders` state만 남기고 `showSenderPicker`/`pickerBranchId`/`pickerForm` state 삭제.
-- `:269` — 로드 useEffect에서 localStorage 복원·pickerBranchId 초기화 라인 삭제(branchSenders 로드+3단 폴백 보존). 프리필 useEffect 전체 삭제.
-- `:366-392` — 신규 `resolveSenderForRow(s)` 헬퍼(행별 sender 해결, cafe24→HQ 폴백).
-- `:394-407` — 신규 `guardSenders(targets)` 가드(이름/전화/주소 빈칸 시 수령자명 alert 후 중단).
-- `:408-483` — `downloadCjExcel` 재작성: 모달 제거→가드→행별 sender로 CJ aoa 매핑. RTC(`KX-`)/헤더/`!cols`/파일명/PENDING→PRINTED 자동전환 보존.
-- `:904-933` — `exportSelectedToExcel` 재작성: 모달 제거→가드→행별 sender. `doExportSelectedToExcel` 통합 삭제.
-- 발송지 선택 모달 JSX(구 L1631-1716) 전체 삭제 — 컴포넌트 말미가 `</div>);}` 로 정리됨.
+모두 단일 파일 `src/app/(dashboard)/pos/SalesListTab.tsx`:
+
+- `:158-164` — 비교뷰 state 추가: `subView('list'|'compare')`, `compareBranchIds string[]`, `compareRows`, `compareLoading`.
+- `:307-310` — branches 로드 시 `compareBranchIds` 전체 active 지점으로 초기화하는 useEffect.
+- `:318-345` — `loadCompare`: 경량 select(`branch_id, ordered_at, status, total_amount`), KST gte/lte(kstDayStart/kstDayEnd), `.in('branch_id', compareBranchIds)`, status 제외 `.not('status','in','(CANCELLED,REFUNDED,PARTIALLY_REFUNDED)')`, PAGE=1000 페이지네이션(.range, len<PAGE break). 빈 선택 가드.
+- `:347-350` — `subView==='compare'`일 때만 loadCompare 호출하는 useEffect(불필요 페치 방지).
+- `:352-380` — `compareMatrix`(useMemo): 날짜행×지점열 매트릭스 + 행총계/열총계(colTotalValues)/총계(grandTotal). `fmtDateKST` 그룹핑.
+- `:382-386` — `toggleCompareBranch` 헬퍼.
+- `:553-570` — 서브뷰 토글 세그먼트 버튼(목록 | 지점비교), `!isBranchUser` 게이트.
+- `:600-614` — 조회 버튼 분기(compare→loadCompare), 고객찾기·CSV 버튼은 list-only.
+- `:617-665` — 기본 필터 바를 `subView==='list'` 게이트로 감쌈.
+- `:667-687` — 지점 다수선택 UI(전체/해제 버튼 + 지점별 체크박스), compare 전용.
+- `:690` — 고급검색 패널 게이트에 `subView==='list'` 추가.
+- `:796-1009` — 목록 본문(요약카드/일자별요약/메인테이블)을 `subView==='list'` 프래그먼트로 감쌈.
+- `:1013-1062` — 지점비교 매트릭스 표(table only, 차트 없음): 헤더=지점열+합계, tbody=날짜행+행총계, tfoot=지점 합계행+총계. 로딩/빈선택/빈기간 분기.
 
 ## Open Questions
-- 가드는 브리프대로 이름/전화/주소만 검사. 우편번호 빈칸은 통과시킴(CJ 양식상 선택값). 의도 맞는지 확인 요청.
-- cafe24 행(branch_id NULL) 폴백 순서: branch_id 매칭 → `is_headquarters` → `branchSenders[0]`. HQ 미존재 환경에서 [0]이 의도치 않은 지점일 수 있으나, 그 경우 주소/전화 비면 가드가 막음.
+- 없음. 브리프 Build Order 전 항목 구현, 모든 Locked Decision 준수.
 
 ## Out of Scope (logged in BUILD-LOG)
-- 지점 발송지(branches.sender_*) 등록 UI — 미등록 지점은 가드가 차단.
-- cafe24 shipment 생성 시 branch_id 부여 로직 — HQ 폴백으로 충분(브리프).
-- POS "구매자 동일" 시 sender_address 저장 정책 — 미변경.
-- `openDaumPostcode`/Daum 스크립트 useEffect는 manualForm/editForm 주소검색에서 사용 중이라 **보존**(grep 확인).
+- 비교뷰 차트 / CSV 내보내기 / 순매출(discount·환불 반영) 컬럼 / 결제수단·채널별 분해
+- schema.ts·tools.ts 무수정(DB/enum/액션 변경 0 → AI Sync 해당 없음)
+
+## Build
+- `npm run build` ✓ Compiled successfully (5.8s), 에러·경고 없음.

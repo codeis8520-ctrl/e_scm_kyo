@@ -155,6 +155,13 @@ export default function SalesListTab() {
   const [refundOrderNumber, setRefundOrderNumber] = useState<string | null>(null);
   const [reprintReceipt, setReprintReceipt] = useState<any>(null);
 
+  // 서브뷰: 목록 ↔ 지점비교 (본사/관리자 전용). 지점비교는 날짜 행 × 지점 열 매트릭스.
+  const [subView, setSubView] = useState<'list' | 'compare'>('list');
+  // 비교뷰 전용 다수선택 상태 — 기존 단일 branchFilter 와 독립. 기본값은 전체 active 지점.
+  const [compareBranchIds, setCompareBranchIds] = useState<string[]>([]);
+  const [compareRows, setCompareRows] = useState<{ branch_id: string | null; ordered_at: string; total_amount: number }[]>([]);
+  const [compareLoading, setCompareLoading] = useState(false);
+
   // 초기 — 지점·직원 목록
   useEffect(() => {
     const sb = createClient() as any;
@@ -302,6 +309,81 @@ export default function SalesListTab() {
       debouncedSearch, productSearch, orderOptionSearch, recipientSearch, addressSearch]);
 
   useEffect(() => { loadOrders(); }, [loadOrders]);
+
+  // 비교뷰 지점 선택 초기화 — branches 로드되면 전체 active 지점으로 채움.
+  useEffect(() => {
+    setCompareBranchIds(branches.map(b => b.id));
+  }, [branches]);
+
+  // 지점비교 집계 로드 (loadOrders 와 별개). 경량 컬럼만, 기간 동일(startDate/endDate, KST 경계).
+  // 1000행 캡 우회 페이지네이션 필수 — loadOrders 의 .limit() 패턴은 집계에 부적합.
+  const loadCompare = useCallback(async () => {
+    if (compareBranchIds.length === 0) { setCompareRows([]); return; }
+    setCompareLoading(true);
+    const sb = createClient() as any;
+    const PAGE = 1000;
+    let all: { branch_id: string | null; ordered_at: string; total_amount: number }[] = [];
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await sb
+        .from('sales_orders')
+        .select('branch_id, ordered_at, status, total_amount')
+        .gte('ordered_at', kstDayStart(startDate))
+        .lte('ordered_at', kstDayEnd(endDate))
+        .in('branch_id', compareBranchIds)
+        // 매출 정의: 취소·환불·부분환불 제외 (목록 일별 집계와 동일 기준)
+        .not('status', 'in', '(CANCELLED,REFUNDED,PARTIALLY_REFUNDED)')
+        .order('ordered_at', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) { console.error('[SalesListTab] compare load error:', error); break; }
+      const rows = (data as any[]) || [];
+      if (rows.length === 0) break;
+      all = all.concat(rows.map(r => ({ branch_id: r.branch_id, ordered_at: r.ordered_at, total_amount: r.total_amount || 0 })));
+      if (rows.length < PAGE) break;
+    }
+    setCompareRows(all);
+    setCompareLoading(false);
+  }, [startDate, endDate, compareBranchIds]);
+
+  // 비교뷰 진입 시에만 페치 (목록 진입 시 불필요 페치 금지).
+  useEffect(() => {
+    if (subView === 'compare') loadCompare();
+  }, [subView, loadCompare]);
+
+  // 매트릭스 빌드 — rows=날짜(오름차순), cols=compareBranchIds 순서.
+  const compareMatrix = useMemo(() => {
+    const branchName = new Map(branches.map(b => [b.id, b.name]));
+    const cols = compareBranchIds.map(id => ({ id, name: branchName.get(id) || id }));
+    // cell[date][branch_id] = total_amount 합
+    const cell = new Map<string, Map<string, number>>();
+    const dateSet = new Set<string>();
+    const colTotals = new Map<string, number>();
+    let grandTotal = 0;
+    for (const r of compareRows) {
+      if (!r.branch_id) continue;
+      const d = fmtDateKST(r.ordered_at);   // KST 기준 일자 그룹핑(UTC 슬라이스 금지)
+      dateSet.add(d);
+      let row = cell.get(d);
+      if (!row) { row = new Map(); cell.set(d, row); }
+      row.set(r.branch_id, (row.get(r.branch_id) || 0) + r.total_amount);
+      colTotals.set(r.branch_id, (colTotals.get(r.branch_id) || 0) + r.total_amount);
+      grandTotal += r.total_amount;
+    }
+    const dates = [...dateSet].sort((a, b) => a.localeCompare(b));
+    const rows = dates.map(d => {
+      const row = cell.get(d);
+      const values = cols.map(c => row?.get(c.id) || 0);
+      const rowTotal = values.reduce((s, v) => s + v, 0);
+      return { date: d, values, rowTotal };
+    });
+    const colTotalValues = cols.map(c => colTotals.get(c.id) || 0);
+    return { cols, rows, colTotalValues, grandTotal };
+  }, [compareRows, compareBranchIds, branches]);
+
+  const toggleCompareBranch = (id: string) => {
+    setCompareBranchIds(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  };
 
   // search 입력 → 400ms 후 debouncedSearch 반영 (DB 재호출 빈도 제한)
   useEffect(() => {
@@ -469,6 +551,23 @@ export default function SalesListTab() {
 
   return (
     <div className="space-y-4">
+      {/* 서브뷰 토글 — 본사/관리자 전용 (지점직원은 목록만) */}
+      {!isBranchUser && (
+        <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1 w-fit">
+          {([['list', '목록'], ['compare', '지점비교']] as ['list' | 'compare', string][]).map(([k, label]) => (
+            <button
+              key={k}
+              onClick={() => setSubView(k)}
+              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                subView === k ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* 필터 바 */}
       <div className="card space-y-3">
         {/* 기간 프리셋 */}
@@ -498,17 +597,24 @@ export default function SalesListTab() {
               onChange={e => { setEndDate(e.target.value); setPeriod('custom'); }}
               className="input text-sm py-1 w-36" />
           </div>
-          <button onClick={loadOrders} className="btn-secondary text-sm py-1.5 ml-auto">조회</button>
-          <button onClick={() => setShowCustomerLookup(true)}
-            className="text-sm py-1.5 px-3 rounded border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
-            title="고객 이름·전화로 검색해 상담·구매(과거 포함) 이력 화면으로 이동">
-            🔍 고객 찾기
-          </button>
-          <button onClick={handleCsv} disabled={filtered.length === 0}
-            className="btn-secondary text-sm py-1.5 disabled:opacity-40">CSV 내보내기</button>
+          <button
+            onClick={subView === 'compare' ? loadCompare : loadOrders}
+            className="btn-secondary text-sm py-1.5 ml-auto">조회</button>
+          {subView === 'list' && (
+            <>
+              <button onClick={() => setShowCustomerLookup(true)}
+                className="text-sm py-1.5 px-3 rounded border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+                title="고객 이름·전화로 검색해 상담·구매(과거 포함) 이력 화면으로 이동">
+                🔍 고객 찾기
+              </button>
+              <button onClick={handleCsv} disabled={filtered.length === 0}
+                className="btn-secondary text-sm py-1.5 disabled:opacity-40">CSV 내보내기</button>
+            </>
+          )}
         </div>
 
         {/* 기본 필터 바 — 가장 빈번한 조회(고객명·전화·주문번호) */}
+        {subView === 'list' && (
         <div className="flex flex-wrap gap-2">
           <input
             type="text"
@@ -556,9 +662,32 @@ export default function SalesListTab() {
             취소·환불 포함
           </label>
         </div>
+        )}
+
+        {/* 지점비교 — 지점 다수선택 */}
+        {subView === 'compare' && (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <div className="flex items-center gap-2">
+              <button onClick={() => setCompareBranchIds(branches.map(b => b.id))}
+                className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50">전체</button>
+              <button onClick={() => setCompareBranchIds([])}
+                className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50">해제</button>
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              {branches.map(b => (
+                <label key={b.id} className="flex items-center gap-1.5 text-sm text-slate-700">
+                  <input type="checkbox" className="w-4 h-4"
+                    checked={compareBranchIds.includes(b.id)}
+                    onChange={() => toggleCompareBranch(b.id)} />
+                  {b.name}
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* 고급 검색 패널 (PDF 중요도 순) */}
-        {showAdvanced && (
+        {subView === 'list' && showAdvanced && (
           <div className="mt-1 pt-3 border-t border-slate-200 space-y-3">
             <div className="flex items-center justify-between">
               <p className="text-xs font-semibold text-slate-600">정밀 검색</p>
@@ -664,6 +793,8 @@ export default function SalesListTab() {
         )}
       </div>
 
+      {/* 목록 뷰 본문 */}
+      {subView === 'list' && (<>
       {/* 요약 카드 */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <SummaryCard label="판매 건수" value={`${summary.count}건`} sub={summary.cancelledCount > 0 ? `취소·환불 ${summary.cancelledCount}건` : undefined} />
@@ -877,6 +1008,58 @@ export default function SalesListTab() {
           </table>
         </div>
       </div>
+      </>)}
+
+      {/* 지점비교 매트릭스 (본사/관리자) */}
+      {subView === 'compare' && (
+        <div className="card">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-semibold text-slate-700">지점별 일 매출 비교</h3>
+            <span className="text-xs text-slate-400">{startDate} ~ {endDate} · 선택 {compareMatrix.cols.length}개 지점</span>
+          </div>
+          {compareLoading ? (
+            <div className="text-center py-10 text-slate-400">로딩 중...</div>
+          ) : compareMatrix.cols.length === 0 ? (
+            <div className="text-center py-10 text-slate-400">비교할 지점을 1개 이상 선택하세요</div>
+          ) : compareMatrix.rows.length === 0 ? (
+            <div className="text-center py-10 text-slate-400">해당 기간 매출이 없습니다</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="table text-sm min-w-[480px]">
+                <thead>
+                  <tr className="text-xs text-slate-500">
+                    <th className="whitespace-nowrap">일자</th>
+                    {compareMatrix.cols.map(c => (
+                      <th key={c.id} className="text-right whitespace-nowrap">{c.name}</th>
+                    ))}
+                    <th className="text-right whitespace-nowrap font-semibold">합계</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {compareMatrix.rows.map(row => (
+                    <tr key={row.date}>
+                      <td className="font-mono whitespace-nowrap">{row.date}</td>
+                      {row.values.map((v, i) => (
+                        <td key={compareMatrix.cols[i].id} className="text-right">{v.toLocaleString()}원</td>
+                      ))}
+                      <td className="text-right font-semibold">{row.rowTotal.toLocaleString()}원</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t-2 border-slate-300 font-semibold text-slate-800">
+                    <td>지점 합계</td>
+                    {compareMatrix.colTotalValues.map((v, i) => (
+                      <td key={compareMatrix.cols[i].id} className="text-right">{v.toLocaleString()}원</td>
+                    ))}
+                    <td className="text-right text-blue-700">{compareMatrix.grandTotal.toLocaleString()}원</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {selectedOrderId && (
         <SalesDetailDrawer
