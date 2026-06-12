@@ -1080,6 +1080,99 @@ export async function adjustInventory(formData: FormData) {
   return { success: true };
 }
 
+// 재고 소모(사용유형) 다건 일괄 OUT 차감 — 판매 아님.
+// inventory_movements 에 reference_type='USAGE' + usage_type_id 로 기록. 음수 재고 허용.
+// 2-pass: 1) 검증+RAW/SUB 본사제한 전수 통과해야 시작, 2) 라인별 실제 차감.
+export async function recordStockUsage(input: {
+  branch_id: string;
+  usage_type_id: string;
+  memo?: string;
+  items: { product_id: string; quantity: number }[];
+}) {
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  const branchId = input.branch_id;
+  const usageTypeId = input.usage_type_id;
+  const memo = input.memo;
+  const items = input.items || [];
+
+  // ── pass 1: 검증 (전체 거부, 처리 전) ──
+  if (!branchId) return { error: '지점을 선택하세요.' };
+  if (!usageTypeId) return { error: '사용유형을 선택하세요.' };
+  if (items.length === 0) return { error: '소모 품목을 1개 이상 추가하세요.' };
+  for (const item of items) {
+    if (!item.product_id) return { error: '품목 정보가 올바르지 않습니다.' };
+    if (!Number.isInteger(item.quantity) || item.quantity < 1) {
+      return { error: '소모 수량은 1개 이상의 정수여야 합니다.' };
+    }
+  }
+
+  // ── pass 1: 원자재·부자재 본사(is_headquarters=true) 제한 — adjustInventory 패턴 재사용 ──
+  //   OEM 위탁 생산 모델에서 RAW/SUB는 본사 관리 원칙(CLAUDE.md 생산관리 섹션).
+  //   폴백: product_type / is_headquarters 컬럼 미적용 시 제한 생략.
+  try {
+    const hqRes = await db.from('branches').select('id').eq('is_headquarters', true).maybeSingle();
+    const hqId: string | null = hqRes?.data?.id ?? null;
+    if (hqId && branchId !== hqId) {
+      for (const item of items) {
+        const prodRes = await db
+          .from('products')
+          .select('name, product_type')
+          .eq('id', item.product_id)
+          .maybeSingle();
+        const pt: string | null = prodRes?.data?.product_type ?? null;
+        if (pt === 'RAW' || pt === 'SUB') {
+          const label: string = prodRes?.data?.name ?? item.product_id;
+          return { error: `'${label}' 원자재·부자재는 본사에서만 소모 처리할 수 있습니다.` };
+        }
+      }
+    }
+  } catch {
+    // 폴백 — 컬럼 부재 등으로 확인 실패 시 제한 생략
+  }
+
+  // ── pass 2: 실제 차감 (라인 루프, 비트랜잭션 — 기존 코드 일관) ──
+  for (const item of items) {
+    const { data: currentArr } = await db
+      .from('inventories')
+      .select('quantity')
+      .eq('branch_id', branchId)
+      .eq('product_id', item.product_id);
+    const current = currentArr?.[0];
+
+    if (!current) {
+      // 행 없음 → 음수 재고 행 생성 (소모는 OUT 이므로 음수가 맞음. abs 분기 복붙 금지.)
+      await db.from('inventories').insert({
+        branch_id: branchId,
+        product_id: item.product_id,
+        quantity: -item.quantity,
+        safety_stock: 0,
+      });
+    } else {
+      const newQuantity = (current.quantity || 0) - item.quantity; // 음수 허용
+      await db
+        .from('inventories')
+        .update({ quantity: newQuantity })
+        .eq('branch_id', branchId)
+        .eq('product_id', item.product_id);
+    }
+
+    await db.from('inventory_movements').insert({
+      branch_id: branchId,
+      product_id: item.product_id,
+      movement_type: 'OUT',
+      quantity: item.quantity,
+      reference_type: 'USAGE',
+      usage_type_id: usageTypeId,
+      memo: memo || null,
+    });
+  }
+
+  revalidatePath('/inventory');
+  return { success: true, count: items.length };
+}
+
 export async function transferInventory(formData: FormData) {
   const supabase = await createClient();
   const db = supabase as any;

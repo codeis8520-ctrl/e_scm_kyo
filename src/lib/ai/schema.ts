@@ -154,6 +154,7 @@ export const BUSINESS_RULES = `
 - "발주 / 구매 주문 / 공급업체 통해서" → create_purchase_order 흐름
 - 모호하면 먼저 물어보기
 - 원자재(RAW)·부자재(SUB) 재고는 **본사(branches.is_headquarters=true)에서만** 입출고·조정 가능 (OEM 위탁 생산 모델). 비본사 지점에 대한 adjust_inventory 호출은 서버가 거부. 본사 지정이 없으면 제한 미적용(폴백).
+- 재고 소모 차감은 재고화면 '소모 차감' 버튼(recordStockUsage)으로 다건 일괄 OUT 처리 — 지점+사용유형+품목리스트, 음수 허용, RAW/SUB 본사 제한.
 
 [발주 워크플로우]
 DRAFT → CONFIRMED → RECEIVED

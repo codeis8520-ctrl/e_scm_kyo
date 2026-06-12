@@ -5,8 +5,10 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import InventoryModal from './InventoryModal';
 import TransferModal from './TransferModal';
+import StockUsageModal from './StockUsageModal';
 import MovementHistoryModal from './MovementHistoryModal';
 import PackUnpackModal from './PackUnpackModal';
+import { getInventoryUsageTypes } from '@/lib/actions';
 import { updateSafetyStock } from '@/lib/inventory-actions';
 import { backfillMissingInventories } from '@/lib/inventory-backfill-actions';
 
@@ -128,6 +130,8 @@ export default function InventoryPage() {
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
+  const [showUsageModal, setShowUsageModal] = useState(false);
+  const [usageTypes, setUsageTypes] = useState<{ id: string; code: string; name: string }[]>([]);
   const [editInventory, setEditInventory] = useState<Inventory | null>(null);
   const [transferInventory, setTransferInventory] = useState<Inventory | null>(null);
   const [viewMode, setViewMode] = useState<'pivot' | 'flat'>('pivot');
@@ -167,6 +171,14 @@ export default function InventoryPage() {
       }
       fetchBranches();
       fetchCategories();
+      // 사용유형(소모 차감용) — 마이그 079 미적용/빈배열이면 빈 목록. active 만 필터.
+      try {
+        const r = await getInventoryUsageTypes();
+        const active = (r.data || []).filter((u: any) => u.is_active !== false);
+        setUsageTypes(active.map((u: any) => ({ id: u.id, code: u.code, name: u.name })));
+      } catch (e) {
+        console.warn('[inventory] usageTypes 로드 스킵:', e);
+      }
     })();
     if (isBranchUser && userBranchId) {
       setFlatBranchFilter(userBranchId);
@@ -485,6 +497,12 @@ export default function InventoryPage() {
             className="btn-primary text-sm"
           >
             + 입출고
+          </button>
+          <button
+            onClick={() => setShowUsageModal(true)}
+            className="btn-secondary text-sm"
+          >
+            + 소모 차감
           </button>
         </div>
       </div>
@@ -878,6 +896,17 @@ export default function InventoryPage() {
           branches={branches}
           onClose={() => { setShowTransferModal(false); setTransferInventory(null); }}
           onSuccess={() => { setShowTransferModal(false); setTransferInventory(null); fetchInventory(); }}
+        />
+      )}
+
+      {showUsageModal && (
+        <StockUsageModal
+          branches={isBranchUser && userBranchId ? branches.filter(b => b.id === userBranchId) : branches}
+          inventories={inventories}
+          usageTypes={usageTypes}
+          defaultBranchId={isBranchUser && userBranchId ? userBranchId : ''}
+          onClose={() => setShowUsageModal(false)}
+          onSuccess={() => { setShowUsageModal(false); fetchInventory(); }}
         />
       )}
 

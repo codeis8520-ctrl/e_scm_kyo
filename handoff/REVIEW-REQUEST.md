@@ -1,40 +1,23 @@
-# Review Request — Step 1: 사용유형 코드 테이블 + 코드 관리 UI
+# Review Request — Feature A Step 2: 다건 재고 소모 차감
 Date: 2026-06-12
 Ready for Review: YES
 
 ## Files Changed
-
-### src/lib/actions.ts
-- L1474-1573 — Inventory Usage Types CRUD 4종 (createChannel/updateChannel/deleteChannel 패턴 미러링).
-  - getInventoryUsageTypes (L1476-1484): 전체 select, order('sort_order'), 활성필터 없음.
-  - createInventoryUsageType (L1486-1512): name 필수, code 정규화 slice(0,30), is_system=false·is_active=true 고정, revalidatePath.
-  - updateInventoryUsageType (L1514-1535): name/sort_order/is_active만 수정 (code/is_system 불변).
-  - deleteInventoryUsageType (L1537-1573): ① is_system=true 거부 ② inventory_movements.usage_type_id 참조 존재 시 거부 ③ 통과 시 delete.
-
-### src/lib/ai/schema.ts (AI Sync — 필수)
-- L26 — inventory_movements 라인에 usage_type_id 컬럼 추가 + reference_type 'USAGE' 주석(L27).
-- L28-29 — inventory_usage_types 신규 테이블 라인 + 소모 기록 규약 주석.
-
-### src/app/(dashboard)/system-codes/page.tsx
-- L14 — import create/update/deleteInventoryUsageType (get은 클라이언트 직접 select 사용).
-- L39-46 — InventoryUsageType 인터페이스.
-- L172 — usageTypes state.
-- L186-187 — showUsageTypeModal / editingUsageType state.
-- L220-223 — fetchData usage_types 분기 ((supabase as any) 방어 패턴).
-- L321-330 — handleDeleteUsageType (서버 거부 메시지 alert 노출).
-- L410 — '사용유형' 탭 (채널 다음).
-- L494-572 — 사용유형 목록 렌더 섹션 (채널 카드 동형, color 필드 없음, 시스템 행은 삭제 버튼 미노출·시스템 배지).
-- L1300-1306 — UsageTypeModal 마운트.
-- L1493-1607 — UsageTypeModal 컴포넌트 (ChannelModal 동형, color 제외).
-
-## Self-Review
-- Richard가 먼저 볼 곳: deleteInventoryUsageType 의 두 거부 분기 순서/메시지, 시스템 행 삭제버튼 숨김 처리. → 브리프 문구 그대로 구현, 시스템 행은 UI에서도 삭제 차단(이중 안전).
-- 브리프 요구사항 전수 확인: CRUD 4종 / UI 탭(color 없음) / system 보호 / movements 참조검사 / schema.ts 3요소 / 마이그 미작성 / `as any` 방어 — 모두 충족.
-- 데이터 빈/실패 시: 목록 비면 "등록된 사용유형이 없습니다" 표시. 삭제 거부 시 서버 한글 메시지 alert. 마이그 미적용 시 select 결과 null → 빈 목록(크래시 없음).
-- `npm run build` ✓ Compiled successfully in 6.3s, 에러·경고 없음.
+- src/lib/actions.ts:1083-1181 — recordStockUsage(객체 인자) 신규. adjustInventory 바로 아래. 2-pass(검증+RAW/SUB 본사제한 전수 → 라인별 OUT 차감), 행없음 시 음수 quantity insert(abs 분기 복붙 안 함), inventory_movements OUT/USAGE/usage_type_id insert, revalidatePath + {success, count}.
+- src/app/(dashboard)/inventory/StockUsageModal.tsx:1-302 — 신규 자체완결 모달(TransferModal 동형, 자체 fetch 없음). 지점 select(defaultBranchId 시 disabled) + 사용유형 dropdown(빈목록 안내+disable) + 공통 memo + 제품검색 다건 리스트(현재고 표시, 중복추가 방지, 비차단 초과 경고). recordStockUsage 호출.
+- src/app/(dashboard)/inventory/page.tsx:8 — import StockUsageModal.
+- src/app/(dashboard)/inventory/page.tsx:11 — import getInventoryUsageTypes.
+- src/app/(dashboard)/inventory/page.tsx:133-134 — state showUsageModal + usageTypes.
+- src/app/(dashboard)/inventory/page.tsx:172-180 — 첫 useEffect 에서 getInventoryUsageTypes() active 필터 로드(try/catch 폴백).
+- src/app/(dashboard)/inventory/page.tsx:500-506 — '+ 입출고' 옆 '+ 소모 차감' 헤더 버튼.
+- src/app/(dashboard)/inventory/page.tsx:902-911 — StockUsageModal mount(지점고정 사용자: branches 자기지점 필터 + defaultBranchId 강제).
+- src/lib/ai/schema.ts:157 — BUSINESS_RULES 에 recordStockUsage 1줄 추가(DB_SCHEMA 무수정).
 
 ## Open Questions
-- 없음. 브리프가 명확하여 추가 결정 없이 구현.
+- 모달 품목 검색 후보는 page 의 `inventories`(검색조건 매칭분) 한정 — 브리프 "page 가 이미 가진 데이터 주입" 설계 그대로. 재고화면에서 아무 검색도 안 한 상태면 후보가 빌 수 있음. 의도된 동작인지 확인 부탁(BUILD-LOG Known Gap 기재).
+- RAW/SUB 제한에서 불필요 쿼리 절약 위해 branchId!=HQ 일 때만 라인별 product_type 조회하도록 했음(HQ면 어차피 통과). 브리프 L18 의미와 일치 판단했으나 검토 부탁.
 
 ## Out of Scope (logged in BUILD-LOG)
-- Step 2: 다건 소모 차감 화면 + consumeInventory 서버액션, inventory_movements.usage_type_id 쓰기/읽기, tools.ts WRITE_TOOLS 소모 도구.
+- 비트랜잭션 부분실패 자동 롤백 없음(pass2 도중 supabase 에러 시 앞선 라인 반영됨). 기존 코드 동일 한계. 사용자 거부는 전부 pass1.
+- 소모 이력 보고/필터/조회 화면, CSV 다건 업로드, 사용유형별 통계 대시보드.
+- tools.ts 에이전트 소모 WRITE 도구.

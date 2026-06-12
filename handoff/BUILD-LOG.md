@@ -1,3 +1,44 @@
+# BUILD-LOG — 재고 소모(사용유형) · Step 2: 다건 재고 소모 차감 화면
+
+## Step 2 — recordStockUsage + StockUsageModal (BUILD DONE · 리뷰 대기)
+시작: 2026-06-12 · 빌드완료: 2026-06-12
+
+### Locked Decisions
+- recordStockUsage 는 **객체 인자**(FormData 아님 — 다건). `{ branch_id, usage_type_id, memo?, items[] }`.
+- 2-pass: pass1 = branch/usage/items/quantity(정수>=1) 전수검증 + RAW/SUB 본사 제한 라인별 전수검사 → 하나라도 실패 시 처리 시작 전 거부. pass2 = 라인별 실제 차감.
+- RAW/SUB 제한: HQ id 1회 조회(is_headquarters=true). branchId!=HQ 일 때만 라인별 product_type 조회(불필요 쿼리 절약). RAW/SUB 면 `'<품명>' 원자재·부자재는 본사에서만 소모 처리할 수 있습니다.` 거부. 폴백 try/catch(컬럼 부재 시 제한 생략).
+- 행 없을 때 insert: `quantity = -item.quantity`, safety_stock=0 (음수 재고 행 생성 — 소모는 OUT). adjustInventory 의 abs 입고 분기 **복붙 금지** 준수.
+- 행 있을 때: `newQuantity = (current.quantity||0) - quantity` 음수 허용 update.
+- inventory_movements insert: movement_type='OUT', reference_type='USAGE', usage_type_id, memo||null.
+- 모달은 자체 fetch 없음 — page 가 branches/inventories/usageTypes 주입. 현재고는 inventories(branch_id===선택지점 && product_id) 매칭, 지점 변경 시 재계산.
+- 현재고 초과 경고는 비차단(배지/빨강 보더), 처리 버튼 유지(음수 정책).
+- 지점고정 사용자: defaultBranchId 주입 → 지점 select disabled. branches 도 page 에서 자기 지점만 필터 전달.
+- `(supabase as any)` 방어 패턴(079 미적용 빌드 통과).
+
+### Files Changed
+- `src/lib/actions.ts` — adjustInventory 바로 아래 recordStockUsage 추가.
+- `src/app/(dashboard)/inventory/StockUsageModal.tsx` — 신규 모달(TransferModal 동형, 자체 fetch 없음).
+- `src/app/(dashboard)/inventory/page.tsx` — import(StockUsageModal·getInventoryUsageTypes), state(showUsageModal·usageTypes), 첫 useEffect 에서 usageTypes active 로드, '+ 소모 차감' 헤더 버튼, 모달 mount.
+- `src/lib/ai/schema.ts` — BUSINESS_RULES 에 recordStockUsage 1줄 추가(DB_SCHEMA 무수정).
+
+### AI Sync
+- schema.ts DB_SCHEMA: **무수정**(Step 1 에서 inventory_usage_types·usage_type_id·reference_type='USAGE' 전부 반영됨).
+- BUSINESS_RULES: 소모 차감 워크플로우 1줄 추가.
+- tools.ts WRITE_TOOLS: 미추가(lock — 에이전트 자동 소모 비즈니스 요구 없음. 읽기는 analyze_data 충분).
+
+### Build
+- `npm run build` ✓ Compiled successfully, 에러·경고 없음.
+
+### Known Gaps (Out of Scope)
+- 비트랜잭션 부분실패 자동 롤백 없음 — pass2 차감 도중 supabase 에러 시 앞선 라인은 이미 반영(롤백 불가). 기존 코드(adjustInventory 등) 동일 한계. 사용자 거부는 전부 pass1 에서 발생하므로 실무상 부분차감 거의 없음.
+- 모달 품목 검색 후보는 page 의 `inventories`(검색조건 매칭분)에 한정 — 재고 페이지에서 아무 검색도 안 한 상태면 후보 비어있을 수 있음(page 의 검색 결과를 그대로 주입하는 브리프 설계). 전체 제품 독립 검색은 스코프 밖.
+- 소모 이력 보고/필터/조회 화면, CSV 다건 업로드, 사용유형별 통계 대시보드 — 스코프 밖.
+
+### Deploy
+- 미배포.
+
+---
+
 # BUILD-LOG — 재고 소모(사용유형) · Step 1: 코드 테이블 + 코드 관리 UI
 
 ## Step 1 — 사용유형 코드 테이블 + 관리 UI (REVIEW FIX 적용 · 배포 대기)

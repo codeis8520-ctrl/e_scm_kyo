@@ -1,41 +1,64 @@
-# Architect Brief — 재고 소모(사용유형) · Step 1: 코드 테이블 + 코드 관리 UI
+# Architect Brief — 재고 소모(사용유형) · Step 2: 다건 재고 소모 차감 화면
 
 ## Goal
-관리자가 재고 "사용유형"(로스/자가사용/시음용/기타) 코드를 추가·수정·비활성·삭제할 수 있게 된다. 실제 소모 차감(다건 OUT) 화면은 Step 2(다음 스프린트). 이 단계만으로 독립 배포·검증 가능(시드 4종 + CRUD).
+지점 + 사용유형을 고른 뒤 여러 품목을 리스트업해 한 번에 OUT 차감(소모)할 수 있게 된다. 판매 아님. inventory_movements 에 reference_type='USAGE' + usage_type_id 로 일괄 기록된다. (마이그 추가 없음 — 079 가 스키마 전부 커버. 확인 완료.)
 
-## 데이터 모델 (Arch 확정 — 변경 금지)
-- 마이그 **079_inventory_usage_types.sql 는 Arch 가 이미 작성**(`supabase/migrations/079_...`). Bob 은 수정/추가 마이그 만들지 말 것. Supabase 적용은 Project Owner 후속(apply_one_sql.py).
-- 신규 테이블 `inventory_usage_types(id, code UNIQUE, name, sort_order, is_system, is_active, created_at, updated_at)`. 시드: LOSS/로스, SELF_USE/자가사용, SAMPLE/시음용, ETC/기타(is_system=true).
-- `inventory_movements.usage_type_id UUID` 컬럼 추가됨(NULL 허용). **Step 2 에서만 사용** — 이 단계에서는 건드리지 않음.
-- 소모 기록 규약(Step 2 참고용, 지금 구현 X): movement_type='OUT', reference_type='USAGE', usage_type_id=선택값.
+## 마이그/스키마 (확정 — 변경 금지)
+- 신규 마이그 없음. 079(inventory_usage_types + inventory_movements.usage_type_id)로 충분. Bob 은 .sql 만들지 말 것.
+- schema.ts 의 DB_SCHEMA 는 Step 1 에서 usage_type_id·USAGE·inventory_usage_types 다 반영됨 → DB_SCHEMA 무수정(BUSINESS_RULES 1줄만 추가, 아래 AI Sync 참조).
 
 ## Build Order
-- `src/lib/actions.ts`: CRUD 4종 추가. **createChannel/updateChannel/deleteChannel(L1403~1471) 패턴을 그대로 미러링**.
-  - `getInventoryUsageTypes()`: 전체 select, `.order('sort_order')`. (활성 필터 없이 전체 — 관리 화면용)
-  - `createInventoryUsageType(formData)`: name 필수. code 는 createChannel 의 정규화 방식(영문 대문자/`_`, slice) 사용하되 `inventory_usage_types` 는 code VARCHAR(30) → slice(0,30). 한글이면 원문. is_system=false 고정. is_active=true. `revalidatePath('/system-codes')`.
-  - `updateInventoryUsageType(id, formData)`: name/sort_order/is_active 수정. code/is_system 은 수정 불가(불변). 
-  - `deleteInventoryUsageType(id)`: **is_system=true 면 거부**('시스템 기본 유형은 삭제할 수 없습니다. 비활성만 가능합니다.'). 또한 **usage_type_id 로 참조 중인 inventory_movements 가 있으면 거부**(deleteChannel 의 참조검사 패턴: `inventory_movements` 에서 `.eq('usage_type_id', id)` count>0 → '소모 이력이 있어 삭제할 수 없습니다. 비활성 처리하세요.'). 둘 다 통과 시 delete.
-- `src/app/(dashboard)/system-codes/page.tsx`: **채널(Channel) 탭 UI 를 템플릿으로** "사용유형" 관리 섹션 추가(같은 페이지의 새 탭 또는 채널 섹션과 동형 카드). 목록(이름/코드/정렬/활성·시스템배지) + 추가폼 + 행 수정/삭제. import 에 4 액션 추가. 채널 탭의 색상(color) 필드는 **불필요 — 넣지 말 것**(usage_type 에 color 컬럼 없음).
-- **AI Sync (CLAUDE.md 필수, 같은 PR)**: `src/lib/ai/schema.ts`
-  - DB_SCHEMA 에 `inventory_usage_types: id, code, name, sort_order, is_system, is_active` 한 줄 추가.
-  - `inventory_movements` 라인(L26)에 `usage_type_id(소모 사용유형 FK, reference_type=USAGE 일 때만)` 추가 + reference_type enum 목록에 'USAGE' 표기.
-  - tools.ts WRITE_TOOLS 는 **이 단계에서 추가하지 않음**(에이전트 소모 호출은 Step 2 의 consume 액션이 생긴 뒤 검토). 단 analyze_data 가 새 테이블을 읽을 수 있도록 schema.ts 반영은 위에서 완료.
+
+### 1) 서버액션 recordStockUsage — src/lib/actions.ts (adjustInventory L1005 바로 아래 새 섹션)
+시그니처: recordStockUsage(input: { branch_id: string; usage_type_id: string; memo?: string; items: { product_id: string; quantity: number }[] })
+(FormData 아님 — 다건이라 객체 인자. 'use server' 파일 내 직접 export.)
+- 검증(전체 거부, 처리 전): branch_id/usage_type_id 필수, items 비어있으면 { error: '소모 품목을 1개 이상 추가하세요.' }. 각 quantity 정수 >=1 아니면 거부.
+- RAW/SUB 본사 제한 — adjustInventory L1016~1031 패턴 그대로 재사용(일관성 lock, 새 정책 아님):
+  - HQ id 1회 조회(branches.is_headquarters=true). 폴백 동일(컬럼 부재 시 제한 생략, try/catch).
+  - 라인별로 product_type 확인. RAW/SUB 인데 branch_id != HQ 면 그 라인을 거부하고 처리 시작 전 { error: "'<품목명/product_id>' 원자재·부자재는 본사에서만 소모 처리할 수 있습니다." } 반환.
+- 처리(라인 루프, 비트랜잭션 — 기존 코드 일관): 각 item 마다
+  - inventories select(quantity) → newQuantity = (current?.quantity||0) - quantity. 음수 허용(adjustInventory 선례). 행 없으면 insert(quantity = -quantity, safety_stock=0) — 음수 재고 행 생성. (adjustInventory 의 OUT 행없음 abs 입고 분기 복붙 금지. 소모는 OUT 이므로 음수 생성이 맞음. lock)
+  - inventory_movements insert: branch_id, product_id, movement_type:'OUT', quantity, reference_type:'USAGE', usage_type_id, memo: memo||null.
+- partial-failure 정책 (lock): 검증·RAW/SUB 제한은 루프 진입 전 전수 통과해야 시작 → 2-pass. 1st pass: branch/usage/items/quantity + 각 라인 product_type HQ 체크 전부 OK 확인. 2nd pass: 실제 차감. 차감 패스 도중 supabase 에러는 비트랜잭션이라 롤백 불가 → 기존 코드 동일 한계(BUILD-LOG Known Gap 기재). 사용자 거부는 전부 1-pass 에서 발생 → 실무상 부분차감 거의 없음.
+- (supabase as any) 방어 패턴 유지(마이그 미적용 폴백). 끝에 revalidatePath('/inventory') + { success: true, count: items.length }.
+
+### 2) UI — 새 모달 src/app/(dashboard)/inventory/StockUsageModal.tsx (신규 파일)
+결정: 새 모달(TransferModal 동형 mount). 탭/서브뷰 아님 — 입출고 버튼군과 한 자리.
+- Props: { branches: {id;name;is_headquarters?}[]; inventories: Inventory[]; usageTypes: {id;code;name}[]; defaultBranchId?: string; onClose; onSuccess }. 자체 fetch 없음 — page 가 이미 가진 데이터 주입.
+- 상단: 지점 select(지점고정 사용자면 자기 지점 고정·disabled — page 의 isBranchUser 로 defaultBranchId 강제), 사용유형 select(usageTypes active 만; 빈 목록이면 '사용유형을 먼저 시스템코드에서 등록하세요' 안내 + 처리버튼 disable), 공통 memo(optional).
+- 하단 다건 리스트: 제품 검색 입력(이름/코드, inventories 의 product 로 필터) → 선택 시 행 추가. 행 = 품목명·코드 / 선택 지점의 현재고 표시 / 수량 input / 삭제. 같은 품목 중복추가 막기(이미 있으면 수량 포커스).
+  - 현재고는 inventories 에서 (branch_id===선택지점 && product_id) 매칭. 지점 바꾸면 각 행 현재고 재계산.
+  - 수량 > 현재고: 경고 표시(빨강 텍스트/배지)하되 차단 안 함(음수 정책). 처리 버튼 살아있음.
+- 처리 버튼: recordStockUsage 호출. error 면 표시·중단. success 면 onSuccess(→ fetchInventory + close). 처리 중 disable.
+- 스타일은 TransferModal 클래스(input/btn-primary/btn-secondary) 재사용.
+
+### 3) inventory/page.tsx 배선
+- import: StockUsageModal, getInventoryUsageTypes (from '@/lib/actions').
+- state: showUsageModal(bool). usageTypes 목록은 최초 useEffect/fetchInventory 에서 getInventoryUsageTypes() 호출해 보관(active 만 필터해 모달에 전달). 마이그 미적용/빈배열이면 빈배열.
+- 헤더 버튼군(L481~489, '+ 입출고' 옆)에 '+ 소모 차감' 버튼 추가 → setShowUsageModal(true).
+- 모달 mount: TransferModal mount(L875~) 옆에 {showUsageModal && <StockUsageModal branches inventories usageTypes defaultBranchId={isBranchUser? userBranchId : ''} onClose onSuccess />}.
 
 ## Flags (추측 금지)
-- code 정규화: createChannel 방식 재사용하되 length 30. UNIQUE 충돌 시 DB error.message 그대로 반환(createChannel 동일).
-- RBAC: 코드 관리는 system-codes 페이지 접근 권한(screen_permissions)에 종속 — **별도 역할 체크 코드 추가 불필요**. 페이지가 이미 권한 게이트됨.
-- 마이그 미적용 상태에서 빌드/타입은 통과해야 함(supabase 클라이언트는 `as any` 패턴, 기존 코드와 동일). 런타임은 적용 후 동작.
+- RBAC: inventory 페이지 접근 권한(screen_permissions)에 종속 — 별도 역할 체크 추가 X. 지점고정 사용자는 지점 select 고정(자기 지점). 본사 전용 별도 게이트 없음(RAW/SUB 라인만 HQ 제한으로 자연 차단).
+- 행 없을 때 insert: 음수 quantity 로 생성(소모는 OUT). adjustInventory 의 abs 분기 복붙 금지.
+- recordStockUsage 는 FormData 가 아니라 객체 인자(다건). transferInventory(FormData)와 다름 — 주의.
+- as any 방어 패턴 필수(079 미적용 환경 빌드 통과).
 
-## Out of Scope (→ BUILD-LOG Known Gaps if surfaces)
-- 다건 소모 차감 화면 + consumeInventory 서버액션 (Step 2, 별도 스프린트).
-- inventory_movements.usage_type_id 쓰기/읽기 (Step 2).
-- 재고 페이지(inventory/page.tsx) 변경 일체.
-- 소모 이력 보고/필터 화면.
-- tools.ts WRITE_TOOLS 소모 도구.
+## AI Sync 결정 (CLAUDE.md 매트릭스 적용)
+- schema.ts DB_SCHEMA: 무수정 — Step 1 에서 inventory_usage_types·usage_type_id·reference_type='USAGE' 전부 반영됨. analyze_data 가 이미 읽음.
+- tools.ts WRITE_TOOLS: 이번에도 미추가 (lock). 에이전트 자동 소모 실행 비즈니스 요구 없음(로스/자가사용은 사람 판단). 읽기는 analyze_data 로 충분.
+- BUSINESS_RULES 한 줄 추가: schema.ts BUSINESS_RULES 재고/소모 섹션(L29 인근)에 → "재고 소모 차감은 재고화면 '소모 차감' 버튼(recordStockUsage)으로 다건 일괄 OUT 처리 — 지점+사용유형+품목리스트, 음수 허용, RAW/SUB 본사 제한." (DB_SCHEMA 무수정과 모순 아님: BUSINESS_RULES 텍스트 1줄만.)
+
+## Out of Scope (→ BUILD-LOG Known Gaps)
+- 소모 이력 보고/필터/조회 화면.
+- 비트랜잭션 부분실패 자동 롤백(기존 코드 한계 동일).
+- tools.ts 에이전트 소모 WRITE 도구.
+- CSV/엑셀 업로드 다건 입력.
+- 사용유형별 재고 소모 통계/대시보드.
 
 ## Acceptance
-- `npm run build` 통과.
-- system-codes 페이지에 사용유형 목록(시드 4종)·추가·수정·삭제 UI 노출.
-- deleteInventoryUsageType: is_system 거부 + movements 참조 거부 분기 존재.
-- schema.ts 에 신규 테이블 + usage_type_id + 'USAGE' reference_type 반영.
-- Bob 은 마이그 파일을 새로 만들지 않음(079 Arch 작성분 사용).
+- npm run build 통과.
+- 재고화면 헤더에 '+ 소모 차감' 버튼 → 모달: 지점·사용유형·다건 품목·현재고·수량.
+- recordStockUsage: items 빈배열 거부, quantity<1 거부, RAW/SUB 비본사 라인 거부(1-pass), 통과 시 라인별 inventories 음수허용 차감 + inventory_movements(OUT/USAGE/usage_type_id) insert.
+- 지점고정 사용자 지점 select 고정.
+- 마이그 신규 0개. schema.ts DB_SCHEMA 무수정, BUSINESS_RULES 1줄만 추가.
