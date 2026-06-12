@@ -102,3 +102,30 @@
 
 ### Known Gaps
 - (대기) POS 위젯 정렬 = Step 2 별도 스프린트.
+
+---
+
+## Feature D — 카테고리 정렬 · Step 2 (POS 판매위젯 정렬 필터) · 빌드 완료 · 리뷰 대기
+시작: 2026-06-12
+
+### Build Status — BUILT
+- npm run build ✓ Compiled successfully in 9.2s, 에러/경고 0.
+- 변경 파일: src/app/(dashboard)/pos/page.tsx (단일 파일). 신규 util 없음, category-tree.ts 무변경.
+  - L12 — `import { buildCategoryInfo, type CategoryInfo } from '@/lib/category-tree';`
+  - L208~209 — state `categoryInfo`(Map) + `widgetSort`('category'|'name'|'price'|'stock', 기본 'category').
+  - L417/L424/L432 — products 3단 폴백 select 모두에 `, category_id` 추가.
+  - L437~443 — Promise.all 에 `categories` select(id,name,parent_id,sort_order order by sort_order) + `categoriesRes` 구조분해.
+  - L466~467 — `setCategoryInfo(buildCategoryInfo(categoriesRes.error ? [] : data))` (error 시 빈 맵).
+  - L805~840 — filteredProducts useMemo 승격 + 정렬(검색·위젯 모드 공통). deps: products,search,widgetSort,categoryInfo,selectedBranch,inventoryMap.
+  - L1962~1984 — 검색 input 블록에 flex 래퍼 + 정렬 select(4옵션) 추가.
+
+### Build Decisions (Step 2)
+- category_id 는 기존 컬럼(products) — 폴백 사다리 3변형 모두 추가, DB 부재 시 graceful(정렬만 약화).
+- categories 페치: `(supabase as any).from('categories')` 캐스트(타입 미정의 회피). error 시 빈 맵 → 카테고리 없는 제품처럼 맨 뒤 정렬.
+- stock 정렬: getStock(L857)이 filteredProducts(L805)보다 뒤 선언 → memo 내부에 동일 로직(`inventoryMap.get(`${selectedBranch}_${id}`) ?? null`) 인라인. use-before-declaration 회피.
+- 정렬 규칙: category=sortKey(없으면 '￿' 맨뒤)→가격desc→이름 / price=가격desc→이름 / name=이름 localeCompare('ko') / stock=재고desc, null(미로드) 맨뒤→이름.
+- 원본 products mutate 없음(`[...base].sort`). 중분류 단독 그룹핑/헤더 없음(브리프 Out of Scope — sortKey 계층이 대>중>소 자동 반영).
+- DB/마이그/schema.ts/tools.ts 무변경.
+
+### Known Gaps
+- 없음.

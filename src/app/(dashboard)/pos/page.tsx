@@ -9,6 +9,7 @@ import { processPosCheckout, createCustomer } from '@/lib/actions';
 import { saveDraft, listDrafts, getDraft, deleteDraft, type DraftRow } from '@/lib/sales-draft-actions';
 import ReceiptModal from './ReceiptModal';
 import { kstTodayString } from '@/lib/date';
+import { buildCategoryInfo, type CategoryInfo } from '@/lib/category-tree';
 import PageTabs from '@/components/PageTabs';
 
 const SalesListTab = dynamic(() => import('./SalesListTab'), {
@@ -204,6 +205,8 @@ function POSPageInner() {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [search, setSearch] = useState('');
   const [products, setProducts] = useState<any[]>([]);
+  const [categoryInfo, setCategoryInfo] = useState<Map<string, CategoryInfo>>(new Map());
+  const [widgetSort, setWidgetSort] = useState<'category' | 'name' | 'price' | 'stock'>('category');
   const [productMap, setProductMap] = useState<Map<string, any>>(new Map());
   const [inventoryMap, setInventoryMap] = useState<Map<string, number>>(new Map());
   // 매트릭스 067: `${branchId}|${gradeCode}` → 적립율(%). 매칭되면 등급 기본보다 우선.
@@ -412,14 +415,14 @@ function POSPageInner() {
       // product_type + pos_widget 포함 시도 → 마이그 071/042 미적용 DB 폴백
       let productsRes: any = await supabase
         .from('products')
-        .select('id, name, code, barcode, price, unit, product_type, pos_widget')
+        .select('id, name, code, barcode, price, unit, product_type, pos_widget, category_id')
         .eq('is_active', true)
         .order('name');
       if (productsRes.error) {
         // 마이그 071 미적용 — pos_widget 빼고 재시도 (product_type 은 유지)
         productsRes = await supabase
           .from('products')
-          .select('id, name, code, barcode, price, unit, product_type')
+          .select('id, name, code, barcode, price, unit, product_type, category_id')
           .eq('is_active', true)
           .order('name');
       }
@@ -427,16 +430,17 @@ function POSPageInner() {
         // 마이그 042 미적용 — product_type 까지 빼고 재시도
         productsRes = await supabase
           .from('products')
-          .select('id, name, code, barcode, price, unit')
+          .select('id, name, code, barcode, price, unit, category_id')
           .eq('is_active', true)
           .order('name');
       }
 
-      const [branchesRes, gradesRes, ratesRes, usersRes] = await Promise.all([
+      const [branchesRes, gradesRes, ratesRes, usersRes, categoriesRes] = await Promise.all([
         supabase.from('branches').select('*').eq('is_active', true).order('created_at'),
         supabase.from('customer_grades').select('id, code, point_rate'),
         (supabase as any).from('branch_point_rates').select('branch_id, grade_id, point_rate, is_active'),
         supabase.from('users').select('id, name, role, branch_id').eq('is_active', true).order('name'),
+        (supabase as any).from('categories').select('id, name, parent_id, sort_order').order('sort_order'),
       ]);
 
       const branchesData = (branchesRes.data || []) as any[];
@@ -460,6 +464,8 @@ function POSPageInner() {
       setBranchRateMap(newBranchRateMap);
 
       setProducts(productsData);
+      // 마이그 부재/오류 시 빈 맵 유지 → 정렬 시 카테고리 없는 제품처럼 맨 뒤 처리
+      setCategoryInfo(buildCategoryInfo((categoriesRes.error ? [] : categoriesRes.data || []) as any[]));
       setBranches(branchesData);
       setStaff(((usersRes.data as any[]) || []) as StaffUser[]);
 
@@ -800,9 +806,41 @@ function POSPageInner() {
 
   // 검색어 없으면 위젯 표시 제품(pos_widget===true)만 그리드, 검색 중이면 전체(세트 포함)에서 name/code 매칭.
   // pos_widget 컬럼 부재(마이그 071 미적용) 폴백 = 전부 노출.
-  const filteredProducts = search.trim()
-    ? products.filter(p => p.name.includes(search) || p.code.includes(search))
-    : products.filter(p => p.pos_widget === undefined || p.pos_widget === true);
+  // 정렬은 검색/위젯 모드 동일 적용. 원본 products 는 mutate 하지 않음([...].sort).
+  const filteredProducts = useMemo(() => {
+    const base = search.trim()
+      ? products.filter(p => p.name.includes(search) || p.code.includes(search))
+      : products.filter(p => p.pos_widget === undefined || p.pos_widget === true);
+
+    // stock 정렬용 — getStock 동일 로직 인라인(getStock 은 아래에서 선언됨)
+    const stockOf = (id: string): number | null =>
+      inventoryMap.get(`${selectedBranch}_${id}`) ?? null;
+    const byName = (a: any, b: any) => (a.name || '').localeCompare(b.name || '', 'ko');
+
+    return [...base].sort((a, b) => {
+      switch (widgetSort) {
+        case 'name':
+          return byName(a, b);
+        case 'price':
+          return (b.price - a.price) || byName(a, b);
+        case 'stock': {
+          // null(미로드)은 맨 뒤
+          const sa = stockOf(a.id), sb = stockOf(b.id);
+          if (sa === null && sb === null) return byName(a, b);
+          if (sa === null) return 1;
+          if (sb === null) return -1;
+          return (sb - sa) || byName(a, b);
+        }
+        case 'category':
+        default: {
+          // 카테고리 없는 제품은 맨 뒤(￿), 동일 카테고리 내 고가순 → 이름순
+          const ka = categoryInfo.get(a.category_id)?.sortKey ?? '￿';
+          const kb = categoryInfo.get(b.category_id)?.sortKey ?? '￿';
+          return ka.localeCompare(kb) || (b.price - a.price) || byName(a, b);
+        }
+      }
+    });
+  }, [products, search, widgetSort, categoryInfo, selectedBranch, inventoryMap]);
 
   // 매출처 검색 결과
   const isBranchLocked = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
@@ -1955,16 +1993,29 @@ function POSPageInner() {
         {/* 하단 — 제품 검색/그리드 (축소) */}
         <div className="flex flex-col min-h-0 flex-1">
           <div className="mb-2">
-            <input
-              ref={searchRef}
-              type="text"
-              placeholder="제품명, 코드 검색 또는 바코드 스캔 후 Enter"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              onKeyDown={handleSearchEnter}
-              className="input w-full text-sm"
-              autoComplete="off"
-            />
+            <div className="flex gap-2">
+              <input
+                ref={searchRef}
+                type="text"
+                placeholder="제품명, 코드 검색 또는 바코드 스캔 후 Enter"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                onKeyDown={handleSearchEnter}
+                className="input flex-1 text-sm"
+                autoComplete="off"
+              />
+              <select
+                value={widgetSort}
+                onChange={e => setWidgetSort(e.target.value as typeof widgetSort)}
+                className="input w-auto text-sm"
+                title="정렬 기준"
+              >
+                <option value="category">카테고리순</option>
+                <option value="price">고가순</option>
+                <option value="name">이름순</option>
+                <option value="stock">재고순</option>
+              </select>
+            </div>
             {search && (
               <p className="text-xs text-slate-400 mt-1 pl-1">
                 {filteredProducts.length}개 · Enter키로 첫 번째 항목 담기
