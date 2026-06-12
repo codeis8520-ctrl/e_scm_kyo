@@ -12,6 +12,7 @@ import TransferBatchPanel from './TransferBatchPanel';
 import { getInventoryUsageTypes } from '@/lib/actions';
 import { updateSafetyStock } from '@/lib/inventory-actions';
 import { backfillMissingInventories } from '@/lib/inventory-backfill-actions';
+import { buildCategoryInfo, type CategoryRow } from '@/lib/category-tree';
 
 type ProductType = 'FINISHED' | 'RAW' | 'SUB' | 'SERVICE';
 
@@ -22,20 +23,13 @@ interface Inventory {
   quantity: number;
   safety_stock: number;
   branch?: { id: string; name: string; is_headquarters?: boolean };
-  product?: { id: string; name: string; code: string; barcode?: string; product_type?: ProductType | null; category_id?: string | null; track_inventory?: boolean; is_phantom?: boolean; pack_child_id?: string | null; pack_child_qty?: number | null };
+  product?: { id: string; name: string; code: string; barcode?: string; product_type?: ProductType | null; category_id?: string | null; track_inventory?: boolean; is_phantom?: boolean; pack_child_id?: string | null; pack_child_qty?: number | null; price?: number | null };
 }
 
 interface Branch {
   id: string;
   name: string;
   is_headquarters?: boolean;
-}
-
-interface CategoryRow {
-  id: string;
-  name: string;
-  parent_id: string | null;
-  sort_order: number;
 }
 
 // 제품별 피벗 행: 제품 정보 + 지점별 재고 맵
@@ -50,48 +44,8 @@ interface ProductRow {
   isPhantom: boolean;
   packChildId: string | null;
   packChildQty: number | null;
+  price: number;
   byBranch: Record<string, Inventory>;
-}
-
-// 카테고리 트리 정보 — id 별로 path 코드/이름/정렬키/조상셋을 한 번에 보관
-interface CategoryInfo {
-  id: string;
-  name: string;
-  parent_id: string | null;
-  pathCode: string;            // "1-1-1" — 위치 기반 계층 코드
-  pathName: string;            // "제품 / 더경옥 제품 / 단지"
-  sortKey: string;             // 정렬용 (3자리 zero-pad 누적)
-  ancestorIds: Set<string>;    // 자기 자신 포함
-  depth: number;
-}
-
-function buildCategoryInfo(categories: CategoryRow[]): Map<string, CategoryInfo> {
-  // parent_id로 그룹화 + sort_order/name 정렬
-  const byParent = new Map<string | null, CategoryRow[]>();
-  for (const c of categories) {
-    const list = byParent.get(c.parent_id ?? null) || [];
-    list.push(c);
-    byParent.set(c.parent_id ?? null, list);
-  }
-  for (const list of byParent.values()) {
-    list.sort((a, b) => (a.sort_order - b.sort_order) || a.name.localeCompare(b.name, 'ko'));
-  }
-  const out = new Map<string, CategoryInfo>();
-  const walk = (parentId: string | null, parentCode: string, parentName: string, parentSortKey: string, parentAncestors: Set<string>, depth: number) => {
-    const list = byParent.get(parentId) || [];
-    list.forEach((c, i) => {
-      const pos = i + 1;
-      const pathCode = parentCode ? `${parentCode}-${pos}` : String(pos);
-      const pathName = parentName ? `${parentName} / ${c.name}` : c.name;
-      const sortKey = parentSortKey + String(pos).padStart(3, '0') + '/';
-      const ancestors = new Set(parentAncestors);
-      ancestors.add(c.id);
-      out.set(c.id, { id: c.id, name: c.name, parent_id: c.parent_id, pathCode, pathName, sortKey, ancestorIds: ancestors, depth });
-      walk(c.id, pathCode, pathName, sortKey, ancestors, depth + 1);
-    });
-  };
-  walk(null, '', '', '', new Set(), 0);
-  return out;
 }
 
 // 원자재·부자재는 본사에서만 입출고·조정 가능 (OEM 위탁 생산 모델)
@@ -136,6 +90,7 @@ export default function InventoryPage() {
   const [editInventory, setEditInventory] = useState<Inventory | null>(null);
   const [transferInventory, setTransferInventory] = useState<Inventory | null>(null);
   const [viewMode, setViewMode] = useState<'pivot' | 'flat'>('pivot');
+  const [sortMode, setSortMode] = useState<'category' | 'name' | 'stockDesc' | 'stockAsc'>('category');
   const [subView, setSubView] = useState<'stock' | 'transfer'>('stock');
   const [flatBranchFilter, setFlatBranchFilter] = useState('');
   // 재고 변동 이력 모달
@@ -299,7 +254,7 @@ export default function InventoryPage() {
     };
 
     const trySelects = [
-      '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory, is_phantom, pack_child_id, pack_child_qty)',
+      '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory, is_phantom, pack_child_id, pack_child_qty, price)',
       '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory, is_phantom)',
       '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory)',
       '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id)',
@@ -371,6 +326,7 @@ export default function InventoryPage() {
           isPhantom: inv.product.is_phantom === true,
           packChildId: inv.product.pack_child_id ?? null,
           packChildQty: inv.product.pack_child_qty ?? null,
+          price: inv.product.price ?? 0,
           byBranch: {},
         });
       }
@@ -390,16 +346,29 @@ export default function InventoryPage() {
         isPhantom: true,
         packChildId: p.packChildId,
         packChildQty: p.packChildQty,
+        price: 0,
         byBranch: {},
       });
     }
     const arr = Array.from(map.values());
+    const pivotQty = (r: ProductRow) => Object.values(r.byBranch).reduce((s, i) => s + (i.quantity || 0), 0);
     arr.sort((a, b) => {
-      // 카테고리 트리 순 → 같은 카테고리 내 이름 순. 미지정 카테고리는 끝
+      if (sortMode === 'name') {
+        return a.productName.localeCompare(b.productName, 'ko');
+      }
+      if (sortMode === 'stockDesc' || sortMode === 'stockAsc') {
+        const diff = pivotQty(a) - pivotQty(b);
+        const q = sortMode === 'stockDesc' ? -diff : diff;
+        if (q !== 0) return q;
+        return a.productName.localeCompare(b.productName, 'ko');
+      }
+      // category: 카테고리 트리 순 → 가격 내림차순(고가순) → 이름 순. 미지정 카테고리는 끝
       const aKey = a.categoryId ? (categoryInfo.get(a.categoryId)?.sortKey || 'zzz') : 'zzz';
       const bKey = b.categoryId ? (categoryInfo.get(b.categoryId)?.sortKey || 'zzz') : 'zzz';
       const cmp = aKey.localeCompare(bKey);
       if (cmp !== 0) return cmp;
+      const priceCmp = (b.price || 0) - (a.price || 0);
+      if (priceCmp !== 0) return priceCmp;
       return a.productName.localeCompare(b.productName, 'ko');
     });
     return arr;
@@ -436,35 +405,57 @@ export default function InventoryPage() {
       return matchBranch && matchCategory && matchType && matchSearch;
     })
     .sort((a, b) => {
-      // 카테고리 트리 순 → 지점명 → 제품명. 미분류는 끝.
+      if (sortMode === 'name') {
+        const n = (a.product?.name || '').localeCompare(b.product?.name || '', 'ko');
+        if (n !== 0) return n;
+        return (a.branch?.name || '').localeCompare(b.branch?.name || '', 'ko');
+      }
+      if (sortMode === 'stockDesc' || sortMode === 'stockAsc') {
+        const diff = (a.quantity || 0) - (b.quantity || 0);
+        const q = sortMode === 'stockDesc' ? -diff : diff;
+        if (q !== 0) return q;
+        return (a.product?.name || '').localeCompare(b.product?.name || '', 'ko');
+      }
+      // category: 카테고리 트리 순 → 가격 내림차순(고가순) → 지점명 → 제품명. 미분류는 끝.
       const aCid = a.product?.category_id ?? null;
       const bCid = b.product?.category_id ?? null;
       const aKey = aCid ? (categoryInfo.get(aCid)?.sortKey || 'zzz') : 'zzz';
       const bKey = bCid ? (categoryInfo.get(bCid)?.sortKey || 'zzz') : 'zzz';
       const c1 = aKey.localeCompare(bKey);
       if (c1 !== 0) return c1;
+      const priceCmp = (b.product?.price || 0) - (a.product?.price || 0);
+      if (priceCmp !== 0) return priceCmp;
       const c2 = (a.branch?.name || '').localeCompare(b.branch?.name || '', 'ko');
       if (c2 !== 0) return c2;
       return (a.product?.name || '').localeCompare(b.product?.name || '', 'ko');
     });
 
-  // 그룹 빌더 — 연속된 같은 카테고리 행을 묶어 헤더·소계 렌더에 사용
+  // 그룹 빌더 — 카테고리순일 때만 연속 카테고리 행을 묶어 헤더·소계 렌더에 사용.
+  //   비-카테고리 정렬은 단일 그룹 1개(헤더·소계 미렌더 → 평면 리스트).
   type FlatGroup = { categoryId: string | null; rows: typeof filteredFlat };
   const flatGroups: FlatGroup[] = [];
-  for (const r of filteredFlat) {
-    const cid = r.product?.category_id ?? null;
-    const last = flatGroups[flatGroups.length - 1];
-    if (!last || last.categoryId !== cid) flatGroups.push({ categoryId: cid, rows: [r] });
-    else last.rows.push(r);
+  if (sortMode === 'category') {
+    for (const r of filteredFlat) {
+      const cid = r.product?.category_id ?? null;
+      const last = flatGroups[flatGroups.length - 1];
+      if (!last || last.categoryId !== cid) flatGroups.push({ categoryId: cid, rows: [r] });
+      else last.rows.push(r);
+    }
+  } else if (filteredFlat.length > 0) {
+    flatGroups.push({ categoryId: null, rows: filteredFlat });
   }
 
   type PivotGroup = { categoryId: string | null; rows: typeof filteredPivot };
   const pivotGroups: PivotGroup[] = [];
-  for (const r of filteredPivot) {
-    const cid = r.categoryId;
-    const last = pivotGroups[pivotGroups.length - 1];
-    if (!last || last.categoryId !== cid) pivotGroups.push({ categoryId: cid, rows: [r] });
-    else last.rows.push(r);
+  if (sortMode === 'category') {
+    for (const r of filteredPivot) {
+      const cid = r.categoryId;
+      const last = pivotGroups[pivotGroups.length - 1];
+      if (!last || last.categoryId !== cid) pivotGroups.push({ categoryId: cid, rows: [r] });
+      else last.rows.push(r);
+    }
+  } else if (filteredPivot.length > 0) {
+    pivotGroups.push({ categoryId: null, rows: filteredPivot });
   }
 
   // 카테고리 헤더 라벨 헬퍼
@@ -559,6 +550,19 @@ export default function InventoryPage() {
           ))}
         </select>
 
+        {/* 정렬 필터 — 카테고리순(기본)/이름순/재고순 */}
+        <select
+          value={sortMode}
+          onChange={(e) => setSortMode(e.target.value as typeof sortMode)}
+          className="input w-full sm:w-44 text-sm"
+          title="목록 정렬 기준"
+        >
+          <option value="category">카테고리순 → 고가순</option>
+          <option value="name">이름순 (가나다)</option>
+          <option value="stockDesc">재고 많은순</option>
+          <option value="stockAsc">재고 적은순</option>
+        </select>
+
         {/* 제품 유형 필터 — 완제품/원자재/부자재/무형상품 */}
         <div className="flex rounded-lg border border-slate-200 overflow-hidden text-sm">
           {TYPE_FILTER_OPTIONS.map(opt => (
@@ -651,6 +655,8 @@ export default function InventoryPage() {
                   </td>
                 </tr>
               ) : pivotGroups.flatMap((group, gIdx) => {
+                // 카테고리순일 때만 헤더·소계 렌더. 비-카테고리는 평면 행만.
+                const showCategoryChrome = sortMode === 'category';
                 // 그룹별: 헤더 → 행들 → 소계
                 const headerRow = (
                   <tr key={`hdr-${group.categoryId || 'none'}-${gIdx}`} className="bg-slate-50">
@@ -789,7 +795,9 @@ export default function InventoryPage() {
                   </tr>
                   );
                 });
-                return [headerRow, ...dataRows, subtotalRow] as React.ReactElement[];
+                return (showCategoryChrome
+                  ? [headerRow, ...dataRows, subtotalRow]
+                  : dataRows) as React.ReactElement[];
               })}
             </tbody>
           </table>
@@ -821,6 +829,8 @@ export default function InventoryPage() {
                 </td>
               </tr>
             ) : flatGroups.flatMap((group, gIdx) => {
+              // 카테고리순일 때만 헤더·소계 렌더. 비-카테고리는 평면 행만.
+              const showCategoryChrome = sortMode === 'category';
               const headerRow = (
                 <tr key={`fhdr-${group.categoryId || 'none'}-${gIdx}`} className="bg-slate-50">
                   <td colSpan={8} className="px-3 py-1.5 text-xs font-semibold text-slate-600">
@@ -902,7 +912,9 @@ export default function InventoryPage() {
                 </tr>
                 );
               });
-              return [headerRow, ...dataRows, subtotalRow] as React.ReactElement[];
+              return (showCategoryChrome
+                ? [headerRow, ...dataRows, subtotalRow]
+                : dataRows) as React.ReactElement[];
             })}
           </tbody>
         </table>

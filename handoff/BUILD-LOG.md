@@ -65,3 +65,40 @@
 ### Known Gaps
 - [Project Owner 결정 대기] 기존 0원 sales_orders.total_amount 행 + 잘못 기표된 journal_entries 백필. 이번 수정은 FORWARD-ONLY. 자동 백필 안 함.
 - sync-orders.ts: amount/parseOptionPairs 패턴 없음(status-only) 확인 → 미수정.
+
+---
+
+## Feature D — 카테고리 정렬 · Step 1 (공유 util 정리 + 재고현황 정렬 필터) · 브리프 작성
+시작: 2026-06-12 (카페24 버그 스프린트로 덮였던 브리프 재작성)
+
+### Locked Decisions
+- [Arch 결정 — policy 차이, 의도적] 신규 `src/lib/category-sort.ts` 생성 안 함. 기존 `src/lib/category-tree.ts` 가 동일 `CategoryRow/CategoryInfo/buildCategoryInfo` 를 이미 export(products·production·ProductModal 사용 중)하고, inventory/page.tsx L34~95 로컬 사본이 바이트 동일. → "공유 util 추출" = inventory 로컬 중복 삭제 + `@/lib/category-tree` import 로 통일. 두 번째 util 신설 시 드리프트 부채 → 회피. policy 의도(순수 이동·로직 무변경·회귀 방지)는 dedupe 가 더 잘 충족.
+- [Project Owner 해결] 비-카테고리 정렬(이름순/재고많은·적은순) 시 카테고리 그룹 헤더·소계 숨기고 단일 평면 리스트. pivot·flat 양 뷰 모두. → 기본 LOCKED.
+- 4옵션: 카테고리순→고가순(기본, sortKey 계층순 + tie-break 가격 desc) / 이름순(가나다) / 재고많은순 / 재고적은순.
+- price: trySelects 폴백 사다리 맨 위 변형 1개에만 추가, 하위 4개 무변경(graceful degrade). matchedProducts 쿼리 무변경. 가격 null=0 취급.
+- DB/관리 UI 변경 0, 마이그 없음, schema.ts/tools.ts 무변경(정렬=read 표현).
+- Step 분할: Step 1=공유 util 정리+재고현황(이번 배포 단위). Step 2=POS 위젯(별도).
+
+### Build Status (2026-06-12) — BUILT · 리뷰 대기
+- npm run build ✓ Compiled successfully in 7.9s, 에러/경고 0.
+- 변경 파일: src/app/(dashboard)/inventory/page.tsx (단일 파일). category-tree.ts 무변경, 신규 파일 없음.
+  - L15 — `@/lib/category-tree` 에서 buildCategoryInfo/CategoryRow/CategoryInfo import.
+  - (삭제) 로컬 interface CategoryRow / interface CategoryInfo / function buildCategoryInfo — 바이트 동일 dedupe.
+  - L26 — Inventory.product 타입에 `price?: number | null` 추가.
+  - L47 — ProductRow 에 `price: number` 추가(피벗 정렬용).
+  - L93 — `sortMode` state('category'|'name'|'stockDesc'|'stockAsc', 기본 'category').
+  - L329/L349 — ProductRow 빌더에 price 채움(실데이터 `inv.product.price ?? 0`, phantom-pack 합성 행 `0`).
+  - L354~373 — pivot 정렬 comparator sortMode 분기(category=트리순+가격desc tie-break, name, stock asc/desc; pivot 수량=byBranch 합).
+  - L407~430 — flat 정렬 comparator sortMode 분기(category=트리순+가격desc→지점명→제품명; name; stock asc/desc=item.quantity).
+  - L433~459 — 그룹 빌더 sortMode 분기(category=연속 카테고리 묶음, 그 외=단일 그룹 1개).
+  - L553~564 — 정렬 필터 select(4옵션) 컨트롤 행에 추가.
+  - L658~800 (pivot) / L832~917 (flat) — showCategoryChrome=`sortMode==='category'` 가드. 비-카테고리는 headerRow·subtotalRow 미반환(평면 행만). renderCategoryLabel 은 headerRow 내부에서만 호출 → 자동 가드.
+
+### Build Decisions (Step 1)
+- price 폴백: trySelects 맨 위 변형(L325 영역)에만 `, price` 추가, 하위 4개·matchedProducts 무변경. products.price 컬럼은 schema.sql L78 에 존재(NOT NULL) — 폴백은 안전망.
+- pivot 수량 = `Object.values(r.byBranch).reduce((s,i)=>s+(i.quantity||0),0)` (지점 사용자도 byBranch 합 일관). flat 수량 = item.quantity.
+- 가격 null/undefined → 0 취급, 고가순 정렬 시 맨 뒤.
+- 비-카테고리 단일 그룹의 categoryId=null 이지만 헤더 미렌더이므로 라벨 영향 없음.
+
+### Known Gaps
+- (대기) POS 위젯 정렬 = Step 2 별도 스프린트.
