@@ -129,3 +129,30 @@
 
 ### Known Gaps
 - 없음.
+
+---
+
+## Feature E — 재고이동 from_branch 서버측 소유 검증 (보안) · 1 step · 빌드 완료 · 리뷰 대기
+시작: 2026-06-12 / 해소 대상: Feature B Known Gap L41(단건+배치 출발지 서버측 무검증)
+
+### Build Status — BUILT
+- npm run build ✓ Compiled successfully (6.2s), 에러/경고 0. (tsc --noEmit 0 에러)
+- 변경 파일: src/lib/actions.ts (단일 파일)
+  - L9 — `import { requireSession, type SessionUser } from '@/lib/session';` 추가.
+  - L1177~1196 — 모듈 로컬 헬퍼 `assertFromBranchOwnership(session, fromBranchId): { error: string } | null` 신규(단건·배치 공유).
+  - L1207~1209 — transferInventory 초입(formData 파싱 직후): `requireSession()` + 헬퍼, 거부 시 `{ error }` return.
+  - L1300~1302 — transferInventoryBatch pass1(from/to 존재 체크 직후, 재고부족 검사 전): 동일 패턴.
+
+### Locked Decisions
+- 정책(브리프 잠금): HQ급(SUPER_ADMIN/HQ_OPERATOR/EXECUTIVE)=출발지 자유. 지점고정(BRANCH_STAFF/PHARMACY_STAFF)=`from===session.branch_id`만 허용, 불일치/branch_id=null 시 거부('본인 지점의 재고만 출고할 수 있습니다.'). 도착지(to_branch) 무검증(타지점 입고 허용 유지).
+- branch_id=null(지점고정) 거부 = 안전측. requireSession()은 세션 없으면 throw → 미인증 차단.
+- 두 함수가 헬퍼 1개 공유(로직 드리프트 없음).
+- DB/마이그/schema.ts/tools.ts 변경 없음(순수 액션 가드, 스키마·enum 불변).
+
+### Build Decisions
+- 거부 반환을 `return denied;`(변수, `{ error: string } | null` narrow) 대신 `return { error: denied.error };`(리터럴)로 작성. 이유: 변수 union 반환이 함수 추론 반환타입의 `success: true` 리터럴을 `boolean`으로 widen시켜 호출부 TransferBatchPanel/TransferModal 의 `result?.error` 판별 union이 깨지는 tsc 에러 발생. 리터럴 반환은 기존 error 반환 패턴과 동일하며 동작·메시지 무변경.
+
+### Known Gaps
+- [인접 보안 갭 — 이번 스코프 아님] adjustInventory(actions.ts:1005)·recordStockUsage(actions.ts:1086): 호출자 지점 대조 없이 입력 branch_id 사용. adjustInventory 는 RAW/SUB 본사 제한만 있고 일반 제품은 타지점 조정 가능 잠재. 지점고정 직원의 임의 branch_id 조정/소모 경로 — 동일한 출발지 가드 미적용. 후속 보안 스텝 후보(제품/보안 정책 결정).
+- AI tool execTransferInventory(tools.ts transfer_inventory): 별도 코드경로(자체 movements, 이 서버액션 미경유), ToolContext RBAC 관할 → 이번 변경 무관(손대지 않음).
+- pass1↔pass2 비트랜잭션 동시성 레이스(기존 한계) — 이번 스코프 아님.

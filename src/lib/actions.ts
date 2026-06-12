@@ -6,6 +6,7 @@ import { redirect } from 'next/navigation';
 import { fireNotificationTrigger } from '@/lib/notification-triggers';
 import { computeBomCost } from '@/lib/production-actions';
 import { kstTodayString } from '@/lib/date';
+import { requireSession, type SessionUser } from '@/lib/session';
 
 // ============ Products ============
 
@@ -1173,6 +1174,26 @@ export async function recordStockUsage(input: {
   return { success: true, count: items.length };
 }
 
+// 재고이동 출발지(from_branch) 소유 검증 — 단건/다건이 공유(로직 드리프트 방지).
+// HQ급(SUPER_ADMIN/HQ_OPERATOR/EXECUTIVE)은 출발지 자유.
+// 지점고정(BRANCH_STAFF/PHARMACY_STAFF)은 본인 지점 출고만 허용.
+//   - branch_id가 null(본인 지점 미상)이면 안전측으로 거부.
+// 도착지(to_branch)는 검증하지 않는다(타지점 입고 허용 — 기존 UI 정책).
+// null이면 통과, { error } 객체면 호출부에서 그대로 return.
+function assertFromBranchOwnership(
+  session: SessionUser,
+  fromBranchId: string,
+): { error: string } | null {
+  const HQ_ROLES = ['SUPER_ADMIN', 'HQ_OPERATOR', 'EXECUTIVE'];
+  if (HQ_ROLES.includes(session.role)) return null;
+
+  // 지점고정 직원: 본인 지점 미상이거나 출발지가 본인 지점이 아니면 거부.
+  if (!session.branch_id || session.branch_id !== fromBranchId) {
+    return { error: '본인 지점의 재고만 출고할 수 있습니다.' };
+  }
+  return null;
+}
+
 export async function transferInventory(formData: FormData) {
   const supabase = await createClient();
   const db = supabase as any;
@@ -1182,6 +1203,10 @@ export async function transferInventory(formData: FormData) {
   const productId = formData.get('product_id') as string;
   const quantity = parseInt(formData.get('quantity') as string);
   const memo = formData.get('memo') as string;
+
+  const session = await requireSession();
+  const denied = assertFromBranchOwnership(session, fromBranchId);
+  if (denied) return { error: denied.error };
 
   if (fromBranchId === toBranchId) {
     return { error: '동일 지점 간 이동은 할 수 없습니다.' };
@@ -1272,6 +1297,9 @@ export async function transferInventoryBatch(input: {
   // ── pass 1: 검증 (전체 거부, 처리 전) ──
   if (!fromBranchId) return { error: '출발 지점을 선택하세요.' };
   if (!toBranchId) return { error: '도착 지점을 선택하세요.' };
+  const session = await requireSession();
+  const denied = assertFromBranchOwnership(session, fromBranchId);
+  if (denied) return { error: denied.error };
   if (fromBranchId === toBranchId) {
     return { error: '동일 지점 간 이동은 할 수 없습니다.' };
   }
