@@ -118,3 +118,13 @@ export const CAFE24_STATUS_TO_LOCAL: Record<string, string> = {
   S: 'SHIPPED',
   D: 'DELIVERED',     // 구버전 D → DELIVERED (COMPLETED 아님)
 };
+
+// Cafe24 금액 필드는 문자열로 내려오고, 포인트 전액결제 시 payment_amount=0/"0".
+// 우선순위대로 Number 변환 후 첫 번째 유한 + 양수 값을 반환(없으면 0).
+export function firstPositiveAmount(...vals: unknown[]): number {
+  for (const v of vals) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 0;
+}

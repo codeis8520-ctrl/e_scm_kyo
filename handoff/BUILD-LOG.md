@@ -42,3 +42,26 @@
 
 ## Decisions (Feature B)
 - 2026-06-12 AMENDMENT: 리뷰 갭(HQ 사용자 후보 빈) 스코프 포함 확정. TransferBatchPanel 이 getInventory(fromBranchId) 로 출발지 inventories 자체 페치(출발지 변경 시 refetch), page-level inventories 의존 제거. + qty<1 submitDisabled 가드(Should Fix). RBAC 서버강제는 파킹(위 Known Gap).
+
+---
+
+## Feature C — Cafe24 Bugfix (2 bugs · 1 step) · 빌드 완료 · 리뷰 대기
+시작: 2026-06-12
+
+### Build Status
+- BUILT — npm run build ✓ 컴파일 성공·에러/경고 없음.
+- 변경 파일:
+  - src/lib/cafe24/types.ts — `firstPositiveAmount(...vals)` 공유 헬퍼 신규(우선순위대로 Number 변환→첫 유한+양수, 없으면 0). Bug ③ 단일 출처.
+  - src/app/api/cafe24/orders/route.ts — (a) `isNoSelection(v)` 헬퍼 + parseOptionPairs 양 분기 적용(Bug ②); (b) firstPositiveAmount import + L322 total_price 교체(Bug ③).
+  - src/lib/cafe24/webhook.ts — firstPositiveAmount import + total_amount(L273~) ?? 체인 교체(Bug ③). L369/L391 createSaleJournal 무변경(DB 행에서 읽어 transitive 수정).
+  - src/lib/ai/schema.ts — BUSINESS_RULES 한 줄 추가(cafe24 total_amount = 결제수단 무관 주문상품금액). DB_SCHEMA 무변경.
+
+### Locked Decisions
+- Bug ②: isNoSelection = `v.replace(/\s+/g,'') === '선택안함'` ("선택안함"+"선택 안함" 커버, 추가 퍼징 없음). 배열 분기는 v='' 로 기존 filter 가 드롭, 문자열 분기는 '' 반환(기존 bare k 반환 아님 → .filter(Boolean) 으로 완전 제거). L281-288 extractItemOptions 무변경(`''` → `name xQty` 폴백 기존 동작).
+- Bug ③ 필드 우선순위 LOCKED: payment_amount → order_price_amount → total_order_price → actual_payment_amount(webhook) / +detailOrder 변형(orders/route). 0/빈값/NaN 은 이제 통과(포인트 전액결제 payment_amount=0 → order_price_amount 사용). 정상주문 무변경.
+- 헬퍼 위치: types.ts(webhook 이 이미 import 중) → 양 spot 공유.
+- discount_amount(webhook L281-286) 무변경(0 은 유효 할인).
+
+### Known Gaps
+- [Project Owner 결정 대기] 기존 0원 sales_orders.total_amount 행 + 잘못 기표된 journal_entries 백필. 이번 수정은 FORWARD-ONLY. 자동 백필 안 함.
+- sync-orders.ts: amount/parseOptionPairs 패턴 없음(status-only) 확인 → 미수정.

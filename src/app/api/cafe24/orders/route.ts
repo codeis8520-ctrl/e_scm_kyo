@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { getValidAccessToken, forceRefreshAccessToken } from '@/lib/cafe24/token-store';
+import { firstPositiveAmount } from '@/lib/cafe24/types';
 import { kstTodayString, fmtDateKST } from '@/lib/date';
 
 // Cafe24 주문 품목의 선택사항(option_value / additional_option_value / options[]) 추출.
@@ -8,13 +9,18 @@ import { kstTodayString, fmtDateKST } from '@/lib/date';
 function safeDecode(s: string): string {
   try { return decodeURIComponent(s); } catch { return s; }
 }
+// "선택안함" / "선택 안함" 등 공백만 다른 무선택 옵션값 판별.
+function isNoSelection(v: string): boolean {
+  return v.replace(/\s+/g, '') === '선택안함';
+}
 function parseOptionPairs(raw: any): string {
   if (!raw) return '';
   if (Array.isArray(raw)) {
     return raw
       .map((o: any) => {
         const k = (o?.option_name ?? o?.name ?? '').toString().trim();
-        const v = (o?.option_value ?? o?.value ?? '').toString().trim();
+        let v = (o?.option_value ?? o?.value ?? '').toString().trim();
+        if (isNoSelection(v)) v = '';
         return v ? (k ? `${k}: ${v}` : v) : '';
       })
       .filter(Boolean).join(', ');
@@ -26,6 +32,7 @@ function parseOptionPairs(raw: any): string {
       if (eq < 0) return safeDecode(pair).trim();
       const k = safeDecode(pair.slice(0, eq)).trim();
       const v = safeDecode(pair.slice(eq + 1)).trim();
+      if (isNoSelection(v)) return '';
       return v ? `${k}: ${v}` : k;
     })
     .filter(Boolean).join(', ');
@@ -319,7 +326,11 @@ export async function GET(request: NextRequest) {
             || o?.user_id_message
             || '',
           items_summary: itemsSummary,
-          total_price: Number(o.payment_amount ?? detailOrder?.payment_amount ?? 0),
+          total_price: firstPositiveAmount(
+            o.payment_amount, detailOrder?.payment_amount,
+            o.order_price_amount, detailOrder?.order_price_amount,
+            o.total_order_price, detailOrder?.total_order_price,
+          ),
           already_added: existingIds.has(orderId),
           cafe24_status: rawStatus,
           customer_match: null as { id: string; name: string } | null,
