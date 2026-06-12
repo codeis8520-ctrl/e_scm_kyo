@@ -6,10 +6,29 @@
 
 ## ACTIVE SPRINT — 수령 전 전표 품목 추가/삭제 + 방문↔택배 전환 (2026-06-11)
 
-전체 3스텝. ARCHITECT-BRIEF.md는 **현재 스텝만** 담는다.
-- Step 1 (브리핑 완료): 품목 추가/삭제 서버액션 + 공용 재계산 헬퍼 + 드로어 UI. shipments 미접촉.
-- Step 2 (대기): 품목 delivery_type 전환 + order receipt_status 재집계.
-- Step 3 (대기): 방문↔택배 양방향 = shipment 생성/void + 수령자·주소 입력.
+전체 2스텝(원 3스텝 → Step2+3 병합). ARCHITECT-BRIEF.md는 **현재 스텝만** 담는다.
+- Step 1 (✅ 배포 완료, 커밋 59658d9): 품목 추가/삭제 서버액션 + 공용 재계산 헬퍼 + 드로어 UI. shipments 미접촉. ⚠️ 마이그 078 Supabase 적용은 Project Owner 대기.
+- Step 2 (브리핑 완료, 병합): 방문↔택배 양방향 전환 = 품목 delivery_type 변경 + order receipt_status 재집계 + shipment 생성/삭제 + 수령자·주소 입력.
+
+### Step 2 — 병합 결정 (Arch, 2026-06-12)
+- **원 Step2(품목 delivery_type만)·Step3(shipment 생성/void)을 1배포단위로 병합.** 근거: delivery_type만 바꾸고 shipment를 안 만들면 "택배예정인데 송장 발행할 배송레코드 없음" 깨진 반쪽 상태. 사용자 핵심요구는 shipment 생성/삭제가 같이 들어와야 진짜 기능 → thin Step2 단독배포 폐기.
+
+### Step 2 — 잠긴 결정 (Locked)
+- 수정 게이트: Step 1과 동일(COMPLETED AND receipt_status∉{RECEIVED,null}). loadEditableOrder 재사용, 서버+UI.
+- **금액 불변 정책 확정**: 방문↔택배는 배송비 라인 없음(시스템에 배송비 품목 개념 없음) → total/VAT/포인트/payments/journal 전부 미변경. delta=0. Step1 recalc/payment/journal 경로 **호출 안 함**.
+- 방문→택배: recipient name/phone/address 필수(NOT NULL 3종) 입력, 고객정보 prefill. 품목 PICKUP→PARCEL/PARCEL_PLANNED(RECEIVED 품목 제외). shipment 있으면 update, 없으면 insert(processPosCheckout ②-b 폴백 복제, status PENDING).
+- 택배→방문: **shipment.status='PENDING'일 때만** 허용(송장 미발행). PRINTED/SHIPPED/DELIVERED는 거부(송장발행/발송 가드). void=하드 DELETE(shipments enum에 CANCELLED 없음 → 신규 마이그 회피). 품목 PARCEL/QUICK→PICKUP/RECEIVED/오늘.
+- receipt_status 재집계 우선순위: PARCEL_PLANNED > QUICK_PLANNED > PICKUP_PLANNED > (전부 RECEIVED면 RECEIVED). 헬퍼 deriveOrderReceiptStatus 1개로 추출. markItemReceived allDone 판정과 의미 일치.
+- 재사용: loadEditableOrder/isMissingColumnError/resolveStockBranchId 재사용. 기존 changeDeliveryType(PARCEL↔QUICK)·markReceiptCompleted·revertReceiptStatus·markItemReceived 미접촉.
+- AI Sync: DB_SCHEMA 변경 없음. BUSINESS_RULES에 배송전환 규칙 1~2줄. tools.ts 도구 미추가(화면 전용).
+
+### Step 2 — Known Gaps (범위 밖)
+- 품목 단건 delivery_type 전환(주문 단위 전체 전환만 구현).
+- 배송비 과금/금액 변동(정책상 0).
+- shipments CANCELLED 상태(soft-cancel) — 하드 DELETE로 대체.
+- PRINTED/SHIPPED 송장 회수·재배송 워크플로 — 가드로 차단만.
+- changeDeliveryType(PARCEL↔QUICK) 통합 — 별도 유지.
+- 에이전트 tools.ts 도구.
 
 ### Step 1 — 잠긴 결정 (Locked)
 - 수정 허용 조건: `status==='COMPLETED' && receipt_status NOT IN (RECEIVED, null)`. receipt_status 없음=수정불가(레거시 안전).
@@ -61,6 +80,30 @@ Arch 결정 Option B(부호 보존). 마이그 078(`amount≥0` 제약 제거 + 
 **변경 파일 (2개)**:
 - `src/lib/sales-revise-actions.ts` — `recordPaymentDelta`: ① amount 부호 보존(음수=부분환불, abs 미사용) ② 조용한 실패 제거 → insert 실패 시 `{ error }` 전파(42703 폴백만 유지, 23514 등은 삼키지 않음) ③ `paymentRecordMethod` 신규(child CHECK 허용목록 검증, 'mixed' 보존·null/목록밖만 'cash'). 두 호출부(addSalesOrderItem/removeSalesOrderItem)에서 `payRes.error` 시 즉시 `{ error }` 반환 → 재고·분개 조정 후 결제장부 누락 정합성 깨짐 차단.
 - `src/lib/ai/schema.ts` — sales_order_payments 주석에 amount 음수=환불·Σ=순수금액·payment_method enum('mixed' 포함) 1줄 추가.
+
+### Step 2 — 빌드 완료 (Bob, 2026-06-12) — 방문↔택배 양방향 전환
+
+**상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, `npm run build` ✅ Compiled successfully in 6.9s, error/warning 0)
+
+**조사 정정 (브리프 L-번호 보정)**: markItemReceived/changeDeliveryType/markReceiptCompleted/revertReceiptStatus는 서버액션이 아니라 **SalesListTab.tsx 내부 로컬 함수**(supabase client 직접). 브리프의 L1129/L1304는 이 컴포넌트 내부 라인. processPosCheckout ②-b shipment insert는 `src/lib/actions.ts` L2215~2274. 전부 미접촉.
+
+**변경 파일 (3개, DB/마이그 변경 없음 — 기존 테이블만)**:
+- `src/lib/sales-revise-actions.ts` — 신규 export 2개 + 헬퍼 2개:
+  - `deriveOrderReceiptStatus(items)` (L464) — 우선순위 PARCEL_PLANNED>QUICK_PLANNED>PICKUP_PLANNED>RECEIVED, receiptDate(RECEIVED일 때만 오늘).
+  - `reaggregateOrderReceiptStatus(db, orderId)` (L477) — 품목 재조회→도출→sales_orders update. 052/051 미적용 시 컬럼-누락 폴백으로 조용히 skip.
+  - `convertOrderToParcel({orderId, recipient})` (L500) — loadEditableOrder 가드→수령자 name/phone/address 필수검증→미수령 품목 PARCEL/PARCEL_PLANNED(RECEIVED 제외, .neq)→shipment upsert(기존 있으면 update+수령자/주소, 없으면 insert: processPosCheckout ②-b 폴백 복제, source=STORE/status=PENDING/delivery_type=PARCEL/sender=출고지점 또는 ''/items_summary=제품명)→재집계→revalidate(/pos,/shipping)+audit. **recalc/payment/journal 미호출(delta=0)**.
+  - `convertOrderToPickup({orderId})` (L659) — 가드→shipment 조회(있으면 status≠PENDING 거부, PENDING이면 DELETE)→미수령 품목 PICKUP/RECEIVED/오늘(RECEIVED 제외)→재집계→revalidate+audit.
+- `src/app/(dashboard)/pos/SalesListTab.tsx` — import 2개 추가; convert 상태 8개(converting/showConvertForm/cv* 6필드); openConvertForm(고객 name/phone prefill + customers.address lazy fetch); handleConvertToParcel/handleConvertToPickup; shipment 헤더에 '🏠 방문 수령으로 전환' 버튼(editable 게이트, 서버 가드 에러 alert 노출); shipment 없고 editable이면 '📦 택배로 전환' 버튼+인라인 폼(Step1 add-form 스타일, 수령자 6필드). 기존 changeDeliveryType/markReceiptCompleted/revert/markItemReceived 미접촉.
+- `src/lib/ai/schema.ts` — BUSINESS_RULES(L195)에 전표 배송전환 규칙 1줄. DB_SCHEMA 컬럼 변경 없음.
+
+**주요 결정**:
+- 금액 불변(배송비 없음) → Step1 recalc/payment/journal 경로 호출 안 함(delta=0). total/VAT/포인트/payments/journal 전부 미변경.
+- 택배→방문 가드: shipment.status≠'PENDING'(PRINTED/SHIPPED/DELIVERED)이면 브리프 지정 에러 그대로 반환·거부. void=하드 DELETE(CANCELLED enum 없음).
+- 혼합 보존: 품목 update에 `.neq('receipt_status','RECEIVED')` → 이미 수령 끝난 품목 미접촉. 주문 재집계는 deriveOrderReceiptStatus 우선순위.
+- shipment insert 폴백: payloadFull(delivery_type 포함)→42703 시 delivery_type 제거→여전히 42703 시 created_by 제거. processPosCheckout 패턴 중 본 액션이 추가하는 optional 컬럼(delivery_type/created_by)만 단계적 제거.
+- items_summary: 제품명 조회(in) 후 폴백 product_id. shipping 목록 가독성.
+
+**Step 2 — Known Gaps (범위 밖)**: 위 [Step 2 — Known Gaps] 동일 — 품목 단건 delivery_type 토글, 배송비 과금, shipments CANCELLED soft-cancel, PRINTED/SHIPPED 송장 회수 워크플로, changeDeliveryType(PARCEL↔QUICK) 통합, 에이전트 tools.ts 도구.
 
 ---
 

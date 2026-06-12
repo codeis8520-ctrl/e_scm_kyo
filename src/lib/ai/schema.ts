@@ -192,6 +192,7 @@ sales_orders.receipt_status: 제품 수령 흐름 (현장판매는 대부분 REC
 sales_order_items.order_option: 품목별 주문 부가 옵션(보자기/쇼핑백/색상/서비스 등). 배송 방식 기록용 아님.
 sales_order_items.delivery_type + receipt_status: 같은 전표 내 품목별 배송·수령 추적. 3품목 중 1품목만 택배 같은 혼합 시나리오 정식 지원(수령지는 1곳만 가정).
 sales_orders.receipt_status: 품목 receipt_status 집계(우선순위 PARCEL_PLANNED > QUICK_PLANNED > PICKUP_PLANNED > RECEIVED). 품목 모두 RECEIVED이면 자동 전이.
+전표 배송전환(방문↔택배, 수정가능 전표=COMPLETED·receipt_status∉{RECEIVED,null}만): 방문→택배는 미수령 품목을 PARCEL_PLANNED로 바꾸고 shipment(status=PENDING) 생성, 택배→방문은 shipment.status='PENDING'(송장 미발행)일 때만 shipment 삭제 후 품목 RECEIVED 전환. 금액 불변(배송비 없음). RECEIVED 품목은 보존.
 
 [포인트]
 1P = 1원 할인. 포인트 적립 = 결제금액 × 적립률.

@@ -457,6 +457,265 @@ export async function addSalesOrderItem(params: {
   return { success: true, delta: deltaFinal };
 }
 
+// ── 주문 receipt_status 재집계 (혼합 delivery_type 대응) ──
+//   우선순위: PARCEL_PLANNED > QUICK_PLANNED > PICKUP_PLANNED > (전부 RECEIVED면 RECEIVED).
+//   receipt_date: RECEIVED로 갈 때만 오늘, 그 외 null.
+//   markItemReceived(SalesListTab)의 allDone 판정(전부 RECEIVED→주문 RECEIVED)과 의미 일치.
+function deriveOrderReceiptStatus(
+  items: Array<{ receipt_status?: string | null }>,
+): { status: 'RECEIVED' | 'PARCEL_PLANNED' | 'QUICK_PLANNED' | 'PICKUP_PLANNED'; receiptDate: string | null } {
+  const statuses = items.map(it => it.receipt_status || 'RECEIVED');
+  if (statuses.some(s => s === 'PARCEL_PLANNED')) return { status: 'PARCEL_PLANNED', receiptDate: null };
+  if (statuses.some(s => s === 'QUICK_PLANNED')) return { status: 'QUICK_PLANNED', receiptDate: null };
+  if (statuses.some(s => s === 'PICKUP_PLANNED')) return { status: 'PICKUP_PLANNED', receiptDate: null };
+  // 남은 건 전부 RECEIVED (null도 RECEIVED로 간주)
+  return { status: 'RECEIVED', receiptDate: kstTodayString() };
+}
+
+// ── 주문 receipt_status 재집계 update (품목 재조회 → 도출 → sales_orders update) ──
+//   052 미적용 환경: 품목 receipt_status 컬럼 부재 시 재집계 불가 → 조용히 skip(폴백).
+async function reaggregateOrderReceiptStatus(db: any, orderId: string): Promise<void> {
+  let res: any = await db
+    .from('sales_order_items')
+    .select('receipt_status')
+    .eq('sales_order_id', orderId);
+  if (res.error && isMissingColumnError(res.error)) return; // 052 미적용 — 재집계 생략
+  const rows = (res.data || []) as Array<{ receipt_status?: string | null }>;
+  if (rows.length === 0) return;
+  const { status, receiptDate } = deriveOrderReceiptStatus(rows);
+  let upErr = (await db
+    .from('sales_orders')
+    .update({ receipt_status: status, receipt_date: receiptDate })
+    .eq('id', orderId)).error;
+  if (upErr && isMissingColumnError(upErr)) return; // 051 미적용 — 주문 레벨 재집계 생략
+}
+
+/**
+ * 방문(PICKUP) → 택배(PARCEL) 전환
+ *
+ * 수정 가능 전표 한정. 미수령 PICKUP 품목을 PARCEL/PARCEL_PLANNED로 바꾸고
+ * shipment 레코드를 생성(없으면)하거나 update(있으면)한다. RECEIVED 품목은 보존.
+ * 금액 불변 — recalc/payment/journal 호출 안 함.
+ */
+export async function convertOrderToParcel(params: {
+  orderId: string;
+  recipient: {
+    name: string;
+    phone: string;
+    address: string;
+    zipcode?: string | null;
+    addressDetail?: string | null;
+    message?: string | null;
+  };
+}): Promise<{ success?: true; error?: string }> {
+  let session;
+  try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
+
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  const guard = await loadEditableOrder(db, params.orderId);
+  if ('error' in guard) return { error: guard.error };
+  const order = guard.order;
+
+  // 1) 수령자 필수값 검증 (NOT NULL 3종)
+  const name = (params.recipient?.name || '').trim();
+  const phone = (params.recipient?.phone || '').trim();
+  const address = (params.recipient?.address || '').trim();
+  if (!name || !phone || !address) {
+    return { error: '수령자명·연락처·주소는 필수 입력 항목입니다.' };
+  }
+
+  // 2) 미수령 품목 → PARCEL/PARCEL_PLANNED (이미 RECEIVED인 품목은 제외·보존)
+  let itemUpd: any = await db
+    .from('sales_order_items')
+    .update({ delivery_type: 'PARCEL', receipt_status: 'PARCEL_PLANNED', receipt_date: null })
+    .eq('sales_order_id', order.id)
+    .neq('receipt_status', 'RECEIVED');
+  if (itemUpd.error && isMissingColumnError(itemUpd.error)) {
+    // 050/052 미적용: delivery_type/receipt_status 컬럼 부재 → 품목 갱신 생략(전환 자체는 shipment로 표현)
+    itemUpd = { error: null };
+  }
+  if (itemUpd.error) return { error: '품목 배송방식 변경에 실패했습니다.' };
+
+  // 3) shipment upsert — 있으면 update, 없으면 insert(processPosCheckout ②-b 폴백 복제)
+  const { data: existing } = await db
+    .from('shipments')
+    .select('id')
+    .eq('sales_order_id', order.id)
+    .maybeSingle();
+
+  if (existing?.id) {
+    // 기존 shipment 존재(택배→퀵 잔존 등) → delivery_type=PARCEL + 수령자/주소 갱신
+    const updPayload: any = {
+      delivery_type: 'PARCEL',
+      recipient_name: name,
+      recipient_phone: phone,
+      recipient_zipcode: params.recipient.zipcode || null,
+      recipient_address: address,
+      recipient_address_detail: params.recipient.addressDetail || null,
+      delivery_message: params.recipient.message || null,
+    };
+    let updErr = (await db.from('shipments').update(updPayload).eq('id', existing.id)).error;
+    if (updErr && isMissingColumnError(updErr)) {
+      delete updPayload.delivery_type;
+      updErr = (await db.from('shipments').update(updPayload).eq('id', existing.id)).error;
+    }
+    if (updErr) return { error: '배송 정보 갱신에 실패했습니다.' };
+  } else {
+    // 신규 insert — processPosCheckout ②-b 폴백 패턴 복제
+    const stockBranchId = await resolveStockBranchId(db, order);
+    // 출고지점 발신정보 조회 (NOT NULL 방어 — 없으면 '')
+    const { data: senderBranch } = await db
+      .from('branches')
+      .select('name, phone')
+      .eq('id', stockBranchId)
+      .maybeSingle();
+    const senderName = senderBranch?.name || '';
+    const senderPhone = senderBranch?.phone || '';
+
+    // items_summary: PARCEL 대상(미수령) 품목 요약 — 제품명으로 (이름 조회 실패 시 product_id 폴백)
+    const items = (order.order_items || []) as any[];
+    const shipItems = items.filter(it => (it.receipt_status || 'RECEIVED') !== 'RECEIVED');
+    const summarySource = shipItems.length > 0 ? shipItems : items;
+    const nameMap = new Map<string, string>();
+    const pids = Array.from(new Set(summarySource.map(it => it.product_id).filter(Boolean)));
+    if (pids.length > 0) {
+      const { data: prods } = await db.from('products').select('id, name').in('id', pids);
+      for (const p of (prods || []) as any[]) nameMap.set(p.id, p.name);
+    }
+    const itemsSummary = summarySource
+      .map(it => {
+        const label = nameMap.get(it.product_id) || String(it.product_id);
+        return Number(it.quantity) > 1 ? `${label} x${it.quantity}` : label;
+      })
+      .join(', ');
+
+    const payloadBase: any = {
+      source: 'STORE',
+      sales_order_id: order.id,
+      branch_id: stockBranchId,
+      sender_name: senderName,
+      sender_phone: senderPhone,
+      recipient_name: name,
+      recipient_phone: phone,
+      recipient_zipcode: params.recipient.zipcode || null,
+      recipient_address: address,
+      recipient_address_detail: params.recipient.addressDetail || null,
+      delivery_message: params.recipient.message || null,
+      items_summary: itemsSummary || null,
+      status: 'PENDING',
+      created_by: session.id,
+    };
+    const payloadFull = {
+      ...payloadBase,
+      delivery_type: 'PARCEL',
+    };
+
+    let shipErr = (await db.from('shipments').insert(payloadFull)).error;
+    if (shipErr && isMissingColumnError(shipErr)) {
+      // delivery_type 미적용(050 없음) 우선 제거
+      const { delivery_type, ...withoutType } = payloadFull;
+      const retryA = await db.from('shipments').insert(withoutType);
+      if (retryA.error && isMissingColumnError(retryA.error)) {
+        // created_by 등 추가 누락 — base에서 created_by 제거 후 재시도
+        const { created_by, ...withoutCreatedBy } = withoutType;
+        shipErr = (await db.from('shipments').insert(withoutCreatedBy)).error;
+      } else {
+        shipErr = retryA.error;
+      }
+    }
+    if (shipErr) {
+      console.error('[convertOrderToParcel] shipments insert failed:', shipErr);
+      return { error: '배송 정보 저장에 실패했습니다.' };
+    }
+  }
+
+  // 4) 주문 receipt_status 재집계
+  await reaggregateOrderReceiptStatus(db, order.id);
+
+  writeAuditLog({
+    userId: session.id,
+    action: 'UPDATE',
+    tableName: 'sales_orders',
+    recordId: order.id,
+    description: `전표 배송전환 방문→택배: ${order.order_number}, 수령자 ${name}`,
+  }).catch(() => {});
+
+  revalidatePath('/pos');
+  revalidatePath('/shipping');
+
+  return { success: true };
+}
+
+/**
+ * 택배(PARCEL/QUICK) → 방문(PICKUP) 전환
+ *
+ * 수정 가능 전표 한정. shipment.status='PENDING'(송장 미발행)일 때만 허용 —
+ * PRINTED/SHIPPED/DELIVERED는 거부. PENDING shipment는 하드 DELETE.
+ * 미수령 품목을 PICKUP/RECEIVED(오늘)로 바꾼다. RECEIVED 품목은 보존.
+ * 금액 불변.
+ */
+export async function convertOrderToPickup(params: {
+  orderId: string;
+}): Promise<{ success?: true; error?: string }> {
+  let session;
+  try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
+
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  const guard = await loadEditableOrder(db, params.orderId);
+  if ('error' in guard) return { error: guard.error };
+  const order = guard.order;
+
+  // 1) shipment 조회 → 가드 → void(DELETE)
+  const { data: shipment } = await db
+    .from('shipments')
+    .select('id, status')
+    .eq('sales_order_id', order.id)
+    .maybeSingle();
+
+  if (shipment?.id) {
+    if (shipment.status !== 'PENDING') {
+      return { error: '이미 송장이 발행/발송된 배송은 방문 수령으로 전환할 수 없습니다. 배송을 먼저 취소/회수하세요.' };
+    }
+    const { error: delErr } = await db.from('shipments').delete().eq('id', shipment.id);
+    if (delErr) {
+      console.error('[convertOrderToPickup] shipments delete failed:', delErr);
+      return { error: '배송 레코드 삭제에 실패했습니다.' };
+    }
+  }
+
+  // 2) 미수령 품목 → PICKUP/RECEIVED/오늘 (이미 RECEIVED 품목은 제외·보존)
+  const today = kstTodayString();
+  let itemUpd: any = await db
+    .from('sales_order_items')
+    .update({ delivery_type: 'PICKUP', receipt_status: 'RECEIVED', receipt_date: today })
+    .eq('sales_order_id', order.id)
+    .neq('receipt_status', 'RECEIVED');
+  if (itemUpd.error && isMissingColumnError(itemUpd.error)) {
+    itemUpd = { error: null }; // 050/052 미적용 — 품목 갱신 생략
+  }
+  if (itemUpd.error) return { error: '품목 배송방식 변경에 실패했습니다.' };
+
+  // 3) 주문 receipt_status 재집계
+  await reaggregateOrderReceiptStatus(db, order.id);
+
+  writeAuditLog({
+    userId: session.id,
+    action: 'UPDATE',
+    tableName: 'sales_orders',
+    recordId: order.id,
+    description: `전표 배송전환 택배→방문: ${order.order_number}`,
+  }).catch(() => {});
+
+  revalidatePath('/pos');
+  revalidatePath('/shipping');
+
+  return { success: true };
+}
+
 /**
  * 품목 삭제
  */

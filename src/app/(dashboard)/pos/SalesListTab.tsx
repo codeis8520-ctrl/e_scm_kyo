@@ -8,7 +8,7 @@ import ReceiptModal from './ReceiptModal';
 import RefundModal from './RefundModal';
 import { fmtDateKST, fmtTimeKST, fmtDateTimeKST, kstTodayString, kstDayStart, kstDayEnd } from '@/lib/date';
 import { cancelSalesOrder } from '@/lib/sales-cancel-actions';
-import { addSalesOrderItem, removeSalesOrderItem } from '@/lib/sales-revise-actions';
+import { addSalesOrderItem, removeSalesOrderItem, convertOrderToParcel, convertOrderToPickup } from '@/lib/sales-revise-actions';
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -1066,6 +1066,15 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
   const [addPrice, setAddPrice] = useState('');
   const [addOption, setAddOption] = useState('');
   const [addDeliveryType, setAddDeliveryType] = useState<'PICKUP' | 'PARCEL' | 'QUICK'>('PICKUP');
+  // 방문↔택배 배송전환
+  const [converting, setConverting] = useState(false);
+  const [showConvertForm, setShowConvertForm] = useState(false);
+  const [cvName, setCvName] = useState('');
+  const [cvPhone, setCvPhone] = useState('');
+  const [cvZipcode, setCvZipcode] = useState('');
+  const [cvAddress, setCvAddress] = useState('');
+  const [cvAddressDetail, setCvAddressDetail] = useState('');
+  const [cvMessage, setCvMessage] = useState('');
 
   const handleCancelSale = async () => {
     if (!order) return;
@@ -1322,6 +1331,67 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
       onChanged();
     } finally {
       setChangingDeliveryType(false);
+    }
+  };
+
+  // 방문→택배 전환 폼 열기 — 고객 정보(name/phone/address) prefill (best-effort)
+  const openConvertForm = async () => {
+    setShowConvertForm(true);
+    // 1차 prefill: 드로어에 이미 로드된 주문/고객 정보
+    setCvName(order?.customer?.name || order?.buyer_name || '');
+    setCvPhone(order?.customer?.phone || order?.buyer_phone || '');
+    // 2차: 고객 주소는 별도 조회 (드로어 select엔 address가 없음)
+    if (order?.customer?.id) {
+      const sb = createClient() as any;
+      const { data } = await sb.from('customers').select('address').eq('id', order.customer.id).maybeSingle();
+      if (data?.address) setCvAddress(prev => prev || data.address);
+    }
+  };
+
+  // 방문 → 택배 전환 실행
+  const handleConvertToParcel = async () => {
+    if (converting || !order) return;
+    const name = cvName.trim();
+    const phone = cvPhone.trim();
+    const address = cvAddress.trim();
+    if (!name || !phone || !address) {
+      alert('수령자명·연락처·주소는 필수 입력 항목입니다.');
+      return;
+    }
+    if (!confirm('택배 배송으로 전환합니다.\n배송 레코드가 생성되고 품목이 택배예정으로 변경됩니다.')) return;
+    setConverting(true);
+    try {
+      const res = await convertOrderToParcel({
+        orderId: order.id,
+        recipient: {
+          name, phone, address,
+          zipcode: cvZipcode.trim() || null,
+          addressDetail: cvAddressDetail.trim() || null,
+          message: cvMessage.trim() || null,
+        },
+      });
+      if (res.error) { alert('택배 전환 실패: ' + res.error); return; }
+      setShowConvertForm(false);
+      setCvName(''); setCvPhone(''); setCvZipcode(''); setCvAddress(''); setCvAddressDetail(''); setCvMessage('');
+      await loadDetail(true);
+      onChanged();
+    } finally {
+      setConverting(false);
+    }
+  };
+
+  // 택배 → 방문 전환 실행
+  const handleConvertToPickup = async () => {
+    if (converting || !order) return;
+    if (!confirm('배송 레코드가 삭제되고 방문 수령으로 전환됩니다.')) return;
+    setConverting(true);
+    try {
+      const res = await convertOrderToPickup({ orderId: order.id });
+      if (res.error) { alert(res.error); return; }
+      await loadDetail(true);
+      onChanged();
+    } finally {
+      setConverting(false);
     }
   };
 
@@ -1907,6 +1977,17 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
                     >
                       {changingDeliveryType ? '변경 중...' : `${isQuick ? '📦 택배' : '🛵 퀵'}로 변경`}
                     </button>
+                    {editable && (
+                      <button
+                        type="button"
+                        onClick={handleConvertToPickup}
+                        disabled={converting}
+                        className="text-[11px] text-amber-600 hover:text-amber-800 underline disabled:opacity-50"
+                        title="배송을 취소하고 방문 수령으로 전환합니다 (송장 미발행 건만 가능)"
+                      >
+                        {converting ? '전환 중...' : '🏠 방문 수령으로 전환'}
+                      </button>
+                    )}
                   </div>
                   <div className={`p-3 rounded-md border text-sm space-y-1 ${isQuick ? 'border-indigo-200 bg-indigo-50/30' : 'border-slate-200'}`}>
                     {shipment.branch?.id && shipment.branch.id !== order.branch?.id && (
@@ -1953,6 +2034,73 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
                 </div>
               );
             })()}
+
+            {/* 배송 레코드 없는 수정가능 전표: 택배로 전환 */}
+            {!shipment && editable && (
+              <div>
+                {!showConvertForm ? (
+                  <button
+                    type="button"
+                    onClick={openConvertForm}
+                    className="text-xs px-2.5 py-1.5 rounded border border-blue-300 text-blue-700 hover:bg-blue-50"
+                  >
+                    📦 택배로 전환
+                  </button>
+                ) : (
+                  <div className="p-3 border border-blue-200 rounded-md bg-blue-50/40 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-semibold text-blue-700">택배 전환 — 수령자 정보</p>
+                      <button onClick={() => setShowConvertForm(false)} className="text-slate-400 hover:text-slate-600 text-sm">✕</button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] text-slate-500">수령자명 *</label>
+                        <input type="text" value={cvName} onChange={e => setCvName(e.target.value)}
+                          className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-500">연락처 *</label>
+                        <input type="text" value={cvPhone} onChange={e => setCvPhone(e.target.value)}
+                          className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label className="text-[10px] text-slate-500">우편번호</label>
+                        <input type="text" value={cvZipcode} onChange={e => setCvZipcode(e.target.value)}
+                          className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                      </div>
+                      <div className="col-span-2">
+                        <label className="text-[10px] text-slate-500">주소 *</label>
+                        <input type="text" value={cvAddress} onChange={e => setCvAddress(e.target.value)}
+                          className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-500">상세 주소</label>
+                      <input type="text" value={cvAddressDetail} onChange={e => setCvAddressDetail(e.target.value)}
+                        className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-500">배송 메시지 (선택)</label>
+                      <input type="text" value={cvMessage} onChange={e => setCvMessage(e.target.value)}
+                        placeholder="예: 부재 시 경비실"
+                        className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                    </div>
+                    <p className="text-[10px] text-slate-500">
+                      전환 시 미수령 품목이 택배예정으로 바뀌고 배송 레코드가 생성됩니다. 금액 변동은 없습니다.
+                    </p>
+                    <button
+                      onClick={handleConvertToParcel}
+                      disabled={converting}
+                      className="w-full py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {converting ? '처리 중...' : '택배로 전환'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* 액션 */}
             <div className="flex flex-wrap gap-2 pt-3 border-t border-slate-100">
