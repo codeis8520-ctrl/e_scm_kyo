@@ -1,25 +1,31 @@
-# Review Feedback — Step 2 (방문↔택배 양방향 전환)
+# Review Feedback — Step 1 (CJ/선택 엑셀 발송지 모달 제거 + 행별 자동 해결)
 Date: 2026-06-12
-Ready for Builder: YES
+Status: APPROVED
 
-## Must Fix
+## Conditions
 (none)
 
-## Should Fix
-(none)
-
-## Escalate to Architect
-(none)
+## Escalate to Arch
+(none blocking — two design choices below are confirmed acceptable, listed only for the record)
 
 ## Cleared
-방문(PICKUP)↔택배(PARCEL) 양방향 전환을 리뷰했고 전부 통과한다.
+src/app/(dashboard)/shipping/page.tsx 만 리뷰. 검증 통과:
 
-검증 항목:
-- **편집 게이트 동일성**: 서버는 양 액션 모두 loadEditableOrder(COMPLETED AND receipt_status∉{RECEIVED,null}) 사용, UI는 editable(line 1495) 동일 조건 — Step 1과 일치.
-- **방문→택배(convertOrderToParcel)**: 수령자 name/phone/address 클라+서버 양쪽 trim 검증(line 522-527), 미수령 품목만 PARCEL_PLANNED(.neq RECEIVED, line 534)로 RECEIVED 보존, shipment upsert(maybeSingle 존재→update / 부재→insert, line 542-632) 분기 정확, status=PENDING, 42703 폴백(delivery_type→created_by 순차 제거) 안전. recalc/payment/journal 미호출 확인 — delta=0 정책 준수.
-- **택배→방문(convertOrderToPickup)**: shipment.status≠'PENDING'이면 거부(line 680-682, PRINTED/SHIPPED/DELIVERED 차단), PENDING이면 하드 DELETE 후 품목 PICKUP/RECEIVED/오늘로 전환.
-- **deriveOrderReceiptStatus 우선순위**(line 468-472): PARCEL>QUICK>PICKUP>RECEIVED, null→RECEIVED 간주. SalesListTab markItemReceived allDone 판정(line 1138)과 의미 일치. AI schema.ts(line 194-195)와도 일치.
-- **Step 1 미변경**: sales-revise-actions.ts diff는 단일 삽입 훅(+259/-0). SalesListTab은 import 1줄 추가 외 전부 신규 블록 추가 — changeDeliveryType/markReceiptCompleted/revertReceiptStatus/markItemReceived 무변경 확인.
-- **AI Sync**: schema.ts BUSINESS_RULES 전환 규칙 1줄 반영(line 195). 신규 컬럼 없으므로 DB_SCHEMA 변경 불필요 — 적절.
+- resolveSenderForRow (L366-390): 이름/전화는 저장 sender_* → 출고지점 → 폴백, 주소/우편번호는
+  항상 출고지점(구매자/수령자 주소 절대 미참조) — 정책 순서 정확. cafe24/NULL branch_id 행은
+  is_headquarters → branchSenders[0] 폴백, 로드 쿼리가 is_headquarters DESC 정렬(L243)이라 두 경로 수렴.
+  branch_id 가 있으나 inactive/삭제로 미매칭 시 falsy → HQ 폴백으로 안전 통과.
+- guardSenders (L394-405): 이름/전화/주소 빈칸 행을 수령자명 alert 후 차단. downloadCjExcel(L418)·
+  exportSelectedToExcel(L908) 양쪽 모두 가드 선통과 후 export — 조용한 빈칸 export 경로 없음.
+- PENDING→PRINTED 부수효과(L455-479) 보존, .eq('status','PENDING') race 가드 유지. RTC(KX-),
+  헤더/!cols/파일명 미변경.
+- Dead-code 제거 완전: showSenderPicker/pickerForm/pickerBranchId/confirmSenderAndExport/
+  doExportSelectedToExcel/lastSenderBranchId 참조 0건(grep). 프리필·localStorage useEffect 삭제.
+  모달 JSX 삭제 후 컴포넌트 정상 종료. build 0 warning.
+- openDaumPostcode/Daum 스크립트 보존 — manualForm(L1200)·editForm(L1600) 주소검색에서 사용 중, 미손상.
+- Shipment 인터페이스 추가(branch_id/sender_zipcode/sender_address_detail)는 getShipments 가
+  select('*') 반환(shipping-actions.ts L32)이라 정합.
 
-부분상태 위험 검토(Bob Open Question 응답): 양 액션 모두 비-트랜잭션 순차 호출이나, 중간 실패 시 함수가 에러 반환하고 전표는 editable 상태로 남는다. 재시도 시 .neq('RECEIVED') 멱등성 + maybeSingle 재조회로 self-healing(영구 오염 없음). 이는 코드베이스 기존 패턴(DB 트랜잭션 미사용)과 동일 수준으로, 신규 위험을 도입하지 않음 — Must Fix 아님.
+확인된 설계 선택 (수정 불필요):
+- 우편번호 미가드: CJ 양식상 선택값, sender.zipcode||'' 매핑. 의도대로 통과 — OK.
+- cafe24 HQ-폴백 순서: HQ 미존재 시 [0] 이 의도외 지점일 수 있으나 주소/전화 비면 가드가 차단 — 안전.

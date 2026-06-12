@@ -12,9 +12,12 @@ interface Shipment {
   id: string;
   source: 'CAFE24' | 'STORE';
   cafe24_order_id: string | null;
+  branch_id: string | null;
   sender_name: string;
   sender_phone: string;
   sender_address: string | null;
+  sender_address_detail: string | null;
+  sender_zipcode: string | null;
   recipient_name: string;
   recipient_phone: string;
   recipient_zipcode: string | null;
@@ -226,13 +229,8 @@ export default function ShippingPage() {
     sender_address_detail?: string | null;
   }
   const [branchSenders, setBranchSenders] = useState<BranchSender[]>([]);
-  const [showSenderPicker, setShowSenderPicker] = useState<'cj' | 'selected' | null>(null);
-  const [pickerBranchId, setPickerBranchId] = useState<string>(''); // 'manual' = 직접 입력
-  const [pickerForm, setPickerForm] = useState({
-    name: '', phone: '', zipcode: '', address: '', address_detail: '',
-  });
 
-  // 지점 발송지 목록 로드 + 마지막 선택값 복원
+  // 지점 발송지 목록 로드
   // ⚠️ 마이그 063 (branches.sender_*) 미적용 환경 폴백 — 신규 컬럼 SELECT 실패 시 기본 컬럼만.
   useEffect(() => {
     (async () => {
@@ -269,27 +267,8 @@ export default function ShippingPage() {
 
       const list = (res.data || []) as BranchSender[];
       setBranchSenders(list);
-      const remembered = typeof window !== 'undefined' ? window.localStorage.getItem('shipping.lastSenderBranchId') : null;
-      const hq = list.find(b => b.is_headquarters);
-      const initial = (remembered && list.find(b => b.id === remembered)?.id) || hq?.id || list[0]?.id || '';
-      setPickerBranchId(initial);
     })();
   }, []);
-
-  // 지점 선택 변경 시 폼 프리필
-  useEffect(() => {
-    if (pickerBranchId === 'manual') return;
-    const b = branchSenders.find(x => x.id === pickerBranchId);
-    if (!b) return;
-    const defaultName = b.sender_name ?? (b.name.includes('경옥채') ? b.name : `경옥채 ${b.name}`);
-    setPickerForm({
-      name: defaultName,
-      phone: b.sender_phone ?? b.phone ?? '',
-      zipcode: b.sender_zipcode ?? '',
-      address: b.sender_address ?? b.address ?? '',
-      address_detail: b.sender_address_detail ?? '',
-    });
-  }, [pickerBranchId, branchSenders]);
 
   // ── Daum 우편번호 스크립트 로드 ──────────────────────────────────────────
   useEffect(() => {
@@ -378,94 +357,126 @@ export default function ShippingPage() {
     setShowRecipientDrop(false);
   };
 
+  // ── 행별 발송지(보내는분) 자동 해결 ──────────────────────────────────────
+  // 정책 (Project Owner 확정):
+  //  - 이름/전화: 저장된 shipment.sender_* 우선 → 출고지점 branch.sender_* → 기본 폴백.
+  //  - 주소/우편번호: 항상 출고지점 발송지(구매자 주소 절대 아님). sender_address 없으면 branch.address.
+  //  - cafe24 행(branch_id=NULL): 본사 지점을 출고지점으로 간주, 없으면 branchSenders[0].
+  // 반환값에 빈칸이 남으면 가드가 export 를 막는다.
+  const resolveSenderForRow = (s: Shipment) => {
+    const branch = (s.branch_id && branchSenders.find(b => b.id === s.branch_id))
+      || branchSenders.find(b => b.is_headquarters)
+      || branchSenders[0]
+      || null;
+
+    const branchName = branch
+      ? (branch.sender_name ?? (branch.name.includes('경옥채') ? branch.name : `경옥채 ${branch.name}`))
+      : '';
+    const branchPhone = branch ? (branch.sender_phone ?? branch.phone ?? '') : '';
+    const branchAddress = branch ? (branch.sender_address ?? branch.address ?? '') : '';
+    const branchAddressDetail = branch ? (branch.sender_address_detail ?? '') : '';
+    const branchZipcode = branch ? (branch.sender_zipcode ?? '') : '';
+
+    const name = (s.sender_name && s.sender_name.trim()) || branchName;
+    const phone = (s.sender_phone && s.sender_phone.trim()) || branchPhone;
+
+    return {
+      name: name || '',
+      phone: phone || '',
+      address: branchAddress || '',
+      addressDetail: branchAddressDetail || '',
+      zipcode: branchZipcode || '',
+    };
+  };
+
+  // 가드: 모든 target 행의 발송지를 해결, 이름/전화/주소 중 하나라도 빈 행이 있으면
+  // export 를 막고 수령자명을 나열해 alert. 조용한 빈칸 export 금지.
+  const guardSenders = (targets: Shipment[]): boolean => {
+    const unresolved = targets.filter(s => {
+      const r = resolveSenderForRow(s);
+      return !r.name.trim() || !r.phone.trim() || !r.address.trim();
+    });
+    if (unresolved.length > 0) {
+      const names = unresolved.map(s => s.recipient_name || '(수령자명 없음)').join(', ');
+      alert(`발송지(보내는분) 정보를 확정할 수 없는 행이 있습니다: ${names}. 출고 지점의 발송지 정보(지점 관리)를 먼저 등록해주세요.`);
+      return false;
+    }
+    return true;
+  };
+
   // ── 대한통운 엑셀 다운로드 ────────────────────────────────────────────────
   // 정책: 행 체크박스로 선택한 건만 추출 (전체 일괄 추출은 의도치 않은 대량 발송 위험).
-  // 1단계: 발송지 선택 모달 열기 (실제 export 는 confirmSenderAndExport 에서)
-  const downloadCjExcel = () => {
+  // 발송지는 행별로 자동 해결(resolveSenderForRow) — 모달 없음.
+  const downloadCjExcel = async () => {
     if (selectedShipments.size === 0) {
       alert('대한통운 엑셀로 추출할 행을 좌측 체크박스로 먼저 선택해주세요.');
       return;
     }
-    setShowSenderPicker('cj');
-  };
+    // 선택된 행만 export — 정렬은 화면 순서(filteredShipments) 유지
+    const targets = filteredShipments.filter(s => selectedShipments.has(s.id));
+    if (targets.length === 0) { alert('선택된 행이 없습니다.'); return; }
+    if (!guardSenders(targets)) return;
 
-  // 2단계: 모달에서 발송지 확정 후 실제 export
-  const confirmSenderAndExport = async () => {
-    if (!pickerForm.name.trim()) { alert('보내는분 이름을 입력해주세요.'); return; }
-    if (!pickerForm.phone.trim()) { alert('보내는분 전화번호를 입력해주세요.'); return; }
-    if (!pickerForm.address.trim()) { alert('보내는분 주소를 입력해주세요.'); return; }
+    const header = [
+      '받는분성명', '받는분전화번호', '받는분기타연락처',
+      '받는분주소(전체, 분할)', '배송메세지1',
+      '품목명', '내품명', '내품수량', '운임구분',
+      '보내는분성명', '보내는분전화번호', '보내는분주소(전체, 분할)',
+      '보내는분우편번호',
+    ];
 
-    if (showSenderPicker === 'cj') {
-      // 선택된 행만 export — 정렬은 화면 순서(filteredShipments) 유지
-      const targets = filteredShipments.filter(s => selectedShipments.has(s.id));
-      if (targets.length === 0) { alert('선택된 행이 없습니다.'); setShowSenderPicker(null); return; }
-      const senderFullAddress = [pickerForm.address, pickerForm.address_detail].filter(Boolean).join(' ');
-
-      const header = [
-        '받는분성명', '받는분전화번호', '받는분기타연락처',
-        '받는분주소(전체, 분할)', '배송메세지1',
-        '품목명', '내품명', '내품수량', '운임구분',
-        '보내는분성명', '보내는분전화번호', '보내는분주소(전체, 분할)',
-        '보내는분우편번호',
-      ];
-
-      // Round-trip code — shipment.id 앞 8자리 hex 를 "내품명" 컬럼(7번째)에 박음.
-      // CJ 임포트 양식이 컬럼을 그대로 보존하므로 출력 후 다시 export 된 엑셀에도 유지됨.
-      // Import 시 이 코드로 1:1 매칭 → 동일 전화 다건 / 행 순서 변경 / 동명이인 사고 방지.
-      const rows = targets.map(s => [
+    // Round-trip code — shipment.id 앞 8자리 hex 를 "내품명" 컬럼(7번째)에 박음.
+    // CJ 임포트 양식이 컬럼을 그대로 보존하므로 출력 후 다시 export 된 엑셀에도 유지됨.
+    // Import 시 이 코드로 1:1 매칭 → 동일 전화 다건 / 행 순서 변경 / 동명이인 사고 방지.
+    const rows = targets.map(s => {
+      const sender = resolveSenderForRow(s);
+      const senderFullAddress = [sender.address, sender.addressDetail].filter(Boolean).join(' ');
+      return [
         s.recipient_name, s.recipient_phone, '',
         [s.recipient_address, s.recipient_address_detail].filter(Boolean).join(' '),
         s.delivery_message || '', s.items_summary || '',
         `KX-${s.id.replace(/-/g, '').slice(0, 8)}`,    // 내품명 ← RTC
         '', '선불',
-        pickerForm.name, pickerForm.phone, senderFullAddress,
-        pickerForm.zipcode || '',
-      ]);
-
-      const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
-      ws['!cols'] = [
-        { wch: 12 }, { wch: 16 }, { wch: 14 }, { wch: 50 }, { wch: 30 },
-        { wch: 24 }, { wch: 16 }, { wch: 8 }, { wch: 8 },
-        { wch: 12 }, { wch: 16 }, { wch: 40 }, { wch: 10 },
+        sender.name, sender.phone, senderFullAddress,
+        sender.zipcode || '',
       ];
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'sheet1');
-      XLSX.writeFile(wb, `CJ대한통운_${kstTodayString().replace(/-/g, '')}.xlsx`);
+    });
 
-      // ─── 상태 자동 전환: PENDING → PRINTED ──────────────────────────────
-      // CJ 엑셀 다운로드 = "출력 명단 확정" 의미. PENDING 만 PRINTED 로 전환.
-      // (이미 PRINTED/SHIPPED/DELIVERED 인 건은 그대로 — 운영 중에 재다운로드 케이스 보호)
-      const pendingIds = targets.filter(s => s.status === 'PENDING').map(s => s.id);
-      if (pendingIds.length > 0) {
-        try {
-          const sb = createClient() as any;
-          const { error } = await sb
-            .from('shipments')
-            .update({ status: 'PRINTED', updated_at: new Date().toISOString() })
-            .in('id', pendingIds)
-            .eq('status', 'PENDING');  // race condition 가드
-          if (error) {
-            console.error('[shipping] PENDING → PRINTED 전환 실패:', error);
-          } else {
-            await fetchShipments();
-            // 사용자에게 피드백 — 별도 alert 으로 다운로드와 분리해 인지하게
-            setTimeout(() => {
-              alert(`${pendingIds.length}건의 배송 상태가 "출력완료(PRINTED)" 로 전환되었습니다.\n실제로 CJ 임포트를 진행하지 않았다면 각 행에서 상태를 되돌릴 수 있습니다.`);
-            }, 100);
-          }
-        } catch (e) {
-          console.error('[shipping] 상태 전환 예외:', e);
+    const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+    ws['!cols'] = [
+      { wch: 12 }, { wch: 16 }, { wch: 14 }, { wch: 50 }, { wch: 30 },
+      { wch: 24 }, { wch: 16 }, { wch: 8 }, { wch: 8 },
+      { wch: 12 }, { wch: 16 }, { wch: 40 }, { wch: 10 },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'sheet1');
+    XLSX.writeFile(wb, `CJ대한통운_${kstTodayString().replace(/-/g, '')}.xlsx`);
+
+    // ─── 상태 자동 전환: PENDING → PRINTED ──────────────────────────────
+    // CJ 엑셀 다운로드 = "출력 명단 확정" 의미. PENDING 만 PRINTED 로 전환.
+    // (이미 PRINTED/SHIPPED/DELIVERED 인 건은 그대로 — 운영 중에 재다운로드 케이스 보호)
+    const pendingIds = targets.filter(s => s.status === 'PENDING').map(s => s.id);
+    if (pendingIds.length > 0) {
+      try {
+        const sb = createClient() as any;
+        const { error } = await sb
+          .from('shipments')
+          .update({ status: 'PRINTED', updated_at: new Date().toISOString() })
+          .in('id', pendingIds)
+          .eq('status', 'PENDING');  // race condition 가드
+        if (error) {
+          console.error('[shipping] PENDING → PRINTED 전환 실패:', error);
+        } else {
+          await fetchShipments();
+          // 사용자에게 피드백 — 별도 alert 으로 다운로드와 분리해 인지하게
+          setTimeout(() => {
+            alert(`${pendingIds.length}건의 배송 상태가 "출력완료(PRINTED)" 로 전환되었습니다.\n실제로 CJ 임포트를 진행하지 않았다면 각 행에서 상태를 되돌릴 수 있습니다.`);
+          }, 100);
         }
+      } catch (e) {
+        console.error('[shipping] 상태 전환 예외:', e);
       }
-    } else if (showSenderPicker === 'selected') {
-      doExportSelectedToExcel();
     }
-
-    // 마지막 선택 기억
-    if (pickerBranchId && pickerBranchId !== 'manual' && typeof window !== 'undefined') {
-      window.localStorage.setItem('shipping.lastSenderBranchId', pickerBranchId);
-    }
-    setShowSenderPicker(null);
   };
 
   // ── 엑셀 임포트 (송장번호) ────────────────────────────────────────────────
@@ -890,24 +901,21 @@ export default function ShippingPage() {
     }
   };
 
+  // 선택 엑셀 익스포트 — 발송지는 행별 자동 해결(resolveSenderForRow). 모달 없음.
   const exportSelectedToExcel = () => {
     const toExport = filteredShipments.filter(s => selectedShipments.has(s.id));
     if (toExport.length === 0) return;
-    setShowSenderPicker('selected');
-  };
-
-  // 모달 확정 후 실제 export (선택 엑셀 익스포트)
-  const doExportSelectedToExcel = () => {
-    const toExport = filteredShipments.filter(s => selectedShipments.has(s.id));
-    if (toExport.length === 0) return;
-    const rows = toExport.map(s => ({
+    if (!guardSenders(toExport)) return;
+    const rows = toExport.map(s => {
+      const sender = resolveSenderForRow(s);
+      return {
       '등록일': s.created_at?.slice(0, 10) ?? '',
       '출처': s.source === 'CAFE24' ? '카페24' : '직접입력',
-      '발송자': pickerForm.name,
-      '발송자 전화': pickerForm.phone,
-      '발송자 우편번호': pickerForm.zipcode,
-      '발송자 주소': pickerForm.address,
-      '발송자 상세주소': pickerForm.address_detail,
+      '발송자': sender.name,
+      '발송자 전화': sender.phone,
+      '발송자 우편번호': sender.zipcode,
+      '발송자 주소': sender.address,
+      '발송자 상세주소': sender.addressDetail,
       '수령자': s.recipient_name,
       '수령자 전화': s.recipient_phone,
       '수령자 우편번호': s.recipient_zipcode ?? '',
@@ -917,7 +925,8 @@ export default function ShippingPage() {
       '품목': s.items_summary ?? '',
       '상태': STATUS_LABEL[s.status] ?? s.status,
       '송장번호': s.tracking_number ?? '',
-    }));
+      };
+    });
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, '배송목록');
@@ -1623,93 +1632,6 @@ export default function ShippingPage() {
             <div className="flex gap-2 pt-2">
               <button className="btn-primary flex-1" onClick={handleEditSave} disabled={editSaving}>{editSaving ? '저장 중...' : '저장'}</button>
               <button className="flex-1 px-4 py-2 rounded border border-slate-300 text-slate-600 text-sm hover:bg-slate-50" onClick={handleEditClose}>취소</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── 발송지(보내는분) 선택 모달 ─────────────────────────────────────── */}
-      {showSenderPicker && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-auto p-6 space-y-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-bold text-slate-800">발송지(보내는분) 선택</h2>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  {showSenderPicker === 'cj' ? '대한통운 엑셀' : '선택 엑셀'} 의 모든 행에 적용됩니다.
-                </p>
-              </div>
-              <button onClick={() => setShowSenderPicker(null)} className="text-slate-400 hover:text-slate-600 text-xl">&times;</button>
-            </div>
-
-            <div>
-              <label className="block text-xs text-slate-500 mb-1">발송 지점</label>
-              <select
-                className="input w-full"
-                value={pickerBranchId}
-                onChange={e => setPickerBranchId(e.target.value)}
-              >
-                {branchSenders.map(b => (
-                  <option key={b.id} value={b.id}>
-                    {b.is_headquarters ? '🏢 ' : '🏪 '}경옥채 {b.name}{b.is_headquarters ? ' (본사)' : ''}
-                  </option>
-                ))}
-                <option value="manual">✏️ 직접 입력</option>
-              </select>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs text-slate-500 block mb-1">보내는분 이름 *</label>
-                <input className="input w-full" value={pickerForm.name}
-                  onChange={e => setPickerForm(f => ({ ...f, name: e.target.value }))} placeholder="경옥채 본사" />
-              </div>
-              <div>
-                <label className="text-xs text-slate-500 block mb-1">전화번호 *</label>
-                <input className="input w-full" value={pickerForm.phone}
-                  onChange={e => setPickerForm(f => ({ ...f, phone: e.target.value }))} placeholder="02-0000-0000" />
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs text-slate-500 block mb-1">우편번호</label>
-              <div className="flex gap-2">
-                <input className="input flex-1" value={pickerForm.zipcode}
-                  onChange={e => setPickerForm(f => ({ ...f, zipcode: e.target.value }))} placeholder="06000" />
-                <button
-                  type="button"
-                  onClick={() => openDaumPostcode((zipcode, address) => {
-                    setPickerForm(f => ({ ...f, zipcode, address }));
-                  })}
-                  className="px-3 py-2 rounded border border-slate-300 text-sm text-slate-600 hover:bg-slate-50 whitespace-nowrap"
-                >주소 검색</button>
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs text-slate-500 block mb-1">주소 *</label>
-              <input className="input w-full" value={pickerForm.address}
-                onChange={e => setPickerForm(f => ({ ...f, address: e.target.value }))} placeholder="서울특별시 ..." />
-            </div>
-
-            <div>
-              <label className="text-xs text-slate-500 block mb-1">상세주소</label>
-              <input className="input w-full" value={pickerForm.address_detail}
-                onChange={e => setPickerForm(f => ({ ...f, address_detail: e.target.value }))} placeholder="1층 물류센터" />
-            </div>
-
-            <div className="rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-xs text-slate-600">
-              💡 지점 선택 후 필요하면 위 항목을 직접 수정하세요. 다음에 열면 마지막 선택이 유지됩니다.
-            </div>
-
-            <div className="flex gap-2 pt-1">
-              <button className="btn-primary flex-1" onClick={confirmSenderAndExport}>
-                이 발송지로 다운로드
-              </button>
-              <button
-                className="flex-1 px-4 py-2 rounded border border-slate-300 text-slate-600 text-sm hover:bg-slate-50"
-                onClick={() => setShowSenderPicker(null)}
-              >취소</button>
             </div>
           </div>
         </div>

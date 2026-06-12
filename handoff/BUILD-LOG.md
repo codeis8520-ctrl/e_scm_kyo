@@ -4,7 +4,34 @@
 
 ---
 
-## ACTIVE SPRINT — 수령 전 전표 품목 추가/삭제 + 방문↔택배 전환 (2026-06-11)
+## ACTIVE SPRINT — CJ/선택 엑셀 발송지 모달 제거 + 행별 자동 해결 (2026-06-12)
+
+### Step 1 — 빌드 완료 (Bob, 2026-06-12)
+
+**상태**: 🔵 리뷰 대기 (REVIEW-REQUEST 제출, `npm run build` ✅ Compiled successfully, error/warning 0, /shipping 정상)
+
+**변경 파일 (1개, DB/마이그/schema.ts 변경 없음 — 순수 클라이언트 export 로직)**:
+- `src/app/(dashboard)/shipping/page.tsx`
+  - `Shipment` interface: `branch_id`/`sender_address_detail`/`sender_zipcode` 3필드 추가(getShipments `select('*')`가 이미 반환).
+  - Dead state 제거: `showSenderPicker`/`pickerBranchId`/`pickerForm`. 프리필 useEffect·localStorage `shipping.lastSenderBranchId` 저장/복원·pickerBranchId 초기화 제거. `branchSenders` state·로드 useEffect는 보존(폴백 3단 포함).
+  - 신규 `resolveSenderForRow(s)` 헬퍼: 행별 발송지 해결. 이름/전화=저장 sender_* 우선→출고지점 branch.sender_*→기본 폴백(`경옥채 {name}`/branch.phone). 주소/우편번호=항상 출고지점(sender_address 없으면 branch.address). cafe24(branch_id=NULL)→본사(is_headquarters), 없으면 branchSenders[0].
+  - 신규 `guardSenders(targets)` 가드: 이름/전화/주소 중 하나라도 빈 행 존재 시 export 중단+수령자명 나열 alert. 조용한 빈칸 export 차단.
+  - `downloadCjExcel`: 모달 오픈 제거 → 가드 후 직접 export. row 매핑 `pickerForm.*`→`resolveSenderForRow(s)` 행별. RTC/헤더/`!cols`/파일명/PENDING→PRINTED 전환 전부 보존.
+  - `confirmSenderAndExport` 전체 삭제(CJ 본문은 downloadCjExcel로 이전).
+  - `exportSelectedToExcel`: 모달 오픈 제거 → 가드 후 직접 export, 행별 sender. `doExportSelectedToExcel` 별도 함수 통합 삭제.
+  - 발송지 선택 모달 JSX 전체 삭제.
+  - `openDaumPostcode`·Daum 스크립트 useEffect는 **보존**(manualForm L1191/editForm L1591 주소검색에서 사용 — grep 확인).
+
+**주요 결정**:
+- 가드는 이름/전화/주소만 검사(브리프 명시). 우편번호 빈칸은 허용(CJ 양식 선택값).
+- cafe24 행 폴백 우선순위: branch_id 매칭 → is_headquarters → branchSenders[0] (브리프 정책).
+- Shipment 객체는 전부 `getShipments() as Shipment[]` 캐스트 또는 필터 부분집합 — 신규 필수필드를 만족시켜야 하는 클라이언트 리터럴 생성 없음(빌드 통과 확인).
+
+**Known Gaps (범위 밖, 브리프 명시)**: 지점 발송지(branches.sender_*) 등록 UI(가드로 차단), cafe24 shipment 생성 시 branch_id 부여, POS "구매자 동일" sender_address 저장 정책 — 전부 미접촉.
+
+---
+
+## PREVIOUS SPRINT — 수령 전 전표 품목 추가/삭제 + 방문↔택배 전환 (2026-06-11)
 
 전체 2스텝(원 3스텝 → Step2+3 병합). ARCHITECT-BRIEF.md는 **현재 스텝만** 담는다.
 - Step 1 (✅ 배포 완료, 커밋 59658d9): 품목 추가/삭제 서버액션 + 공용 재계산 헬퍼 + 드로어 UI. shipments 미접촉. ⚠️ 마이그 078 Supabase 적용은 Project Owner 대기.
