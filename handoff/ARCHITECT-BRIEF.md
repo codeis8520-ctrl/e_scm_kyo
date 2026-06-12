@@ -1,47 +1,41 @@
-# Architect Brief — Step 1: 지점 매출 비교 서브뷰
+# Architect Brief — 재고 소모(사용유형) · Step 1: 코드 테이블 + 코드 관리 UI
 
 ## Goal
-판매현황 탭(SalesListTab)에 본사/관리자 전용 '지점비교' 서브뷰를 추가한다. 다수 지점을 선택하면 날짜 행 × 지점 열 매트릭스로 일별 합계 매출을 비교한다.
+관리자가 재고 "사용유형"(로스/자가사용/시음용/기타) 코드를 추가·수정·비활성·삭제할 수 있게 된다. 실제 소모 차감(다건 OUT) 화면은 Step 2(다음 스프린트). 이 단계만으로 독립 배포·검증 가능(시드 4종 + CRUD).
 
-## Locked Decisions (변경 금지)
-- **집계 방식 = (B) 클라이언트 집계.** RPC/마이그레이션 없음. 근거: 단순 GROUP BY 2축이고, 기간(보통 7~30일) 한정 경량 페치면 충분. RPC는 마이그+AI Sync 부담 대비 이득 없음. → **CLAUDE.md AI Sync 매트릭스 해당 없음**(테이블/컬럼/enum/액션 변경 0). schema.ts·tools.ts 손대지 말 것.
-- **매출 정의 = `total_amount` 합계, status가 CANCELLED/REFUNDED/PARTIALLY_REFUNDED 인 주문 제외.** discount_amount는 반영하지 않는다(목록 화면 일별 집계 L389~407이 total_amount 그대로 합산하는 것과 동일 기준 — 일관성). 이 기준은 코드 주석으로만 남기고 셀/툴팁엔 노출 안 함.
-- **날짜 경계 = KST.** 페치는 `kstDayStart(startDate)`/`kstDayEnd(endDate)`(gte/lte, loadOrders L210과 동일). 일자 그룹핑은 `fmtDateKST(ordered_at)`(L404와 동일, UTC slice 금지).
-- **권한 게이트 = !isBranchUser 일 때만 토글 노출.** isBranchUser는 기존 L121(`userRole==='BRANCH_STAFF' || 'PHARMACY_STAFF'`). SUPER_ADMIN/HQ_OPERATOR/EXECUTIVE에게만 '지점비교' 토글이 보인다. 별도 role 화이트리스트 만들지 말고 기존 isBranchUser 부정으로 처리.
-- **다수선택 상태는 별도.** 기존 단일 `branchFilter`(L133)는 건드리지 말 것. 비교뷰 전용 새 state `compareBranchIds: string[]` 추가. 기본값 = 전체 active 지점 id 배열(branches 로드 후 채움). 전지점 조회는 이 '전체 선택' 상태로 충족.
+## 데이터 모델 (Arch 확정 — 변경 금지)
+- 마이그 **079_inventory_usage_types.sql 는 Arch 가 이미 작성**(`supabase/migrations/079_...`). Bob 은 수정/추가 마이그 만들지 말 것. Supabase 적용은 Project Owner 후속(apply_one_sql.py).
+- 신규 테이블 `inventory_usage_types(id, code UNIQUE, name, sort_order, is_system, is_active, created_at, updated_at)`. 시드: LOSS/로스, SELF_USE/자가사용, SAMPLE/시음용, ETC/기타(is_system=true).
+- `inventory_movements.usage_type_id UUID` 컬럼 추가됨(NULL 허용). **Step 2 에서만 사용** — 이 단계에서는 건드리지 않음.
+- 소모 기록 규약(Step 2 참고용, 지금 구현 X): movement_type='OUT', reference_type='USAGE', usage_type_id=선택값.
 
 ## Build Order
-1. **서브뷰 토글 state**: `const [subView, setSubView] = useState<'list'|'compare'>('list')`. 토글 UI는 필터 바 상단(기간 프리셋 줄 영역 L475 근처)에 '목록 | 지점비교' 세그먼트 버튼 2개. `!isBranchUser`일 때만 렌더.
-2. **compare state**: `compareBranchIds: string[]`. branches 변경 시 전체 선택으로 초기화(useEffect). 다수선택 UI = 지점별 체크박스 + '전체/해제' 버튼.
-3. **집계 로드 `loadCompare`**(loadOrders와 별개):
-   - sales_orders에서 **경량 컬럼만** select: `branch_id, ordered_at, status, total_amount`.
-   - 필터: `.gte('ordered_at', kstDayStart(startDate)).lte('ordered_at', kstDayEnd(endDate))`, `.in('branch_id', compareBranchIds)`, status 제외는 쿼리단 `.not('status','in','(CANCELLED,REFUNDED,PARTIALLY_REFUNDED)')` 권장(JS 폴백 가능).
-   - **1000행 캡 우회 페이지네이션 필수.** 패턴은 `src/app/(dashboard)/customers/[id]/page.tsx` L235~249(`PAGE=1000`, `for(from=0;;from+=PAGE)`, `.range(from, from+PAGE-1)`, `data.length<PAGE → break`) 그대로 차용. loadOrders의 `.limit(500/2000)`는 집계에 부적합 — 절대 재사용 금지.
-   - subView==='compare'일 때만 호출(목록 진입 시 불필요 페치 금지). 의존: startDate/endDate/compareBranchIds.
-4. **매트릭스 빌드 + 렌더(useMemo)**:
-   - rows = 기간 내 등장한 날짜(오름차순), cols = compareBranchIds 순서(branches 이름 매핑).
-   - cell[date][branch] = 해당 셀 total_amount 합.
-   - 행 끝 = 그 날짜 선택지점 총계 / 맨 아래 합계 행 = 지점별 기간 합계 / 우하단 = 총계.
-   - 빈 셀 0 + toLocaleString. 표만, 차트 없음. 셀 `…원` 포맷, 기존 화면과 통일.
-5. **CSV**: Out of Scope. 넣지 말 것.
+- `src/lib/actions.ts`: CRUD 4종 추가. **createChannel/updateChannel/deleteChannel(L1403~1471) 패턴을 그대로 미러링**.
+  - `getInventoryUsageTypes()`: 전체 select, `.order('sort_order')`. (활성 필터 없이 전체 — 관리 화면용)
+  - `createInventoryUsageType(formData)`: name 필수. code 는 createChannel 의 정규화 방식(영문 대문자/`_`, slice) 사용하되 `inventory_usage_types` 는 code VARCHAR(30) → slice(0,30). 한글이면 원문. is_system=false 고정. is_active=true. `revalidatePath('/system-codes')`.
+  - `updateInventoryUsageType(id, formData)`: name/sort_order/is_active 수정. code/is_system 은 수정 불가(불변). 
+  - `deleteInventoryUsageType(id)`: **is_system=true 면 거부**('시스템 기본 유형은 삭제할 수 없습니다. 비활성만 가능합니다.'). 또한 **usage_type_id 로 참조 중인 inventory_movements 가 있으면 거부**(deleteChannel 의 참조검사 패턴: `inventory_movements` 에서 `.eq('usage_type_id', id)` count>0 → '소모 이력이 있어 삭제할 수 없습니다. 비활성 처리하세요.'). 둘 다 통과 시 delete.
+- `src/app/(dashboard)/system-codes/page.tsx`: **채널(Channel) 탭 UI 를 템플릿으로** "사용유형" 관리 섹션 추가(같은 페이지의 새 탭 또는 채널 섹션과 동형 카드). 목록(이름/코드/정렬/활성·시스템배지) + 추가폼 + 행 수정/삭제. import 에 4 액션 추가. 채널 탭의 색상(color) 필드는 **불필요 — 넣지 말 것**(usage_type 에 color 컬럼 없음).
+- **AI Sync (CLAUDE.md 필수, 같은 PR)**: `src/lib/ai/schema.ts`
+  - DB_SCHEMA 에 `inventory_usage_types: id, code, name, sort_order, is_system, is_active` 한 줄 추가.
+  - `inventory_movements` 라인(L26)에 `usage_type_id(소모 사용유형 FK, reference_type=USAGE 일 때만)` 추가 + reference_type enum 목록에 'USAGE' 표기.
+  - tools.ts WRITE_TOOLS 는 **이 단계에서 추가하지 않음**(에이전트 소모 호출은 Step 2 의 consume 액션이 생긴 뒤 검토). 단 analyze_data 가 새 테이블을 읽을 수 있도록 schema.ts 반영은 위에서 완료.
 
-## Out of Scope (넣지 말 것 → surface 시 BUILD-LOG Known Gaps)
-- 차트/그래프
-- 비교뷰 CSV 내보내기
-- discount/환불액 반영 순매출 컬럼
-- RPC/마이그레이션/AI schema 동기화
-- 지점직원용 비교뷰(권한상 숨김 확정)
-- 결제수단·채널별 분해
+## Flags (추측 금지)
+- code 정규화: createChannel 방식 재사용하되 length 30. UNIQUE 충돌 시 DB error.message 그대로 반환(createChannel 동일).
+- RBAC: 코드 관리는 system-codes 페이지 접근 권한(screen_permissions)에 종속 — **별도 역할 체크 코드 추가 불필요**. 페이지가 이미 권한 게이트됨.
+- 마이그 미적용 상태에서 빌드/타입은 통과해야 함(supabase 클라이언트는 `as any` 패턴, 기존 코드와 동일). 런타임은 적용 후 동작.
+
+## Out of Scope (→ BUILD-LOG Known Gaps if surfaces)
+- 다건 소모 차감 화면 + consumeInventory 서버액션 (Step 2, 별도 스프린트).
+- inventory_movements.usage_type_id 쓰기/읽기 (Step 2).
+- 재고 페이지(inventory/page.tsx) 변경 일체.
+- 소모 이력 보고/필터 화면.
+- tools.ts WRITE_TOOLS 소모 도구.
 
 ## Acceptance
-- 본사/관리자: '목록 | 지점비교' 토글 노출. 지점직원: 토글 안 보임(기존 목록만).
-- '지점비교' → 기본 전체 지점 선택 매트릭스. 체크박스 부분선택 시 표 즉시 갱신.
-- 기간 프리셋/날짜 변경이 비교뷰에도 반영(동일 startDate/endDate 재사용).
-- 1000건 넘는 기간(전지점 30일)에서도 합계 안 잘림(페이지네이션 확인).
-- 행 총계 = 그 행 셀들 합, 우하단 = 모든 셀 합 = 열 합계의 합(산술 일관).
-- CANCELLED/REFUNDED/PARTIALLY_REFUNDED 제외.
 - `npm run build` 통과.
-
-## Files
-- 수정: `src/app/(dashboard)/pos/SalesListTab.tsx`(유일한 변경 대상)
-- 참조: `src/app/(dashboard)/customers/[id]/page.tsx` L235~249(페이지네이션), `src/lib/date.ts`(kstDayStart/kstDayEnd/fmtDateKST)
+- system-codes 페이지에 사용유형 목록(시드 4종)·추가·수정·삭제 UI 노출.
+- deleteInventoryUsageType: is_system 거부 + movements 참조 거부 분기 존재.
+- schema.ts 에 신규 테이블 + usage_type_id + 'USAGE' reference_type 반영.
+- Bob 은 마이그 파일을 새로 만들지 않음(079 Arch 작성분 사용).

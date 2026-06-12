@@ -23,7 +23,10 @@ products: id, name, code, barcode, unit, price(판매가), cost(원가), cost_so
 product_files: id, product_id, file_url, file_name, file_type(image/document), sort_order
 inventories: id, branch_id, product_id, quantity, safety_stock  [UNIQUE(branch_id, product_id)]
   ※ quantity 음수 허용 (CHECK 제약 없음). 판매·생산 시 부족해도 차단하지 않고 마이너스로 차감, 입고/반품 시 누적 복원.
-inventory_movements: id, branch_id, product_id, movement_type(IN/OUT/ADJUST/TRANSFER/PRODUCTION), quantity, memo, created_at
+inventory_movements: id, branch_id, product_id, movement_type(IN/OUT/ADJUST/TRANSFER/PRODUCTION), quantity, memo, created_at, usage_type_id(소모 사용유형 FK, reference_type=USAGE 일 때만 값 존재; 그 외 NULL)
+  ※ reference_type(VARCHAR free-form): PHANTOM_DECOMPOSE / PACK_UNPACK / USAGE(재고 소모=로스·자가사용·시음용 등) 등.
+inventory_usage_types(마이그 079): id, code(UNIQUE), name, sort_order, is_system(true=삭제금지·비활성만), is_active
+  ※ 재고 소모 사용유형 코드(로스/자가사용/시음용/기타). 판매 아님. 소모 기록은 inventory_movements.movement_type='OUT' + reference_type='USAGE' + usage_type_id.
 
 --- 고객·CRM ---
 customers: id, name, phone, phone2(제2 연락처(정규화)), email, grade(NORMAL/VIP/VVIP), primary_branch_id, address, health_note, is_active

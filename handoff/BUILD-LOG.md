@@ -1,3 +1,39 @@
+# BUILD-LOG — 재고 소모(사용유형) · Step 1: 코드 테이블 + 코드 관리 UI
+
+## Step 1 — 사용유형 코드 테이블 + 관리 UI (REVIEW FIX 적용 · 배포 대기)
+시작: 2026-06-12 · 빌드완료: 2026-06-12
+
+### Locked Decisions
+- 마이그 079(Arch 작성분) 사용. Bob 은 마이그 파일 신규/수정 안 함.
+- CRUD 4종은 createChannel/updateChannel/deleteChannel(actions.ts L1403~1471) 패턴 미러링. color 필드 제외.
+- code 정규화: createChannel 방식 재사용, VARCHAR(30) → slice(0,30). 한글이면 원문. is_system=false 고정.
+- deleteInventoryUsageType: ① is_system=true 거부('시스템 기본 유형은 삭제할 수 없습니다. 비활성만 가능합니다.') ② inventory_movements.usage_type_id 참조 존재 시 거부('소모 이력이 있어 삭제할 수 없습니다. 비활성 처리하세요.').
+- UI: system-codes 페이지에 '사용유형' 탭 신규(채널 탭 동형). 시스템 행은 삭제 버튼 미노출(수정 모달의 활성 토글로만 비활성 가능). 시스템 배지 표기.
+- 마이그 미적용 환경 대비: 모든 SELECT/CRUD `(supabase as any)` 방어 패턴(기존 코드 동일).
+
+### Files Changed
+- `src/lib/actions.ts` — Inventory Usage Types 섹션(4 액션) 추가.
+- `src/lib/ai/schema.ts` — inventory_movements 라인에 usage_type_id + reference_type 'USAGE' 주석, inventory_usage_types 신규 라인.
+- `src/app/(dashboard)/system-codes/page.tsx` — import 4액션, InventoryUsageType 인터페이스, 탭/state/fetchData/삭제핸들러/렌더섹션/모달 마운트/UsageTypeModal 추가.
+
+### AI Sync
+- schema.ts DB_SCHEMA: 신규 테이블 + usage_type_id 컬럼 + reference_type='USAGE' 반영 완료.
+- tools.ts WRITE_TOOLS: 이 단계 미추가(Step 2 consume 액션 생긴 뒤 검토 — 브리프 지시).
+
+### Build
+- `npm run build` ✓ Compiled successfully in 6.3s, 에러·경고 없음.
+
+### Review Fix (2026-06-12)
+- Richard Must Fix: 마이그 079 RLS 정책만 있고 GRANT 누락 → anon 롤 전면 접근거부.
+- 수정: 079 L81 에 `GRANT SELECT, INSERT, UPDATE, DELETE ON inventory_usage_types TO anon, authenticated;` 추가(064 패턴 동일). 앱 코드 무변경.
+
+### Known Gaps (Out of Scope)
+- 다건 소모 차감 화면 + consumeInventory 서버액션 (Step 2).
+- inventory_movements.usage_type_id 쓰기/읽기 (Step 2).
+- 재고 페이지 변경, 소모 이력 보고/필터 화면, tools.ts WRITE_TOOLS 소모 도구.
+
+---
+
 # BUILD-LOG — 판매현황 지점 매출 비교 서브뷰
 
 ## Step 1 — 지점비교 서브뷰 (BUILD DONE · 리뷰 대기)

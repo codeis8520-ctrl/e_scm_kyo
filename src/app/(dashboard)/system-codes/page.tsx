@@ -11,6 +11,7 @@ import {
   createCategory, updateCategory, deleteCategory,
   createUser, updateUser, deleteUser,
   createChannel, updateChannel, deleteChannel,
+  createInventoryUsageType, updateInventoryUsageType, deleteInventoryUsageType,
   upsertBranchPointRate,
   resetBranchPointRates,
 } from '@/lib/actions';
@@ -32,6 +33,15 @@ interface Channel {
   name: string;
   color: string;
   sort_order: number;
+  is_active: boolean;
+}
+
+interface InventoryUsageType {
+  id: string;
+  code: string;
+  name: string;
+  sort_order: number;
+  is_system: boolean;
   is_active: boolean;
 }
 
@@ -160,10 +170,11 @@ interface BranchPointRate {
 }
 
 export default function SystemCodesPage() {
-  const [activeTab, setActiveTab] = useState<'channels' | 'branches' | 'grades' | 'tags' | 'categories' | 'staff' | 'permissions' | 'campaign_types' | 'point_rates'>('channels');
+  const [activeTab, setActiveTab] = useState<'channels' | 'branches' | 'grades' | 'tags' | 'categories' | 'staff' | 'permissions' | 'campaign_types' | 'point_rates' | 'usage_types'>('channels');
   const [role] = useState<string | null>(() => getCookie('user_role'));
   const canConfigureHq = role === 'SUPER_ADMIN' || role === 'HQ_OPERATOR';
   const [channels, setChannels] = useState<Channel[]>([]);
+  const [usageTypes, setUsageTypes] = useState<InventoryUsageType[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [grades, setGrades] = useState<CustomerGrade[]>([]);
   const [tags, setTags] = useState<CustomerTag[]>([]);
@@ -176,6 +187,8 @@ export default function SystemCodesPage() {
   const [loading, setLoading] = useState(true);
 
   const [showChannelModal, setShowChannelModal] = useState(false);
+  const [showUsageTypeModal, setShowUsageTypeModal] = useState(false);
+  const [editingUsageType, setEditingUsageType] = useState<InventoryUsageType | null>(null);
   const [showBranchModal, setShowBranchModal] = useState(false);
   const [qrBranch, setQrBranch] = useState<Branch | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState('');
@@ -204,6 +217,10 @@ export default function SystemCodesPage() {
     if (activeTab === 'channels') {
       const { data } = await supabase.from('channels').select('*').order('sort_order');
       setChannels((data || []) as Channel[]);
+    } else if (activeTab === 'usage_types') {
+      // 마이그 079 미적용 환경에서도 화면이 깨지지 않도록 as any.
+      const { data } = await (supabase as any).from('inventory_usage_types').select('*').order('sort_order');
+      setUsageTypes((data || []) as InventoryUsageType[]);
     } else if (activeTab === 'branches') {
       const [branchesRes, channelsRes] = await Promise.all([
         supabase.from('branches').select('*').order('created_at', { ascending: true }),
@@ -301,6 +318,16 @@ export default function SystemCodesPage() {
     fetchData();
   };
 
+  const handleDeleteUsageType = async (id: string) => {
+    if (!confirm('정말 삭제하시겠습니까?\n\n※ 시스템 기본 유형이거나 소모 이력이 있으면 삭제할 수 없습니다.\n   대신 수정에서 "비활성"으로 전환해주세요.')) return;
+    const result = await deleteInventoryUsageType(id);
+    if (result?.error) {
+      alert(result.error);
+      return;
+    }
+    fetchData();
+  };
+
   const handleDeleteBranch = async (id: string) => {
     if (!confirm('정말 삭제하시겠습니까?\n\n※ 이 지점을 참조하는 직원·재고·판매전표 등이 있으면 삭제할 수 없습니다.\n   대신 지점 수정에서 "비활성"으로 전환해주세요.')) return;
     const result = await deleteBranch(id);
@@ -380,6 +407,7 @@ export default function SystemCodesPage() {
       <PageTabs
         tabs={[
           { key: 'channels', label: '채널 관리' },
+          { key: 'usage_types', label: '사용유형' },
           { key: 'branches', label: '지점 관리' },
           { key: 'grades', label: '고객 등급' },
           { key: 'tags', label: '고객 태그' },
@@ -454,6 +482,75 @@ export default function SystemCodesPage() {
                 <tr>
                   <td colSpan={6} className="text-center text-slate-400 py-8">
                     등록된 채널이 없습니다
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'usage_types' && (
+        <div className="card">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="font-semibold">사용유형 목록</h3>
+            <button
+              onClick={() => { setEditingUsageType(null); setShowUsageTypeModal(true); }}
+              className="btn-primary text-sm"
+            >
+              + 사용유형 추가
+            </button>
+          </div>
+          <p className="text-xs text-slate-500 mb-4">판매가 아닌 재고 소모(로스·자가사용·시음용 등)를 구분하는 코드입니다.</p>
+
+          <div className="overflow-x-auto -mx-4 sm:mx-0">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>코드</th>
+                <th>이름</th>
+                <th>정렬순서</th>
+                <th>상태</th>
+                <th>관리</th>
+              </tr>
+            </thead>
+            <tbody>
+              {usageTypes.map((ut) => (
+                <tr key={ut.id}>
+                  <td className="font-mono">{ut.code}</td>
+                  <td className="font-medium">
+                    {ut.name}
+                    {ut.is_system && <span className="badge badge-info ml-2">시스템</span>}
+                  </td>
+                  <td>{ut.sort_order}</td>
+                  <td>
+                    <span className={`badge ${ut.is_active ? 'badge-success' : 'badge-error'}`}>
+                      {ut.is_active ? '활성' : '비활성'}
+                    </span>
+                  </td>
+                  <td>
+                    <button
+                      onClick={() => { setEditingUsageType(ut); setShowUsageTypeModal(true); }}
+                      className="text-blue-600 hover:underline mr-2"
+                    >
+                      수정
+                    </button>
+                    {!ut.is_system && (
+                      <button
+                        onClick={() => handleDeleteUsageType(ut.id)}
+                        className="text-red-600 hover:underline"
+                      >
+                        삭제
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {usageTypes.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="text-center text-slate-400 py-8">
+                    등록된 사용유형이 없습니다
                   </td>
                 </tr>
               )}
@@ -1200,6 +1297,14 @@ export default function SystemCodesPage() {
         />
       )}
 
+      {showUsageTypeModal && (
+        <UsageTypeModal
+          usageType={editingUsageType}
+          onClose={() => setShowUsageTypeModal(false)}
+          onSuccess={() => { setShowUsageTypeModal(false); fetchData(); }}
+        />
+      )}
+
       {showBranchModal && (
         <>
           <BranchModal
@@ -1376,6 +1481,117 @@ function ChannelModal({ channel, onClose, onSuccess }: { channel: Channel | null
           <div className="flex gap-2 pt-4">
             <button type="submit" disabled={loading} className="flex-1 btn-primary">
               {loading ? '처리 중...' : (channel ? '수정' : '추가')}
+            </button>
+            <button type="button" onClick={onClose} className="flex-1 btn-secondary">취소</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function UsageTypeModal({ usageType, onClose, onSuccess }: { usageType: InventoryUsageType | null; onClose: () => void; onSuccess: () => void }) {
+  const [formData, setFormData] = useState({
+    name: usageType?.name || '',
+    sort_order: usageType?.sort_order || 0,
+    is_active: usageType?.is_active ?? true,
+  });
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    setFieldErrors({});
+
+    const errors: Record<string, string> = {};
+    const nameError = validators.required(formData.name, '이름');
+    if (nameError) errors.name = nameError;
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      setLoading(false);
+      return;
+    }
+
+    const form = new FormData();
+    Object.entries(formData).forEach(([key, value]) => {
+      form.append(key, String(value));
+    });
+
+    const result = usageType
+      ? await updateInventoryUsageType(usageType.id, form)
+      : await createInventoryUsageType(form);
+
+    if (result?.error) {
+      setError(result.error);
+      setLoading(false);
+    } else {
+      onSuccess();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-lg p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-lg font-bold">{usageType ? '사용유형 수정' : '사용유형 추가'}</h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">✕</button>
+        </div>
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-lg text-sm">{error}</div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {usageType && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700">코드</label>
+              <input type="text" value={usageType.code} disabled className="mt-1 input bg-slate-100 text-slate-500" />
+            </div>
+          )}
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">이름 *</label>
+            <input
+              type="text"
+              value={formData.name}
+              onChange={(e) => { setFormData({ ...formData, name: e.target.value }); setFieldErrors({ ...fieldErrors, name: '' }); }}
+              placeholder="로스"
+              className={`mt-1 input ${fieldErrors.name ? 'border-red-500' : ''}`}
+            />
+            {fieldErrors.name && <p className="mt-1 text-xs text-red-500">{fieldErrors.name}</p>}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">정렬순서</label>
+            <input
+              type="number"
+              value={formData.sort_order}
+              onChange={(e) => setFormData({ ...formData, sort_order: parseInt(e.target.value) || 0 })}
+              onFocus={(e) => e.target.select()}
+              min="0"
+              className="mt-1 input"
+            />
+          </div>
+
+          {usageType && (
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="usage_is_active"
+                checked={formData.is_active}
+                onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })}
+              />
+              <label htmlFor="usage_is_active" className="text-sm text-gray-700">활성 상태</label>
+            </div>
+          )}
+
+          <div className="flex gap-2 pt-4">
+            <button type="submit" disabled={loading} className="flex-1 btn-primary">
+              {loading ? '처리 중...' : (usageType ? '수정' : '추가')}
             </button>
             <button type="button" onClick={onClose} className="flex-1 btn-secondary">취소</button>
           </div>

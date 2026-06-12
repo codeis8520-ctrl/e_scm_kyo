@@ -1471,6 +1471,107 @@ export async function deleteChannel(id: string) {
   return { success: true };
 }
 
+// ============ Inventory Usage Types (재고 사용유형) ============
+
+export async function getInventoryUsageTypes() {
+  const supabase = await createClient();
+  // 마이그 079 미적용 환경에서도 빌드/타입이 깨지지 않도록 as any (기존 패턴).
+  const { data } = await (supabase as any)
+    .from('inventory_usage_types')
+    .select('*')
+    .order('sort_order');
+  return { data: data || [] };
+}
+
+export async function createInventoryUsageType(formData: FormData) {
+  const supabase = await createClient();
+
+  const name = formData.get('name') as string;
+  // code 는 createChannel 정규화 방식 재사용 (영문 대문자/`_`). VARCHAR(30) → slice(0,30).
+  // 한글 포함 시 영문 변환 불가하므로 원문 사용.
+  const code = name.replace(/\s+/g, '_').toUpperCase().slice(0, 30);
+
+  const usageTypeData = {
+    code,
+    name,
+    sort_order: parseInt(formData.get('sort_order') as string) || 0,
+    is_system: false,
+    is_active: true,
+  };
+
+  const { error } = await (supabase as any)
+    .from('inventory_usage_types')
+    .insert(usageTypeData);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidatePath('/system-codes');
+  return { success: true };
+}
+
+export async function updateInventoryUsageType(id: string, formData: FormData) {
+  const supabase = await createClient();
+
+  // code/is_system 은 불변 — name/sort_order/is_active 만 수정.
+  const usageTypeData = {
+    name: formData.get('name') as string,
+    sort_order: parseInt(formData.get('sort_order') as string) || 0,
+    is_active: formData.get('is_active') === 'true',
+  };
+
+  const { error } = await (supabase as any)
+    .from('inventory_usage_types')
+    .update(usageTypeData)
+    .eq('id', id);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidatePath('/system-codes');
+  return { success: true };
+}
+
+export async function deleteInventoryUsageType(id: string) {
+  const supabase = await createClient();
+
+  // 1) 시스템 기본 유형('기타' 등)은 삭제 금지 — 비활성만 허용.
+  const { data: row } = await (supabase as any)
+    .from('inventory_usage_types')
+    .select('is_system')
+    .eq('id', id)
+    .single();
+
+  if (row?.is_system) {
+    return { error: '시스템 기본 유형은 삭제할 수 없습니다. 비활성만 가능합니다.' };
+  }
+
+  // 2) 소모 이력(inventory_movements)에서 참조 중이면 삭제 금지.
+  const { data: movements } = await (supabase as any)
+    .from('inventory_movements')
+    .select('id')
+    .eq('usage_type_id', id)
+    .limit(1);
+
+  if (movements && movements.length > 0) {
+    return { error: '소모 이력이 있어 삭제할 수 없습니다. 비활성 처리하세요.' };
+  }
+
+  const { error } = await (supabase as any)
+    .from('inventory_usage_types')
+    .delete()
+    .eq('id', id);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidatePath('/system-codes');
+  return { success: true };
+}
+
 // ============ Users (Staff Management) ============
 
 export async function getUsers() {
