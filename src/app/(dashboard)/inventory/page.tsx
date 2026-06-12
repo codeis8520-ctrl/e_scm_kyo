@@ -8,6 +8,7 @@ import TransferModal from './TransferModal';
 import StockUsageModal from './StockUsageModal';
 import MovementHistoryModal from './MovementHistoryModal';
 import PackUnpackModal from './PackUnpackModal';
+import TransferBatchPanel from './TransferBatchPanel';
 import { getInventoryUsageTypes } from '@/lib/actions';
 import { updateSafetyStock } from '@/lib/inventory-actions';
 import { backfillMissingInventories } from '@/lib/inventory-backfill-actions';
@@ -135,6 +136,7 @@ export default function InventoryPage() {
   const [editInventory, setEditInventory] = useState<Inventory | null>(null);
   const [transferInventory, setTransferInventory] = useState<Inventory | null>(null);
   const [viewMode, setViewMode] = useState<'pivot' | 'flat'>('pivot');
+  const [subView, setSubView] = useState<'stock' | 'transfer'>('stock');
   const [flatBranchFilter, setFlatBranchFilter] = useState('');
   // 재고 변동 이력 모달
   const [historyProduct, setHistoryProduct] = useState<{ id: string; name: string; code: string } | null>(null);
@@ -481,6 +483,31 @@ export default function InventoryPage() {
 
   return (
     <div className="card">
+      {/* 서브뷰 토글 — 재고현황 ↔ 지점이동 (지점고정 사용자도 노출, 출발지 자기지점 잠금) */}
+      <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1 w-fit mb-4">
+        {([['stock', '재고현황'], ['transfer', '지점이동']] as ['stock' | 'transfer', string][]).map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => setSubView(k)}
+            className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+              subView === k ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {subView === 'transfer' && (
+        <TransferBatchPanel
+          branches={branches}
+          defaultFromBranchId={isBranchUser && userBranchId ? userBranchId : ''}
+          fromBranchLocked={isBranchUser && !!userBranchId}
+          onSuccess={fetchInventory}
+        />
+      )}
+
+      {subView === 'stock' && (<>
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 sm:mb-6">
         <div className="flex items-center gap-3">
           <h3 className="sr-only">재고 현황</h3>
@@ -881,6 +908,7 @@ export default function InventoryPage() {
         </table>
         </div>
       )}
+      </>)}
 
       {showModal && (
         <InventoryModal

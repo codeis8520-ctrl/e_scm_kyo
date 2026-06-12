@@ -1251,6 +1251,112 @@ export async function transferInventory(formData: FormData) {
   return { success: true };
 }
 
+// 지점 간 다건 일괄 이동 — 단건 transferInventory 의 OUT/IN(reference_type='TRANSFER') 을 배치로 래핑.
+// 2-pass: 1) 전수검증(동일지점 거부·수량≥1·출고지 재고부족 라인 거부) 통과해야 시작, 2) 라인별 OUT+IN 처리.
+// 이동은 음수 미허용 — 소모(recordStockUsage)와 달리 재고 초과 라인은 반드시 거부한다.
+// 한계: pass1↔pass2 트랜잭션 없음(기존 단건과 동일) — 동시성 레이스는 이번 스코프 아님.
+export async function transferInventoryBatch(input: {
+  from_branch_id: string;
+  to_branch_id: string;
+  memo?: string;
+  items: { product_id: string; quantity: number }[];
+}) {
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  const fromBranchId = input.from_branch_id;
+  const toBranchId = input.to_branch_id;
+  const memo = input.memo;
+  const items = input.items || [];
+
+  // ── pass 1: 검증 (전체 거부, 처리 전) ──
+  if (!fromBranchId) return { error: '출발 지점을 선택하세요.' };
+  if (!toBranchId) return { error: '도착 지점을 선택하세요.' };
+  if (fromBranchId === toBranchId) {
+    return { error: '동일 지점 간 이동은 할 수 없습니다.' };
+  }
+  if (items.length === 0) return { error: '이동 품목을 1개 이상 추가하세요.' };
+  for (const item of items) {
+    if (!item.product_id) return { error: '품목 정보가 올바르지 않습니다.' };
+    if (!Number.isInteger(item.quantity) || item.quantity < 1) {
+      return { error: '이동 수량은 1개 이상의 정수여야 합니다.' };
+    }
+  }
+
+  // 출고지 재고부족 전수검사 — 음수 미허용(이동 정책). 라인별 from_branch_id 재고 조회.
+  for (const item of items) {
+    const { data: invArr } = await db
+      .from('inventories')
+      .select('quantity, product:products(name)')
+      .eq('branch_id', fromBranchId)
+      .eq('product_id', item.product_id);
+    const inv = invArr?.[0];
+    if (!inv || (inv.quantity ?? 0) < item.quantity) {
+      const label: string = inv?.product?.name ?? item.product_id;
+      return { error: `'${label}' 이동 수량이 출고 지점의 재고보다 많습니다.` };
+    }
+  }
+
+  // ── pass 2: 라인 루프(비트랜잭션 — 기존 코드 일관). 단건 transferInventory 의 OUT/IN 반복 ──
+  for (const item of items) {
+    const q = item.quantity;
+
+    const { data: fromArr } = await db
+      .from('inventories')
+      .select('quantity')
+      .eq('branch_id', fromBranchId)
+      .eq('product_id', item.product_id);
+    const fromCurrent = fromArr?.[0];
+
+    const { data: toArr } = await db
+      .from('inventories')
+      .select('id, quantity')
+      .eq('branch_id', toBranchId)
+      .eq('product_id', item.product_id);
+    const toCurrent = toArr?.[0];
+
+    if (toCurrent) {
+      await db
+        .from('inventories')
+        .update({ quantity: (toCurrent.quantity || 0) + q })
+        .eq('id', toCurrent.id);
+    } else {
+      await db.from('inventories').insert({
+        branch_id: toBranchId,
+        product_id: item.product_id,
+        quantity: q,
+        safety_stock: 0,
+      });
+    }
+
+    await db
+      .from('inventories')
+      .update({ quantity: (fromCurrent?.quantity || 0) - q })
+      .eq('branch_id', fromBranchId)
+      .eq('product_id', item.product_id);
+
+    await db.from('inventory_movements').insert({
+      branch_id: fromBranchId,
+      product_id: item.product_id,
+      movement_type: 'OUT',
+      quantity: q,
+      reference_type: 'TRANSFER',
+      memo: `지점 이동: ${memo || '출고'}`,
+    });
+    await db.from('inventory_movements').insert({
+      branch_id: toBranchId,
+      product_id: item.product_id,
+      movement_type: 'IN',
+      quantity: q,
+      reference_type: 'TRANSFER',
+      memo: `지점 이동: ${memo || '입고'}`,
+    });
+  }
+
+  revalidatePath('/inventory');
+  return { success: true, count: items.length };
+}
+
 // ============ Categories ============
 
 export async function getCategories() {
