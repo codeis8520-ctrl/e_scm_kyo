@@ -192,3 +192,26 @@
 - 카페24 품목코드 → products 매핑(자동) 미구현 — 향후 별도 스텝(브리프 Out of Scope).
 - 과거 이미 등록된 카페24 주문 소급 품목 채우기 미포함(브리프 Out of Scope).
 - live order_items price: i.product_price 우선, 없으면 payment_amount, 둘 다 없으면 0(브리프 규정). 정확 라인 단가는 카페24 옵션가/할인 미반영 가능 — LTV는 sales_orders.total_amount 헤더 기준이라 영향 없음.
+
+---
+
+## Feature F — 지점 재고 이동 둘러보기·체크박스 다중선택 · 1 step (빌드 완료 · 리뷰 대기)
+시작: 2026-06-13
+
+### Build Status — BUILT
+- npm run build ✓ Compiled successfully in 6.6s, 에러/경고 0.
+- 변경 파일: src/app/(dashboard)/inventory/TransferBatchPanel.tsx (단일 파일).
+  - 제거: `candidates` 드롭다운 memo(검색어 트리거·이미담긴품목 제외·slice(20)).
+  - 추가: `browseAll` memo(출발지 재고>0 dedup, name 한글 localeCompare 정렬), `browseFiltered` memo(search 부분일치 필터), `browseList`=slice(0,200), `overCap` 플래그.
+  - `addRow` 에서 `setSearch('')` 제거(토글 시 필터 유지). 토글 핸들러 `toggleProduct`(checked=rows 파생 → removeRow / addRow), `selectAllFiltered`(필터 미담김 전부 qty:1 추가), `deselectAllFiltered`(보이는 product_id 만 제거).
+  - UI: 드롭다운 → max-h-72 스크롤 체크박스 목록. 각 행 `<label>`+checkbox+상품명/코드+현재고(stockOf). 헤더 우측 전체선택/해제. 200초과 안내 문구. 미선택/로딩/재고없음/필터무결과 인라인 힌트.
+
+### Locked Decisions (브리프 준수)
+- 체크 단일 출처 = rows: `checked = rows.some(r=>r.product_id===pid)`. 별도 selection state 없음 → ✕삭제 시 자동 언체크.
+- 전체선택/해제 = 현재 필터된 browseList 기준. 전체해제는 visible product_id 만 제거(필터 밖 담긴 품목 보존).
+- search = 목록 필터(이름/코드). 드롭다운 트리거 의미 폐기. submit 성공·출발지 변경 시 search 초기화는 기존대로 유지.
+- 레이아웃 = 상하 단일컬럼(출발→도착+메모 → 둘러보기 → 선택 rows → 일괄 이동). rows UI·가드(sameBranch/hasOver/hasInvalidQty/빈행/submitDisabled)·handleFromChange 리셋·stale 가드 무변경.
+- 서버/DB/마이그/schema.ts/tools.ts 변경 없음. getInventory·transferInventoryBatch 인자 무변경.
+
+### Known Gaps
+- 없음(Out of Scope 항목 표면화 없음: 가상화/카테고리필터/수량일괄/즐겨찾기·서버페이지네이션 모두 미채택대로 미구현).

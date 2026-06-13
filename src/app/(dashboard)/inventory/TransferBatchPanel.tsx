@@ -73,11 +73,11 @@ export default function TransferBatchPanel({
     return inv ? inv.quantity : null;
   };
 
-  // 제품 검색 후보 — 출발 지점(fromBranchId) 기준 재고>0 품목만, 이미 추가된 품목 제외
-  const candidates = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q || !fromBranchId) return [];
-    const addedIds = new Set(rows.map((r) => r.product_id));
+  // 둘러보기 목록 — 출발 지점(fromBranchId) 재고>0 품목 전체. search 는 필터로만 동작.
+  // 이미 담긴 품목도 목록에 남긴다(체크 상태로 표시). 이름 한글 오름차순 정렬, 상위 200개 캡.
+  const BROWSE_CAP = 200;
+  const browseAll = useMemo(() => {
+    if (!fromBranchId) return [];
     const seen = new Set<string>();
     const out: { product_id: string; name: string; code: string }[] = [];
     for (const inv of srcInventories) {
@@ -85,20 +85,29 @@ export default function TransferBatchPanel({
       if (!p) continue;
       if (inv.branch_id !== fromBranchId) continue;
       if (inv.quantity <= 0) continue;
-      if (seen.has(inv.product_id) || addedIds.has(inv.product_id)) continue;
-      const name = (p.name || '').toLowerCase();
-      const code = (p.code || '').toLowerCase();
-      if (name.includes(q) || code.includes(q)) {
-        seen.add(inv.product_id);
-        out.push({ product_id: inv.product_id, name: p.name, code: p.code });
-      }
+      if (seen.has(inv.product_id)) continue;
+      seen.add(inv.product_id);
+      out.push({ product_id: inv.product_id, name: p.name, code: p.code });
     }
-    return out.slice(0, 20);
-  }, [search, srcInventories, rows, fromBranchId]);
+    out.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ko'));
+    return out;
+  }, [srcInventories, fromBranchId]);
+
+  const browseFiltered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return browseAll;
+    return browseAll.filter((c) => {
+      const name = (c.name || '').toLowerCase();
+      const code = (c.code || '').toLowerCase();
+      return name.includes(q) || code.includes(q);
+    });
+  }, [browseAll, search]);
+
+  const browseList = browseFiltered.slice(0, BROWSE_CAP);
+  const overCap = browseFiltered.length > BROWSE_CAP;
 
   const addRow = (c: { product_id: string; name: string; code: string }) => {
     setRows((prev) => [...prev, { ...c, quantity: 1 }]);
-    setSearch('');
   };
 
   const updateQty = (productId: string, qty: number) => {
@@ -109,6 +118,30 @@ export default function TransferBatchPanel({
 
   const removeRow = (productId: string) => {
     setRows((prev) => prev.filter((r) => r.product_id !== productId));
+  };
+
+  // 체크 ↔ rows 단일 출처 동기화 — checked 는 rows 파생, 토글은 add/remove 만.
+  const toggleProduct = (c: { product_id: string; name: string; code: string }) => {
+    const checked = rows.some((r) => r.product_id === c.product_id);
+    if (checked) removeRow(c.product_id);
+    else addRow(c);
+  };
+
+  // 전체 선택 — 현재 필터된 browseList 중 아직 안 담긴 것 전부 quantity:1 로 추가.
+  const selectAllFiltered = () => {
+    setRows((prev) => {
+      const have = new Set(prev.map((r) => r.product_id));
+      const toAdd = browseList
+        .filter((c) => !have.has(c.product_id))
+        .map((c) => ({ ...c, quantity: 1 }));
+      return [...prev, ...toAdd];
+    });
+  };
+
+  // 전체 해제 — browseList 에 보이는 product_id 들만 제거(필터 밖에서 담긴 품목 보존).
+  const deselectAllFiltered = () => {
+    const visible = new Set(browseList.map((c) => c.product_id));
+    setRows((prev) => prev.filter((r) => !visible.has(r.product_id)));
   };
 
   // 출발 지점 변경 시 — 다른 지점 재고 기준이므로 선택 품목 초기화
@@ -244,38 +277,85 @@ export default function TransferBatchPanel({
           />
         </div>
 
-        {/* 다건 품목 검색 — 출발 지점 재고>0 만 */}
-        <div className="relative">
-          <label className="block text-sm font-medium text-gray-700">품목 추가</label>
+        {/* 둘러보기 목록 — 출발 지점 재고>0 품목 체크박스 다중선택. search 는 목록 필터. */}
+        <div>
+          <div className="flex items-center justify-between gap-2">
+            <label className="block text-sm font-medium text-gray-700">품목 선택</label>
+            {fromBranchId && browseAll.length > 0 && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={selectAllFiltered}
+                  className="text-xs text-blue-600 hover:underline"
+                >
+                  전체 선택
+                </button>
+                <span className="text-slate-300">|</span>
+                <button
+                  type="button"
+                  onClick={deselectAllFiltered}
+                  className="text-xs text-slate-500 hover:underline"
+                >
+                  전체 해제
+                </button>
+              </div>
+            )}
+          </div>
+
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder={fromBranchId ? '제품명 / 코드 검색...' : '먼저 출발 지점을 선택하세요'}
+            placeholder={fromBranchId ? '제품명 / 코드로 목록 필터...' : '먼저 출발 지점을 선택하세요'}
             disabled={!fromBranchId}
             className={`mt-1 input ${!fromBranchId ? 'bg-slate-100 cursor-not-allowed' : ''}`}
           />
+
+          {!fromBranchId && (
+            <p className="mt-2 text-sm text-slate-400">먼저 출발 지점을 선택하세요.</p>
+          )}
           {fromBranchId && loadingInv && (
-            <p className="mt-1 text-xs text-slate-400">출발 지점 재고 불러오는 중...</p>
+            <p className="mt-2 text-xs text-slate-400">출발 지점 재고 불러오는 중...</p>
           )}
-          {fromBranchId && !loadingInv && search.trim() && candidates.length === 0 && (
-            <p className="mt-1 text-xs text-slate-400">검색 결과 없음 (재고 있는 품목만 표시)</p>
+          {fromBranchId && !loadingInv && browseAll.length === 0 && (
+            <p className="mt-2 text-sm text-slate-400">이동 가능한 재고가 없습니다.</p>
           )}
-          {candidates.length > 0 && (
-            <ul className="absolute z-10 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow max-h-56 overflow-y-auto">
-              {candidates.map((c) => (
-                <li key={c.product_id}>
-                  <button
-                    type="button"
-                    onClick={() => addRow(c)}
-                    className="w-full text-left px-3 py-2 hover:bg-slate-100 text-sm"
-                  >
-                    <span className="font-medium">{c.name}</span>
-                    <span className="text-slate-500"> · {c.code}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
+          {fromBranchId && !loadingInv && browseAll.length > 0 && (
+            <>
+              {browseList.length === 0 ? (
+                <p className="mt-2 text-xs text-slate-400">검색 결과 없음</p>
+              ) : (
+                <div className="mt-1 border border-slate-200 rounded-lg max-h-72 overflow-y-auto divide-y">
+                  {browseList.map((c) => {
+                    const checked = rows.some((r) => r.product_id === c.product_id);
+                    const stock = stockOf(c.product_id);
+                    return (
+                      <label
+                        key={c.product_id}
+                        className="flex items-center gap-3 px-3 py-2 text-sm cursor-pointer hover:bg-slate-50"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleProduct(c)}
+                          className="h-4 w-4 shrink-0"
+                        />
+                        <span className="flex-1 min-w-0">
+                          <span className="font-medium">{c.name}</span>
+                          <span className="text-slate-500"> · {c.code}</span>
+                        </span>
+                        <span className="text-xs text-slate-500 shrink-0">
+                          현재고 <span className="font-semibold">{stock === null ? 0 : stock}</span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+              {overCap && (
+                <p className="mt-1 text-xs text-slate-400">상위 200개만 표시 — 검색으로 좁히세요</p>
+              )}
+            </>
           )}
         </div>
 
