@@ -214,7 +214,7 @@ export default function CustomerDetailPage() {
         .single(),
       supabase
         .from('sales_orders')
-        .select(`id, order_number, ordered_at, status, total_amount, payment_method, credit_settled, credit_settled_method, points_earned, points_used, branch_id, branch:branches(name, id), items:sales_order_items(id, quantity, unit_price, total_price, order_option, product:products(name))`)
+        .select(`id, order_number, ordered_at, status, total_amount, payment_method, credit_settled, credit_settled_method, points_earned, points_used, branch_id, branch:branches(name, id), items:sales_order_items(id, quantity, unit_price, total_price, order_option, item_text, product:products(name))`)
         .eq('customer_id', customerId)
         .gte('ordered_at', kstDayStart(purchaseDateRange.start))
         .lte('ordered_at', kstDayEnd(purchaseDateRange.end))
@@ -264,7 +264,8 @@ export default function CustomerDetailPage() {
       if (purchaseBranchFilter && order.branch_id !== purchaseBranchFilter) return false;
       if (purchaseProductSearch) {
         const q = purchaseProductSearch.toLowerCase();
-        const match = (order.items || []).some((i: any) => i.product?.name?.toLowerCase().includes(q));
+        const match = (order.items || []).some((i: any) =>
+          (i.product?.name || i.item_text || '').toLowerCase().includes(q));
         if (!match) return false;
       }
       return true;
@@ -946,7 +947,7 @@ export default function CustomerDetailPage() {
                     const isRefunded = ['REFUNDED', 'PARTIALLY_REFUNDED'].includes(o.status);
                     const isCancelled = o.status === 'CANCELLED';
                     const statusLabel: Record<string, string> = { COMPLETED: '완료', CANCELLED: '취소', REFUNDED: '환불', PARTIALLY_REFUNDED: '부분환불' };
-                    const mainItems = (o.items || []).slice(0, 3).map((i: any) => i.product?.name).filter(Boolean);
+                    const mainItems = (o.items || []).slice(0, 3).map((i: any) => i.product?.name || i.item_text).filter(Boolean);
                     const extraCount = (o.items?.length || 0) - mainItems.length;
                     return (
                       <div key={`o-${o.id}`} className="relative">
@@ -1114,7 +1115,7 @@ export default function CustomerDetailPage() {
                                 {(order.items || []).map((it: any) => (
                                   <tr key={it.id}>
                                     <td>
-                                      <div>{it.product?.name || '-'}</div>
+                                      <div>{it.product?.name || it.item_text || '-'}</div>
                                       {it.order_option && (
                                         <div className="text-xs text-pink-600 mt-0.5">🎀 {it.order_option}</div>
                                       )}

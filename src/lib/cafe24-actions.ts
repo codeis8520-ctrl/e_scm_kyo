@@ -50,7 +50,10 @@ export async function syncCafe24PaidOrders(params: { startDate: string; endDate:
 // 주문(sales_orders)에 customer_id 연결 → 판매현황에 고객으로 표기.
 // dedup: phone(UNIQUE) 기준. 전화가 이미 타인(이름 불일치) 소유면 스킵(오등록 방지).
 export async function registerCafe24Customers(
-  items: { cafe24_order_id: string; name: string; phone: string; address?: string; email?: string }[]
+  items: {
+    cafe24_order_id: string; name: string; phone: string; address?: string; email?: string;
+    order_items?: { name: string; quantity: number; price: number; option?: string }[];
+  }[]
 ) {
   try {
     await requireSession();
@@ -97,6 +100,39 @@ export async function registerCafe24Customers(
         .is('customer_id', null)
         .select('id');
       if (upd?.length) linked += upd.length;
+
+      // 구매품목 텍스트 저장 (best-effort) — 신규/기존 연결 양쪽 모두.
+      // 이미 연결된 주문은 위 update가 비어 있으므로 별도로 soId 확보.
+      const orderItems = it.order_items ?? [];
+      if (orderItems.length > 0) {
+        try {
+          const { data: so } = await sb.from('sales_orders')
+            .select('id')
+            .eq('cafe24_order_id', it.cafe24_order_id)
+            .maybeSingle();
+          const soId = so?.id;
+          if (soId) {
+            // 멱등 가드: 이미 품목이 있으면 재클릭 중복 insert 방지
+            const { data: existingItem } = await sb.from('sales_order_items')
+              .select('id').eq('sales_order_id', soId).limit(1);
+            if (!existingItem?.length) {
+              await sb.from('sales_order_items').insert(
+                orderItems.map(oi => ({
+                  sales_order_id: soId,
+                  product_id: null,
+                  item_text: oi.name,
+                  quantity: oi.quantity || 1,
+                  unit_price: oi.price || 0,
+                  total_price: (oi.price || 0) * (oi.quantity || 1),
+                  order_option: oi.option || null,
+                }))
+              );
+            }
+          }
+        } catch {
+          // 품목 저장 실패는 고객 등록 성공에 영향 주지 않음(080 미적용 등)
+        }
+      }
     }
   }
 

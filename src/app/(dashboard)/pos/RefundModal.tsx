@@ -147,12 +147,14 @@ export default function RefundModal({ branchId, initialOrderNumber, onClose, onS
       reason,
       reasonDetail,
       refundMethod,
-      items: activeItems.map((i: any) => ({
-        sales_order_item_id: i.id,
-        product_id: i.product.id,
-        quantity: selectedItems[i.id],
-        unit_price: i.unit_price,
-      })),
+      items: activeItems
+        .filter((i: any) => i.product?.id)
+        .map((i: any) => ({
+          sales_order_item_id: i.id,
+          product_id: i.product?.id,
+          quantity: selectedItems[i.id],
+          unit_price: i.unit_price,
+        })),
     });
 
     if (result.error) {
@@ -346,8 +348,8 @@ export default function RefundModal({ branchId, initialOrderNumber, onClose, onS
                     {(order.items || []).map((item: any) => (
                       <tr key={item.id}>
                         <td>
-                          <p className="font-medium text-sm">{item.product.name}</p>
-                          <p className="text-xs text-slate-400">{item.product.code}</p>
+                          <p className="font-medium text-sm">{item.product?.name ?? item.item_text ?? '-'}</p>
+                          <p className="text-xs text-slate-400">{item.product?.code ?? ''}</p>
                         </td>
                         <td className="text-center text-sm">{item.quantity}</td>
                         <td className="text-right text-sm">{item.unit_price.toLocaleString()}원</td>

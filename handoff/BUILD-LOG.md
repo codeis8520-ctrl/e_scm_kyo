@@ -156,3 +156,39 @@
 - [인접 보안 갭 — 이번 스코프 아님] adjustInventory(actions.ts:1005)·recordStockUsage(actions.ts:1086): 호출자 지점 대조 없이 입력 branch_id 사용. adjustInventory 는 RAW/SUB 본사 제한만 있고 일반 제품은 타지점 조정 가능 잠재. 지점고정 직원의 임의 branch_id 조정/소모 경로 — 동일한 출발지 가드 미적용. 후속 보안 스텝 후보(제품/보안 정책 결정).
 - AI tool execTransferInventory(tools.ts transfer_inventory): 별도 코드경로(자체 movements, 이 서버액션 미경유), ToolContext RBAC 관할 → 이번 변경 무관(손대지 않음).
 - pass1↔pass2 비트랜잭션 동시성 레이스(기존 한계) — 이번 스코프 아님.
+
+---
+
+## Feature C — 카페24 주문자 등록 시 구매품목 텍스트 저장 · 1 step (빌드 완료 · 리뷰 대기)
+시작: 2026-06-12
+
+### Build Status (2026-06-12)
+- BUILT — npm run build ✓ Compiled successfully in 6.6s (에러/경고 없음). 마이그 080 미적용 상태에서 통과(item_text는 select-only, insert는 런타임 best-effort + try/catch 방어).
+- 변경 파일:
+  - src/lib/ai/schema.ts L70~72 — sales_order_items: product_id nullable 표기 + item_text 추가 + 카페24 텍스트 품목 주석(AI sync, CLAUDE.md 규칙).
+  - src/app/api/cafe24/orders/route.ts — interface Cafe24OrderForShipping에 order_items[] 필드 추가, DEMO_ORDERS 3건 더미 order_items 추가, live 매핑에서 detailOrder.items → order_items{name,quantity,price,option} 노출(items_summary 병존 유지).
+  - src/lib/cafe24-actions.ts — registerCafe24Customers items 타입에 order_items? 추가. customerId 확정 후 cafe24_order_id로 soId 확보 → 멱등 가드(이미 품목 있으면 skip) → product_id=null/item_text/order_option insert. try/catch best-effort(실패해도 고객 등록 성공).
+  - src/app/(dashboard)/shipping/page.tsx — Cafe24OrderForShipping interface에 order_items? 추가, handleRegisterCustomers payload에 order_items 포함.
+  - src/app/(dashboard)/customers/[id]/page.tsx — sales_order_items select에 item_text 추가, 렌더 폴백 product?.name||item_text||'-', mainItems 폴백, 품목검색 필터에 item_text 포함.
+
+### Locked Decisions (브리프 준수)
+- 저장 위치 = sales_order_items 텍스트 확장(B안), product_id=null, item_text=상품명. 가격 없으면 0.
+- 캡처 = registerCafe24Customers (신규생성·기존연결 양쪽). 멱등 가드로 재클릭 중복 insert 방지.
+- 마이그 080(.sql)는 Arch 소유 — Bob 미작성.
+
+### AMENDMENT Build (2026-06-12) — 환불 경로 회귀 차단 (Must Fix 대응)
+- BUILT — npm run build ✓ Compiled successfully (에러/경고 없음).
+- 정책(Arch 락): 카페24 ONLINE 주문은 POS·에이전트 환불에서 통째로 제외(sync-only 정책의 귀결). null-safety는 방어선으로 병행 유지.
+- 변경 파일:
+  - src/lib/return-actions.ts:294 — searchSalesOrdersForRefund에 `.neq('channel', 'ONLINE')`.
+  - src/lib/return-actions.ts:338-340 — getSalesOrderForRefund: `data.channel === 'ONLINE'`이면 거부 메시지 반환.
+  - src/app/(dashboard)/pos/RefundModal.tsx:150-156 — activeItems `i.product?.id` filter + `product_id: i.product?.id`.
+  - src/lib/ai/tools.ts:2901-2907 — 전액환불 map 전 `.filter((i)=>i.product?.id)`.
+  - src/lib/ai/tools.ts:2917 — 수량 에러 메시지 `match.product?.name ?? match.item_text ?? '-'`.
+  - src/lib/ai/tools.ts:2919-2921 — 부분환불 `match.product?.id` 없으면 에러 반환(NULL 라인 미투입).
+- 마이그레이션: 없음(080 그대로, channel은 기존 컬럼).
+
+### Known Gaps
+- 카페24 품목코드 → products 매핑(자동) 미구현 — 향후 별도 스텝(브리프 Out of Scope).
+- 과거 이미 등록된 카페24 주문 소급 품목 채우기 미포함(브리프 Out of Scope).
+- live order_items price: i.product_price 우선, 없으면 payment_amount, 둘 다 없으면 0(브리프 규정). 정확 라인 단가는 카페24 옵션가/할인 미반영 가능 — LTV는 sales_orders.total_amount 헤더 기준이라 영향 없음.

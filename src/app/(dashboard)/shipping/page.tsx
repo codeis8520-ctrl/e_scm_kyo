@@ -42,6 +42,7 @@ interface Cafe24OrderForShipping {
   recipient_address: string;
   delivery_message: string;
   items_summary: string;
+  order_items?: { name: string; quantity: number; price: number; option: string }[];
   total_price: number;
   already_added: boolean;
   cafe24_status: string;
@@ -753,6 +754,7 @@ export default function ShippingPage() {
           phone: o.orderer_phone,
           address: o.orderer_address || o.recipient_address,
           email: o.orderer_email,
+          order_items: o.order_items,
         }));
       const res = await registerCafe24Customers(items);
       setRegisterMsg(res.message || (res.success ? '완료' : '실패'));

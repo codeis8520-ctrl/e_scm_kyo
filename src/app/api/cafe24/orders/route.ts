@@ -60,6 +60,7 @@ interface Cafe24OrderForShipping {
   recipient_address: string;
   delivery_message: string;
   items_summary: string;
+  order_items: { name: string; quantity: number; price: number; option: string }[];
   total_price: number;
   already_added: boolean;
   cafe24_status: string;
@@ -143,6 +144,10 @@ const DEMO_ORDERS: Omit<Cafe24OrderForShipping, 'already_added' | 'orderer_email
     recipient_address: '서울특별시 강남구 테헤란로 152 강남파이낸스센터 3층',
     delivery_message: '부재 시 경비실에 맡겨주세요.',
     items_summary: '경옥고 80g x1, 공진단 10환 x2',
+    order_items: [
+      { name: '경옥고 80g', quantity: 1, price: 65000, option: '' },
+      { name: '공진단 10환', quantity: 2, price: 60000, option: '' },
+    ],
     total_price: 185000,
     cafe24_status: 'F',
   },
@@ -156,6 +161,9 @@ const DEMO_ORDERS: Omit<Cafe24OrderForShipping, 'already_added' | 'orderer_email
     recipient_address: '경기도 성남시 분당구 판교역로 235 에이치스퀘어 N동 2층',
     delivery_message: '',
     items_summary: '경옥고 160g x1',
+    order_items: [
+      { name: '경옥고 160g', quantity: 1, price: 98000, option: '' },
+    ],
     total_price: 98000,
     cafe24_status: 'A',
   },
@@ -169,6 +177,10 @@ const DEMO_ORDERS: Omit<Cafe24OrderForShipping, 'already_added' | 'orderer_email
     recipient_address: '서울특별시 서초구 반포대로 201 반포자이아파트 101동 1502호',
     delivery_message: '문 앞에 놓아주세요.',
     items_summary: '공진단 5환 x1, 경옥고 80g x2',
+    order_items: [
+      { name: '공진단 5환', quantity: 1, price: 12000, option: '' },
+      { name: '경옥고 80g', quantity: 2, price: 65000, option: '' },
+    ],
     total_price: 142000,
     cafe24_status: 'B',
   },
@@ -326,6 +338,12 @@ export async function GET(request: NextRequest) {
             || o?.user_id_message
             || '',
           items_summary: itemsSummary,
+          order_items: items.map((i: any) => ({
+            name: i.product_name ?? '',
+            quantity: i.quantity ?? 1,
+            price: Number(i.product_price ?? i.payment_amount ?? 0) || 0,
+            option: extractItemOptions(i),
+          })),
           total_price: firstPositiveAmount(
             o.payment_amount, detailOrder?.payment_amount,
             o.order_price_amount, detailOrder?.order_price_amount,

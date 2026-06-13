@@ -67,8 +67,9 @@ sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, buyer_n
   ※ taxable_amount/exempt_amount/vat_amount=거래 시점 스냅샷(마이그 058). 카트 내 products.is_taxable
     기준으로 라인별 분리 → finalAmount(고객 실수령)에 비례 배분. vat=round(taxable×10/110).
     세 값 합 ≒ finalAmount(반올림 1원 이내). 058 미적용 주문은 0/NULL → reports는 사후 집계로 폴백.
-sales_order_items: id, sales_order_id, product_id, quantity, unit_price, discount_amount, total_price, order_option, delivery_type(PICKUP/PARCEL/QUICK), receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date
+sales_order_items: id, sales_order_id, product_id(nullable — 080), quantity, unit_price, discount_amount, total_price, order_option, item_text(080), delivery_type(PICKUP/PARCEL/QUICK), receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date
   ※ order_option=품목별 부가 옵션(보자기 포장/쇼핑백/색상/서비스 지급 등).
+  ※ item_text=카페24 텍스트 품목(우리 products 매핑 안 됨, product_id=null인 행). 렌더 폴백: product?.name || item_text.
   ※ delivery_type=품목별 배송 방식 — 같은 전표에서 품목별로 다를 수 있음(예: 3품목 중 1품목만 택배, 2품목 현장수령). 단 shipments는 주문당 1건 유지(수령지 1곳만 전제; 2곳 이상은 새 전표 분리).
   ※ receipt_status=품목별 수령 상태. sales_orders.receipt_status는 품목 상태 집계 결과. 품목 전부 RECEIVED이면 주문 RECEIVED + shipments.status=DELIVERED 자동.
   ※ shipments.items_summary는 PICKUP 제외, PARCEL/QUICK 품목만 요약.

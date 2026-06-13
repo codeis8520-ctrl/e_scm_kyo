@@ -2898,12 +2898,14 @@ async function execRefundSalesOrder(sb: any, args: {
   let refundItems: Array<{ sales_order_item_id: string; product_id: string; quantity: number; unit_price: number }> = [];
 
   if (fullRefund) {
-    refundItems = (order.items || []).map((i: any) => ({
-      sales_order_item_id: i.id,
-      product_id: i.product.id,
-      quantity: i.quantity,
-      unit_price: i.unit_price,
-    }));
+    refundItems = (order.items || [])
+      .filter((i: any) => i.product?.id)
+      .map((i: any) => ({
+        sales_order_item_id: i.id,
+        product_id: i.product.id,
+        quantity: i.quantity,
+        unit_price: i.unit_price,
+      }));
   } else {
     // 부분 환불 — product_name 매핑
     for (const req of args.items || []) {
@@ -2914,7 +2916,10 @@ async function execRefundSalesOrder(sb: any, args: {
         return JSON.stringify({ error: `주문에 "${req.product_name}" 항목이 없습니다.` });
       }
       if (req.quantity <= 0 || req.quantity > match.quantity) {
-        return JSON.stringify({ error: `${match.product.name}의 환불 수량은 1~${match.quantity} 범위여야 합니다.` });
+        return JSON.stringify({ error: `${match.product?.name ?? match.item_text ?? '-'}의 환불 수량은 1~${match.quantity} 범위여야 합니다.` });
+      }
+      if (!match.product?.id) {
+        return JSON.stringify({ error: '외부 채널 텍스트 품목은 환불할 수 없습니다.' });
       }
       refundItems.push({
         sales_order_item_id: match.id,

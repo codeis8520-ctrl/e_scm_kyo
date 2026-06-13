@@ -1,43 +1,95 @@
-# Architect Brief — Step: 재고이동 from_branch 서버측 소유 검증
+# Architect Brief — Cafe24 주문자 등록 시 구매품목 텍스트 저장 (단일 스텝)
 
 ## Goal
-지점고정 직원이 UI/요청 우회로 타지점 재고를 출고하지 못하도록, transferInventory(단건)·transferInventoryBatch(다건)에 서버측 출발지(from_branch) 소유 검증을 추가한다.
+배송 카페24 '주문자 고객 등록' 시 해당 자사몰 주문의 구매 품목을 sales_order_items에 텍스트(product_id=null, item_text=상품명)로 저장한다. 등록 후 고객 구매내역 탭에 카페24 품목이 보인다.
 
-## Locked Decisions (변경 금지)
-- **세션 획득**: `requireSession()` (src/lib/session.ts) 사용. 반환 `SessionUser { role: string; branch_id: string | null }`. 둘 다 현재 세션 검증이 **전혀 없음** — 신규 추가.
-- **import 추가 필요**: actions.ts 상단에 `import { requireSession } from '@/lib/session';` (현재 미import). 경로/이름 확인됨.
-- **정책(잠금)**:
-  - HQ급 = `['SUPER_ADMIN','HQ_OPERATOR','EXECUTIVE']` → 출발지 자유.
-  - 지점고정 = `['BRANCH_STAFF','PHARMACY_STAFF']` → `from_branch_id === session.branch_id` 일 때만 허용. 불일치 시 `return { error: '본인 지점의 재고만 출고할 수 있습니다.' }`.
-  - 도착지(to_branch)는 **무제한**(타지점 입고 허용 — 기존 UI 정책 유지). 검증 추가 금지.
-- **세션/branch 미지정 시 거동**: 기존 RBAC 선례(requireHq: `!ctx.userRole`이면 통과)와 **일관**. `requireSession`이 세션 없으면 throw하므로 그 시점에서 차단됨. role이 지점고정인데 `session.branch_id`가 null이면 → **거부**(본인 지점 미상이면 출고 불가, 안전측). HQ급은 통과. 이 거동을 주석으로 명시.
-- **검증 위치**:
-  - 단건: 함수 초입(formData 파싱 직후, `fromBranchId === toBranchId` 체크 부근). 빠른 거부.
-  - 다건: **pass1 검증 단계**(L1273~ from/to 존재 체크 직후, 재고부족 전수검사 전). 처리 전 거부.
-- **공통 헬퍼 권장**: actions.ts 내 모듈 로컬 함수 1개로 추출 — 시그니처 예:
-  `function assertFromBranchOwnership(session: SessionUser, fromBranchId: string): { error: string } | null` — null이면 통과, 객체면 그 error를 호출부에서 그대로 return. 두 함수가 동일 로직 공유(중복 금지).
-- **마이그/DB 변경 없음**. schema.ts·BUSINESS_RULES 변경 없음(스키마·enum 불변, 순수 액션 가드). 이 점 REVIEW-REQUEST에 명시.
+## 락된 결정 (변경 금지)
+- 저장 위치 = sales_order_items 텍스트 확장 (B안). legacy_orders 재사용 안 함.
+- 마이그 번호 = **080** (079까지 존재 확인됨). Arch가 직접 Supabase 적용. Bob은 .sql 작성만.
+- 캡처 시점 = registerCafe24Customers. **기존 고객 연결 + 신규 생성 양쪽 모두** 품목 저장.
+- 가격 비필수: unit_price/total_price NOT NULL → 카페24 price 없으면 0. LTV는 sales_orders.total_amount 헤더 기준이라 영향 없음.
+- 단일 배포 스텝. DB+route+action+UI+렌더+AI sync 한 PR. (마이그 미적용 상태에서도 build·런타임 방어.)
 
 ## Build Order
-1. actions.ts 상단 import에 `requireSession`(+ 필요시 `SessionUser` 타입) 추가.
-2. 모듈 로컬 헬퍼 `assertFromBranchOwnership` 작성(HQ 화이트리스트 + 지점고정 일치검사 + branch_id null 거부).
-3. transferInventory(L1176): 초입에서 `const session = await requireSession();` → `const denied = assertFromBranchOwnership(session, fromBranchId); if (denied) return denied;`.
-4. transferInventoryBatch(L1258): pass1 초입(from/to 존재 체크 직후)에서 동일 패턴.
-5. `npm run build` 통과.
 
-## Out of Scope (확대 금지)
-- adjustInventory(L1005)·recordStockUsage(L1086): 동일한 from-branch 무검증 패턴 가능성 → **이번 범위 아님**. 인접 갭이면 BUILD-LOG Known Gaps에 기록만.
-- AI tool `execTransferInventory`(tools.ts transfer_inventory): 별도 코드경로(자체 movements, 이 서버액션 미경유). ToolContext RBAC가 이미 관할 → 이번 변경과 무관. 손대지 말 것. (참고 기록만)
-- 동시성/트랜잭션(pass1↔pass2 레이스): 기존 한계, 이번 스코프 아님.
+### 1. 마이그 080 (.sql만, 적용은 Arch)
+- 파일: `supabase/migrations/080_sales_order_items_text.sql`
+- `ALTER TABLE sales_order_items ALTER COLUMN product_id DROP NOT NULL;`
+- `ALTER TABLE sales_order_items ADD COLUMN IF NOT EXISTS item_text TEXT;`
+- 멱등(IF NOT EXISTS). 기존 행 product_id 값 보존 — DROP NOT NULL은 기존 데이터 무영향.
+- option은 기존 `order_option` 컬럼 재사용 (새 컬럼 X).
+
+### 2. AI 스키마 동기화 (같은 PR 필수 — CLAUDE.md 규칙)
+- `src/lib/ai/schema.ts` DB_SCHEMA의 sales_order_items: `product_id` nullable 표기 + `item_text` 추가.
+- 주석: `item_text = 카페24 텍스트 품목(우리 products 매핑 안 됨, product_id=null인 행)`.
+
+### 3. orders route — 구조화 품목 노출
+- `src/app/api/cafe24/orders/route.ts`
+- interface `Cafe24OrderForShipping`(L51~68)에 필드 추가: `order_items: { name: string; quantity: number; price: number; option: string }[]`
+- detailOrder.items(L286~)에서 매핑: name=`i.product_name`, quantity=`i.quantity ?? 1`, price=`Number(i.product_price ?? i.payment_amount ?? 0)`(없으면 0), option=`extractItemOptions(i)`. items_summary는 그대로 유지(둘 다 노출).
+- DEMO_ORDERS(L135~)에도 order_items 더미 추가(타입 통과용).
+
+### 4. registerCafe24Customers 시그니처 확장
+- `src/lib/cafe24-actions.ts` (L52~109)
+- items 타입에 `order_items?: { name: string; quantity: number; price: number; option?: string }[]` 추가.
+- customerId 확정 후 sales_orders update로 받은 `upd[0].id`(sales_order pk)에 대해:
+  - **멱등 가드**: `sb.from('sales_order_items').select('id').eq('sales_order_id', soId).limit(1)` → 이미 있으면 insert 스킵(재클릭 중복 방지).
+  - 없으면 it.order_items를 insert: `{ sales_order_id: soId, product_id: null, item_text: oi.name, quantity: oi.quantity, unit_price: oi.price||0, total_price: (oi.price||0)*(oi.quantity||1), order_option: oi.option||null }`.
+- 기존 고객 연결(customerId=exist.id) 경로에서도 동일하게 insert — 단, 그 경로는 `.is('customer_id', null)` 조건으로 update upd가 비어있을 수 있음(이미 연결됨). soId가 없으면(upd 비었으면) 기존 연결 주문의 sales_order id를 별도 조회해서라도 품목 가드+insert. → 정확히: customerId 있으면 항상 `eq('cafe24_order_id').select('id')`로 soId 확보 후 품목 처리.
+- Flag: insert 실패해도 고객 등록 자체는 성공 처리(품목은 best-effort). 카운트 메시지는 기존 유지.
+
+### 5. shipping page UI — 등록 호출에 품목 포함
+- 카페24 주문탭에서 registerCafe24Customers 호출하는 곳(shipping page 컴포넌트) 찾아, 선택 주문의 `order_items`를 payload에 포함. Bob: grep `registerCafe24Customers(` 호출처 확인 후 수정.
+
+### 6. 구매내역 렌더 폴백
+- `src/app/(dashboard)/customers/[id]/page.tsx`
+- L217 select: `items:sales_order_items(... order_option, item_text, product:products(name))` — item_text 추가.
+- L1117 렌더: `{it.product?.name || it.item_text || '-'}`
+- L949 mainItems: `.map((i:any) => i.product?.name || i.item_text).filter(Boolean)`
+- 품목 검색 필터: sales_order items 대상 필터가 있으면 item_text도 포함(legacy L1216처럼). 없으면 skip.
+
+## Out of Scope
+- POS/매출분개/재고차감 경로 — ONLINE 주문은 재고 미차감, product_id=null 텍스트 품목 안 탐. 가드 불필요(확인 완료). dashboard route L271·details는 이미 null-safe(`product?.name || '알 수 없음'`).
+- 카페24 품목코드 → products 매핑(향후 별도).
+- 과거 이미 등록된 카페24 주문 소급 품목 채우기.
 
 ## Acceptance
-- 지점고정 직원이 `from_branch_id`=타지점으로 단건/다건 호출 시 거부(error 반환, 재고/movements 무변경).
-- 지점고정 직원이 본인 지점 출고는 **정상** 통과(회귀 없음).
-- HQ급(SUPER_ADMIN/HQ_OPERATOR/EXECUTIVE)은 임의 출발지 정상 통과(회귀 없음).
-- 도착지 타지점 입고는 계속 허용.
-- `npm run build` 통과.
+- `npm run build` 통과(마이그 미적용 상태에서도 — item_text는 select에만, insert는 런타임).
+- 마이그 080 적용 후: 카페24 주문 등록 → 구매내역 탭에 품목 표시.
+- 같은 주문 재등록(재클릭) 시 품목 중복 insert 안 됨.
+- 신규 고객·기존 고객 연결 양쪽 모두 품목 저장.
+- DB_SCHEMA 동기화 diff 포함.
 
-## Review Flags (Richard — 보안 민감, 리뷰 필수)
-- 회귀 1순위: 정상 지점직원 자기지점 이동·HQ 이동이 막히면 안 됨.
-- branch_id null(지점고정) 거부 거동이 운영에서 정당한지 확인.
-- 두 함수가 헬퍼 공유했는지(로직 드리프트 없음) 확인.
+## Escalation
+없음 — 정책 전부 Project Owner 확정. 신규 제품 동작 추가 없음.
+
+---
+
+# AMENDMENT — 환불 경로 회귀 차단 (Step 후속, 같은 PR)
+
+## 결정 (Arch 락)
+**both = 정책 제외(b) + null-safety(1).**
+근거: 카페24 ONLINE 주문은 자사몰 결제·환불 채널이고 ERP는 매출 동기화 전용 — 이미 Project Owner가 락한 "sync-only / 고객 자동생성 안 함" 정책과 동일 선상. 따라서 ONLINE 주문을 POS·에이전트 환불 검색에서 통째로 제외하는 것이 정책에 맞고 크래시를 원천 차단한다. 신규 제품 동작이 아니라 기존 정책의 적용이므로 **Project Owner 추가 확인 불필요(이미 락된 결정의 귀결)**.
+null-safety는 제외와 무관하게 방어선으로 유지(향후 다른 텍스트 품목 소스 대비). processRefund가 product_id로 재고복원+COGS 분개를 하므로 NULL product 라인은 환불 대상이 될 수 없다.
+
+## Build Order (환불 경로만 — 다른 영역 확장 금지)
+
+### A. ONLINE 주문 환불 검색 제외 (return-actions.ts)
+- `searchSalesOrdersForRefund` (L286~): 쿼리 빌더에 `.neq('channel', 'ONLINE')` 추가 (status `.in(...)` 체인 근처). channel 컬럼 존재 확인 후. ONLINE 주문이 검색 결과에 안 뜨게.
+- `getSalesOrderForRefund` (L322~): `.eq('order_number', ...)` 결과 single 받은 뒤, `data.channel === 'ONLINE'`이면 `{ data: null, error: '카페24(자사몰) 주문은 POS에서 환불할 수 없습니다. 자사몰에서 처리하세요.' }` 반환. (select에 channel 미포함이면 select 목록에 `channel` 추가 — 현재 `*`라 이미 포함됨, 확인만.)
+
+### B. null-safety (방어선 — 3개 site)
+- `RefundModal.tsx:152` → `product_id: i.product?.id ?? null`. 추가로 `activeItems.map` 직전(또는 activeItems 산출 지점)에서 `i.product?.id`가 없는 라인은 환불 항목에서 제외(filter). 즉 텍스트 품목 라인은 매핑 대상에서 빠지게.
+- `tools.ts:2901~2906` 전액환불 map: `i.product?.id`가 없는 라인 제외 후 매핑 (`(order.items||[]).filter((i:any)=>i.product?.id).map(...)`, 내부 `product_id: i.product.id` 유지).
+- `tools.ts:2911` 부분환불 find: `i.product?.name` (이미 옵셔널). `:2917` `match.product?.name ?? match.item_text ?? '-'`, `:2921` `match.product?.id`가 없으면 그 req는 에러 반환(`"외부 채널 텍스트 품목은 환불할 수 없습니다."`) — NULL product_id를 refundItems에 넣지 말 것.
+
+## Out of Scope (AMENDMENT)
+- processRefund 내부 로직 변경 X. 환불 외 경로 X. UI 안내 카피 외 신규 화면 X.
+
+## 마이그레이션
+**없음.** 080 그대로. 스키마 변경 없음 (channel은 기존 컬럼).
+
+## Acceptance (AMENDMENT)
+- ONLINE 주문이 POS 환불 검색·order_number 조회에 안 뜬다(또는 명확한 거부 메시지).
+- NULL product 라인이 어떤 환불 경로로도 processRefund에 안 들어간다.
+- `npm run build` 통과.

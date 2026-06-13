@@ -291,6 +291,7 @@ export async function searchSalesOrdersForRefund(params: {
       branch:branches(id, name, code)
     `)
     .in('status', ['COMPLETED', 'PARTIALLY_REFUNDED'])
+    .neq('channel', 'ONLINE')
     .order('ordered_at', { ascending: false })
     .limit(params.limit || 30);
 
@@ -336,5 +337,8 @@ export async function getSalesOrderForRefund(orderNumber: string) {
     .single();
 
   if (error) return { data: null, error: '주문을 찾을 수 없습니다.' };
+  if (data?.channel === 'ONLINE') {
+    return { data: null, error: '카페24(자사몰) 주문은 POS에서 환불할 수 없습니다. 자사몰에서 처리하세요.' };
+  }
   return { data };
 }
