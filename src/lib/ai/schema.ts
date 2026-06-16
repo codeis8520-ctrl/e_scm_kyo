@@ -280,6 +280,7 @@ sales_orders.receipt_status: 품목 receipt_status 집계(우선순위 PARCEL_PL
 - 매칭/중복 기준 = 이름 AND 전화. 전화만 같고 이름 다르면 연결/등록 안 함(오귀속 방지). customers.phone UNIQUE·대시포맷(010-XXXX-XXXX).
 - cafe24 total_amount = 결제수단 무관 주문상품금액(포인트 전액결제 시에도 order_price_amount 사용, 0 아님).
 - 카페24 품목(product_code + 옵션조합 정규화) → 내부 product 매핑(cafe24_product_map), 송장/배송 짧은 품목명(이카운트식). 미매핑은 원본 옵션정리 표시.
+- 카페24 주문 동기화(webhook.ts) 시 sales_order_items 도 생성: 매핑되면 product_id 연결, 미매핑은 item_text(원본 품목명) 텍스트. **재고 미차감**(inventory_movements·point_history 없음 — 별도 스프린트).
 
 [배송]
 - shipments: source=CAFE24(자사몰)/STORE(직접입력)

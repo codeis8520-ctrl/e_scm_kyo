@@ -1,52 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { getValidAccessToken, forceRefreshAccessToken } from '@/lib/cafe24/token-store';
-import { firstPositiveAmount, normalizeOptionValue } from '@/lib/cafe24/types';
+import { firstPositiveAmount, normalizeOptionValue, extractItemOptions } from '@/lib/cafe24/types';
 import { kstTodayString, fmtDateKST } from '@/lib/date';
 
-// Cafe24 주문 품목의 선택사항(option_value / additional_option_value / options[]) 추출.
-// 일반 형식: "색상=레드&사이즈=L" 또는 [{option_name, option_value}] 배열.
-function safeDecode(s: string): string {
-  try { return decodeURIComponent(s); } catch { return s; }
-}
-// "선택안함" / "선택 안함" 등 공백만 다른 무선택 옵션값 판별.
-function isNoSelection(v: string): boolean {
-  return v.replace(/\s+/g, '') === '선택안함';
-}
-function parseOptionPairs(raw: any): string {
-  if (!raw) return '';
-  if (Array.isArray(raw)) {
-    return raw
-      .map((o: any) => {
-        const k = (o?.option_name ?? o?.name ?? '').toString().trim();
-        let v = (o?.option_value ?? o?.value ?? '').toString().trim();
-        if (isNoSelection(v)) v = '';
-        return v ? (k ? `${k}: ${v}` : v) : '';
-      })
-      .filter(Boolean).join(', ');
-  }
-  if (typeof raw !== 'string') return '';
-  return raw.split('&')
-    .map(pair => {
-      const eq = pair.indexOf('=');
-      if (eq < 0) return safeDecode(pair).trim();
-      const k = safeDecode(pair.slice(0, eq)).trim();
-      const v = safeDecode(pair.slice(eq + 1)).trim();
-      if (isNoSelection(v)) return '';
-      return v ? `${k}: ${v}` : k;
-    })
-    .filter(Boolean).join(', ');
-}
-function extractItemOptions(item: any): string {
-  // 1순위: option_value (단일 옵션 그룹)
-  // 2순위: options 배열 (Cafe24 응답에 따라 존재)
-  // 3순위: additional_option_value (추가 옵션)
-  const main = parseOptionPairs(item?.option_value)
-            || parseOptionPairs(item?.options);
-  const add = parseOptionPairs(item?.additional_option_value)
-            || parseOptionPairs(item?.additional_options);
-  return [main, add].filter(Boolean).join(' / ');
-}
+// extractItemOptions(옵션 표시 텍스트 추출)는 src/lib/cafe24/types.ts로 이동(단일 출처).
+// webhook.ts(sales_order_items.order_option)와 공유 — drift 방지.
 
 interface Cafe24OrderForShipping {
   cafe24_order_id: string;

@@ -163,3 +163,51 @@ export function normalizeOptionValue(raw: any): string {
   pairs.sort((a, b) => a.key.localeCompare(b.key));
   return pairs.map(p => (p.key ? `${p.key}=${p.value}` : p.value)).join('&');
 }
+
+// ─── 카페24 옵션 표시 텍스트 추출 (사용자 표시용 — 매핑 키 아님) ───────────────
+// item의 선택사항(option_value / additional_option_value / options[])을 사람이 읽을 수
+// 있는 문자열("색상: 레드, 사이즈: L")로 만든다. orders/route.ts(송장 items_summary·
+// order_items.option)와 webhook.ts(sales_order_items.order_option)가 동일 모듈을 import해
+// 사용한다 — 복붙 금지(drift 방지).
+// ⚠️ 위 normalizeOptionValue 계열(safeDecodeKey/isNoSelectionValue, 정렬됨, 매핑키 전용)과
+//    혼동 금지. 이쪽은 표시용으로 정렬하지 않고 key: value 형태로 합친다.
+function safeDecode(s: string): string {
+  try { return decodeURIComponent(s); } catch { return s; }
+}
+function isNoSelection(v: string): boolean {
+  return v.replace(/\s+/g, '') === '선택안함';
+}
+function parseOptionPairs(raw: any): string {
+  if (!raw) return '';
+  if (Array.isArray(raw)) {
+    return raw
+      .map((o: any) => {
+        const k = (o?.option_name ?? o?.name ?? '').toString().trim();
+        let v = (o?.option_value ?? o?.value ?? '').toString().trim();
+        if (isNoSelection(v)) v = '';
+        return v ? (k ? `${k}: ${v}` : v) : '';
+      })
+      .filter(Boolean).join(', ');
+  }
+  if (typeof raw !== 'string') return '';
+  return raw.split('&')
+    .map(pair => {
+      const eq = pair.indexOf('=');
+      if (eq < 0) return safeDecode(pair).trim();
+      const k = safeDecode(pair.slice(0, eq)).trim();
+      const v = safeDecode(pair.slice(eq + 1)).trim();
+      if (isNoSelection(v)) return '';
+      return v ? `${k}: ${v}` : k;
+    })
+    .filter(Boolean).join(', ');
+}
+export function extractItemOptions(item: any): string {
+  // 1순위: option_value (단일 옵션 그룹)
+  // 2순위: options 배열 (Cafe24 응답에 따라 존재)
+  // 3순위: additional_option_value (추가 옵션)
+  const main = parseOptionPairs(item?.option_value)
+            || parseOptionPairs(item?.options);
+  const add = parseOptionPairs(item?.additional_option_value)
+            || parseOptionPairs(item?.additional_options);
+  return [main, add].filter(Boolean).join(' / ');
+}

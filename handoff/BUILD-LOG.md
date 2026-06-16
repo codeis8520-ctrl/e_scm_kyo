@@ -1,5 +1,27 @@
 # BUILD-LOG
 
+## 카페24 주문 흐름 수정 (Step 1: webhook memo + sales_order_items 생성) — 2026-06-16
+시작/완료: 2026-06-16 · Build Status: npm run build ✓ (에러/경고 0)
+
+### 변경 파일 (4) — DB/마이그/tools.ts 무변경, 신규 패키지 없음
+- **src/lib/cafe24/types.ts** — extractItemOptions(+deps parseOptionPairs/isNoSelection/safeDecode)를 orders/route.ts에서 이관·export. 표시용 헬퍼(정렬X, "key: value")로 기존 normalizeOptionValue 계열(safeDecodeKey/isNoSelectionValue, 매핑키 전용, 정렬됨)과 별도 — 이름 충돌·의미 혼동 없음.
+- **src/app/api/cafe24/orders/route.ts** — 위 헬퍼 module-local 정의 삭제 → types.ts에서 import. 호출부 2곳(itemsSummary, order_items.option) 동일 구현 → 무회귀.
+- **src/lib/cafe24/webhook.ts** handleOrderCreated:
+  - (A) memo: recipient.address 있으면 `Delivery: addr (+detail)`, 없으면 null. 'Delivery: undefined' 제거(임베드 응답에 평면 recipient_address 없어 항상 undefined였던 버그).
+  - (B) order_created 로그 직후 sales_order_items 생성. 멱등 가드(sales_order_items where sales_order_id=newOrder.id limit 1 존재 시 skip — registerCafe24Customers와 동일 계약). 매핑 일괄조회(N+1 금지, route.ts 패턴): (product_code, normalizeOptionValue(option_value))→cafe24_product_map→product_id, 매핑된 id→products.name. 매핑됨=product_id+내부명(item_text), 미매핑=null+product_name. quantity||1, unit_price=Number(price??product_price??0)||0, total_price=unit*qty, order_option=extractItemOptions||null. delivery_type/receipt_status 미명시(DB DEFAULT). try/catch + 컬럼미존재(42703) degrade. 실패 시 logSyncEvent('order_items_error') — 주문 생성 성공 불변.
+- **src/lib/ai/schema.ts** — BUSINESS_RULES 1줄: 카페24 동기화 시 sales_order_items 생성(매핑 product_id / 미매핑 item_text), 재고 미차감.
+
+### 결정 사항
+- delivery_type/receipt_status는 DB DEFAULT(PICKUP/RECEIVED) 수용 — 카페24=택배지만 이번 범위 default 허용(브리프 LOCKED, Known Gap).
+- 품목 실패는 logSyncEvent로 기록만 — 주문 row는 이미 생성됨(롤백 안 함, registerCafe24Customers 선례).
+
+### Known Gaps (Out of Scope — 미수정)
+- 재고 차감 / inventory_movements / point_history 미생성(별도 스프린트, 명시적 범위 밖).
+- delivery_type=PARCEL·receipt_status=PARCEL_PLANNED 정밀화(카페24 전수 택배지만 default 수용).
+- 과거 깨진 카페24 주문 보정 = Step 2(인플레이스 백필, 별도 빌드).
+- total_amount 0원 과거 백필(forward-only 결정).
+
+
 ## ESC 닫기 훅 + 핵심 모달 9곳 (Step 1) (Must Fix 2건 반영 · 재제출 — 2026-06-16)
 시작: 2026-06-16
 
@@ -556,3 +578,20 @@
 - option_value NOT NULL DEFAULT '' — UNIQUE(cafe24_product_code, option_value) 가 조회 인덱스 겸함, 별도 인덱스 없음.
 - actions.ts upsert onConflict 'cafe24_product_code,option_value' 와 UNIQUE 제약 일치 확인.
 - ⚠️ Supabase 적용은 Arch가 배포 게이트에서 직접 실행 (DB 마이그=Arch 소유).
+
+---
+## Step: 카페24 주문 연동 수정 — webhook memo + 품목 생성 (브리프 작성 · 빌드 대기 — 2026-06-16)
+- Root cause: handleOrderCreated(webhook.ts L200~)가 getOrder로 items 가져오지만 ①sales_order_items 미생성 ②memo='Delivery: undefined'(recipient_address 평면필드 없음). sync-orders.ts→processCafe24Webhook→handleOrderCreated 공용 → 1곳 수정=웹훅+크론 양쪽.
+- Locked 범위: ①memo 수정 + ②sales_order_items 생성. **재고 차감·movements·point_history 범위 밖**(별도 스프린트).
+- Locked memo: recipient.address(+detail) 사용, 없으면 null. 'Delivery: undefined' 문자열 금지.
+- Locked 품목: orders/route.ts L312~360 일괄매핑 패턴 재사용(N+1 금지). 매핑됨→product_id+item_text(내부명), 미매핑→product_id=null+item_text=product_name. quantity/unit_price/total_price 폴백(NOT NULL). order_option=extractItemOptions(표시용, normalizeOptionValue 매핑키와 구분). delivery_type/receipt_status=DB DEFAULT. 멱등 가드(sales_order_id 존재검사, registerCafe24Customers L117 계약 동일). try/catch degrade(080/082 미적용 방어).
+- Locked drift방지: extractItemOptions(+parseOptionPairs/isNoSelection/safeDecode) route.ts module-local → types.ts export 이동, webhook.ts+route.ts 둘 다 import. route.ts 무회귀 확인.
+- Locked 과거보정(Step 2, 별도): **인플레이스 백필**(삭제-재생성 금지 — customer_id/환불/분개 FK 안전). 1회성 ts 스크립트 or 관리라우트(getOrder 재조회 필요). already-exists skip(L258) 유지, 백필은 별도경로. memo·recipient_* UPDATE + 품목 없으면 생성, customer_id 불변, 재고 미반영.
+- Locked 스텝분할: Step1=webhook(memo+품목+drift정리+schema.ts 1줄), Step2=과거 백필. N+1 차단(Step1 배포·로그 후 Step2).
+- AI Sync: 의미변화 없음 → schema.ts BUSINESS_RULES 1줄(품목 생성=매핑/텍스트, 재고 미차감). tools.ts 무관. 마이그 없음.
+- 에스컬레이션: 없음(정책 전부 확정, UX/신규동작 변경 없음). Deploy Gate에서만 go-ahead.
+
+### Known Gaps (이 step)
+- 재고 차감/movements/포인트 미반영(범위 밖).
+- delivery_type=PICKUP/receipt_status=RECEIVED default(카페24=택배지만 default 수용, 정밀화 후속).
+- 과거 깨진 주문(품목 0종·memo undefined·083 이전 받는분 누락)은 Step 2 백필로 보정.
