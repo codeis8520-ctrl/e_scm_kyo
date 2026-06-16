@@ -428,7 +428,7 @@ export default function ShippingPage() {
       return [
         s.recipient_name, s.recipient_phone, '',
         [s.recipient_address, s.recipient_address_detail].filter(Boolean).join(' '),
-        s.delivery_message || '', '',
+        s.delivery_message || '', s.items_summary || '',
         `KX-${s.id.replace(/-/g, '').slice(0, 8)}`,    // 내품명 ← RTC
         '', '선불',
         sender.name, sender.phone, senderFullAddress,

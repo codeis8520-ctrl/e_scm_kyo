@@ -1,3 +1,35 @@
+# BUILD-LOG
+
+## Sprint B Step 1 — 카페24 옵션조합→내부제품 매핑 데이터층 (빌드 완료 · 리뷰 대기)
+시작: 2026-06-16
+
+### Build Status — npm run build ✓ Compiled successfully in 6.9s (에러/경고 0)
+
+### 변경 파일 (5)
+- **src/lib/cafe24/types.ts**: `normalizeOptionValue(raw)` export 추가(단일 출처). safeDecodeKey/isNoSelectionValue 내부 자급(route.ts 비export 로직 동작 복제). 규칙(LOCKED): null/non-string→'', '&' split, eq없으면 토큰 전체를 value, '선택안함'(공백제거)·빈값 페어 제거, key localeCompare 사전순 정렬, `key=value`(key없으면 value) `&` join.
+- **src/app/api/cafe24/orders/route.ts**:
+  - import에 normalizeOptionValue 추가.
+  - 주문 페치를 2-pass로 분리: 1차 `fetched`(detail/receiver/items만), 그 사이 cafe24_product_map 1회 + products 1회 조회(N+1 없음), 2차 `fetched.map`로 주문 객체 빌드.
+  - 매핑 Map: `mapKey(code, normalizedOptValue)`→product_id, product_id→name. **try/catch + error 무시 → 테이블 미적용 시 빈 Map 폴백(크래시 금지)**.
+  - itemsSummary: 매핑 name 있으면 `${mapped} x${qty}`, 없으면 현행 extractItemOptions 경로.
+  - order_items[]에 product_code/option_value(정규화키)/mapped_name(string|null) 추가. interface(Cafe24OrderForShipping) 동기 확장. DEMO_ORDERS 3건 order_items도 신규 필드 채움(타입 정합).
+- **src/app/(dashboard)/shipping/page.tsx** downloadCjExcel L431: F열(품목명) 두번째 `''` → `s.items_summary || ''` 복원. G열 RTC·header·13컬럼 불변.
+- **src/lib/cafe24-actions.ts**: normalizeOptionValue import. 신규 서버액션 3종 — createCafe24ProductMap(requireSession + role 화이트리스트 [SUPER_ADMIN,HQ_OPERATOR], **저장 직전 normalizeOptionValue 재적용 LOCKED**, upsert onConflict 'cafe24_product_code,option_value'), listCafe24ProductMaps(requireSession, products(name) join), deleteCafe24ProductMap(동 role, 삭제키도 정규화). 셋 다 createClient() as any + try/catch, {success}|{error} 반환.
+- **src/lib/ai/schema.ts**: DB_SCHEMA cafe24_product_map 테이블 추가(컬럼+UNIQUE 주석). BUSINESS_RULES [자사몰] 섹션 1줄 추가.
+
+### 결정 사항
+- 키 단일 출처: route(조회)·actions(저장) 모두 types.ts의 normalizeOptionValue import. byte 동일 보장.
+- session.role 검증: session.ts SessionUser.role(string) 확인, actions.ts adjustInventory 선례 그대로.
+- tools.ts 무변경: 매핑은 UI/송장 표현 전용, 에이전트 호출 불요(브리프 6 명시).
+
+### Known Gaps (Out of Scope — 미수정)
+- 인라인 매핑 UI = Step 2(다음 브리프). 이번엔 데이터층/적용/액션/export만.
+- 기존 저장된 shipment.items_summary 소급 갱신 안 함 — 주문 재조회·재추가해야 매핑 반영.
+- product_code 빈 카페24 품목: 키 ('' + opt)로 동작하나 실질 매핑 불가, fallback 유지.
+- 마이그082는 Arch 소유(미작성). 코드는 082 미적용 상태에서 build+런타임 통과(빈 Map 폴백).
+
+---
+
 # BUILD-LOG — Sprint A: 송장 보내는분=구매자명 + 품목명 제거
 
 ## Sprint A — 1 step (빌드 완료 · 리뷰 대기)
@@ -343,3 +375,12 @@
 
 ### Known Gaps
 - createUser: auth.signUp + SHA256 사용(bcrypt 아님) — 기존 불일치, 이번 step 미수정.
+
+### 마이그레이션 082 작성 완료 (2026-06-16, Arch)
+- **supabase/migrations/082_cafe24_product_map.sql** 작성됨 (위 L29 "미작성" 해소).
+- FK 타깃 검증: products(id) = UUID PRIMARY KEY (schema.sql L70-71) → 정합.
+- 064/079 패턴 준수: RLS ENABLE + FOR ALL TO anon,authenticated USING/CHECK(true) + GRANT SELECT,INSERT,UPDATE,DELETE TO anon,authenticated (LOAD-BEARING, 079 Must Fix 재발 방지).
+- 멱등: CREATE TABLE IF NOT EXISTS + DROP POLICY IF EXISTS 가드.
+- option_value NOT NULL DEFAULT '' — UNIQUE(cafe24_product_code, option_value) 가 조회 인덱스 겸함, 별도 인덱스 없음.
+- actions.ts upsert onConflict 'cafe24_product_code,option_value' 와 UNIQUE 제약 일치 확인.
+- ⚠️ Supabase 적용은 Arch가 배포 게이트에서 직접 실행 (DB 마이그=Arch 소유).

@@ -2,6 +2,7 @@
 
 import { requireSession } from '@/lib/session';
 import { loadTokens, refreshAccessToken } from '@/lib/cafe24/token-store';
+import { normalizeOptionValue } from '@/lib/cafe24/types';
 import { syncCafe24PaidOrdersCore } from '@/lib/cafe24/sync-orders';
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
@@ -143,4 +144,99 @@ export async function registerCafe24Customers(
     message: `고객 ${created}명 등록, 주문 ${linked}건 연결${skipped ? `, ${skipped}건 스킵(정보부족·번호충돌)` : ''}`,
     created, linked, skipped,
   };
+}
+
+// ─── 카페24 품목 → 내부 product 매핑 (이카운트식 짧은 품목명) ───────────────────
+// (cafe24_product_code + 정규화 option_value) → product_id 매핑. 송장/배송 items_summary에
+// 내부 product.name(짧음)을 표시. 미매핑은 원본 옵션정리 fallback.
+// 키 일관성: 저장 직전 normalizeOptionValue 재적용(LOCKED) — orders/route 조회와 byte 동일.
+const PRODUCT_MAP_ROLES = ['SUPER_ADMIN', 'HQ_OPERATOR'];
+
+export async function createCafe24ProductMap(params: {
+  cafe24_product_code: string;
+  option_value: string;
+  product_id: string;
+}) {
+  let session;
+  try {
+    session = await requireSession();
+  } catch (e: any) {
+    return { error: e.message };
+  }
+  if (!PRODUCT_MAP_ROLES.includes(session.role)) {
+    return { error: '품목 매핑은 본사 권한만 가능합니다.' };
+  }
+
+  const code = (params.cafe24_product_code || '').trim();
+  const productId = (params.product_id || '').trim();
+  if (!code || !productId) {
+    return { error: '카페24 품목코드와 내부 제품을 모두 지정하세요.' };
+  }
+  // 저장 직전 정규화 재적용(LOCKED) — 호출자 입력과 무관하게 키 일관성 보장.
+  const optionValue = normalizeOptionValue(params.option_value);
+
+  try {
+    const sb = (await createClient()) as any;
+    const { error } = await sb
+      .from('cafe24_product_map')
+      .upsert(
+        { cafe24_product_code: code, option_value: optionValue, product_id: productId },
+        { onConflict: 'cafe24_product_code,option_value' }
+      );
+    if (error) return { error: error.message };
+    return { success: true };
+  } catch (e: any) {
+    return { error: e?.message ?? '매핑 저장 중 오류가 발생했습니다.' };
+  }
+}
+
+export async function listCafe24ProductMaps() {
+  try {
+    await requireSession();
+  } catch (e: any) {
+    return { error: e.message };
+  }
+  try {
+    const sb = (await createClient()) as any;
+    const { data, error } = await sb
+      .from('cafe24_product_map')
+      .select('id, cafe24_product_code, option_value, product_id, created_at, products(name)')
+      .order('cafe24_product_code', { ascending: true });
+    if (error) return { error: error.message };
+    return { success: true, maps: data ?? [] };
+  } catch (e: any) {
+    return { error: e?.message ?? '매핑 조회 중 오류가 발생했습니다.' };
+  }
+}
+
+export async function deleteCafe24ProductMap(params: {
+  cafe24_product_code: string;
+  option_value: string;
+}) {
+  let session;
+  try {
+    session = await requireSession();
+  } catch (e: any) {
+    return { error: e.message };
+  }
+  if (!PRODUCT_MAP_ROLES.includes(session.role)) {
+    return { error: '품목 매핑은 본사 권한만 가능합니다.' };
+  }
+
+  const code = (params.cafe24_product_code || '').trim();
+  // 삭제 키도 동일 정규화(저장값과 byte 일치).
+  const optionValue = normalizeOptionValue(params.option_value);
+
+  try {
+    const sb = (await createClient()) as any;
+    const { error } = await sb
+      .from('cafe24_product_map')
+      .delete()
+      .eq('cafe24_product_code', code)
+      .eq('option_value', optionValue);
+    if (error) return { error: error.message };
+    return { success: true };
+  } catch (e: any) {
+    return { error: e?.message ?? '매핑 삭제 중 오류가 발생했습니다.' };
+  }
 }

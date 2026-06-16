@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { getValidAccessToken, forceRefreshAccessToken } from '@/lib/cafe24/token-store';
-import { firstPositiveAmount } from '@/lib/cafe24/types';
+import { firstPositiveAmount, normalizeOptionValue } from '@/lib/cafe24/types';
 import { kstTodayString, fmtDateKST } from '@/lib/date';
 
 // Cafe24 주문 품목의 선택사항(option_value / additional_option_value / options[]) 추출.
@@ -60,7 +60,15 @@ interface Cafe24OrderForShipping {
   recipient_address: string;
   delivery_message: string;
   items_summary: string;
-  order_items: { name: string; quantity: number; price: number; option: string }[];
+  order_items: {
+    name: string;
+    quantity: number;
+    price: number;
+    option: string;
+    product_code: string;
+    option_value: string;   // 정규화된 매핑 키
+    mapped_name: string | null;
+  }[];
   total_price: number;
   already_added: boolean;
   cafe24_status: string;
@@ -145,8 +153,8 @@ const DEMO_ORDERS: Omit<Cafe24OrderForShipping, 'already_added' | 'orderer_email
     delivery_message: '부재 시 경비실에 맡겨주세요.',
     items_summary: '경옥고 80g x1, 공진단 10환 x2',
     order_items: [
-      { name: '경옥고 80g', quantity: 1, price: 65000, option: '' },
-      { name: '공진단 10환', quantity: 2, price: 60000, option: '' },
+      { name: '경옥고 80g', quantity: 1, price: 65000, option: '', product_code: '', option_value: '', mapped_name: null },
+      { name: '공진단 10환', quantity: 2, price: 60000, option: '', product_code: '', option_value: '', mapped_name: null },
     ],
     total_price: 185000,
     cafe24_status: 'F',
@@ -162,7 +170,7 @@ const DEMO_ORDERS: Omit<Cafe24OrderForShipping, 'already_added' | 'orderer_email
     delivery_message: '',
     items_summary: '경옥고 160g x1',
     order_items: [
-      { name: '경옥고 160g', quantity: 1, price: 98000, option: '' },
+      { name: '경옥고 160g', quantity: 1, price: 98000, option: '', product_code: '', option_value: '', mapped_name: null },
     ],
     total_price: 98000,
     cafe24_status: 'A',
@@ -178,8 +186,8 @@ const DEMO_ORDERS: Omit<Cafe24OrderForShipping, 'already_added' | 'orderer_email
     delivery_message: '문 앞에 놓아주세요.',
     items_summary: '공진단 5환 x1, 경옥고 80g x2',
     order_items: [
-      { name: '공진단 5환', quantity: 1, price: 12000, option: '' },
-      { name: '경옥고 80g', quantity: 2, price: 65000, option: '' },
+      { name: '공진단 5환', quantity: 1, price: 12000, option: '', product_code: '', option_value: '', mapped_name: null },
+      { name: '경옥고 80g', quantity: 2, price: 65000, option: '', product_code: '', option_value: '', mapped_name: null },
     ],
     total_price: 142000,
     cafe24_status: 'B',
@@ -279,8 +287,8 @@ export async function GET(request: NextRequest) {
     const listJson = await listRes.json();
     const rawOrders: any[] = listJson.orders ?? [];
 
-    // 2. 주문별 상세(items) + receivers 병렬 조회
-    const orders: Cafe24OrderForShipping[] = await Promise.all(
+    // 2. 주문별 상세(items) + receivers 병렬 조회 (1차: 페치만)
+    const fetched = await Promise.all(
       rawOrders.map(async (o: any) => {
         const orderId = String(o.order_id ?? '');
 
@@ -297,10 +305,68 @@ export async function GET(request: NextRequest) {
         const buyer = detailOrder?.buyer ?? {};
         const items: any[] = detailOrder?.items ?? [];
 
+        return { o, orderId, detailOrder, receiver, buyer, items };
+      })
+    );
+
+    // 3. 카페24 품목 → 내부 product 매핑 일괄 조회 (N+1 금지, 테이블 미적용 시 빈 Map 폴백).
+    //    매핑 키 = (product_code, normalizeOptionValue(option_value)). 정규화는 단일 출처(types.ts).
+    const mapKey = (code: string, optValue: string) => `${code}
+${optValue}`;
+    const productMap = new Map<string, string>();   // mapKey → product_id
+    const productNameById = new Map<string, string>(); // product_id → name
+    try {
+      const wanted = new Set<string>();
+      for (const f of fetched) {
+        for (const i of f.items) {
+          const code = String(i?.product_code ?? '');
+          const optValue = normalizeOptionValue(i?.option_value);
+          wanted.add(mapKey(code, optValue));
+        }
+      }
+      if (wanted.size > 0) {
+        const db = supabase as any;
+        const { data: maps, error: mapErr } = await db
+          .from('cafe24_product_map')
+          .select('cafe24_product_code, option_value, product_id');
+        if (!mapErr && Array.isArray(maps)) {
+          for (const m of maps as any[]) {
+            productMap.set(mapKey(String(m.cafe24_product_code ?? ''), String(m.option_value ?? '')), m.product_id);
+          }
+          const neededIds = [...new Set(
+            [...wanted].map(k => productMap.get(k)).filter((v): v is string => !!v)
+          )];
+          if (neededIds.length > 0) {
+            const { data: prods, error: prodErr } = await db
+              .from('products')
+              .select('id, name')
+              .in('id', neededIds);
+            if (!prodErr && Array.isArray(prods)) {
+              for (const p of prods as any[]) productNameById.set(p.id, p.name);
+            }
+          }
+        }
+      }
+    } catch {
+      // 테이블 미적용/조회 실패 → 빈 Map 폴백(크래시 금지). 미매핑 품목은 현행 fallback 표시.
+    }
+
+    // item별 매핑 해소: 매핑된 내부 product.name 또는 null.
+    const resolveMappedName = (i: any): string | null => {
+      const code = String(i?.product_code ?? '');
+      const optValue = normalizeOptionValue(i?.option_value);
+      const pid = productMap.get(mapKey(code, optValue));
+      return pid ? (productNameById.get(pid) ?? null) : null;
+    };
+
+    // 4. 주문 객체 빌드 (매핑 적용)
+    const orders: Cafe24OrderForShipping[] = fetched.map(({ o, orderId, detailOrder, receiver, buyer, items }) => {
         const itemsSummary = items.length > 0
           ? items.map((i: any) => {
               const name = i.product_name ?? '';
               const qty = i.quantity ?? 1;
+              const mapped = resolveMappedName(i);
+              if (mapped) return `${mapped} x${qty}`;
               const opt = extractItemOptions(i);
               return opt ? `${name} [${opt}] x${qty}` : `${name} x${qty}`;
             }).join(', ')
@@ -343,6 +409,9 @@ export async function GET(request: NextRequest) {
             quantity: i.quantity ?? 1,
             price: Number(i.product_price ?? i.payment_amount ?? 0) || 0,
             option: extractItemOptions(i),
+            product_code: String(i?.product_code ?? ''),
+            option_value: normalizeOptionValue(i?.option_value), // 정규화 매핑 키
+            mapped_name: resolveMappedName(i),
           })),
           total_price: firstPositiveAmount(
             o.payment_amount, detailOrder?.payment_amount,
@@ -353,8 +422,7 @@ export async function GET(request: NextRequest) {
           cafe24_status: rawStatus,
           customer_match: null as { id: string; name: string } | null,
         };
-      })
-    );
+      });
 
     // 우리 고객DB 매칭 (이름 AND 전화). customers.phone 은 대시포맷 저장.
     const digitsOf = (s: string) => (s || '').replace(/\D/g, '');

@@ -128,3 +128,38 @@ export function firstPositiveAmount(...vals: unknown[]): number {
   }
   return 0;
 }
+
+// ─── 카페24 옵션조합 정규화 (매핑 키 단일 출처) ───────────────────────────────
+// 카페24 item의 원본 option_value 문자열(예 "보자기포장=선택안함&쇼핑백=선택안함")을
+// cafe24_product_map의 매칭 키로 변환한다. route.ts(조회)와 cafe24-actions.ts(저장)가
+// 동일 모듈을 import해 써야 키가 byte 단위로 일치한다 — 불일치 시 매핑 영구 실패.
+// 규칙(LOCKED): safeDecode → '&' split → '선택안함'/빈값 페어 제거 → key 사전순 정렬 → key=value join.
+// 모든 옵션이 무선택이면 ''.
+function safeDecodeKey(s: string): string {
+  try { return decodeURIComponent(s); } catch { return s; }
+}
+function isNoSelectionValue(v: string): boolean {
+  return v.replace(/\s+/g, '') === '선택안함';
+}
+export function normalizeOptionValue(raw: any): string {
+  if (raw === null || raw === undefined) return '';
+  if (typeof raw !== 'string') return '';
+  const pairs: { key: string; value: string }[] = [];
+  for (const token of raw.split('&')) {
+    const eq = token.indexOf('=');
+    let key: string;
+    let value: string;
+    if (eq < 0) {
+      // eq 없으면 토큰 전체를 value로 취급(key 없음)
+      key = '';
+      value = safeDecodeKey(token).trim();
+    } else {
+      key = safeDecodeKey(token.slice(0, eq)).trim();
+      value = safeDecodeKey(token.slice(eq + 1)).trim();
+    }
+    if (!value || isNoSelectionValue(value)) continue; // 무선택/빈값 페어 제거(키도 버림)
+    pairs.push({ key, value });
+  }
+  pairs.sort((a, b) => a.key.localeCompare(b.key));
+  return pairs.map(p => (p.key ? `${p.key}=${p.value}` : p.value)).join('&');
+}
