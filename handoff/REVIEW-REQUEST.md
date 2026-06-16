@@ -1,21 +1,21 @@
-# Review Request — Step 1 (카페24 매출 부분결제분 forward)
+# Review Request — Step 2 (자사몰 total_amount 백필 라우트)
 Date: 2026-06-16
 Ready for Review: YES
 
-Build: `npm run build` ✓ (Compiled successfully 7.0s, 에러/경고 0)
-
 ## Files Changed
-- src/lib/cafe24/types.ts:132-145 — 신규 `cafe24OrderTotal(order)`: payment_amount + naver_point + actual_order_amount.points_spent_amount + actual_order_amount.credits_spent_amount, num(v)=유한 Number else 0. 합 0이면 firstPositiveAmount(payment_amount, order_price_amount, total_order_price, actual_payment_amount) 폴백. firstPositiveAmount(L124) 유지.
-- src/lib/cafe24/webhook.ts:3 — import에 cafe24OrderTotal 추가.
-- src/lib/cafe24/webhook.ts:399 — `total_amount: cafe24OrderTotal(cafe24Order)` (기존 firstPositiveAmount 4-arg 인라인 교체). discount_amount·payment_method 무변경.
-- src/app/api/cafe24/orders/route.ts:4 — import을 firstPositiveAmount → cafe24OrderTotal로 교체.
-- src/app/api/cafe24/orders/route.ts:375 — `total_price: cafe24OrderTotal(detailOrder ?? o)` (중첩 actual_order_amount는 detail 응답에만 존재 → detailOrder 우선).
-- src/lib/ai/schema.ts:281 — BUSINESS_RULES 카페24 매출 라인 1줄 교체(모든 결제수단 합 공식 + 쿠폰 제외 + 폴백). 마이그/tools.ts 무변경.
+- src/app/api/cafe24/backfill-amount/route.ts:1-144 — 신규 GET 백필 라우트 전체.
+  - L31-45 — 가드(CRON_SECRET 미설정 500 / Bearer 불일치 401) + offset/limit 파싱(limit Math.min 50, offset max 0).
+  - L48-67 — getValidAccessToken null 401 + Cafe24Client setTokens (/backfill 복제).
+  - L72-85 — 대상 SELECT: channel='ONLINE' AND cafe24_order_id NOT NULL AND status NOT IN (취소/환불), ordered_at desc + .range(offset, offset+limit-1). 깨짐필터 미사용(전체).
+  - L94-130 — 건별 루프: getOrder → cafe24OrderTotal 재계산 → 다르면 total_amount만 update(updated), 같으면 unchanged, getOrder실패/update에러 → failed+continue.
+  - L132-143 — 반환 JSON: scanned/updated/unchanged/failed + failedOrderNos? + nextOffset?(scanned===limit) + done(scanned<limit).
 
 ## Open Questions
-- route.ts L375: `detailOrder ?? o` 가 브리프 §3 의도와 일치 — list(o)에는 actual_order_amount 중첩이 없고 detail에만 있으므로 detail 우선. 확인 요청.
+- 없음. 브리프 사양 그대로 구현.
 
 ## Out of Scope (logged in BUILD-LOG)
-- 기존 행 금액 백필 (Step 2).
-- 회계 createSaleJournal 재게시 (분개 무조정).
-- discount_amount / payment_method 변경 없음.
+- 회계분개 무조정 (createSaleJournal 재게시 안 함) — Known Gap.
+- schema.ts / tools.ts / 마이그레이션 무변경 (읽기 + 기존 total_amount 컬럼 update만).
+
+## Build
+- npm run build ✓ — 에러/경고 0. /api/cafe24/backfill-amount ƒ(dynamic) 컴파일 확인.

@@ -1,5 +1,20 @@
 # BUILD-LOG
 
+## Step 2 (백필 라우트) 구현 완료 — 2026-06-16
+완료: 2026-06-16 · Build Status: npm run build ✓ (에러/경고 0, /api/cafe24/backfill-amount ƒ 컴파일 확인)
+
+### 변경 파일 (1) — 신규, DB/마이그/schema.ts/tools.ts 무변경
+- **src/app/api/cafe24/backfill-amount/route.ts** (신규, L1~144) — GET 백필 라우트.
+  - 가드(/backfill 복제): CRON_SECRET 미설정→500, `Authorization !== Bearer ${CRON_SECRET}`→401, getValidAccessToken null→401, Cafe24Client setTokens 동일.
+  - 쿼리: `?offset`(기본 0, max(_,0)) + `?limit`(기본 20, `Math.min(_,50)`).
+  - SELECT: channel='ONLINE' AND cafe24_order_id NOT NULL AND status NOT IN (CANCELLED,REFUNDED,PARTIALLY_REFUNDED) — **전체**(깨짐필터 미사용). `id, cafe24_order_id, total_amount`. ordered_at desc + `.range(offset, offset+limit-1)`.
+  - 루프: getOrder → cafe24OrderTotal(data) 재계산 → newTotal!==current면 total_amount만 update(updated++), 같으면 unchanged++. getOrder 실패/update 에러 → failed++ + failedOrderNos(상한 20) + continue(중단 금지).
+  - 반환: `{ scanned, updated, unchanged, failed, failedOrderNos?, nextOffset?, done }`. nextOffset=offset+limit (scanned===limit일 때만), done=scanned<limit.
+
+### Known Gaps (Out of Scope, 이번 단계)
+- **회계 무조정**: total_amount 변경돼도 createSaleJournal 재게시/조정 안 함. journal_entries 불일치 별도 처리.
+- schema.ts/tools.ts/마이그레이션 무변경 — DB 컬럼·enum·로직 변화 없음(읽기 + 기존 total_amount 컬럼 update만).
+
 ## Step 1 (forward) 구현 완료 — 2026-06-16
 완료: 2026-06-16 · Build Status: npm run build ✓ (Compiled successfully 7.0s, 에러/경고 0)
 

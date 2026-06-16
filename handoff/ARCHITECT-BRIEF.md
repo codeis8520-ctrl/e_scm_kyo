@@ -1,40 +1,34 @@
-# Architect Brief — 카페24 매출 부분결제분 누락 (Step 1: forward)
+# Architect Brief — #15 Step 2 (자사몰 과거주문 total_amount 백필)
 
 ## Goal
-신규 카페24 주문의 total_amount(매출)가 카드 실결제만이 아니라 **모든 결제수단 합**(카드 + 네이버포인트 + 적립금 + 예치금)으로 집계된다. (예: 50,000+12,000=62,000.)
-
-## 잠근 결정 (LOCKED)
-- **공식**: `cafe24OrderTotal(order) = num(order.payment_amount) + num(order.naver_point) + num(order.actual_order_amount?.points_spent_amount) + num(order.actual_order_amount?.credits_spent_amount)`. `num(v)` = `Number.isFinite(Number(v)) ? Number(v) : 0`.
-- **합이 0이면** 기존 `firstPositiveAmount(...)` 폴백 사용(전액 정보없음 방어). firstPositiveAmount는 **삭제하지 말고 폴백 용도로 유지**.
-- 쿠폰은 tender 아님(discount) → 제외. discount_amount는 현행(total_discount_price) 유지. payment_method도 현행('card' 등) 유지 — **total만 보정**.
-- 회계 createSaleJournal 조정은 **범위 밖(Known Gap)** — DB total_amount 갱신만, 분개 재게시 없음.
+이미 동기화된 과거 카페24 주문(channel='ONLINE')의 total_amount를 cafe24 재조회 → cafe24OrderTotal 재계산 → 다르면 인플레이스 update. 네이버페이 포인트 등 누락 tender 보정.
 
 ## Build Order
-1. **src/lib/cafe24/types.ts** — `firstPositiveAmount` 바로 아래에 신규 export:
-   ```
-   export function cafe24OrderTotal(order: unknown): number {
-     const o = order as any;
-     const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
-     const sum = num(o?.payment_amount) + num(o?.naver_point)
-       + num(o?.actual_order_amount?.points_spent_amount)
-       + num(o?.actual_order_amount?.credits_spent_amount);
-     return sum > 0 ? sum : firstPositiveAmount(
-       o?.payment_amount, o?.order_price_amount, o?.total_order_price, o?.actual_payment_amount,
-     );
-   }
-   ```
-   - 주석: 매출=모든 결제수단 합(포인트 포함). 쿠폰 제외. 합 0이면 폴백.
-2. **src/lib/cafe24/webhook.ts** L399 — `total_amount: firstPositiveAmount(...)` → `total_amount: cafe24OrderTotal(cafe24Order)`. import에 `cafe24OrderTotal` 추가(L3 `firstPositiveAmount` 옆).
-3. **src/app/api/cafe24/orders/route.ts** L375 — `total_price: firstPositiveAmount(...)` → `total_price: cafe24OrderTotal(detailOrder ?? o)`. (detailOrder가 actual_order_amount 중첩을 가진 풀 응답. 없으면 o 폴백.) import에 `cafe24OrderTotal` 추가(L4).
-   - Flag: route는 list+detail 2소스다. detailOrder 우선이 맞는지(중첩 actual_order_amount는 detail에만 있음) — 그대로 detailOrder ?? o.
-4. **src/lib/ai/schema.ts** BUSINESS_RULES 카페24 섹션 — 한 줄: "카페24 매출 total_amount = 모든 결제수단 합(payment_amount + naver_point + points_spent_amount + credits_spent_amount). 포인트/적립금도 결제수단으로 매출 포함. 쿠폰은 할인(제외)." 마이그 없음.
+- 신규 라우트 생성: `src/app/api/cafe24/backfill-amount/route.ts` (GET). 기존 `src/app/api/cafe24/backfill/route.ts`를 **복제 베이스**로 사용 — 가드/토큰/클라이언트 셋업 패턴 그대로.
+- 재사용: `cafe24OrderTotal` from `@/lib/cafe24/types` (모든 tender 합), `Cafe24Client.getOrder`, `getValidAccessToken` from `@/lib/cafe24/token-store`.
+- **가드(복제)**: CRON_SECRET 미설정→500, `Authorization !== Bearer ${CRON_SECRET}`→401. 토큰 null→401. Cafe24Client setTokens 동일.
+- **쿼리파라미터**: `?offset`(기본 0), `?limit`(기본 20, **최대 50**). `Math.min(parsed, 50)`.
+- **대상 SELECT**: `sales_orders` where `channel='ONLINE'` AND `cafe24_order_id NOT NULL` AND `status NOT IN (CANCELLED,REFUNDED,PARTIALLY_REFUNDED)`. select `id, cafe24_order_id, total_amount`. `.order('ordered_at', { ascending: false })` 안정 정렬. `.range(offset, offset+limit-1)` (offset 페이지네이션).
+  - Flag: 기존 /backfill의 `.or(recipient_name.is.null,...)` 깨짐필터는 **쓰지 마라** — 금액 틀린 건은 recipient/memo 정상일 수 있다. 전체 대상.
+- **건별 처리 루프**: scanned++ → `client.getOrder(cafe24_order_id)`. 실패(success=false/data 없음, 삭제주문) → failed++, failedOrderNos push(상한 20), `continue`(중단 금지). 성공 → `const newTotal = cafe24OrderTotal(order)`.
+  - `newTotal !== current total_amount` → `update({ total_amount: newTotal }).eq('id', row.id)`. **total_amount만** update. update 에러 시 failed++.
+  - 같으면 unchanged++ (멱등 skip).
+- 전체 try/catch로 건별 실패 격리 (기존 라우트 catch 패턴 동일).
+- **반환 JSON**: `{ scanned, updated, unchanged, failed, failedOrderNos?, nextOffset?, done }`.
+  - `nextOffset` = `scanned === limit ? offset + limit : undefined` (스캔이 limit 꽉 찼으면 다음 페이지 존재).
+  - `done` = `scanned < limit` (마지막 페이지).
+- 라우트 상단 주석: 목적·호출법(`GET /api/cafe24/backfill-amount?offset=0&limit=20`, Bearer CRON_SECRET)·멱등·회계 무조정(Known Gap) 명시.
 
-## Out of Scope (→ BUILD-LOG Known Gaps if surfaces)
-- 기존 행 금액 백필 (Step 2).
-- 회계 createSaleJournal 재게시.
-- discount_amount / payment_method 변경.
+## Out of Scope (Known Gap → BUILD-LOG)
+- **회계분개 무조정**: total_amount 바뀌어도 createSaleJournal 재게시/조정 안 함. journal_entries 불일치는 별도 처리.
+- schema.ts / tools.ts / 마이그레이션 **무변경** — DB 컬럼·enum·로직 변화 없음(읽기+기존 컬럼 update만). 확인하고 손대지 마라.
 
 ## Acceptance
 - `npm run build` 통과.
-- cafe24OrderTotal 단일 출처, 3 적용지점 모두 헬퍼 경유. firstPositiveAmount는 헬퍼 내부 폴백으로만 잔존(직접 호출 0).
-- 부분포인트 주문(payment_amount 50000 + naver_point 12000) → 62000. 전액포인트 주문(payment_amount 0) → firstPositiveAmount 폴백으로 0 회피(기존 동작 무회귀).
+- 라우트가 offset/limit으로 페이지네이션, getOrder 재조회, cafe24OrderTotal 재계산, 다를 때만 total_amount update, 같으면 unchanged.
+- 건별 실패가 배치를 멈추지 않음. 토큰 null·인증 실패 가드 동작.
+- 취소/환불 제외. total_amount 외 컬럼(discount/payment_method/recipient/items/customer/status) 무손상.
+
+## 운영 메모 (배포·실행)
+- Vercel 자동배포 매우 지연 — 배포 Ready 확인 후 실행.
+- 운영 호출 시 CRON_SECRET·prod URL 필요(오케스트레이터 보유). offset을 올려가며 또는 nextOffset 루프로 전량 처리.
