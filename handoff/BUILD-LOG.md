@@ -1,5 +1,46 @@
 # BUILD-LOG
 
+## ESC 닫기 훅 + 핵심 모달 9곳 (Step 1) (Must Fix 2건 반영 · 재제출 — 2026-06-16)
+시작: 2026-06-16
+
+### 재제출 — REVIEW-FEEDBACK Must Fix 2건 (2026-06-16)
+- **재출력 중첩 ESC 동시발화** (SalesListTab.tsx): SalesDetailDrawer에 `reprintOpen` prop 추가(부모 `reprintOpen={!!reprintReceipt}` L1306, 시그니처/타입 L1470·1473). 드로어 훅 → `useEscClose(onClose, { enabled: !reprintOpen, isDirty: () => editingDetails })` L1505. ReceiptModal 떠 있는 동안 드로어 ESC OFF → ESC 1회 = 영수증만 닫힘. (reprint 상태는 부모 소유 → prop drill 선택.)
+- **InventoryModal prefill 오탐** (InventoryModal.tsx:54-59): isDirty 재정의 → `(!inventory && !!selectedProduct) || formData.quantity !== 1 || formData.safety_stock !== (inventory?.safety_stock ?? 0) || formData.memo.trim() !== ''`. edit prefill(unchanged)=not dirty. 새 state 추가 없음(quantity 기본 1·safety_stock prefill값 기준 비교).
+- Bob 플래그 1(인라인편집 이중발화): 리뷰어 확인대로 변경 없음(편집 input 자체 onKeyDown Escape 부재 — document 훅만 발화).
+- 재빌드 npm run build ✓ (에러/경고 0).
+
+### Build Status — npm run build ✓ 전 라우트 컴파일·생성 완료 (에러/경고 0)
+
+### 변경 파일 (8) — DB/마이그/schema.ts/tools.ts 무변경, 신규 npm 패키지 없음
+
+**신규 src/hooks/useEscClose.ts** — document keydown 'Escape' 훅
+- `useEscClose(onClose, opts?: { enabled?; isDirty?; confirmMessage? })`. useEffect 내부 handler 정의 → addEventListener('keydown') / cleanup remove.
+- 가드 순서: e.key!=='Escape' return → enabled===false return → IME(e.isComposing||e.keyCode===229) return → isDirty?.() true면 window.confirm(opts 또는 기본 한국어 문구) false 시 return → onClose().
+- deps=[onClose, enabled, isDirty, confirmMessage]. 리스너 재등록 저렴 → useCallback 강제 안 함. capture/stopPropagation·중첩 stack 없음(이 앱 모달 미중첩, 브리프 LOCKED).
+
+**부착 7파일** (기존 X버튼·배경클릭 onClose 무변경, ADD only):
+- pos/ReceiptModal.tsx — `useEscClose(onClose)` (표시 전용)
+- inventory/MovementHistoryModal.tsx — `useEscClose(onClose)` (표시 전용)
+- pos/SalesListTab.tsx — CustomerLookupModal `useEscClose(onClose)` (검색 전용) / SalesDetailDrawer `isDirty: () => editingDetails`
+- pos/RefundModal.tsx — `isDirty: () => !!order || orderNumber.trim() !== '' || Object.keys(selectedItems).length > 0`
+- inventory/InventoryModal.tsx — `isDirty: () => !!selectedProduct || formData.memo.trim() !== ''`
+- inventory/StockUsageModal.tsx — `isDirty: () => rows.length > 0 || usageTypeId !== '' || memo.trim() !== ''`
+- inventory/TransferModal.tsx — `isDirty: () => formData.to_branch_id !== '' || formData.memo.trim() !== ''`
+- inventory/PackUnpackModal.tsx — `isDirty: () => parentQty !== 1 || memo.trim() !== ''`
+
+### 결정 사항
+- dirty 판정은 전부 기존 state 재사용("건드렸나" 수준, 정확 diff 안 함). 새 state 0개 추가.
+- 수량 기본값 1인 폼(Transfer/PackUnpack/Inventory)은 quantity를 dirty 신호에서 제외하거나 !==1로 판정 — 기본값 ESC 시 confirm 남발 방지.
+- SalesDetailDrawer 편집모드 ESC = 편집취소 아닌 드로어 닫기 confirm(브리프 단순화). 추가품목폼(showAddForm)은 우선 isDirty에서 제외, editingDetails만.
+
+### Known Gaps (Out of Scope — 미수정)
+- shipping/page.tsx 인라인 모달 2개(1586,1734), system-codes/page.tsx 인라인 모달 9개 — page 내부 인라인, Step 2에서 일괄 부착.
+- inventory/count/page.tsx, TransferBatchPanel(패널, 모달 아님) — 제외.
+- 공통 Modal 컴포넌트 리팩터(오버레이 통일) — 범위 밖, 훅만 신설.
+- SalesDetailDrawer 인라인 편집 input ESC 이중발화 가능성 — REVIEW-REQUEST Open Question으로 플래그(브리프 Acceptance 지시).
+
+---
+
 ## 판매현황 탭·필터 영속화 (req #12) (빌드 완료 · 리뷰 대기)
 시작: 2026-06-16
 

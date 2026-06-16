@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { packUnpackInventory } from '@/lib/inventory-actions';
 import { createClient } from '@/lib/supabase/client';
+import { useEscClose } from '@/hooks/useEscClose';
 
 interface Branch {
   id: string;
@@ -39,6 +40,10 @@ export default function PackUnpackModal({ parentProduct, branches, initialBranch
   const [childStock, setChildStock] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  useEscClose(onClose, {
+    isDirty: () => parentQty !== 1 || memo.trim() !== '',
+  });
 
   // 자식 SKU 정보 로드
   useEffect(() => {

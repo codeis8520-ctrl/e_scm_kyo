@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from 'react';
 import { recordStockUsage } from '@/lib/actions';
+import { useEscClose } from '@/hooks/useEscClose';
 
 interface Inventory {
   id: string;
@@ -49,6 +50,10 @@ export default function StockUsageModal({
   const [rows, setRows] = useState<UsageRow[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useEscClose(onClose, {
+    isDirty: () => rows.length > 0 || usageTypeId !== '' || memo.trim() !== '',
+  });
 
   // 선택 지점 + product_id 매칭 현재고
   const stockOf = (productId: string): number | null => {

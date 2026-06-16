@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { getInventoryMovements } from '@/lib/inventory-actions';
 import { fmtDateTimeKST, fmtDateKST, kstTodayString } from '@/lib/date';
+import { useEscClose } from '@/hooks/useEscClose';
 
 type Movement = {
   id: string;
@@ -64,6 +65,7 @@ function defaultDateRange(): { from: string; to: string } {
 }
 
 export default function MovementHistoryModal({ product, branches, initialBranchId, onClose }: Props) {
+  useEscClose(onClose);
   const [branchId, setBranchId] = useState<string>(initialBranchId || '');
   const [movementType, setMovementType] = useState<string>('');
   // YYYY-MM-DD — 기본값 오늘 기준 1개월

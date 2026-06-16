@@ -1,59 +1,54 @@
-# Architect Brief — 판매현황 탭·필터 영속화 (req #12)
+# Architect Brief — Step 1: ESC 닫기 훅 + 핵심 모달
 
 ## Goal
-판매관리 화면을 새로고침해도 판매등록(checkout)으로 튕기지 않고, 직전에 보던 판매현황(list) 탭과 조회 조건(기간/검색/필터/뷰)이 그대로 복원된다.
-
-## 설계 — 영속화 = localStorage (LOCKED)
-- URL 아님. 필터 다수 + 목적이 "새로고침 생존". localStorage 채택.
-- 키 네임스페이스:
-  - `pos.mainTab` — 문자열 'checkout'|'list'
-  - `salesList.filters` — JSON 객체 (아래 필터 묶음)
-- 복원 패턴 = **useState lazy init**(초기화 함수 안에서 `typeof window !== 'undefined'` 가드 후 localStorage 읽기) + **변경 시 useEffect로 직렬화 저장**. 마운트 후 effect 저장이라 hydration mismatch 없음('use client' 컴포넌트, 초기 렌더 = 저장값 동일).
+모든 핵심 팝업/상세창을 ESC로 닫을 수 있게 한다. 입력 중(dirty) 폼은 ESC 시 confirm 후에만 닫힌다. 기존 X버튼·배경클릭 닫기는 그대로 유지.
 
 ## Build Order
+1. **신규 훅** `src/hooks/useEscClose.ts` ('use client' 불필요 — 훅 파일은 directive 없이, 호출하는 컴포넌트가 client)
+   시그니처:
+   ```ts
+   export function useEscClose(
+     onClose: () => void,
+     opts?: { enabled?: boolean; isDirty?: () => boolean; confirmMessage?: string }
+   ): void
+   ```
+   동작:
+   - `useEffect`로 `document.addEventListener('keydown', handler)`, cleanup에서 remove.
+   - handler: `e.key !== 'Escape'` → return. `enabled === false` → return.
+   - **IME 가드**: `e.isComposing || e.keyCode === 229` → return (한글 입력 조합 중 ESC 무시).
+   - `isDirty?.()` 가 true면 `if (!window.confirm(confirmMessage ?? '작성 중인 내용이 있습니다. 닫으시겠습니까?')) return;` 후 onClose(). 아니면 즉시 onClose().
+   - deps: `[onClose, opts?.enabled, opts?.isDirty, opts?.confirmMessage]` — 단, onClose/isDirty가 매 렌더 새 함수일 수 있으니 **handler를 useEffect 내부에서 정의하고 deps에 onClose, enabled, isDirty, confirmMessage 직접 넣기**(useCallback 강제 안 함, 리스너 재등록은 저렴).
+   - **중첩 처리 결정(LOCKED)**: capture/stopPropagation 안 씀. 각 모달이 자기 document 리스너를 건다. 이 ERP는 모달 중첩이 사실상 없음(둘러보다 확인됨 — 모달 안에서 또 다른 fixed inset-0 모달 동시 오픈 케이스 없음). 따라서 "top-most만 닫기" 로직 불필요. 만약 향후 중첩 생기면 그때 stack 도입. 지금은 단순 유지.
 
-### A. pos/page.tsx — mainTab 영속화
-- L20 `type MainTab = 'checkout' | 'list'`. L319 `useState<MainTab>('checkout')`.
-- L319 초기값을 lazy init으로: `useState<MainTab>(() => readMainTab())` — localStorage `pos.mainTab` 읽어 'list'면 'list', 그 외/없음/window 없음 → 'checkout'.
-- `setMainTab`을 감싸지 말고, **`mainTab` 변경 useEffect 추가**: `useEffect(() => { try { localStorage.setItem('pos.mainTab', mainTab) } catch {} }, [mainTab])`. (L618/705/1454의 `setMainTab('checkout')` 호출은 effect가 자동 반영 — 별도 수정 불필요.)
-- 작은 헬퍼 `readMainTab()`는 컴포넌트 밖 모듈 스코프 함수로.
+2. **핵심 모달에 훅 부착** (각 파일 컴포넌트 본문 상단에서 호출, onClose 재사용):
 
-### B. SalesListTab.tsx — 필터 묶음 영속화
-영속화 대상(LOCKED, 한 객체 `salesList.filters`로):
-- period, startDate, endDate
-- search
-- branchFilter  ← **isBranchUser 가드 필수(아래 Flag)**
-- paymentFilter, statusFilter
-- subView, listSort
-- receiptStatusFilter, approvalStatusFilter
-- 고급검색: showAdvanced, consultSearch, productSearch, orderOptionSearch, recipientSearch, addressSearch, handlerFilter, shipFromFilter
-- includeCancelled
+   | 파일 | dirty 전략 |
+   |------|-----------|
+   | `pos/SalesListTab.tsx` `SalesDetailDrawer` | isDirty = `() => editingDetails` (편집모드 진입 시 dirty). **편집모드일 때 ESC는 편집취소가 아니라 드로어 닫기 confirm** — 단순화. 추가-품목 입력폼도 editingDetails와 무관하게 열려있을 수 있으면 OR 조건 추가 가능하나, 우선 editingDetails만. |
+   | `pos/SalesListTab.tsx` `CustomerLookupModal` | 표시/검색 전용 → isDirty 없음, 즉시 닫기 |
+   | `pos/ReceiptModal.tsx` | 표시 전용(영수증) → 즉시 닫기 |
+   | `pos/RefundModal.tsx` | 폼 → isDirty = 환불 대상/사유 등 입력값이 초기값과 다른지. 간단히 **모달별 dirty 플래그**: 사용자가 주문 조회/품목 선택/사유 입력 중 하나라도 했으면 dirty. 최소구현 = 조회된 주문이 있거나(orderNumber 입력) 선택 품목이 있으면 dirty. Bob 판단으로 가장 가벼운 플래그 1개. |
+   | `inventory/InventoryModal.tsx` | 폼(조정) → isDirty = 선택 품목 있음 or 수량/사유 입력됨 |
+   | `inventory/StockUsageModal.tsx` | 폼(다건 소모) → isDirty = 담긴 품목行 있음 or 사용유형/사유 입력됨 |
+   | `inventory/TransferModal.tsx` | 폼(단건 이동) → isDirty = 수량/도착지 입력됨 |
+   | `inventory/PackUnpackModal.tsx` | 폼(분해/조립) → isDirty = 수량 입력됨 |
+   | `inventory/MovementHistoryModal.tsx` | 표시 전용(이력) → 즉시 닫기 |
 
-**제외(영속화 금지)**: compareBranchIds (L328-330 branches 로드 effect가 강제 덮어씀 — 무의미), compareGrain/compareInit/compareRows 등 비교뷰 파생/로딩 상태, selectedOrderId·모달류, orders/branches/staff/loading.
+   - dirty 플래그는 **이미 있는 state로 판정**(새 state 최소화). 각 모달의 기존 입력 state를 OR로 묶어 `isDirty` 콜백 인라인 작성. 빈 초기값과만 비교(정확한 diff 불필요 — "건드렸나" 수준).
+   - **표시 전용 3종(Receipt/CustomerLookup/MovementHistory)**: `useEscClose(onClose)` 만.
 
-구현:
-- 모듈 스코프 `readSalesFilters(): Partial<Persisted>` — window 가드 + JSON.parse try/catch, 실패 시 `{}`.
-- 각 해당 useState(L133~156, 164, 166) 초기값을 lazy init으로 변경: 저장값 있으면 사용, 없으면 **기존 기본값 그대로** 폴백.
-  - branchFilter(L138) 기본값 식 `isBranchUser && userBranchId ? userBranchId : ''` 은 유지하되, **branch 사용자면 저장값 무시하고 무조건 잠금값** 사용(Flag 참조).
-- `debouncedSearch`(L142) 초기값도 저장된 search로 seed(`() => readSalesFilters().search ?? ''`) — 복원 직후 첫 loadOrders가 곧장 검색 반영(안 하면 400ms 후 재조회로도 맞지만 깜빡임). seed 권장.
-- 저장 effect 1개 추가: 위 대상 state들을 deps로 묶어 객체 만들어 `localStorage.setItem('salesList.filters', JSON.stringify(...))` (try/catch). 기존 effect들 건드리지 말 것.
-
-## Flags — Bob 추측 금지
-- **branchFilter / isBranchUser**: BRANCH_STAFF·PHARMACY_STAFF는 자기 지점 고정(L138 로직). 저장값에 다른 지점이 들어있어도 **절대 적용 금지**. 복원은 `isBranchUser ? (userBranchId ?? '') : (saved.branchFilter ?? '')` 식으로 분기. 지점 잠금 침해 = 보안 결함.
-- **loadOrders 자동 트리거**: L325 `useEffect(() => loadOrders(), [loadOrders])`. loadOrders는 useCallback이고 복원된 필터가 deps에 포함 → **추가 트리거 코드 작성 금지**. 복원값이 첫 조회에 자동 반영됨.
-- **검색어 vs 날짜필터**: loadOrders L198-203 — 검색어(any) 있으면 날짜무시·전기간 2000행. 복원으로 search가 차 있으면 이 경로를 탄다(의도된 기존 동작). 변경 금지.
-- **period 복원**: period는 useEffect로 날짜를 되돌리는 로직 없음(applyPeriod 함수에서만 setStartDate). 따라서 period='custom'+커스텀 날짜를 같이 저장/복원해도 충돌 없음. 그대로 묶어 저장.
-- **compare init effect**(L379-385): subView='compare' 저장 후 복원 시, compareInit가 false라 기본기간으로 덮음. compareInit는 영속화 안 하므로 비교뷰 복원 시 기간이 올해1/1~오늘로 리셋될 수 있음 — **허용**(Known Gap, 비교뷰는 list 대비 부차). subView만 복원하면 충분.
-
-## Out of Scope
-- 다른 페이지(고객/재고/회계 등) 필터 영속화.
-- URL 쿼리 동기화/공유링크.
-- 비교뷰(compare) 기간·grain 완전 복원 (위 Flag대로 부분만).
-- DB/마이그/schema.ts/tools.ts — **무변경 확인됨**.
+## Out of Scope (→ BUILD-LOG Known Gaps)
+- `shipping/page.tsx` 인라인 모달 2개(1586,1734), `system-codes/page.tsx` 인라인 모달 9개 — 별도 파일 아닌 page 내부 인라인. **Step 2에서 일괄 부착**. 이번 단계 제외.
+- `inventory/count/page.tsx`, `TransferBatchPanel`(패널, 모달 아님 — 확인됨) 제외.
+- 공통 Modal 컴포넌트로의 리팩터(오버레이 통일)는 범위 밖. 훅만 신설.
 
 ## Acceptance
-- 판매현황(list) 탭에서 기간·검색어·지점/결제/상태 필터·subView·정렬을 바꾼 뒤 F5 → 판매현황 탭 유지 + 모든 조건 그대로 + 목록이 그 조건으로 재조회됨.
-- 판매등록(checkout)에서 F5 → checkout 유지(기존 동작 회귀 없음).
-- BRANCH_STAFF 계정: 저장값에 타 지점이 있어도 새로고침 후 branchFilter = 본인 지점 고정.
-- localStorage 비어있는 최초 진입 = 기존 기본값(today/checkout)과 동일.
-- npm run build 통과, hydration 경고 없음.
+- `npm run build` 통과.
+- 각 대상 모달에서 ESC 누르면: 표시전용=즉시 닫힘 / 폼=입력 없으면 즉시, 입력 중이면 confirm 후 닫힘.
+- 한글 입력 조합 중 ESC가 모달을 안 닫음(IME 가드).
+- input 내 기존 onKeyDown Escape(인라인 편집 취소: pos qty/option/discount, system-codes/shipping 가격편집)와 충돌 없음 — input 핸들러가 자체 처리하고 document 리스너는 별개 동작(둘 다 실행될 수 있으나 input ESC는 setState만, 모달 닫기는 별개라 실害 검토). **Bob: SalesDetailDrawer 내 인라인 편집(editingDetails 폼 안 input) ESC가 드로어까지 닫는 이중발화 가능 → 허용(편집 input ESC는 setEditingDetails(false), 동시에 드로어 isDirty=editingDetails였으나 이미 false로 바뀜 타이밍 주의). 우선 동작 확인하고 문제되면 REVIEW에 플래그.**
+
+## Flag (Bob 추측 금지)
+- DB/마이그/schema.ts/tools.ts 변경 **없음** — 확인됨. 'use client' 컴포넌트만 수정.
+- 새 npm 패키지 없음.
+- confirm 문구 한국어 고정.

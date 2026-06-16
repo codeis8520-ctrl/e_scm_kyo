@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { getSalesOrderForRefund, processRefund, searchSalesOrdersForRefund } from '@/lib/return-actions';
 import { fmtDateKST, kstTodayString } from '@/lib/date';
+import { useEscClose } from '@/hooks/useEscClose';
 
 const REFUND_REASONS = [
   { value: 'DEFECTIVE', label: '불량/하자' },
@@ -48,6 +49,10 @@ export default function RefundModal({ branchId, initialOrderNumber, onClose, onS
   const [refundMethod, setRefundMethod] = useState('cash');
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState('');
+
+  useEscClose(onClose, {
+    isDirty: () => !!order || orderNumber.trim() !== '' || Object.keys(selectedItems).length > 0,
+  });
 
   const loadOrderDetail = async (orderNum: string) => {
     setSearching(true);

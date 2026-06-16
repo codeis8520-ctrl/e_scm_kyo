@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { adjustInventory } from '@/lib/actions';
+import { useEscClose } from '@/hooks/useEscClose';
 
 interface Props {
   inventory?: any;
@@ -49,6 +50,14 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
   });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useEscClose(onClose, {
+    isDirty: () =>
+      (!inventory && !!selectedProduct) ||
+      formData.quantity !== 1 ||
+      formData.safety_stock !== (inventory?.safety_stock ?? 0) ||
+      formData.memo.trim() !== '',
+  });
 
   useEffect(() => {
     loadBranches();

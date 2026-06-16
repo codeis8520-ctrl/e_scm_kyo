@@ -1,30 +1,46 @@
-# Review Feedback — 판매현황 탭·필터 영속화 (req #12)
+# Review Feedback — Step 1: ESC 닫기 훅 + 핵심 모달 9곳
 Date: 2026-06-16
-Status: APPROVED
+Ready for Builder: NO
 
-## Conditions
-없음.
+## Must Fix
 
-## Escalate to Arch
-없음.
+- src/app/(dashboard)/pos/SalesListTab.tsx:1307 + :2069 (handleReprint) + ReceiptModal — 중첩 리스너로 ESC 1회에 영수증+드로어 동시 닫힘.
+  - 원인: `onReprint`(1307)와 `handleReprint`(2069)는 드로어를 unmount 하지 않음. 따라서 재출력 영수증(ReceiptModal)이 뜬 동안 SalesDetailDrawer와 ReceiptModal 두 개의 document keydown 리스너가 동시에 활성. ESC 1회 → ReceiptModal `onClose`(즉시) + SalesDetailDrawer `onClose`(editingDetails=false면 즉시) 가 같은 이벤트에서 둘 다 실행 → 영수증만 닫고 드로어로 돌아가려던 사용자가 드로어까지 닫힘.
+  - 훅 주석(useEscClose.ts:9) "중첩 모달은 발생하지 않음" 전제가 이 경로에서 깨짐. onRefundIntent(1308-1311)는 `setSelectedOrderId(null)`로 드로어를 먼저 unmount 하므로 안전하지만, reprint 경로는 그 가드가 없음.
+  - 고치는 법(택1, Bob 판단): (a) ReceiptModal이 떠 있는 동안 SalesDetailDrawer의 훅을 끄기 — 드로어 useEscClose에 `enabled: !reprintOpen` 류 플래그 전달(상위 reprintReceipt 상태를 prop으로 내려 받아). 가장 직접적. (b) 재출력도 onRefundIntent처럼 드로어를 닫고 영수증만 띄우는 패턴으로 통일(단 UX상 영수증 닫으면 목록으로 가버리므로 (a) 권장).
+
+- src/app/(dashboard)/inventory/InventoryModal.tsx:54-56 — 기존 재고행 편집 진입 시 무입력 ESC에도 confirm 발생(prefilled≠dirty).
+  - `selectedProduct`(36-43)는 edit 모드에서 `inventory` prop으로 미리 채워짐. isDirty가 `!!selectedProduct || memo.trim()` 이라 사용자가 아무것도 안 고쳐도 항상 true → ESC마다 confirm. 가장 흔한 "행 클릭→조정폼" 경로에서 dirty 게이트가 무의미해지고 오히려 성가심.
+  - 고치는 법: prefill을 dirty로 치지 말 것. 실제 사용자 변경만 판정. 예: create 모드(=`!inventory`)에서 product를 새로 고른 경우만 dirty 인정 + 항상 quantity/safety_stock 변경·memo 입력을 dirty로. 구체: `isDirty: () => (!inventory && !!selectedProduct) || formData.quantity !== 1 || formData.safety_stock !== (inventory?.safety_stock ?? 0) || formData.memo.trim() !== ''`. (quantity 기본 1, safety_stock 기본 prefill값과 비교.)
+
+## Should Fix
+
+- (없음)
+
+## Escalate to Architect
+
+- (없음 — 두 건 모두 코드 레벨에서 해결 가능. reprint 중첩은 enabled 플래그, InventoryModal은 isDirty 재정의.)
+
+## Cleared (조건부)
+
+훅 useEscClose.ts 구현은 정상 — IME 가드(isComposing/keyCode 229), isDirty→confirm 게이트, cleanup 리스너 제거, enabled 존중 모두 확인. deps에 onClose/isDirty 포함이라 인라인 콜백이 매 렌더 재구독되지만(리스너 churn) stale closure는 없고 최신 클로저가 항상 호출됨 — 누수 없음, 기능상 안전(개선 여지일 뿐 차단 아님).
+
+Bob 플래그 1(SalesDetailDrawer 인라인편집 ESC 이중발화): **문제 없음**. 편집 input에 자체 onKeyDown Escape 핸들러가 코드에 존재하지 않음(파일 전체 grep: setEditingDetails는 button onClick 2201/2343에서만 false). 따라서 ESC는 document 훅만 발화 → editingDetails=true이면 confirm 정상. close-without-confirm/이중액션 발생 안 함. 수용.
+
+표시전용 3개(ReceiptModal:50, MovementHistoryModal:68, CustomerLookupModal:1353) isDirty 없이 즉시 닫기 정상. 폼모달 중 StockUsageModal:55·TransferModal:31·PackUnpackModal:45·RefundModal:54 의 isDirty는 prefill 오탐 없음(to_branch_id/rows/usageTypeId/order/orderNumber/parentQty 모두 기본값 기준 사용자 변경만 판정). InventoryModal만 prefill 오탐(위 Must Fix). 기존 X버튼·배경클릭 onClose 무변경 확인. DB/마이그/schema.ts/tools.ts 변경 없음 확인.
+
+---
+
+# Re-Review — Step 1 Must Fix 2건 (재제출)
+Date: 2026-06-16
+Ready for Builder: YES
+
+## Must Fix 검증 결과
+
+- **Fix 1 (reprint 중첩 ESC) — 통과.** SalesListTab.tsx 호출부 L1307 `reprintOpen={!!reprintReceipt}` (라이브 상태, stale 없음), 시그니처/타입 L1471·1474 `reprintOpen: boolean` 정상 추가. 훅 L1507 `useEscClose(onClose, { enabled: !reprintOpen, isDirty: () => editingDetails })`. ReceiptModal 떠 있는 동안 reprintReceipt 진실 → reprintOpen=true → enabled=false → 드로어 ESC 리스너 OFF → ESC 1회 = 영수증만 닫힘. 영수증 닫힘(reprintReceipt=null) → reprintOpen=false → enabled=true → 드로어 ESC 복구. prop 배선·상태 동기 정확.
+
+- **Fix 2 (InventoryModal prefill 오탐) — 통과.** CRITICAL 베이스라인 대조: formData 초기화(L44-50) quantity:1 / safety_stock: inventory?.safety_stock || 0 / memo:''. isDirty(L54-59) 베이스라인: quantity!==1(초기 1→FALSE), safety_stock!==(inventory?.safety_stock ?? 0)(초기값과 동일→FALSE), memo.trim()!==''(초기 ''→FALSE). quantity는 ADJUST 이동량이라 1로 하드코딩 — 현재고로 prefill되지 않음(리뷰어 우려 해소). selectedProduct 절은 !inventory 가드 → edit 모드 prefill는 dirty 아님; create 모드 초기 null→FALSE. 미수정·신규개봉 시 두 모드 모두 isDirty=FALSE 확인. safety_stock 초기화 `|| 0` vs isDirty `?? 0` 차이는 숫자/널 모두 동일 결과(0)라 오탐 없음.
 
 ## Cleared
-pos/page.tsx mainTab 복원과 SalesListTab.tsx 20필터 영속화를 리뷰함 — SSR 가드, 손상 JSON 폴백,
-지점 사용자 branchFilter 잠금(저장값이 타 지점 노출 불가), debouncedSearch seed, compare 파생/모달
-제외, 빈 localStorage 기본값 회귀 없음, DB/스키마/도구 무변경 모두 확인. 배포 가능.
 
-## Detail (검증 근거)
-- mainTab: readMainTab() window 가드+try/catch (page L23-30), lazy-init useState(readMainTab) (L329),
-  저장 effect 1개 (L341-345). 기존 setMainTab('checkout') 3곳(L635/722/1471) 무수정 — effect 자동반영.
-- 보안 잠금: branchFilter lazy-init `isBranchUser ? (userBranchId ?? '') : (saved.branchFilter ?? '')`
-  (SalesListTab L179-180). setBranchFilter 유일 호출처는 `!isBranchUser` 게이트된 드롭다운(L942-943).
-  지점 사용자는 변경 UI 없음 + 저장값이 init을 덮지 않음 → 오염된 localStorage로 타 지점 조회 불가.
-  loadOrders 쿼리(L292)는 잠긴 branchFilter를 그대로 사용. (기존 client-enforced 자세 유지, 약화 없음.)
-- readSalesFilters: window 가드 + JSON.parse try/catch + object 타입 체크, 실패 시 {} (L147-157).
-- 20필터 lazy-init 전부 기존 기본값 폴백 (L173-208). 저장 effect 1개 + deps 20개 일치 (L221-235).
-- debouncedSearch seed = saved.search (L184) → 첫 조회 stale empty 없음. debounce effect(L503)는
-  이후 search 변경만 반영.
-- compareBranchIds/compareRows/compareGrain/compareInit 미영속 (payload 제외) — 확인.
-- window 무가드 useState initializer 없음.
-- git diff: 소스는 두 파일만, DB/migration/schema.ts/tools.ts 무변경. 추가라인 전부 persistence 한정,
-  드리프트 없음.
+reprint 중첩 ESC 가드(prop 배선)와 InventoryModal isDirty 베이스라인 두 Must Fix 모두 정확히 수정됨. 잔여 Must Fix 0건.

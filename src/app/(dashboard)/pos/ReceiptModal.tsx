@@ -2,6 +2,7 @@
 
 import { useRef } from 'react';
 import { fmtDateKST, fmtTimeKST } from '@/lib/date';
+import { useEscClose } from '@/hooks/useEscClose';
 
 interface ReceiptItem {
   name: string;
@@ -45,6 +46,8 @@ export default function ReceiptModal({
   onClose,
 }: Props) {
   const printRef = useRef<HTMLDivElement>(null);
+
+  useEscClose(onClose);
 
   const handlePrint = () => {
     const content = printRef.current?.innerHTML;

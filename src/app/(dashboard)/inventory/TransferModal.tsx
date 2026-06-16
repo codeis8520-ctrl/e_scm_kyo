@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { transferInventory } from '@/lib/actions';
+import { useEscClose } from '@/hooks/useEscClose';
 
 interface Props {
   inventory: {
@@ -25,6 +26,10 @@ export default function TransferModal({ inventory, branches, onClose, onSuccess 
   });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useEscClose(onClose, {
+    isDirty: () => formData.to_branch_id !== '' || formData.memo.trim() !== '',
+  });
 
   const availableBranches = branches.filter(b => b.id !== inventory.branch?.id);
 

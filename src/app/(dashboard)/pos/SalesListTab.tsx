@@ -9,6 +9,7 @@ import RefundModal from './RefundModal';
 import { fmtDateKST, fmtTimeKST, fmtDateTimeKST, kstTodayString, kstDayStart, kstDayEnd } from '@/lib/date';
 import { cancelSalesOrder } from '@/lib/sales-cancel-actions';
 import { addSalesOrderItem, removeSalesOrderItem, convertOrderToParcel, convertOrderToPickup, updateSalesOrderDetails } from '@/lib/sales-revise-actions';
+import { useEscClose } from '@/hooks/useEscClose';
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -1303,6 +1304,7 @@ export default function SalesListTab() {
         <SalesDetailDrawer
           orderId={selectedOrderId}
           onClose={() => setSelectedOrderId(null)}
+          reprintOpen={!!reprintReceipt}
           onReprint={(r) => setReprintReceipt(r)}
           onRefundIntent={(orderNumber) => {
             setSelectedOrderId(null);
@@ -1348,6 +1350,8 @@ function CustomerLookupModal({ onClose }: { onClose: () => void }) {
   const [debounced, setDebounced] = useState('');
   const [results, setResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+
+  useEscClose(onClose);
 
   // 디바운스
   useEffect(() => {
@@ -1464,9 +1468,10 @@ function SummaryCard({ label, value, sub, accent }: {
 }
 
 // ── 상세 드로어 ────────────────────────────────────────────────────────────────
-function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChanged }: {
+function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundIntent, onChanged }: {
   orderId: string;
   onClose: () => void;
+  reprintOpen: boolean;
   onReprint: (receipt: any) => void;
   onRefundIntent: (orderNumber: string) => void;
   onChanged: () => void;
@@ -1498,6 +1503,8 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
   const [cvMessage, setCvMessage] = useState('');
   // 전표 상세 직접 수정 (고객/표시명/수령일/받는분)
   const [editingDetails, setEditingDetails] = useState(false);
+  // 재출력 영수증(ReceiptModal)이 떠 있는 동안엔 드로어 ESC를 끈다 — 중첩 리스너 동시발화 방지
+  useEscClose(onClose, { enabled: !reprintOpen, isDirty: () => editingDetails });
   const [savingDetails, setSavingDetails] = useState(false);
   const [edCustomerId, setEdCustomerId] = useState<string | null>(null);
   const [edCustomerLabel, setEdCustomerLabel] = useState('');   // 표시용 (이름 전화)
