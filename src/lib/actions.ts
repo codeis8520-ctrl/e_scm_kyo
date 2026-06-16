@@ -1004,6 +1004,11 @@ export async function getInventory(branchId?: string, search?: string) {
 }
 
 export async function adjustInventory(formData: FormData) {
+  const session = await requireSession();
+  if (session.role !== 'SUPER_ADMIN' && session.role !== 'HQ_OPERATOR') {
+    return { error: '재고 조정은 본사 권한만 가능합니다.' };
+  }
+
   const supabase = await createClient();
   const db = supabase as any;
 

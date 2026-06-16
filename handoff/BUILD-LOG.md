@@ -1,3 +1,30 @@
+# BUILD-LOG — Feature D: 재고 조정 권한 정리 (입고/출고 제거 · 본사만 조정)
+
+## Feature D — 1 step (빌드 완료 · 리뷰 대기)
+시작: 2026-06-16
+
+### Build Status (2026-06-16)
+- BUILT — npm run build ✓ Compiled successfully in 6.8s (에러/경고 0).
+- 마이그/DB 변경 없음.
+- 변경 파일:
+  - src/lib/actions.ts — adjustInventory 맨 앞 requireSession + role 화이트리스트(SUPER_ADMIN/HQ_OPERATOR) 서버 가드 추가. 기존 RAW/SUB 본사 제한·이하 로직 무변경.
+  - src/app/(dashboard)/inventory/InventoryModal.tsx — movement_type 기본값 IN→ADJUST, IN/OUT/ADJUST 3버튼 토글 삭제 후 정적 안내 1줄, 수량 라벨 '변경 후 수량 *' 고정, memo placeholder '조정 사유...'.
+  - src/app/(dashboard)/inventory/page.tsx — isHQUser 추가, 헤더 버튼 '+ 입출고'→'+ 재고 조정' 본사만 노출, 그리드 셀 adjustBlocked(=materialBlocked||!isHQUser) 진입 차단·title·↓배지, 플랫 '입출고'→'조정' 본사만 노출, 하단 안내 문구 정리.
+  - src/lib/ai/schema.ts — BUSINESS_RULES [재고 처리 판단]에 본사 전용 조정 정책 1줄 추가.
+
+### Locked Decisions (Arch brief 그대로)
+- IN/OUT 전면 삭제. ADJUST 단일 고정. movement_type 항상 'ADJUST'.
+- 조정 권한 = ['SUPER_ADMIN','HQ_OPERATOR']. 그 외 조정 불가, 조회는 유지.
+- AI 에이전트 adjust_inventory(execAdjustInventory) 무관 — tools.ts 무변경.
+- RAW/SUB→본사 제한 기존 로직 유지.
+
+### Known Gaps (Out of Scope — 미수정)
+- bulk_adjust_inventory / 에이전트 도구 description 문구 — 이번 단계 아님.
+- inventory_movements 과거 'IN'/'OUT' 데이터 — 그대로.
+- TransferModal/TransferBatchPanel(창고이동) — 변경 없음.
+
+---
+
 # BUILD-LOG — Feature C: 지점별 매출 통합 조회 (legacy+sales, day/month/year)
 
 ## Feature C — 1 step (빌드 완료 · 리뷰 대기)

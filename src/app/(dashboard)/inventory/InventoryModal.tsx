@@ -42,7 +42,7 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
   );
   const [formData, setFormData] = useState({
     branch_id: inventory?.branch_id || '',
-    movement_type: 'IN',
+    movement_type: 'ADJUST',
     quantity: 1,
     safety_stock: inventory?.safety_stock || 0,
     memo: '',
@@ -258,52 +258,14 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
           )}
 
           <div>
-            <label className="block text-sm font-medium text-gray-700">조정 유형 *</label>
-            <div className="flex gap-2 mt-1">
-              <button
-                type="button"
-                onClick={() => setFormData({ ...formData, movement_type: 'IN' })}
-                className={`flex-1 py-2 rounded-md ${
-                  formData.movement_type === 'IN'
-                    ? 'bg-green-500 text-white'
-                    : 'bg-slate-100 text-slate-700'
-                }`}
-              >
-                입고 (+)
-              </button>
-              <button
-                type="button"
-                onClick={() => setFormData({ ...formData, movement_type: 'OUT' })}
-                className={`flex-1 py-2 rounded-md ${
-                  formData.movement_type === 'OUT'
-                    ? 'bg-red-500 text-white'
-                    : 'bg-slate-100 text-slate-700'
-                }`}
-              >
-                출고 (-)
-              </button>
-              <button
-                type="button"
-                onClick={() => setFormData({ ...formData, movement_type: 'ADJUST' })}
-                className={`flex-1 py-2 rounded-md ${
-                  formData.movement_type === 'ADJUST'
-                    ? 'bg-blue-500 text-white'
-                    : 'bg-slate-100 text-slate-700'
-                }`}
-              >
-                조정 (=)
-              </button>
-            </div>
-            <p className="mt-1 text-xs text-slate-500">
-              {formData.movement_type === 'IN' && '입고: 현재고 + 수량'}
-              {formData.movement_type === 'OUT' && '출고: 현재고 - 수량'}
-              {formData.movement_type === 'ADJUST' && '조정: 현재고 = 수량'}
+            <p className="text-xs text-slate-500">
+              조정: 현재고를 입력한 수량으로 맞춥니다 (실사 반영)
             </p>
           </div>
 
           <div>
             <label className="block text-sm font-medium text-gray-700">
-              {formData.movement_type === 'ADJUST' ? '변경 후 수량 *' : '수량 *'}
+              변경 후 수량 *
             </label>
             <input
               type="number"
@@ -342,7 +304,7 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
               type="text"
               value={formData.memo}
               onChange={(e) => setFormData({ ...formData, memo: e.target.value })}
-              placeholder="입출고 사유..."
+              placeholder="조정 사유..."
               className="mt-1 input"
             />
           </div>

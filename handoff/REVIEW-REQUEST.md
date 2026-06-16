@@ -1,31 +1,31 @@
-# Review Request — 지점별 매출 통합 조회 (legacy+sales, day/month/year)
+# Review Request — Feature D: 재고 조정 권한 정리 (입고/출고 제거 · 본사만 조정)
 Date: 2026-06-16
 Ready for Review: YES
 
 ## Files Changed
 
-### src/app/(dashboard)/pos/SalesListTab.tsx (compare 서브뷰 전면 교체)
-- L158-169 — compare state: compareRows 타입을 RPC 반환형 `{period_date, branch_id, total}[]` 로 교체, compareError·compareGrain('month' 기본)·compareInit 추가.
-- L324-331 — compareDaySpan(useMemo): startDate~endDate 일수 차이 계산(day grain 366일 가드용).
-- L333-372 — loadCompare 재작성: 페이지네이션 루프 삭제 → `sb.rpc('branch_sales_summary', {p_from, p_to, p_grain})` 1회. day grain 366일 초과 시 조기반환+안내. RPC 에러 → compareError 안내 + 빈 rows(크래시 없음). deps=[startDate,endDate,compareGrain,compareDaySpan].
-- L374-388 — compare 진입 useEffect 2개: ① subView==='compare' 시 loadCompare ② 최초 진입 시 기본기간(올해 1/1~오늘)+'custom' 1회 세팅(compareInit 가드).
-- L383-419 — compareMatrix 재작성: period 행 × 선택지점 열 + 고정 '미매칭'(branch_id NULL) 열(NULL 행 존재 시에만 노출, compareBranchIds 무관 항상 합산) + colTotals + grandTotal.
-- L421-427 — fmtPeriodLabel: grain 따라 연(YYYY)/월(YYYY-MM)/일(YYYY-MM-DD) 라벨.
-- L714-755 — compare 필터 UI: 집계 단위(일/월/연) 토글 3버튼 추가 + 기존 지점 다수선택 묶음.
-- L1081-1134 — 매트릭스 render: 제목 '지점별 매출 (일/월/연)', 헤더 라벨 grain 연동, 행 키 period_date+fmtPeriodLabel, compareError 안내 분기. 미매칭 열은 compareMatrix.cols 에 포함되어 자동 렌더.
-
-### src/lib/ai/schema.ts (AI Sync)
-- L267-270 — BUSINESS_RULES 에 `[지점별 매출(통합 조회)]` 블록: legacy(<2026-05-19)+sales(>=2026-05-19,status 제외조건) 통합, RPC branch_sales_summary 시그니처, 미매칭=branch_id NULL 명시.
+- src/lib/actions.ts:1007-1010 — adjustInventory 맨 앞에 `requireSession()` + role 화이트리스트(SUPER_ADMIN/HQ_OPERATOR) 서버 가드. 비권한자 `{ error: '재고 조정은 본사 권한만 가능합니다.' }`. transfer 패턴 미러. 이하 RAW/SUB 본사 제한·계산 로직 무변경.
+- src/app/(dashboard)/inventory/InventoryModal.tsx:45 — formData.movement_type 기본값 'IN'→'ADJUST'.
+- src/app/(dashboard)/inventory/InventoryModal.tsx:260-268 — IN/OUT/ADJUST 3버튼 토글 전체 삭제 → 정적 안내 "조정: 현재고를 입력한 수량으로 맞춥니다 (실사 반영)" 1줄. 수량 라벨 '변경 후 수량 *' 고정(조건분기 제거).
+- src/app/(dashboard)/inventory/InventoryModal.tsx:307 — memo placeholder '입출고 사유...'→'조정 사유...'.
+- src/app/(dashboard)/inventory/page.tsx:116 — isHQUser 추가(userRole SUPER_ADMIN/HQ_OPERATOR, 쿠키 기반 isBranchUser와 동일 방식).
+- src/app/(dashboard)/inventory/page.tsx:513-525 — 헤더 버튼 `{isHQUser && (...)}` 래핑, 라벨 '+ 입출고'→'+ 재고 조정'.
+- src/app/(dashboard)/inventory/page.tsx:771-797 — 그리드 셀: `adjustBlocked = materialBlocked || !isHQUser`. onClick/disabled/스타일/↓배지 모두 adjustBlocked 기준. title: 비본사='재고 조정은 본사 권한만 가능', RAW/SUB='원자재·부자재는 본사에서만 조정 가능'. 조회 자체는 유지.
+- src/app/(dashboard)/inventory/page.tsx:812 — 그리드 하단 안내 문구 '입출고'→'재고 조정(본사 권한)'·'조정'.
+- src/app/(dashboard)/inventory/page.tsx:894-902 — 플랫 테이블 조정 버튼 `{isHQUser && (...)}` 래핑, 라벨 '입출고'→'조정', title 문구 정리.
+- src/lib/ai/schema.ts:159 — BUSINESS_RULES [재고 처리 판단]에 "재고 조정(adjust)은 본사 역할만 / 수동 입고·출고 제거 — 입고=매입, 출고=판매·이동" 1줄.
 
 ## Self-Review
-- **Richard 첫 지적 예상**: "RPC 미적용 상태에서 크래시?" → 아니오. loadCompare 의 `if (error)` 분기가 compareError 세팅 + 빈 rows 반환. render 가 compareError 우선 분기. 마이그 081 미적용 상태에서 npm run build 통과 확인.
-- **Brief 요구사항 전수 확인**: RPC 호출✓ / grain 토글(기본 month)✓ / day 366일 가드✓ / 기본기간 올해1/1~오늘 1회세팅✓ / 미매칭 고정열✓ / colTotals+grandTotal✓ / 지점명 from branches✓ / RBAC !isBranchUser 유지✓ / AI Sync 1줄✓ / list 서브뷰 미변경✓.
-- **빈 데이터/실패 시 사용자 화면**: RPC 실패→amber 안내문. 지점 0개 선택→"비교할 지점을 1개 이상 선택하세요". 기간 매출 없음→"해당 기간 매출이 없습니다". day 366일 초과→amber 안내(조회 차단).
+- Richard 첫 지적 후보: 비본사 그리드 셀이 disabled여도 시각적으로 active처럼 보이는지 → adjustBlocked가 스타일·↓배지까지 일괄 적용해 greyed/cursor-not-allowed로 통일 확인.
+- Brief 요구사항 전부 구현: 서버가드·모달 토글삭제·라벨·placeholder·isHQUser 3개 진입점 게이트·AI Sync 1줄. 확인 완료.
+- 데이터/실패 시 사용자: 비본사가 서버 직접 호출해도 친화적 한글 에러 반환. 모달은 본사에게만 노출되나 가드가 최종 방어선.
+- AI 에이전트 경로: tools.ts execAdjustInventory 미사용 경로 — diff 0 (건드리지 않음).
+- npm run build ✓ Compiled successfully in 6.8s (에러/경고 0).
 
 ## Open Questions
-- 마이그 081 RPC 의 `period_date` 반환이 `date_trunc(...)::date` (예: 월=YYYY-MM-01)라고 가정하고 fmtPeriodLabel 이 앞자리만 잘라 표시함. RPC 가 다른 형식 반환 시 라벨만 조정 필요(로직 무영향, period_date 는 그룹 키로만 사용).
+- 없음.
 
 ## Out of Scope (logged in BUILD-LOG)
-- legacy 취소/환불 미반영(의도된 가정).
-- compare CSV 내보내기 없음.
-- 지점선택 RPC 인자화 최적화 안 함(클라 필터 유지).
+- bulk_adjust_inventory / 에이전트 도구 description 문구 (이번 단계 아님).
+- inventory_movements 과거 'IN'/'OUT' 데이터 그대로.
+- TransferModal/TransferBatchPanel(창고이동) 무변경.

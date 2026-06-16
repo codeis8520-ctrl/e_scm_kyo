@@ -113,6 +113,7 @@ export default function InventoryPage() {
   const userRole = getCookie('user_role');
   const userBranchId = getCookie('user_branch_id');
   const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
+  const isHQUser = userRole === 'SUPER_ADMIN' || userRole === 'HQ_OPERATOR';
 
   // 첫 진입 — 페이지 메타(지점·카테고리)만 로드. inventories 는 검색 조건이 있을 때만.
   useEffect(() => {
@@ -510,12 +511,14 @@ export default function InventoryPage() {
         </div>
         <div className="flex flex-wrap gap-2">
           <Link href="/inventory/count" className="btn-secondary py-2 px-4 text-sm">재고 실사</Link>
-          <button
-            onClick={() => { setEditInventory(null); setShowModal(true); }}
-            className="btn-primary text-sm"
-          >
-            + 입출고
-          </button>
+          {isHQUser && (
+            <button
+              onClick={() => { setEditInventory(null); setShowModal(true); }}
+              className="btn-primary text-sm"
+            >
+              + 재고 조정
+            </button>
+          )}
           <button
             onClick={() => setShowUsageModal(true)}
             className="btn-secondary text-sm"
@@ -764,18 +767,22 @@ export default function InventoryPage() {
                       const isMissing = !inv;
                       // 원자재·부자재는 본사에서만 입출고·조정 가능. 본사 지정이 없으면 제한 생략.
                       const materialBlocked = isMaterialType(row.productType) && !!hqBranchId && b.id !== hqBranchId;
+                      // 재고 조정은 본사 역할만. 비본사는 조정 진입 차단(조회는 유지).
+                      const adjustBlocked = materialBlocked || !isHQUser;
                       return (
                         <td key={b.id} className="text-center p-0">
                           <button
-                            onClick={() => { if (!materialBlocked) handleAdjust(effective); }}
-                            disabled={materialBlocked}
+                            onClick={() => { if (!adjustBlocked) handleAdjust(effective); }}
+                            disabled={adjustBlocked}
                             title={
-                              materialBlocked
-                                ? '원자재·부자재는 본사에서만 입출고·조정 가능'
-                                : isMissing ? '재고 없음 · 클릭하여 입고' : `입출고 · 안전재고 ${effective.safety_stock}`
+                              !isHQUser
+                                ? '재고 조정은 본사 권한만 가능'
+                                : materialBlocked
+                                  ? '원자재·부자재는 본사에서만 조정 가능'
+                                  : isMissing ? '재고 없음 · 클릭하여 조정' : `재고 조정 · 안전재고 ${effective.safety_stock}`
                             }
                             className={`w-full h-full px-3 py-2 font-semibold transition-colors rounded ${
-                              materialBlocked
+                              adjustBlocked
                                 ? 'text-slate-300 cursor-not-allowed'
                                 : `hover:ring-2 hover:ring-blue-300 hover:ring-inset ${
                                     isMissing
@@ -787,7 +794,7 @@ export default function InventoryPage() {
                             }`}
                           >
                             {effective.quantity}
-                            {isLow && !isMissing && !materialBlocked && <span className="ml-1 text-xs font-normal">↓{effective.safety_stock}</span>}
+                            {isLow && !isMissing && !adjustBlocked && <span className="ml-1 text-xs font-normal">↓{effective.safety_stock}</span>}
                           </button>
                         </td>
                       );
@@ -802,7 +809,7 @@ export default function InventoryPage() {
             </tbody>
           </table>
           <p className="text-xs text-slate-400 mt-3">
-            숫자 클릭 → 입출고 처리 · 제품명 클릭 → 변동 이력 · 빨간 숫자 = 안전재고 미달 (↓기준값) · 원자재·부자재는 본사만 입출고 가능
+            숫자 클릭 → 재고 조정(본사 권한) · 제품명 클릭 → 변동 이력 · 빨간 숫자 = 안전재고 미달 (↓기준값) · 원자재·부자재는 본사만 조정 가능
           </p>
         </div>
       ) : (
@@ -884,14 +891,16 @@ export default function InventoryPage() {
                     )}
                   </td>
                   <td>
-                    <button
-                      onClick={() => handleAdjust(item)}
-                      disabled={materialBlocked}
-                      title={materialBlocked ? '원자재·부자재는 본사에서만 입출고·조정 가능' : undefined}
-                      className={`mr-2 ${materialBlocked ? 'text-slate-300 cursor-not-allowed' : 'text-blue-600 hover:underline'}`}
-                    >
-                      입출고
-                    </button>
+                    {isHQUser && (
+                      <button
+                        onClick={() => { if (!materialBlocked) handleAdjust(item); }}
+                        disabled={materialBlocked}
+                        title={materialBlocked ? '원자재·부자재는 본사에서만 조정 가능' : undefined}
+                        className={`mr-2 ${materialBlocked ? 'text-slate-300 cursor-not-allowed' : 'text-blue-600 hover:underline'}`}
+                      >
+                        조정
+                      </button>
+                    )}
                     <button
                       onClick={() => { setTransferInventory(item); setShowTransferModal(true); }}
                       className="text-green-600 hover:underline mr-2"

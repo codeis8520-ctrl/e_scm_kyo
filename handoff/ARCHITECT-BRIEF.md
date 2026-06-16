@@ -1,52 +1,49 @@
-# Architect Brief — 지점별 매출 통합 조회 (legacy+sales, day/month/year)
+# Architect Brief — 재고 조정 권한 정리 (입고/출고 제거 · 본사만 조정)
 
 ## Goal
-판매현황 '지점비교'(compare) 서브뷰를 2018~현재 legacy+sales 통합·일/월/연 grain 토글·지점별합계+전체합계+미매칭 열로 확장. 집계는 신규 DB RPC.
+재고현황 InventoryModal에서 입고(IN)/출고(OUT) 버튼을 전면 제거하고 조정(ADJUST)만 남긴다. 조정 진입(모달·서버)을 본사 역할(SUPER_ADMIN/HQ_OPERATOR)에게만 허용한다. 비권한자는 재고 조회만 가능.
 
-## 잠긴 결정 (Bob: 추측 금지, 그대로 구현)
-- **1단계 배포** (RPC + 프론트 한 슬라이스). 프론트는 RPC 없이는 무의미하므로 분리 안 함.
-- **컷오프 = 2026-05-19** (RPC 내부 상수 `_CUTOFF date := '2026-05-19'`). legacy: `ordered_at < _CUTOFF`. sales: `ordered_at >= _CUTOFF`. 겹침구간 이중집계 방지.
-- **legacy 상태필터 없음**: legacy_orders.payment_status 는 '결제 완료'/'미결' 한글 텍스트(취소플래그 아님). 과거=완료매출 가정, **전 행 집계**. (취소 표시 없음 확인 완료.)
-- **sales 상태필터**: `status NOT IN ('CANCELLED','REFUNDED','PARTIALLY_REFUNDED')`. (기존 loadCompare L334 와 동일 기준 — PARTIALLY_REFUNDED 도 제외 유지.)
-- **legacy branch_id NULL = '미매칭' 그룹**: 제외 안 함. RPC 는 branch_id NULL 그대로 반환. 프론트가 NULL 열을 '미매칭' 고정라벨로 렌더.
-- **RPC = SECURITY DEFINER** + `GRANT EXECUTE ... TO anon, authenticated`. (search_customers_full 패턴.) custom session auth라 client 는 anon role.
-- **grain=day 가드**: day 선택 시 기간 366일 초과면 프론트에서 조회 막고 안내(8년 일별 폭주 방지). month/year 는 무제한.
-- **기본 기간**: compare 진입 시 startDate/endDate 를 **올해 1/1~오늘**로 세팅하고 grain='month' 기본. (현재 기본 'today'는 분석 부적합.) list 서브뷰 기본은 건드리지 말 것.
-- **branch_id 인자 없음**: RPC 는 기간·grain 만 받고 전 지점 반환. 지점 선택 필터는 **프론트 클라이언트단**에서 유지(compareBranchIds, 미매칭 열은 항상 표시). RPC 시그니처 단순화.
+## Locked Decisions
+- IN/OUT 전면 삭제. ADJUST 단일 고정. movement_type 항상 'ADJUST'.
+- 조정 권한 화이트리스트 = ['SUPER_ADMIN','HQ_OPERATOR']. 그 외(BRANCH_STAFF/PHARMACY_STAFF/EXECUTIVE)는 조정 불가.
+- 서버 가드는 `requireSession()` + role 화이트리스트. transfer 액션 패턴(actions.ts L1207 `const session = await requireSession()` → 거부 시 `{ error }`) 미러.
+- **AI 에이전트 무관 — 건드리지 말 것.** `adjust_inventory` 도구는 자체 executor `execAdjustInventory`(tools.ts L1846, ToolContext RBAC) 사용, `adjustInventory` 액션을 호출하지 않음. requireSession 추가는 에이전트 경로에 영향 없음. 액션 분리 불필요.
+- RAW/SUB→본사 제한(기존 로직) 그대로 유지.
+- 마이그/DB 변경 없음.
 
 ## Build Order
-1. **마이그 `supabase/migrations/081_branch_sales_summary.sql`** (Arch가 Supabase 적용; Bob은 파일만 작성)
-   - `CREATE OR REPLACE FUNCTION public.branch_sales_summary(p_from date, p_to date, p_grain text DEFAULT 'month')`
-   - RETURNS TABLE(period_date date, branch_id uuid, total numeric)
-   - LANGUAGE sql, SECURITY DEFINER, `SET search_path = public`
-   - 내부: `WITH unioned AS ( legacy SELECT ordered_at, branch_id, total_amount WHERE ordered_at >= p_from AND ordered_at <= p_to AND ordered_at < '2026-05-19' UNION ALL sales SELECT ordered_at::date, branch_id, total_amount WHERE ordered_at::date 동일범위 AND ordered_at::date >= '2026-05-19' AND status NOT IN(...) )` → `SELECT date_trunc(p_grain, period)::date, branch_id, SUM(total) GROUP BY 1,2`.
-     - ⚠️ sales_orders.ordered_at 은 timestamptz 일 수 있음 — 범위·grain 모두 `(ordered_at AT TIME ZONE 'Asia/Seoul')::date` 또는 ::date 로 **KST 일자 통일**(기존 kstDayStart/fmtDateKST 와 일치하게). legacy.ordered_at 은 DATE 라 그대로. Bob: sales_orders.ordered_at 타입 확인 후 KST 캐스팅 적용.
-   - `date_trunc(p_grain, ...)` 의 p_grain 은 'day'|'month'|'year' 만 허용 — 함수 시작부 가드(아니면 RAISE EXCEPTION).
-   - `GRANT EXECUTE ON FUNCTION public.branch_sales_summary(date,date,text) TO anon, authenticated;`
-   - 헤더 주석에 컷오프·union 정책 명시(070/077 주석 스타일).
-2. **`SalesListTab.tsx` compare 서브뷰 교체** (단일 파일)
-   - 상태 추가: `compareGrain` ('day'|'month'|'year', 기본 'month'). compareRows 타입을 RPC 반환형 `{ period_date: string; branch_id: string|null; total: number }[]` 로 교체.
-   - `loadCompare` 재작성: 페이지네이션 루프 삭제 → `sb.rpc('branch_sales_summary', { p_from: startDate, p_to: endDate, p_grain: compareGrain })` 1회 호출. **폴백 없음**(RPC 미적용이면 에러 표시; Arch가 마이그 먼저 적용). deps 에 compareGrain 추가.
-   - day 가드: compareGrain==='day' && (endDate-startDate>366일)면 loadCompare 조기반환 + 안내 메시지 상태.
-   - `compareMatrix` 재작성: RPC rows 로 rebuild. **미매칭 열 추가** — branch_id NULL 합계를 별도 '미매칭' 열(항상 표시, compareBranchIds 토글과 무관)로. 선택 지점 열 + 미매칭 열 + 합계열. colTotals/grandTotal 동일.
-   - compare 진입 useEffect: 기본기간(올해 1/1~오늘) 1회 세팅 (이미 사용자가 바꿨으면 덮어쓰지 말 것 — 진입 플래그 1회만).
-   - UI: 기간 프리셋 줄 아래(또는 지점선택 옆)에 grain 토글 3버튼(일/월/연) 추가, compare 서브뷰일 때만. 매트릭스 헤더 '일자'→grain 따라 '월'/'연' 라벨, 행 키 period_date. 제목 '지점별 매출' (일/월/연).
-   - 미매칭 합계 0이면 미매칭 열 숨겨도 됨(선택). 표시 시 라벨 '미매칭' 고정.
 
-## Out of Scope (→ BUILD-LOG Known Gaps if surfaces)
-- legacy 취소/환불 반영(과거엔 신뢰가능 플래그 없음).
-- 지점별 매출의 CSV 내보내기(compare).
-- list 서브뷰 기본기간/동작 변경.
-- 물리적 데이터 이전(read-union 유지).
-- 지점선택을 RPC 인자로 내리는 최적화.
+### 1. src/lib/actions.ts — adjustInventory (L1006~)
+- 함수 맨 앞(L1007 `createClient` 위)에 서버 RBAC 추가:
+  - `const session = await requireSession();`
+  - `if (session.role !== 'SUPER_ADMIN' && session.role !== 'HQ_OPERATOR') return { error: '재고 조정은 본사 권한만 가능합니다.' };`
+- `requireSession`은 이미 import 됨(L9). 기존 RAW/SUB 본사 제한·이하 로직 변경 금지.
+
+### 2. src/app/(dashboard)/inventory/InventoryModal.tsx
+- formData.movement_type 기본값 L45: `'IN'` → `'ADJUST'`.
+- 조정 유형 토글 3버튼(L260-302) 전체 삭제. 대신 정적 안내 한 줄만: "조정: 현재고를 입력한 수량으로 맞춥니다 (실사 반영)". movement_type은 항상 'ADJUST'로 고정(state 유지하되 변경 UI 없음).
+- 수량 라벨(L305-307): 조건 분기 제거하고 '변경 후 수량 *' 고정.
+- 힌트/placeholder 문구 '입출고' → '조정'로 정리: memo placeholder(L345) '조정 사유...'.
+- 제목(L153) '재고 조정' 유지. RAW/SUB 본사 안내(L212-214, L235-237) 유지.
+
+### 3. src/app/(dashboard)/inventory/page.tsx
+- L115 아래 추가: `const isHQUser = userRole === 'SUPER_ADMIN' || userRole === 'HQ_OPERATOR';`
+- 헤더 '+ 입출고' 버튼(L514-517): `{isHQUser && (...)}`로 감싸 본사만 노출. 라벨 '+ 입출고' → '+ 재고 조정'.
+- 그리드 셀 조정 진입(L770 onClick `handleAdjust`): 비본사면 진입 막기 — `materialBlocked` 인근 조건에 `!isHQUser`도 막힘으로 합류. 비본사일 때 onClick no-op + disabled. title은 비본사면 '재고 조정은 본사 권한만 가능'.
+- 플랫 테이블 '입출고' 버튼(L888-893): `{isHQUser && (...)}`로 감싸 비본사에게 숨김(또는 disabled+title). 라벨 '입출고' → '조정'.
+- 하단 안내 문구(L805) '입출고' 표현을 '조정'으로 정리. 본사 전용 의미 반영.
+
+## Out of Scope
+- bulk_adjust_inventory / 에이전트 도구 description 문구 — 손대지 않음(Known Gap 후보, 이번 단계 아님).
+- TransferModal/TransferBatchPanel(창고이동) — 변경 없음.
+- inventory_movements 'IN'/'OUT' 과거 데이터 — 그대로.
+
+## AI Sync (필수 검토)
+- src/lib/ai/schema.ts BUSINESS_RULES에 한 줄 추가: "재고 조정(adjust)은 본사 역할(SUPER_ADMIN/HQ_OPERATOR)만. UI에서 수동 입고/출고 제거 — 입고=매입(purchase), 출고=판매/창고이동으로만 발생." (에이전트 자체 RBAC는 ToolContext가 별도 처리하나 정책 일치를 위해 명시.)
+- DB_SCHEMA 변경 없음(컬럼/enum 불변).
 
 ## Acceptance
-- compare 진입 → 올해 월별 지점매출 매트릭스 즉시 표시(legacy+sales 통합). grain '일/월/연' 토글 동작. custom from/to 변경+조회 반영.
-- 2018년 등 과거 연/월 조회 시 legacy 행 합산 표시. 미매칭(legacy branch NULL) 열 노출.
-- 컷오프 경계(5/18 legacy / 5/19 sales)에서 이중집계 없음. 지점 합계열·전체 합계·지점별 열합 정확.
-- `npm run build` 통과. RBAC: !isBranchUser 에서만 compare 노출(기존 유지).
-
-## AI Sync (CLAUDE.md 매트릭스)
-- 신규 RPC는 테이블 아님 → DB_SCHEMA 변경 불요.
-- `src/lib/ai/schema.ts` BUSINESS_RULES 에 1줄 추가: "지점별 매출 = legacy_orders(ordered_at<2026-05-19) + sales_orders(>=2026-05-19, status NOT IN CANCELLED/REFUNDED/PARTIALLY_REFUNDED) 통합. RPC branch_sales_summary(from,to,grain). legacy branch_id NULL=미매칭."
-- tools.ts 영향 없음(에이전트 도구 미추가 — 범위 밖).
+- npm run build 성공(에러/경고 0).
+- 모달에 IN/OUT 버튼 없음. ADJUST 단일.
+- 본사 계정: 조정 진입·제출 정상. 비본사 계정: 조정 버튼 미노출/비활성 + 서버 호출 시 거부 메시지.
+- 에이전트 adjust_inventory 경로 무변경(코드 diff 없음 확인).
