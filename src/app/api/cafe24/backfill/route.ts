@@ -71,15 +71,19 @@ export async function GET(req: NextRequest) {
   });
 
   // 대상: channel='ONLINE' AND cafe24_order_id NOT NULL AND 취소/환불 제외.
-  // 깨짐 판정 = (sales_order_items 0건 OR memo LIKE 'Delivery: undefined%'/NULL OR recipient_name NULL).
-  // "0건" 술어는 PostgREST .or()로 표현 불가(anti-join) → 임베드 count로 한 페이지를 받아 건별 판정.
-  // limit = 스캔 페이지 캡(멱등이므로 반복 호출로 점진 처리). 이미 정상인 건은 getOrder 없이 skip.
+  // 깨짐 판정 = (sales_order_items 0건 OR memo LIKE 'Delivery: undefined%' OR recipient_name NULL).
+  //   이 셋은 함께 발생(깨진 주문은 recipient_name NULL이면서 memo undefined이면서 품목0).
+  // ⚠️ DB단계 깨짐 필터 필수: 정상 주문(신규 동기화분)이 스캔 앞쪽을 차지하면 limit 캡 안에서
+  //    깨진 건에 도달 못 해 진전이 안 됨. recipient_name NULL OR memo LIKE 로 깨진 행만 선별.
+  //    보정 후 recipient_name/memo가 채워져 자동으로 대상에서 빠짐 → 반복 호출로 페이지네이션.
+  //    (품목만 0건이고 memo/recipient 정상인 잔여 케이스는 본 데이터에 없음 — 동시 발생.)
   const { data: candidates, error: queryError } = await supabase
     .from('sales_orders')
     .select('id, cafe24_order_id, memo, recipient_name, status, sales_order_items(count)')
     .eq('channel', 'ONLINE')
     .not('cafe24_order_id', 'is', null)
     .not('status', 'in', '(CANCELLED,REFUNDED,PARTIALLY_REFUNDED)')
+    .or('recipient_name.is.null,memo.like.Delivery: undefined*')
     .order('ordered_at', { ascending: false })
     .limit(limit);
 
