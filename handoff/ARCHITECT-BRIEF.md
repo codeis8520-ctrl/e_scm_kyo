@@ -1,71 +1,62 @@
-# Architect Brief — 카페24 주문 연동 수정 (Step 1: webhook memo + 품목 생성)
+# Architect Brief — #14 Step 2: 과거 카페24 주문 인플레이스 백필
 
 ## Goal
-카페24 주문이 웹훅/크론으로 들어올 때 sales_orders 뿐 아니라 **sales_order_items**(품목)도 생성되고, memo의 `Delivery: undefined`가 실제 받는분 주소로 채워진다. (재고 차감은 범위 밖 — 별도 스프린트.)
+이미 동기화된 과거 `sales_orders`(channel='ONLINE') 중 깨진 건(품목 0종 / memo='Delivery: undefined' / 받는분 빈값)을 **삭제 없이** cafe24 재조회로 memo·recipient_*·sales_order_items를 인플레이스 보정한다. FK(customer_id·환불·분개) 무손상.
 
-## 진단 (확정)
-- `handleOrderCreated`(src/lib/cafe24/webhook.ts L200~358): `client.getOrder`로 items/buyer/receivers 포함 전체 주문을 가져오지만 sales_orders insert(L284~314)만 하고 **cafe24Order.items를 전혀 안 씀**.
-- L312 `memo: \`Delivery: ${cafe24Order.recipient_address}\`` — recipient_address는 평면 필드, 임베드 응답엔 없음(받는분=receivers[]). → 항상 undefined.
-- sync-orders.ts → processCafe24Webhook → handleOrderCreated. **이 함수 한 곳만 고치면 웹훅+크론 양쪽 반영.**
+## 잠근 결정 (LOCKED)
+
+### 1. 공유 함수 추출 (중복 금지 — 최우선)
+webhook.ts `handleOrderCreated`의 sales_order_items 생성 블록(현 L357~448, try 전체)을 **shared 함수로 추출**해서 webhook과 백필이 같이 쓴다.
+- 신규 export 예: `export async function syncCafe24OrderItems(salesOrderId: string, items: any[], orderNoForLog: string): Promise<void>`
+  - 내부: 멱등 가드(기존 items 있으면 skip) + 매핑 일괄조회(cafe24_product_map→product_id, products.name) + rows 빌드 + insert + 42703 minimal 재시도 + 실패 시 `logSyncEvent('order_items_error', ...)`. **현 블록의 바이트 동작을 그대로 옮긴다(회귀 0).**
+  - `handleOrderCreated`는 이 함수 호출로 교체(인라인 블록 삭제). 호출부 동작 동일해야 함.
+- memo·recipient: `extractRecipientInfo`(L181, 이미 export·"백필 공용")는 그대로 재사용. memo 문자열 규칙(L314~316)은 백필에서도 동일 재현(또는 작은 헬퍼 `buildDeliveryMemo(recipient)` 추출 — 선택, 2곳뿐이라 인라인 재현도 허용).
+
+### 2. 트리거 = CRON_SECRET 보호 admin GET 라우트
+- 신규 `src/app/api/cafe24/backfill/route.ts`. **인증 = `Authorization: Bearer ${CRON_SECRET}`** (sync-orders/route.ts L55~63 패턴 그대로 복제: secret 미설정 500, 불일치 401). 1회성 운영 트리거 + 앱 컨텍스트(getValidAccessToken DB 토큰) 필요 → 서버 라우트가 자연스럽다.
+- 쿼리 파라미터: `?limit=N`(기본 50, 최대 200 cap). 멱등이므로 반복 호출로 점진 처리.
+- getValidAccessToken으로 토큰 주입(webhook L212~222 패턴) → `new Cafe24Client(...)` → `client.getOrder(cafe24_order_id)`(embed=items,buyer,receivers 이미 내장).
+
+### 3. 대상 선정 (서버측 쿼리)
+`sales_orders` where `channel='ONLINE'` AND `cafe24_order_id IS NOT NULL` AND (sales_order_items 0건 OR `memo LIKE 'Delivery: undefined%'` OR `recipient_name IS NULL`).
+- 후보 id+cafe24_order_id+memo+status를 limit으로 페치 → 건별 items 존재여부 확인 → 보정 필요 판정. 1회성 소량이라 건당 getOrder 불가피(허용).
+
+### 4. 보정 범위 (무손상 원칙)
+건별로:
+- cafe24 재조회 성공 시 `extractRecipientInfo` → **memo + recipient_* 5필드 update**(깨진 값일 때만 갱신; 이미 정상이면 skip = 멱등).
+- sales_order_items 0건이면 `syncCafe24OrderItems` 호출로 생성. 이미 있으면 내부 멱등 가드가 skip.
+- **건드리지 않음**: customer_id, total_amount/discount_amount, buyer_name/phone, status, ordered_at, 환불/분개 레코드. **재고 차감·movements·point_history 없음**(범위 밖, Step 1과 동일).
+- recipient_* update는 42703(083 미적용) 방어 재시도 패턴(L326~343) 동일 적용.
+
+### 5. 안전
+- 상태 제외: `status IN ('CANCELLED','REFUNDED','PARTIALLY_REFUNDED')` 건은 **대상 제외**(쿼리 술어 NOT IN).
+- cafe24 getOrder 실패(토큰 만료·삭제주문·네트워크): 해당 건 **로깅 후 continue**(중단 금지). 토큰 자체 null이면 전체 401 응답 후 종료(처리 0).
+- 건별 try/catch — 한 건 실패가 배치 전체를 멈추지 않음. 실패는 카운트 누적(+ logSyncEvent).
+- 순차 처리(for-of await). rate-limit 대비 과한 동시성 금지.
+
+### 6. 결과 리포트
+라우트 응답 JSON: `{ scanned, fixedMemo, fixedRecipient, fixedItems, skipped, failed, failedOrderNos? }` 카운트 반환. 실패 cafe24_order_id 일부만(과다 출력 금지).
+
+### 7. AI Sync / 마이그
+- **schema.ts / tools.ts 무변경**(읽기·보정 라우트, 새 테이블·enum·에이전트 도구 없음). CLAUDE.md 매트릭스 → 해당 없음 확인.
+- **마이그레이션 없음**. 083/080/082 기존. 미적용 시 42703 폴백 degrade.
 
 ## Build Order
+1. webhook.ts: item-생성 블록 → `syncCafe24OrderItems(salesOrderId, items, orderNoForLog)` export 추출 + `handleOrderCreated` 호출로 교체(회귀 0 확인).
+2. (선택) `buildDeliveryMemo(recipient)` 헬퍼 추출 — 안 하면 백필 memo 규칙 인라인 재현.
+3. 신규 `src/app/api/cafe24/backfill/route.ts`: CRON_SECRET 가드 + 토큰 주입 + 대상 쿼리 + for-of 보정 + 카운트 응답.
+4. npm run build.
 
-### A. memo 수정 (webhook.ts L312)
-- 이미 추출돼 있는 `recipient`(L250 extractRecipientInfo) 사용.
-- `recipient.address`(상세는 `recipient.addressDetail`) 사용. 형식 LOCKED:
-  - 주소 있으면: `memo = 'Delivery: ' + [recipient.address, recipient.addressDetail].filter(Boolean).join(' ')`
-  - 주소 없으면(null): `memo = null` — **'Delivery: undefined' 문자열 절대 금지.**
-
-### B. sales_order_items 생성 (sales_orders insert 성공 직후, L346 logSyncEvent 부근)
-- 위치: `newOrder` 확정 후(L344 orderError 가드 통과 후), `linkOrCreateCustomer` 호출 전/후 무관. try/catch로 감싸 **품목 실패가 주문 생성 성공을 깨지 않게** 한다(registerCafe24Customers L133 선례 동일).
-- 매핑 조회 = **orders/route.ts L312~360 패턴 그대로 재사용**(N+1 금지, 일괄 조회):
-  1. `cafe24Order.items`(Cafe24OrderItem[])에서 `(product_code, normalizeOptionValue(option_value))` 키 수집.
-  2. `cafe24_product_map` 전체(또는 해당 code) select → Map(mapKey→product_id). 마이그082 적용됨.
-  3. 매핑된 product_id들로 products(id,name) 일괄 select → Map(product_id→name).
-  4. try/catch로 감싸 테이블 미적용/조회 실패 시 빈 Map 폴백(미매핑 degrade).
-- 각 item → sales_order_items row (shape = cafe24-actions.ts L120~129 선례 그대로):
-  - `sales_order_id`: newOrder.id
-  - 매핑됨: `product_id` = 매핑 product_id, `item_text` = 내부 product.name (또는 null)
-  - 미매핑: `product_id` = null, `item_text` = `item.product_name`
-  - `quantity` = item.quantity || 1
-  - `unit_price` = Number(item.price ?? item.product_price ?? 0) || 0  ← quantity/unit_price/total_price NOT NULL이므로 폴백 필수
-  - `total_price` = unit_price * quantity
-  - `order_option` = extractItemOptions(item) || null  (옵션 표시 텍스트. 매핑 키 normalizeOptionValue와 **다름** — 혼동 금지)
-  - delivery_type / receipt_status: **명시 안 함** → DB DEFAULT('PICKUP'/'RECEIVED', 마이그052). 카페24=택배지만 이번 범위에서 default 수용, 의미왜곡 아님(Known Gap에 기록).
-- 멱등: insert 전 `sales_order_items where sales_order_id=newOrder.id limit 1` 존재 검사 → 있으면 skip(registerCafe24Customers L117 선례와 동일 계약 — 수동 등록이 먼저 만든 경우 중복 방지).
-- **재고 차감·inventory_movements·point_history 절대 생성 안 함**(범위 밖, 명시).
-
-### C. extractItemOptions 단일출처화 (drift 방지)
-- `extractItemOptions`(+ deps `parseOptionPairs`/`isNoSelection`/`safeDecode`)는 현재 orders/route.ts에 **module-local**. webhook.ts에서 필요.
-- LOCKED: 이 함수들을 `src/lib/cafe24/types.ts`로 옮겨 `export` → webhook.ts와 orders/route.ts **둘 다 import**. 복붙 금지.
-- 주의: types.ts에 이미 `safeDecodeKey`/`isNoSelectionValue`(normalizeOptionValue 전용, 정렬됨)가 있음 — **이름 충돌·의미 혼동 금지.** extractItemOptions 계열은 별도 함수로 유지(표시용 vs 매핑키용). 옮긴 뒤 orders/route.ts의 local 정의는 삭제하고 import로 교체.
-- Flag: 함수 이동 후 orders/route.ts 동작 무회귀 확인(extractItemOptions 호출부 3곳: itemsSummary, order_items.option).
-
-### D. AI Sync (CLAUDE.md 매트릭스)
-- 의미변화 없음(컬럼 추가/enum 변경 없음). schema.ts BUSINESS_RULES에 **1줄**: "카페24 주문 동기화 시 sales_order_items 생성(매핑되면 product_id, 미매핑은 item_text 텍스트), **재고 미차감**(별도)." tools.ts 무관. 마이그 없음.
-
-## Out of Scope (→ BUILD-LOG Known Gaps)
-- 재고 차감 / inventory_movements / point_history (별도 스프린트).
-- delivery_type=PARCEL·receipt_status=PARCEL_PLANNED 정밀화(카페24 전수 택배지만 default 수용).
-- **과거 깨진 카페24 주문 보정 = Step 2**(아래 메커니즘 LOCKED, 이번 빌드 미포함).
-- total_amount 0원 과거 백필(이미 forward-only 결정).
+## Out of Scope (→ BUILD-LOG Known Gaps if surfaces)
+- 재고/movements/point_history 생성·역차감.
+- total_amount 0원 백필(forward-only 결정 유지).
+- UI 버튼 트리거(라우트만; 운영은 curl/Bearer 호출).
+- delivery_type/receipt_status 정밀화(DB DEFAULT 수용).
+- legacy_purchases / b2b 보정.
 
 ## Acceptance
-- npm run build ✓.
-- 신규 카페24 주문(웹훅/크론) → sales_orders 1행 + sales_order_items N행(품목 종수만큼) 생성. 매핑된 품목은 product_id 연결, 미매핑은 item_text.
-- memo에 'undefined' 문자열 없음(주소 있으면 주소, 없으면 null).
-- 동일 주문 재처리 시 품목 중복 insert 없음(멱등). 수동 등록(registerCafe24Customers) 후 웹훅 재수신해도 중복 없음.
-- 재고/movements/포인트 변동 0(범위 밖 미생성 확인).
-- orders/route.ts 무회귀(extractItemOptions import 전환).
-
----
-
-# Step 2 (LOCKED 설계 — Step 1 배포 후 별도 빌드)
-## 과거 깨진 카페24 주문 보정
-- 메커니즘 LOCKED: **인플레이스 백필(삭제-재생성 아님).** 이유 = 기존 sales_orders에 customer_id 연결·환불·분개 FK가 걸려 있어 삭제 시 위험. 삭제-재생성 금지.
-- 형태 LOCKED: **1회성 스크립트**(scripts/, psycopg가 아닌 ts/node로 getOrder 재조회 필요 → 관리 라우트 또는 scripts/*.ts). Arch가 Step 2 브리프에서 라우트 vs 스크립트 최종 결정.
-- 동작: cafe24_order_id 있는 기존 sales_orders 순회 → client.getOrder 재조회 → (1) memo·recipient_* UPDATE (2) sales_order_items 없으면 Step 1 로직으로 생성. **삭제 없음, customer_id 불변, 재고 미반영.**
-- handleOrderCreated의 'already exists' skip(L258)은 그대로 둠 — 백필은 별도 경로.
-
-## 에스컬레이션 (Project Owner)
-- 없음 — 정책 모두 확정(범위=memo+품목, 재고 범위밖, 과거=인플레이스 백필). 신규 제품 동작·UX 변경 없음. Deploy Gate에서만 go-ahead 확인.
+- 추출된 `syncCafe24OrderItems`를 webhook이 호출, 기존 신규주문 품목생성 무회귀(로직 바이트 동일).
+- backfill 라우트: CRON_SECRET 없거나 틀리면 500/401. 정상 호출 시 대상만(취소/환불 제외) memo·recipient·items 인플레이스 보정, customer_id/금액/분개 무변경.
+- 멱등: 재호출 시 이미 정상인 건 skip(중복 품목·중복 update 없음).
+- cafe24 1건 실패가 배치를 멈추지 않고 failed로 집계.
+- npm run build 에러/경고 0.

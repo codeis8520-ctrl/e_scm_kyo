@@ -197,6 +197,108 @@ export function extractRecipientInfo(cafe24Order: any): {
   };
 }
 
+// sales_order_items 생성 (품목) — webhook 신규주문 + backfill 공용.
+// 멱등: 이미 품목이 있으면 skip. 매핑되면 product_id + 내부 product.name(item_text),
+// 미매핑은 product_id=null + 원본 product_name. 재고 차감·movements·point_history 없음(범위 밖).
+// 실패는 logSyncEvent('order_items_error')로 기록하되 throw하지 않음(호출부 성공 무회귀).
+export async function syncCafe24OrderItems(
+  salesOrderId: string,
+  items: any[],
+  orderNoForLog: string
+): Promise<void> {
+  try {
+    if (items.length > 0) {
+      // 멱등 가드: 이미 품목이 있으면 skip(수동 등록 registerCafe24Customers가 먼저 만든 경우 중복 방지).
+      const { data: existingItems } = await getSupabase()
+        .from('sales_order_items')
+        .select('id')
+        .eq('sales_order_id', salesOrderId)
+        .limit(1);
+
+      if (!existingItems?.length) {
+        const mapKey = (code: string, optValue: string) => `${code}
+${optValue}`;
+        const productMap = new Map<string, string>();      // mapKey → product_id
+        const productNameById = new Map<string, string>(); // product_id → name
+        try {
+          const wanted = new Set<string>();
+          for (const i of items) {
+            wanted.add(mapKey(String(i?.product_code ?? ''), normalizeOptionValue(i?.option_value)));
+          }
+          if (wanted.size > 0) {
+            const db = getSupabase() as any;
+            const { data: maps, error: mapErr } = await db
+              .from('cafe24_product_map')
+              .select('cafe24_product_code, option_value, product_id');
+            if (!mapErr && Array.isArray(maps)) {
+              for (const m of maps as any[]) {
+                productMap.set(mapKey(String(m.cafe24_product_code ?? ''), String(m.option_value ?? '')), m.product_id);
+              }
+              const neededIds = [...new Set(
+                [...wanted].map(k => productMap.get(k)).filter((v): v is string => !!v)
+              )];
+              if (neededIds.length > 0) {
+                const { data: prods, error: prodErr } = await db
+                  .from('products')
+                  .select('id, name')
+                  .in('id', neededIds);
+                if (!prodErr && Array.isArray(prods)) {
+                  for (const p of prods as any[]) productNameById.set(p.id, p.name);
+                }
+              }
+            }
+          }
+        } catch {
+          // 매핑 테이블 미적용/조회 실패 → 빈 Map 폴백(미매핑 degrade, 크래시 금지).
+        }
+
+        const rows = items.map((i) => {
+          const pid = productMap.get(mapKey(String(i?.product_code ?? ''), normalizeOptionValue(i?.option_value)));
+          const quantity = i.quantity || 1;
+          const unitPrice = Number((i as any).price ?? (i as any).product_price ?? 0) || 0;
+          return {
+            sales_order_id: salesOrderId,
+            product_id: pid ?? null,
+            item_text: pid ? (productNameById.get(pid) ?? null) : (i.product_name ?? null),
+            quantity,
+            unit_price: unitPrice,
+            total_price: unitPrice * quantity,
+            order_option: extractItemOptions(i) || null,
+            // delivery_type / receipt_status: 명시 안 함 → DB DEFAULT(PICKUP/RECEIVED, 마이그052).
+          };
+        });
+
+        let { error: itemsError } = await getSupabase()
+          .from('sales_order_items')
+          .insert(rows);
+
+        // 컬럼 미적용 방어(080/082 등): order_option/product_id 미존재 시 핵심 컬럼만으로 재시도.
+        if (itemsError) {
+          const code = String((itemsError as any).code || '');
+          const msg = String(itemsError.message || '').toLowerCase();
+          if (code === '42703' || (msg.includes('column') && msg.includes('does not exist'))) {
+            const minimalRows = rows.map(({ order_option, product_id, ...rest }) => {
+              void order_option; void product_id;
+              return rest;
+            });
+            const retry = await getSupabase()
+              .from('sales_order_items')
+              .insert(minimalRows);
+            itemsError = retry.error;
+          }
+        }
+
+        if (itemsError) {
+          await logSyncEvent('order_items_error', orderNoForLog, { salesOrderId, itemsError }, 'failed', itemsError.message);
+        }
+      }
+    }
+  } catch (e) {
+    // 품목 생성 실패는 주문 생성 성공에 영향 주지 않음(080/082 미적용 등).
+    await logSyncEvent('order_items_error', orderNoForLog, { salesOrderId }, 'failed', e instanceof Error ? e.message : 'unknown');
+  }
+}
+
 async function handleOrderCreated(
   orderNo: number,
   memberId: string,
@@ -349,103 +451,10 @@ async function handleOrderCreated(
 
   await logSyncEvent('order_created', orderNo.toString(), cafe24Order, 'success');
 
-  // ── sales_order_items 생성 (품목) ──────────────────────────────────────────
-  // 매핑 조회는 orders/route.ts와 동일 패턴(N+1 금지, 일괄 조회). 매핑되면 product_id +
-  // 내부 product.name(item_text), 미매핑은 product_id=null + 원본 product_name.
-  // 재고 차감·movements·point_history 없음(범위 밖). 품목 실패가 주문 생성 성공을 깨지 않게
-  // try/catch로 감싼다(registerCafe24Customers 선례 동일).
-  try {
-    const items = cafe24Order.items ?? [];
-    if (items.length > 0) {
-      // 멱등 가드: 이미 품목이 있으면 skip(수동 등록 registerCafe24Customers가 먼저 만든 경우 중복 방지).
-      const { data: existingItems } = await getSupabase()
-        .from('sales_order_items')
-        .select('id')
-        .eq('sales_order_id', newOrder.id)
-        .limit(1);
-
-      if (!existingItems?.length) {
-        const mapKey = (code: string, optValue: string) => `${code}
-${optValue}`;
-        const productMap = new Map<string, string>();      // mapKey → product_id
-        const productNameById = new Map<string, string>(); // product_id → name
-        try {
-          const wanted = new Set<string>();
-          for (const i of items) {
-            wanted.add(mapKey(String(i?.product_code ?? ''), normalizeOptionValue(i?.option_value)));
-          }
-          if (wanted.size > 0) {
-            const db = getSupabase() as any;
-            const { data: maps, error: mapErr } = await db
-              .from('cafe24_product_map')
-              .select('cafe24_product_code, option_value, product_id');
-            if (!mapErr && Array.isArray(maps)) {
-              for (const m of maps as any[]) {
-                productMap.set(mapKey(String(m.cafe24_product_code ?? ''), String(m.option_value ?? '')), m.product_id);
-              }
-              const neededIds = [...new Set(
-                [...wanted].map(k => productMap.get(k)).filter((v): v is string => !!v)
-              )];
-              if (neededIds.length > 0) {
-                const { data: prods, error: prodErr } = await db
-                  .from('products')
-                  .select('id, name')
-                  .in('id', neededIds);
-                if (!prodErr && Array.isArray(prods)) {
-                  for (const p of prods as any[]) productNameById.set(p.id, p.name);
-                }
-              }
-            }
-          }
-        } catch {
-          // 매핑 테이블 미적용/조회 실패 → 빈 Map 폴백(미매핑 degrade, 크래시 금지).
-        }
-
-        const rows = items.map((i) => {
-          const pid = productMap.get(mapKey(String(i?.product_code ?? ''), normalizeOptionValue(i?.option_value)));
-          const quantity = i.quantity || 1;
-          const unitPrice = Number((i as any).price ?? (i as any).product_price ?? 0) || 0;
-          return {
-            sales_order_id: newOrder.id,
-            product_id: pid ?? null,
-            item_text: pid ? (productNameById.get(pid) ?? null) : (i.product_name ?? null),
-            quantity,
-            unit_price: unitPrice,
-            total_price: unitPrice * quantity,
-            order_option: extractItemOptions(i) || null,
-            // delivery_type / receipt_status: 명시 안 함 → DB DEFAULT(PICKUP/RECEIVED, 마이그052).
-          };
-        });
-
-        let { error: itemsError } = await getSupabase()
-          .from('sales_order_items')
-          .insert(rows);
-
-        // 컬럼 미적용 방어(080/082 등): order_option/product_id 미존재 시 핵심 컬럼만으로 재시도.
-        if (itemsError) {
-          const code = String((itemsError as any).code || '');
-          const msg = String(itemsError.message || '').toLowerCase();
-          if (code === '42703' || (msg.includes('column') && msg.includes('does not exist'))) {
-            const minimalRows = rows.map(({ order_option, product_id, ...rest }) => {
-              void order_option; void product_id;
-              return rest;
-            });
-            const retry = await getSupabase()
-              .from('sales_order_items')
-              .insert(minimalRows);
-            itemsError = retry.error;
-          }
-        }
-
-        if (itemsError) {
-          await logSyncEvent('order_items_error', orderNo.toString(), cafe24Order, 'failed', itemsError.message);
-        }
-      }
-    }
-  } catch (e) {
-    // 품목 생성 실패는 주문 생성 성공에 영향 주지 않음(080/082 미적용 등).
-    await logSyncEvent('order_items_error', orderNo.toString(), cafe24Order, 'failed', e instanceof Error ? e.message : 'unknown');
-  }
+  // ── sales_order_items 생성 (품목) — webhook·backfill 공용 함수로 위임 ──────────
+  // 매핑되면 product_id + 내부 product.name(item_text), 미매핑은 product_id=null + 원본 product_name.
+  // 재고 차감·movements·point_history 없음(범위 밖). 품목 실패가 주문 생성 성공을 깨지 않음(내부 try/catch).
+  await syncCafe24OrderItems(newOrder.id, cafe24Order.items ?? [], orderNo.toString());
 
   // 주문자 → 기존 고객 자동 "연결"만 (자동 생성 안 함 — 미등록은 배송탭에서 수동 등록).
   await linkOrCreateCustomer({

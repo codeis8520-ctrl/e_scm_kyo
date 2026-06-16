@@ -1,5 +1,22 @@
 # BUILD-LOG
 
+## #14 Step 2: 과거 카페24 주문 인플레이스 백필 — 2026-06-16
+시작/완료: 2026-06-16 · Build Status: npm run build ✓ (에러/경고 0, /api/cafe24/backfill 등록)
+
+### 변경 파일 (2) — DB/마이그/schema.ts/tools.ts 무변경, 신규 npm 패키지 없음
+- **src/lib/cafe24/webhook.ts** — Step 1에서 인라인이던 sales_order_items 생성 블록을 `export async function syncCafe24OrderItems(salesOrderId, items, orderNoForLog)`로 추출(바이트 동작 동일). `handleOrderCreated`는 호출로 교체. `logSyncEvent` data 인자만 cafe24Order 전체→`{salesOrderId,...}`(잠근 시그니처에 cafe24Order 없음 — 불가피, 기능 동일).
+- **src/app/api/cafe24/backfill/route.ts** (신규) — CRON_SECRET Bearer GET 라우트. `?limit`(기본50/최대200). getValidAccessToken null→401. 대상=ONLINE+cafe24_order_id+취소/환불 제외, 임베드 count로 페이지 페치 후 건별 깨짐판정(memo undefined/null·recipient_name null·items 0). 정상=skip(getOrder 없이). getOrder→extractRecipientInfo→memo+recipient_*(42703 degrade)+syncCafe24OrderItems(품목 0건만). 건별 try/catch, getOrder 실패=failed+continue. JSON `{scanned,fixedMemo,fixedRecipient,fixedItems,skipped,failed,failedOrderNos?}`.
+
+### 결정 사항
+- **대상 "items 0건" 선정 = 임베드 count + 건별 판정** — PostgREST가 자식 0건 anti-join을 `.or()`로 표현 불가하여 브리프 §3의 단일 `.or()`를 그대로 못 씀. `sales_order_items(count)` 임베드로 한 페이지(limit) 받아 코드에서 3조건 판정. limit=스캔 페이지 캡(멱등 → 반복 호출 점진 처리). 이미 정상인 건은 getOrder 호출 없이 skip(rate-limit·중복 update 방지). REVIEW-REQUEST Open Q1로 리뷰 확인 요청.
+- `order('ordered_at', desc)` 추가(페이지네이션 안정성, 무해).
+- memo 규칙은 `buildDeliveryMemo(recipient)` 로컬 헬퍼로 재현(webhook L314~316 동일, 선택적 추출 허용 범위).
+
+### Known Gaps (Out of Scope — 미수정)
+- ESLint `no-explicit-any` (webhook.ts 전반·신규 라우트 2곳) — 파일 기존 관행 동일, build 클린, 신규 회귀 아님.
+- 재고/movements/point_history, total_amount 0원 백필, UI 버튼 트리거, delivery_type/receipt_status 정밀화, legacy/b2b 보정 — 브리프 명시 범위 밖.
+
+
 ## 카페24 주문 흐름 수정 (Step 1: webhook memo + sales_order_items 생성) — 2026-06-16
 시작/완료: 2026-06-16 · Build Status: npm run build ✓ (에러/경고 0)
 

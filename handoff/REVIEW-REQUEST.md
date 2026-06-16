@@ -1,30 +1,20 @@
-# Review Request — 카페24 주문 흐름 수정 (Step 1: webhook memo + sales_order_items 생성)
+# Review Request — #14 Step 2: 과거 카페24 주문 인플레이스 백필
 Date: 2026-06-16
 Ready for Review: YES
 
 ## Files Changed
 
-- **src/lib/cafe24/types.ts:166-216** — extractItemOptions(+parseOptionPairs/isNoSelection/safeDecode)를 orders/route.ts에서 이관해 export. 표시용 옵션 텍스트 추출("key: value", 정렬X). 기존 normalizeOptionValue 계열(safeDecodeKey/isNoSelectionValue, 매핑키 전용·정렬됨)과 이름·의미 분리 — 충돌 없음.
+### Refactor (회귀 0 목표)
+- **src/lib/cafe24/webhook.ts:200-307** — 신규 `export async function syncCafe24OrderItems(salesOrderId, items, orderNoForLog)`. 기존 `handleOrderCreated`의 sales_order_items 생성 블록(구 L357~448)을 바이트 동작 그대로 함수로 이관(멱등 가드·매핑 일괄조회·rows 빌드·42703 minimal 재시도·`order_items_error` 로깅). 단, `logSyncEvent` data 인자는 `cafe24Order` 전체→`{salesOrderId,...}`로 대체(시그니처에 cafe24Order 없음 — Arch가 잠근 시그니처의 불가피한 결과, 기능 동작 동일).
+- **src/lib/cafe24/webhook.ts:454-457** — `handleOrderCreated` 인라인 블록 삭제 → `await syncCafe24OrderItems(newOrder.id, cafe24Order.items ?? [], orderNo.toString())` 호출로 교체.
 
-- **src/app/api/cafe24/orders/route.ts:4** — import에 extractItemOptions 추가.
-- **src/app/api/cafe24/orders/route.ts:6-8** — module-local extractItemOptions(+deps) 정의 삭제, 이관 주석으로 교체. 호출부(itemsSummary L329, order_items.option L370)는 동일 구현 import → 무회귀.
+### 신규 라우트
+- **src/app/api/cafe24/backfill/route.ts** (전체 신규) — GET, CRON_SECRET Bearer 가드(미설정 500 / 불일치 401, sync-orders 패턴 복제). `?limit`(기본 50, 최대 200). `getValidAccessToken` null이면 401. 대상 쿼리(channel='ONLINE' AND cafe24_order_id NOT NULL AND status NOT IN 취소/환불). for-of 순차: 깨짐 판정(memo undefined/null·recipient_name null·items 0) → 정상이면 skip(getOrder 없이) → `getOrder` → `extractRecipientInfo` → memo+recipient_* 5필드 update(42703 degrade) + 품목 0건이면 `syncCafe24OrderItems`. 건별 try/catch, getOrder 실패=failed+continue. 응답 `{scanned,fixedMemo,fixedRecipient,fixedItems,skipped,failed,failedOrderNos?}`.
 
-- **src/lib/cafe24/webhook.ts:3** — import에 normalizeOptionValue, extractItemOptions 추가.
-- **src/lib/cafe24/webhook.ts:312-317** — (A) memo 수정: recipient.address 있으면 `Delivery: addr(+detail)`, 없으면 null. 'Delivery: undefined' 영구버그 제거(임베드 응답에 평면 recipient_address 없음).
-- **src/lib/cafe24/webhook.ts:351-449** — (B) order_created 로그 직후 sales_order_items 생성. 멱등 가드(존재 시 skip) → 매핑 일괄조회(N+1 금지) → row 빌드(매핑 product_id+내부명 / 미매핑 null+product_name) → insert + 컬럼미존재(42703) 최소컬럼 재시도 → 실패 시 logSyncEvent('order_items_error'). 전체 try/catch — 주문 생성 성공 불변. 재고/movements/포인트 미생성.
-
-- **src/lib/ai/schema.ts:283** — BUSINESS_RULES 1줄(카페24 동기화 시 sales_order_items 생성, 재고 미차감).
-
-## Self-Review
-
-- **Richard가 먼저 볼 곳**: (1) types.ts 헬퍼 이관 후 route.ts 무회귀 — 동일 구현 import, build ✓로 타입 확인. (2) 멱등 가드가 registerCafe24Customers(cafe24-actions L117)와 동일 계약인지 — sales_order_id 기준 limit 1 존재검사 동일. (3) order_option은 extractItemOptions(표시용)이고 매핑키 normalizeOptionValue와 다름 — 브리프 명시대로 분리.
-- **모든 요구사항**: A/B/C/D 전부 구현(BUILD-LOG 대조). 재고차감·movements·point_history 미생성 확인.
-- **실패 시 사용자에게 보이는 것**: 품목 insert 실패해도 주문 row는 생성됨(판매현황에 표시). 실패는 cafe24_sync_logs에 order_items_error로 기록만 — raw 에러 사용자 노출 없음.
-
-## Open Questions
-- unit_price 폴백에서 Cafe24OrderItem 타입은 price: number만 가지나, 임베드 응답이 product_price를 쓸 수 있어 `(i as any).product_price`로 보강 읽음. route.ts도 동일 패턴(L410 product_price ?? payment_amount). 이중 폴백 의도 맞는지 확인 요망.
+## Open Questions / 설계 판정 (리뷰 요청)
+1. **"items 0건" 대상 선정** — 브리프 §3은 `.or()`에 "items 0건"을 포함했으나 PostgREST는 자식 0건 anti-join을 `.or()`로 표현 불가. 따라서 임베드 `sales_order_items(count)`로 한 페이지(limit)를 받아 **건별 판정**으로 구현. `limit`은 스캔 페이지 캡 의미(멱등 → 반복 호출로 점진). 이미 정상인 건은 `getOrder` 호출 없이 skip → rate-limit·재호출 비용 안전. 이 해석이 의도와 맞는지 확인 요청.
+2. **`order('ordered_at', desc)`** — 페이지네이션 안정성 위해 정렬 추가(최신 주문 우선 보정). 브리프 미명시, 무해 판단.
 
 ## Out of Scope (logged in BUILD-LOG)
-- 재고 차감 / inventory_movements / point_history (별도 스프린트).
-- delivery_type=PARCEL·receipt_status 정밀화(default 수용).
-- 과거 주문 보정 = Step 2(인플레이스 백필).
+- ESLint `no-explicit-any` (webhook.ts 전반·신규 라우트 2곳) — 파일 기존 관행 동일, `npm run build` 클린. 신규 회귀 아님.
+- 재고/movements/point_history, total_amount 0원 백필, UI 버튼 — 브리프 명시 범위 밖.
