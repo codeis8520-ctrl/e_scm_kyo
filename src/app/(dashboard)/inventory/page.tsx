@@ -309,8 +309,9 @@ export default function InventoryPage() {
   })();
 
   // ── 피벗 데이터 계산 — 카테고리 트리 순으로 정렬 ──────────────────────
-  // 정책: track_inventory=false / is_phantom=true 도 화면엔 노출 (배지로 상태 안내).
-  //       이전엔 track_inventory=false 행을 통째로 숨겨서 phantom·세트상품이 안 보이는 문제가 있었음.
+  // 정책(2026-06-16): "재고 관리 필요"(track_inventory) 미체크 품목은 재고현황 목록에서 제외.
+  //   phantom/세트(포장용 Pack/Unpack 행 포함)도 track_inventory=false면 숨김 — filteredPivot/filteredFlat에서 필터.
+  //   배지·합성은 그대로 두되 표시 필터에서 걸러냄. (재고차감 등 서버 phantom 로직엔 영향 없음.)
   const productRows: ProductRow[] = (() => {
     const map = new Map<string, ProductRow>();
     for (const inv of inventories) {
@@ -382,6 +383,7 @@ export default function InventoryPage() {
   const searchLower = search.toLowerCase();
 
   const filteredPivot = productRows.filter(r => {
+    if (!r.trackInventory) return false;  // 재고관리 미체크(추적해제) 품목 제외
     if (allowedCategoryIds && !(r.categoryId && allowedCategoryIds.has(r.categoryId))) return false;
     if (typeFilter && (r.productType || 'FINISHED') !== typeFilter) return false;
     if (!searchLower) return true;
@@ -394,6 +396,7 @@ export default function InventoryPage() {
 
   const filteredFlat = inventories
     .filter(item => {
+      if (item.product?.track_inventory === false) return false;  // 재고관리 미체크 제외
       const matchBranch = !flatBranchFilter || item.branch_id === flatBranchFilter;
       const cid = item.product?.category_id ?? null;
       const matchCategory = !allowedCategoryIds || (cid != null && allowedCategoryIds.has(cid));
@@ -469,6 +472,7 @@ export default function InventoryPage() {
 
   // 재고 부족 수 (지점 사용자는 자기 지점만)
   const lowCount = inventories.filter(i =>
+    i.product?.track_inventory !== false &&
     i.quantity < i.safety_stock &&
     (!isBranchUser || !userBranchId || i.branch_id === userBranchId)
   ).length;
