@@ -65,6 +65,11 @@ interface OrderRow {
   customer: { id: string; name: string; phone: string } | null;
   buyer_name?: string | null;   // 자사몰 주문자 스냅샷 (customer 미연결 시 표시)
   buyer_phone?: string | null;
+  recipient_name?: string | null;          // 카페24 받는분 스냅샷 (shipment 없을 때 표시·검색·CSV)
+  recipient_phone?: string | null;
+  recipient_zipcode?: string | null;
+  recipient_address?: string | null;
+  recipient_address_detail?: string | null;
   handler?: { id: string; name: string } | null;
   items: OrderItem[];
   shipments?: ShipmentRow[];
@@ -158,7 +163,7 @@ export default function SalesListTab() {
   // 서브뷰: 목록 ↔ 지점비교 (본사/관리자 전용). 지점비교는 기간 행 × 지점 열 매트릭스.
   const [subView, setSubView] = useState<'list' | 'compare'>('list');
   // 목록 정렬 토글: 'order'=주문일순(현행 flat) / 'receipt'=수령일자별 그룹
-  const [listSort, setListSort] = useState<'order' | 'receipt'>('order');
+  const [listSort, setListSort] = useState<'order' | 'receipt'>('receipt');
   // 비교뷰 전용 다수선택 상태 — 기존 단일 branchFilter 와 독립. 기본값은 전체 active 지점.
   const [compareBranchIds, setCompareBranchIds] = useState<string[]>([]);
   // RPC branch_sales_summary 반환형 — legacy(<2026-05-19)+sales(>=2026-05-19) 통합 집계 행.
@@ -203,6 +208,7 @@ export default function SalesListTab() {
         payment_method, points_earned, points_used, credit_settled, memo,
         approval_no, card_info,
         receipt_status, receipt_date, approval_status, payment_info,
+        recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail,
         branch:branches(id, name),
         customer:customers(id, name, phone),
         buyer_name, buyer_phone,
@@ -477,21 +483,24 @@ export default function SalesListTab() {
         );
         if (!hit) return false;
       }
-      // 받는 분 검색 (이름·전화)
+      // 받는 분 검색 (이름·전화) — shipment 우선, 없으면 sales_order recipient_* (shipment 없는 카페24 주문 포함)
       if (recQ) {
         const hit = (o.shipments || []).some(s => {
           if ((s.recipient_name || '').toLowerCase().includes(recQ)) return true;
           if (recDigits && (s.recipient_phone || '').replace(/[^0-9]/g, '').includes(recDigits)) return true;
           return false;
-        });
+        }) ||
+          (o.recipient_name || '').toLowerCase().includes(recQ) ||
+          (!!recDigits && (o.recipient_phone || '').replace(/[^0-9]/g, '').includes(recDigits));
         if (!hit) return false;
       }
-      // 주소 검색 (배송지)
+      // 주소 검색 (배송지) — shipment 우선, 없으면 sales_order recipient_*
       if (addrQ) {
         const hit = (o.shipments || []).some(s => {
           const addr = `${s.recipient_address || ''} ${s.recipient_address_detail || ''}`.toLowerCase();
           return addr.includes(addrQ);
-        });
+        }) ||
+          `${o.recipient_address || ''} ${o.recipient_address_detail || ''}`.toLowerCase().includes(addrQ);
         if (!hit) return false;
       }
       return true;
@@ -556,6 +565,14 @@ export default function SalesListTab() {
                 const itemNames = items.map(it => it.product?.name).filter(Boolean) as string[];
                 const totalQty = items.reduce((s, it) => s + (it.quantity || 0), 0);
                 const firstShip = (o.shipments || [])[0];
+                // 받는분 = shipment 우선 → 없으면 sales_order recipient_* (카페24 받는분 스냅샷)
+                const recv = {
+                  name: firstShip?.recipient_name ?? o.recipient_name ?? null,
+                  phone: firstShip?.recipient_phone ?? o.recipient_phone ?? null,
+                  address: firstShip?.recipient_address ?? o.recipient_address ?? null,
+                  addressDetail: firstShip?.recipient_address_detail ?? o.recipient_address_detail ?? null,
+                };
+                const hasRecv = !!(recv.name || recv.phone || recv.address);
                 const optionBadges = items.map(it => it.order_option).filter(Boolean) as string[];
                 return (
                   <tr
@@ -641,22 +658,25 @@ export default function SalesListTab() {
                       )}
                     </td>
                     <td className="align-top">
-                      {firstShip ? (
+                      {hasRecv ? (
                         (() => {
-                          const firstShipQuick =
+                          const firstShipQuick = firstShip && (
                             firstShip.delivery_type === 'QUICK'
-                            || (!firstShip.delivery_type && o.receipt_status === 'QUICK_PLANNED');
+                            || (!firstShip.delivery_type && o.receipt_status === 'QUICK_PLANNED')
+                          );
                           return (
                             <div className="text-xs leading-tight">
                               <p className="text-slate-700 flex items-center gap-1">
-                                <span className={firstShipQuick ? 'text-indigo-600' : 'text-blue-600'}>
-                                  {firstShipQuick ? '🛵' : '📦'}
-                                </span>
-                                {firstShip.recipient_name || '-'}
+                                {firstShip && (
+                                  <span className={firstShipQuick ? 'text-indigo-600' : 'text-blue-600'}>
+                                    {firstShipQuick ? '🛵' : '📦'}
+                                  </span>
+                                )}
+                                {recv.name || '-'}
                               </p>
-                              <p className="text-[10px] text-slate-400">{firstShip.recipient_phone || ''}</p>
-                              <p className="text-[10px] text-slate-500 line-clamp-1" title={`${firstShip.recipient_address || ''} ${firstShip.recipient_address_detail || ''}`}>
-                                {firstShip.recipient_address || ''}
+                              <p className="text-[10px] text-slate-400">{recv.phone || ''}</p>
+                              <p className="text-[10px] text-slate-500 line-clamp-1" title={`${recv.address || ''} ${recv.addressDetail || ''}`}>
+                                {recv.address || ''}
                               </p>
                             </div>
                           );
@@ -763,9 +783,9 @@ export default function SalesListTab() {
         PAY_LABEL[o.payment_method] || o.payment_method,
         APPROVAL_STATUS_LABEL[o.approval_status || 'COMPLETED'] || '',
         (o.payment_info || '').replace(/\n/g, ' '),
-        firstShip?.recipient_name || '',
-        firstShip?.recipient_phone || '',
-        `${firstShip?.recipient_address || ''} ${firstShip?.recipient_address_detail || ''}`.trim(),
+        firstShip?.recipient_name ?? o.recipient_name ?? '',
+        firstShip?.recipient_phone ?? o.recipient_phone ?? '',
+        `${firstShip?.recipient_address ?? o.recipient_address ?? ''} ${firstShip?.recipient_address_detail ?? o.recipient_address_detail ?? ''}`.trim(),
         (firstShip?.delivery_message || '').replace(/\n/g, ' '),
         (o._consultMatch || '').replace(/\n/g, ' '),
         STATUS_LABEL[o.status] || o.status,
@@ -790,7 +810,7 @@ export default function SalesListTab() {
       {/* 서브뷰 토글 — 본사/관리자 전용 (지점직원은 목록만) */}
       {!isBranchUser && (
         <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1 w-fit">
-          {([['list', '목록'], ['compare', '지점비교']] as ['list' | 'compare', string][]).map(([k, label]) => (
+          {([['list', '수령 현황'], ['compare', '매출 현황']] as ['list' | 'compare', string][]).map(([k, label]) => (
             <button
               key={k}
               onClick={() => setSubView(k)}

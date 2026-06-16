@@ -1,28 +1,41 @@
-# Review Request — Sprint B Step 2: 카페24 주문 탭 인라인 매핑 UI
+# Review Request — 판매현황 수령/매출 분리 + 카페24 받는분
 Date: 2026-06-16
 Ready for Review: YES
 
-## Files Changed (단일 파일)
-- src/app/(dashboard)/shipping/page.tsx:3 — import에 `Fragment` 추가(key 있는 확장 sub-row 래핑용).
-- src/app/(dashboard)/shipping/page.tsx:6-7 — `createCafe24ProductMap, deleteCafe24ProductMap`(cafe24-actions) + `getProducts`(@/lib/actions) import.
-- src/app/(dashboard)/shipping/page.tsx:12-19 — `getCookie` 헬퍼(inventory/page.tsx L69~76 그대로 복제).
-- src/app/(dashboard)/shipping/page.tsx:55 — `order_items` 인터페이스를 route 실제 shape로 확장(product_code/option_value/mapped_name).
-- src/app/(dashboard)/shipping/page.tsx:183-195 — 매핑 state: userRole/isHQ, allProducts, productsLoaded, expandedOrders, mappingKey/Search/Busy/Error.
-- src/app/(dashboard)/shipping/page.tsx:752-761 — cafe24 탭+isHQ 진입 시 getProducts() 1회 lazy 로드.
-- src/app/(dashboard)/shipping/page.tsx:766-805 — toggleExpandOrder / handleConnectProduct / handleDisconnectProduct (성공 시 handleLoadCafe24Orders 전체 재조회, error 인라인).
-- src/app/(dashboard)/shipping/page.tsx:1128-1280 — 행 map을 Fragment로 래핑, 품목 td에 ▸/▾ 확장 토글, colSpan=11 확장 tr(안내문 + item별 매핑상태/연결·해제 드롭다운).
+## Build
+npm run build ✓ Compiled successfully in 5.3s (에러/경고 0)
+
+## Files Changed
+
+### src/lib/cafe24/webhook.ts
+- L180~199 — 신규 `extractRecipientInfo(cafe24Order)`: `co.receivers?.[0]`에서 받는분 스냅샷 추출(name/phone/zipcode/address/addressDetail, trim()||null).
+- L231 — handleOrderCreated에 `const recipient = extractRecipientInfo(cafe24Order)` 추가.
+- L265~320 — sales_orders insert를 `insertPayload` 객체로 추출, recipient_* 5필드 포함. orderError가 42703/`recipient_`/column-missing이면 5필드 제거 후 재시도(마이그 083 미적용 방어). memo `Delivery:` 라인 현행 유지.
+
+### src/app/(dashboard)/pos/SalesListTab.tsx
+- L66~72 — OrderRow 타입에 recipient_name?/phone?/zipcode?/address?/address_detail? 추가.
+- L166 — listSort 기본값 `'order'`→`'receipt'` (수령 현황 첫 진입 = 수령일자별).
+- L206 — extended select에만 recipient_* 5컬럼 추가(fallback 분기 미변경).
+- L487~503 — 검색 술어 recQ/addrQ에 sales_order recipient_* OR 추가(shipment 없는 카페24 주문도 검색).
+- L563~571 — renderOrderRow에 `recv` 헬퍼(firstShip ?? o.recipient_*) + `hasRecv`.
+- L655~679 — 받는분 셀: shipment 없어도 recv 노출, 택배/퀵 아이콘은 firstShip 있을 때만.
+- L779~782 — CSV 받는분 3컬럼 firstShip ?? o.recipient_* 폴백.
+- L811 — 서브뷰 라벨 '목록'→'수령 현황', '지점비교'→'매출 현황' (subView 키 'list'/'compare' 유지).
+
+### src/lib/ai/schema.ts
+- L58~60 — sales_orders 컬럼에 recipient_* 추가 + 주석 1줄(받는분 스냅샷·shipments 우선).
 
 ## Self-Review
-- **Richard가 먼저 볼 것**: (1) mappingError 단일 공유 — 다른 확장 패널에도 보일 수 있으나 매 액션·패널오픈 시 클리어되는 transient라 허용(BUILD-LOG Gap). (2) 비-HQ는 effect가 isHQ 가드라 allProducts 미로드 — 조회 전용이라 의도된 동작. (3) 드롭다운 onBlur 200ms 지연은 기존 senderResults 패턴과 동일.
-- **Brief 요구사항 전수**: 인터페이스 동기화 ✓ / isHQ 복제 ✓ / getProducts 1회+클라필터 ✓ / expanded Set 토글 ✓ / item별 품목·옵션·수량+매핑상태 ✓ / 연결(createCafe24ProductMap)→전체재조회 ✓ / 해제(deleteCafe24ProductMap)→전체재조회 ✓ / 반복매핑 안내 1줄 ✓ / 버튼 isHQ 전용 ✓ / product_code 빈 품목 비활성+안내 ✓ / DB·schema.ts·tools.ts 무변경 ✓.
-- **빈/실패/로딩**: items 0건 → "품목 정보가 없습니다." / connect·delete `{error}` → 패널 상단 빨강 인라인 / 검색 0건 → "일치하는 제품이 없습니다." 드롭다운.
-- **무회귀**: 주문자 고객 등록(registerCafe24Customers의 order_items 파라미터 타입은 신규 타입의 구조적 부분집합 — build 통과 확인), 선택 주문 배송 추가, 체크박스/필터, CJ export(downloadCjExcel 미변경) 모두 불변.
-
-## Build
-npm run build ✓ Compiled successfully in 7.0s (에러/경고 0).
+- **Richard가 먼저 볼 것**: webhook 42703 retry의 unused destructure — `void` 문으로 lint 통과. retry 조건은 code='42703' OR msg에 'recipient_' OR ('column'+'does not exist) 포함이라 컬럼 누락을 폭넓게 흡수.
+- **브리프 요구사항 전부 구현**: extractRecipientInfo·insert·42703 retry·라벨·기본정렬·extended-only select·recv 헬퍼(render/CSV/검색/수령일자 그룹 공통)·OrderRow 타입·schema 동기화·tools.ts 무변경 확인. 모두 ✓.
+- **빈/실패 UX**: 받는분 없으면 셀 '-'. 마이그 083 미적용 시 extended select 42703→기존 fallback 흡수, webhook insert 42703→recipient 제거 재시도. 주문 생성·목록 로드 안 깨짐.
+- 수령일자별 그룹 렌더(L1156 receiptGroups.flatMap)도 동일 renderOrderRow 사용 → recv 헬퍼 자동 적용.
 
 ## Open Questions
-- 없음. 브리프 LOCKED 결정 그대로 구현.
+- 없음.
 
 ## Out of Scope (logged in BUILD-LOG)
-- shipment.items_summary 소급 갱신, 제품검색 서버 페이지네이션, 매핑 대량 일괄편집 화면.
+- 기존 카페24 주문 recipient_* 백필 없음(shipment 있으면 그쪽 표시).
+- b2b_sales_orders/legacy_purchases 미변경.
+- compare RPC 로직 미변경(라벨만).
+- 마이그 083 파일은 Arch 소유 — Bob 미생성.

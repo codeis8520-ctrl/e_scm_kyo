@@ -177,6 +177,26 @@ export function extractBuyerInfo(cafe24Order: any): {
   return { buyerName, buyerPhone, memberId, isPaid };
 }
 
+// 카페24 주문 객체 → 받는분(수령자) 스냅샷 추출. 원천 = receivers[0] (extractBuyerInfo와 동일 경로).
+export function extractRecipientInfo(cafe24Order: any): {
+  name: string | null;
+  phone: string | null;
+  zipcode: string | null;
+  address: string | null;
+  addressDetail: string | null;
+} {
+  const co = cafe24Order ?? {};
+  const recvObj = Array.isArray(co.receivers) ? (co.receivers[0] ?? {}) : {};
+  const clean = (v: unknown): string | null => (v ?? '').toString().trim() || null;
+  return {
+    name: clean(recvObj.name ?? recvObj.shipping_name),
+    phone: clean(recvObj.cellphone ?? recvObj.phone),
+    zipcode: clean(recvObj.zipcode),
+    address: clean(recvObj.address1 ?? recvObj.address_full ?? recvObj.address),
+    addressDetail: clean(recvObj.address2),
+  };
+}
+
 async function handleOrderCreated(
   orderNo: number,
   memberId: string,
@@ -227,6 +247,7 @@ async function handleOrderCreated(
   //   - 미결제/이름·전화 없는 게스트 주문은 customer_id=null 유지(스냅샷만).
   // ──────────────────────────────────────────────────────────────────────
   const { buyerName, buyerPhone } = extractBuyerInfo(cafe24Order);
+  const recipient = extractRecipientInfo(cafe24Order);
 
   const { data: existingOrder } = await getSupabase()
     .from('sales_orders')
@@ -260,36 +281,62 @@ async function handleOrderCreated(
 
   const orderedById = adminUser?.[0]?.id;
 
-  const { data: newOrder, error: orderError } = await getSupabase()
+  const insertPayload: Record<string, unknown> = {
+    order_number: orderCode,
+    channel: 'ONLINE',
+    branch_id: branchId,
+    customer_id: null,                // linkOrCreateCustomer 가 결제완료 시점에 채움
+    buyer_name: buyerName,            // 주문자 스냅샷 — 비회원 표시 방지
+    buyer_phone: buyerPhone,
+    recipient_name: recipient.name,           // 받는분 스냅샷 — shipment 없어도 표시 (마이그 083)
+    recipient_phone: recipient.phone,
+    recipient_zipcode: recipient.zipcode,
+    recipient_address: recipient.address,
+    recipient_address_detail: recipient.addressDetail,
+    ordered_by: orderedById,
+    total_amount: firstPositiveAmount(
+      (cafe24Order as any).payment_amount,
+      (cafe24Order as any).order_price_amount,
+      (cafe24Order as any).total_order_price,
+      (cafe24Order as any).actual_payment_amount,
+    ),
+    discount_amount:
+      Number(
+        (cafe24Order as any).total_discount_price ??
+        (cafe24Order as any).order_discount_amount ??
+        0
+      ) || 0,
+    status: 'PENDING',
+    payment_method: mapPaymentMethod(cafe24Order.payment_method),
+    cafe24_order_id: orderNo.toString(),
+    memo: `Delivery: ${cafe24Order.recipient_address}`,
+    ordered_at: new Date(cafe24Order.order_date).toISOString(),
+  };
+
+  let { data: newOrder, error: orderError } = await getSupabase()
     .from('sales_orders')
-    .insert({
-      order_number: orderCode,
-      channel: 'ONLINE',
-      branch_id: branchId,
-      customer_id: null,                // linkOrCreateCustomer 가 결제완료 시점에 채움
-      buyer_name: buyerName,            // 주문자 스냅샷 — 비회원 표시 방지
-      buyer_phone: buyerPhone,
-      ordered_by: orderedById,
-      total_amount: firstPositiveAmount(
-        (cafe24Order as any).payment_amount,
-        (cafe24Order as any).order_price_amount,
-        (cafe24Order as any).total_order_price,
-        (cafe24Order as any).actual_payment_amount,
-      ),
-      discount_amount:
-        Number(
-          (cafe24Order as any).total_discount_price ??
-          (cafe24Order as any).order_discount_amount ??
-          0
-        ) || 0,
-      status: 'PENDING',
-      payment_method: mapPaymentMethod(cafe24Order.payment_method),
-      cafe24_order_id: orderNo.toString(),
-      memo: `Delivery: ${cafe24Order.recipient_address}`,
-      ordered_at: new Date(cafe24Order.order_date).toISOString(),
-    })
+    .insert(insertPayload)
     .select()
     .single();
+
+  // 마이그 083 미적용 방어: recipient_* 컬럼이 없으면(42703) 해당 5필드 제거 후 재시도.
+  if (orderError) {
+    const code = String((orderError as any).code || '');
+    const msg = String(orderError.message || '').toLowerCase();
+    if (code === '42703' || msg.includes('recipient_') || (msg.includes('column') && msg.includes('does not exist'))) {
+      const {
+        recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail,
+        ...payloadWithoutRecipient
+      } = insertPayload;
+      void recipient_name; void recipient_phone; void recipient_zipcode; void recipient_address; void recipient_address_detail;
+      const retry = await getSupabase()
+        .from('sales_orders')
+        .insert(payloadWithoutRecipient)
+        .select()
+        .single();
+      newOrder = retry.data; orderError = retry.error;
+    }
+  }
 
   if (orderError) {
     await logSyncEvent('order_creation_error', orderNo.toString(), cafe24Order, 'failed', orderError.message);

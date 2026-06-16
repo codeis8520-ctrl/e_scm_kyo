@@ -1,5 +1,41 @@
 # BUILD-LOG
 
+## 판매현황 수령/매출 분리 + 카페24 받는분 (빌드 완료 · 리뷰 대기)
+시작: 2026-06-16
+
+### Build Status — npm run build ✓ Compiled successfully in 5.3s (에러/경고 0)
+
+### 변경 파일 (3) + 마이그 083(Arch 작성 완료 2026-06-16 — supabase/migrations/083_sales_orders_recipient.sql · Supabase 적용 대기)
+
+**src/lib/cafe24/webhook.ts**
+- L180~199 신규 `export function extractRecipientInfo(cafe24Order)` — 원천 `co.receivers?.[0]` (extractBuyerInfo recvObj 동일 경로). name=name??shipping_name, phone=cellphone??phone, zipcode, address=address1??address_full??address, addressDetail=address2. 전부 trim()||null.
+- handleOrderCreated: `const recipient = extractRecipientInfo(...)` 추가. insert를 `insertPayload` 객체로 추출 후 recipient_* 5필드 포함. 42703/`recipient_`/`column ... does not exist` 시 5필드 destructure 제거 후 재시도(마이그 083 미적용 방어). memo `Delivery:` 라인 현행 유지.
+
+**src/app/(dashboard)/pos/SalesListTab.tsx**
+- OrderRow 타입에 recipient_name?/phone?/zipcode?/address?/address_detail? (string|null) 추가.
+- listSort 기본값 'order'→'receipt' (수령 현황 첫 진입 = 수령일자별).
+- extended select에만 recipient_* 5컬럼 추가(fallback 분기는 미변경 — 42703 폴백이 흡수).
+- renderOrderRow: `recv` 헬퍼(firstShip 우선 → o.recipient_*) + `hasRecv`. 받는분 셀을 shipment 없어도 recv로 노출(택배/퀵 아이콘은 firstShip 있을 때만). order/receipt 두 렌더 모드 공통(둘 다 renderOrderRow 사용).
+- CSV 받는분 3컬럼: firstShip ?? o.recipient_* 폴백.
+- 검색 술어 recQ/addrQ: shipments OR sales_order recipient_* (shipment 없는 카페24 주문도 검색에 걸림).
+- 서브뷰 라벨: '목록'→'수령 현황', '지점비교'→'매출 현황' (subView 키 'list'/'compare' 내부 유지).
+
+**src/lib/ai/schema.ts**
+- sales_orders 컬럼 나열에 recipient_name/phone/zipcode/address/address_detail 추가 + 주석 1줄(받는분 스냅샷·shipments 우선).
+- tools.ts: 신규 enum/액션 없음 → 미변경(확인 완료).
+
+### 결정 사항
+- memo `Delivery:` 라인 현행 유지(중복이나 회귀 방지 — 브리프 위임).
+- compare 헤더 L1171 '지점별 매출 (일/월/연)'는 의미 명확하여 텍스트 유지, 라벨만 '매출 현황'으로 통일.
+- 42703 retry 시 unused destructure 변수는 `void` 문으로 lint 억제.
+
+### Known Gaps (Out of Scope — 미수정)
+- 기존 카페24 주문 recipient_* 백필 없음(083 이전 주문은 sales_order 받는분 비어있음 — shipment 있으면 그쪽 표시).
+- b2b_sales_orders, legacy_purchases 받는분 미변경.
+- compare RPC(branch_sales_summary) 로직 미변경 — 라벨만.
+
+---
+
 ## Sprint B Step 2 — 카페24 주문 탭 인라인 매핑 UI (빌드 완료 · 리뷰 대기)
 시작: 2026-06-16
 
