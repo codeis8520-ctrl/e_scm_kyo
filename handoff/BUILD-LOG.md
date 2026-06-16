@@ -300,3 +300,25 @@
 
 ### Known Gaps
 - 없음(Out of Scope 항목 표면화 없음: 가상화/카테고리필터/수량일괄/즐겨찾기·서버페이지네이션 모두 미채택대로 미구현).
+
+---
+## Step: 직원 삭제 스마트 삭제 + 비활성 토글/재활성 (빌드 완료 · 리뷰 대기 — 2026-06-16)
+- Root cause: deleteUser가 supabase.auth.admin.deleteUser 선호출 → 커스텀 bcrypt 인증이라 실패+early return → users DELETE 미실행.
+- Locked: RBAC = SUPER_ADMIN/HQ_OPERATOR (adjustInventory 패턴). 가드 = 본인 불가 + 마지막 활성 SUPER_ADMIN 불가.
+- Locked: 하드 DELETE → 23503 → is_active=false 폴백. soft 시 session_tokens 삭제(강제 로그아웃). 반환 {deleted}|{deactivated}|{error}.
+- Locked: reactivateUser 전용 액션 신설. UI render-side 필터 + '비활성 포함 보기' 토글, getUsers 시그니처 불변.
+- 확인됨: session_tokens.user_id = ON DELETE CASCADE, audit_logs.user_id = ON DELETE SET NULL → 둘 다 삭제 차단 안 함. 23503은 sales_orders.ordered_by 등 RESTRICT 테이블에서 발생.
+- DB 마이그 없음(is_active 기존). 에이전트 user 관리 도구 없음 → schema.ts/tools.ts 동기화 불필요.
+### Build Status (2026-06-16) — BUILT
+- npm run build ✓ Compiled successfully in 6.3s, 에러/경고 0.
+- 변경 파일:
+  - src/lib/actions.ts L1914-1972 — deleteUser 재작성(RBAC+본인가드+마지막SUPER_ADMIN가드+하드DELETE→23503폴백→session_tokens정리). L1974-1991 — reactivateUser 신규.
+  - src/app/(dashboard)/system-codes/page.tsx — import(reactivateUser), showInactiveUsers state, handleDeleteUser 분기메시지 재작성+handleReactivateUser 신규, staff 탭 '비활성 포함 보기' 토글, render-side 필터+비활성 opacity-50+재활성 버튼 분기.
+- DB 마이그/schema.ts/tools.ts 무변경(확인됨).
+
+### Build Decisions
+- 23503 방어: error.code==='23503' OR error.message.includes('violates foreign key') — PostgREST 코드 누락 대비 이중 방어.
+- target select에 is_active 포함(컨텍스트용), 마지막 SUPER_ADMIN 판정은 active count 쿼리가 권위 소스.
+
+### Known Gaps
+- createUser: auth.signUp + SHA256 사용(bcrypt 아님) — 기존 불일치, 이번 step 미수정.

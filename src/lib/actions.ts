@@ -1912,18 +1912,80 @@ export async function updateUser(id: string, formData: FormData) {
 }
 
 export async function deleteUser(id: string) {
-  const supabase = await createClient();
-
-  // Delete auth user first
-  const { error: authError } = await supabase.auth.admin.deleteUser(id);
-  
-  if (authError) {
-    return { error: authError.message };
+  const session = await requireSession();
+  if (session.role !== 'SUPER_ADMIN' && session.role !== 'HQ_OPERATOR') {
+    return { error: '직원 관리는 본사 권한만 가능합니다.' };
   }
-  
-  // User profile will be deleted via cascade or manually
-  await supabase.from('users').delete().eq('id', id);
-  
+
+  // 본인 계정 삭제 금지
+  if (session.id === id) {
+    return { error: '본인 계정은 삭제할 수 없습니다.' };
+  }
+
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  // 대상 사용자 조회
+  const { data: target } = await db
+    .from('users')
+    .select('id, role, is_active')
+    .eq('id', id)
+    .single();
+
+  if (!target) {
+    return { error: '대상 직원을 찾을 수 없습니다.' };
+  }
+
+  // 마지막 활성 최고관리자 삭제/비활성 금지
+  if (target.role === 'SUPER_ADMIN') {
+    const { count } = await db
+      .from('users')
+      .select('id', { count: 'exact', head: true })
+      .eq('role', 'SUPER_ADMIN')
+      .eq('is_active', true);
+    if ((count ?? 0) <= 1) {
+      return { error: '마지막 활성 최고관리자는 삭제/비활성할 수 없습니다.' };
+    }
+  }
+
+  // 하드 DELETE 시도
+  const { error } = await db.from('users').delete().eq('id', id);
+
+  if (!error) {
+    // 참조 없으니 세션 정리 후 완전 삭제 완료
+    await db.from('session_tokens').delete().eq('user_id', id);
+    revalidatePath('/system-codes');
+    return { deleted: true };
+  }
+
+  // FK 위반 → soft-delete 폴백
+  if (error.code === '23503' || (error.message && error.message.includes('violates foreign key'))) {
+    await db.from('users').update({ is_active: false }).eq('id', id);
+    // 강제 로그아웃
+    await db.from('session_tokens').delete().eq('user_id', id);
+    revalidatePath('/system-codes');
+    return { deactivated: true };
+  }
+
+  return { error: error.message };
+}
+
+export async function reactivateUser(id: string) {
+  const session = await requireSession();
+  if (session.role !== 'SUPER_ADMIN' && session.role !== 'HQ_OPERATOR') {
+    return { error: '직원 관리는 본사 권한만 가능합니다.' };
+  }
+
+  const supabase = await createClient();
+  const { error } = await (supabase as any)
+    .from('users')
+    .update({ is_active: true })
+    .eq('id', id);
+
+  if (error) {
+    return { error: error.message };
+  }
+
   revalidatePath('/system-codes');
   return { success: true };
 }

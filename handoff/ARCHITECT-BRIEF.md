@@ -1,58 +1,70 @@
-# Architect Brief — Step: 판매현황 목록 수령일자별 그룹 토글
+# Architect Brief — Step: 직원 삭제 스마트 삭제 + 비활성 토글/재활성
 
 ## Goal
-판매현황 'list' 서브뷰 목록을 '주문일순'(현행 flat) / '수령일자별'(receipt_date 그룹) 토글로 볼 수 있게 한다. 프론트 전용, DB/쿼리/필터 무변경.
+코드 > 직원 관리에서 삭제 버튼이 실제로 동작한다. 참조 없는 계정은 완전 삭제, 참조 있는 직원은 비활성 폴백. 비활성 직원은 목록에서 숨기되 토글로 보고 재활성 가능.
 
-## Scope (한 파일만)
-`src/app/(dashboard)/pos/SalesListTab.tsx` 만 수정. 그 외 파일 손대지 말 것.
-**DB/마이그/schema.ts/tools.ts 변경 전혀 없음** — 확인됨, 손대지 말 것.
+## Root Cause (확정, 재조사 금지)
+`deleteUser` (src/lib/actions.ts L1914) 가 `supabase.auth.admin.deleteUser(id)` 를 먼저 호출 → 이 앱은 Supabase Auth가 아니라 커스텀 bcrypt 세션(CLAUDE.md). 그 호출이 실패하면 early return → `users` DELETE 자체가 실행 안 됨. 그래서 "삭제 버튼 눌러도 안 됨".
 
 ## Build Order
 
-### 1) 정렬 토글 state
-- `subView` state 선언부(L159 인근)에 추가:
-  `const [listSort, setListSort] = useState<'order' | 'receipt'>('order');`
+### 1. deleteUser 재작성 — src/lib/actions.ts (L1914~1929 전체 교체)
+- `const session = await requireSession();` (이미 L9 import 됨)
+- **RBAC 게이트** (adjustInventory L1007-1008 패턴 그대로):
+  `if (session.role !== 'SUPER_ADMIN' && session.role !== 'HQ_OPERATOR') return { error: '직원 관리는 본사 권한만 가능합니다.' };`
+- **가드 1 — 본인 금지**: `if (session.id === id) return { error: '본인 계정은 삭제할 수 없습니다.' };`
+- **가드 2 — 마지막 활성 SUPER_ADMIN 금지**: 대상 user를 먼저 select(`id, role, is_active`). 대상이 role==='SUPER_ADMIN' 이면, `users`에서 `role='SUPER_ADMIN' AND is_active=true` count 조회 → count<=1 이면 `return { error: '마지막 활성 최고관리자는 삭제/비활성할 수 없습니다.' };`
+- **auth.admin.deleteUser 호출 완전 제거.**
+- **하드 DELETE 시도**: `const { error } = await supabase.from('users').delete().eq('id', id);`
+  - 성공(error 없음) → session_tokens 그 직원 것 정리: `await supabase.from('session_tokens').delete().eq('user_id', id);` (이미 참조 없으니 안전) → `revalidatePath('/system-codes'); return { deleted: true };`
+  - **error.code === '23503'** (FK 위반) → soft-delete 폴백:
+    `await supabase.from('users').update({ is_active: false }).eq('id', id);`
+    그 직원 세션 무효화: `await supabase.from('session_tokens').delete().eq('user_id', id);`
+    → `revalidatePath('/system-codes'); return { deactivated: true };`
+  - 그 외 error → `return { error: error.message };`
+- 반환 타입: `{ deleted: true } | { deactivated: true } | { error: string }`.
+- Flag: session_tokens 컬럼명이 `user_id` 인지 grep 확인 후 사용. FK 위반 코드가 PostgREST에서 `error.code === '23503'` 로 오는지 확인(아니면 `error.code === '23503' || error.message.includes('violates foreign key')` 으로 방어).
 
-### 2) 그룹 useMemo
-- `filtered` useMemo(L442~497) 바로 뒤에 신규 useMemo `receiptGroups` 추가. deps: `[filtered]`.
-- `listSort` 분기는 useMemo 안에서 하지 말고 항상 그룹을 계산해도 됨(렌더에서 모드 분기). 로직:
-  - 그룹 키 = `o.receipt_date`(YYYY-MM-DD 문자열) 그대로. null/빈값 = '미지정' 버킷.
-  - 날짜 그룹 배열을 날짜 **오름차순**(string 비교로 충분, ISO date) 정렬. **'미지정' 그룹은 항상 맨 끝**.
-  - 각 그룹 내 주문 정렬 = receipt_status 우선순위:
-    `PICKUP_PLANNED(0) < PARCEL_PLANNED(1) < QUICK_PLANNED(2) < RECEIVED(3) < 기타(4)`.
-    (status 없거나 위 4개 외 = 4). status 없음의 기본 표시는 기존 코드가 'RECEIVED'로 폴백하나(L941, L959), **정렬 우선순위에선 null을 RECEIVED로 강제하지 말고 '기타(4)'로** 두면 됨. 동순위는 안정정렬 유지.
-  - 각 그룹마다 수령방식별 건수 요약 카운트도 함께 계산: `{ pickup, parcel, quick, received, other }`.
-  - 반환 형태 예: `{ date: string|null, label: string, orders: Order[], counts: {...} }[]`.
+### 2. reactivateUser 신규 액션 — src/lib/actions.ts (deleteUser 바로 아래 추가)
+- `export async function reactivateUser(id: string)`
+- 동일 RBAC 게이트(SUPER_ADMIN/HQ_OPERATOR).
+- `await supabase.from('users').update({ is_active: true }).eq('id', id);`
+- 에러 시 `{ error }`, 성공 시 `revalidatePath('/system-codes'); return { success: true };`
+- Flag: updateUser(L1884)로도 가능하나 FormData 기반이라 단순 토글엔 부적합 → 전용 액션 신설이 맞음.
 
-### 3) 토글 UI
-- 'list' 서브뷰에서만 노출. 위치: **테이블 카드(L902) 헤더 줄 — L903 `flex items-center justify-between` 안**, '판매 내역 (N건)' h3 옆 또는 환불 버튼 왼쪽에 토글 배치(좁은 세그먼트 버튼 2개).
-- 패턴 재사용: L603~615 subView 토글 스타일(`bg-slate-100 rounded-lg p-1`, active=`bg-white text-blue-700 shadow-sm`)을 작게 복제. 라벨: `['order','주문일순'], ['receipt','수령일자별']`.
+### 3. UI — src/app/(dashboard)/system-codes/page.tsx (staff 탭)
+- import 라인(L12)에 `reactivateUser` 추가.
+- **비활성 포함 토글 state**: `const [showInactiveUsers, setShowInactiveUsers] = useState(false);` (다른 useState 근처).
+- staff 탭 헤더(L1031 영역)에 '+ 직원 추가' 옆/위에 토글 체크박스: "비활성 포함 보기".
+- 목록 렌더(L1054) 필터: `users.filter(u => showInactiveUsers || u.is_active).map(...)`.
+  - getUsers 안 쓰고 L242에서 client supabase로 직접 fetch 중 → fetch는 전체 유지(`.order created_at`), **필터는 render 단에서**. (includeInactive 파라미터 불필요.)
+- **비활성 행**: `<tr className={!user.is_active ? 'opacity-50' : ''}>`.
+- **관리 컬럼**: 비활성 직원이면 '삭제' 대신 **'재활성'** 버튼 노출(green/blue), 활성이면 기존 '삭제' 유지. '수정'은 양쪽 유지.
+- **handleDeleteUser (L377) 재작성**: 
+  - confirm 문구 갱신: '이 직원을 삭제합니다.\n주문·상담 등 참조 기록이 있으면 자동으로 비활성 처리됩니다.'
+  - `const res = await deleteUser(id);`
+  - `if (res?.error) alert(res.error);`
+  - `else if (res?.deactivated) alert('참조 기록이 있어 비활성 처리되었습니다.');`
+  - `else if (res?.deleted) alert('직원이 완전히 삭제되었습니다.');`
+  - 그 후 `fetchData();`
+- **handleReactivateUser 신규**: `if(!confirm('이 직원을 재활성하시겠습니까?'))return; const res=await reactivateUser(id); if(res?.error)alert(res.error); fetchData();`
 
-### 4) tbody 렌더 분기 (L927~ tbody, 행 본체 L934~)
-- **핵심: 기존 per-order `<tr>` 본체(L934의 `filtered.map(o => { ... return (<tr key=...>...</tr>) })`)를 절대 다시 쓰지 말 것.** 행 1줄(약 L934~끝 tr)을 `const renderOrderRow = (o) => { ... return <tr ...> }` 헬퍼로 **추출**해 재사용한다. 셀 구성·onClick 상세이동·환불·뱃지 로직 그대로 보존.
-- loading / `filtered.length===0` 분기(L928~933)는 그대로 유지.
-- 그 다음:
-  - `listSort === 'order'` → `filtered.map(renderOrderRow)` (현행과 동일 출력).
-  - `listSort === 'receipt'` → `receiptGroups.flatMap(g => [ <그룹헤더 tr key={'h-'+...}>, ...g.orders.map(renderOrderRow) ])`.
-- **그룹 헤더 행**: `<tr><td colSpan={13} className="...">...</td></tr>`.
-  - colSpan 은 반드시 **13** (헤더 th 13개 = L912~924, 기존 빈/로딩 행도 colSpan=13).
-  - 표시: 날짜(미지정 그룹은 '수령일 미지정') + 그 날짜의 수령방식별 건수 요약.
-    예: `2026-06-20 · 방문 3 · 택배 5 · 퀵 1` (건수 0인 방식은 생략 권장). 수령완료/기타도 건수 있으면 덧붙임.
-  - 스타일: 눈에 띄는 구분 행(예: `bg-slate-100 font-semibold text-slate-700 text-sm`). sticky 불필요.
+## Out of Scope (→ BUILD-LOG Known Gaps if surfaces)
+- createUser 가 `supabase.auth.signUp` + SHA256 사용(bcrypt 아님) — 기존 불일치. 이번 step에서 건드리지 않음.
+- updateUser 의 auth 동기화 없음 — 그대로 둠.
+- 비활성 직원의 과거 주문/상담 표시명 처리 — 변경 없음.
 
-## Out of Scope (건드리면 안 됨)
-- 필터/검색/기간/CSV/요약카드/일자별요약/compare 서브뷰 로직 — 무변경.
-- 정렬은 **이미 받은 filtered 클라이언트 기준**. 서버 재조회 없음.
-- '미지정' 그룹 내부 정렬은 status 우선순위만(주문일 정렬 불필요).
+## Locked Decisions
+- RBAC: 직원 삭제/비활성/재활성 = **SUPER_ADMIN 또는 HQ_OPERATOR** (adjustInventory 패턴 동일). 서버에서 게이트.
+- 가드: 본인 계정 불가 + 마지막 활성 SUPER_ADMIN 불가.
+- 폴백: 하드 DELETE → 23503 → is_active=false. soft 시 session_tokens 삭제로 강제 로그아웃.
+- 목록: 기본 활성만, render-side 필터 + 토글. getUsers 시그니처 변경 없음.
+- DB 마이그레이션 없음 (is_active 이미 존재). schema.ts/tools.ts 영향 없음(에이전트 user 도구 없음 — 확인됨).
 
 ## Acceptance
-- 토글 '주문일순' = 현재와 픽셀 동일 출력(회귀 없음).
-- 토글 '수령일자별' = receipt_date 오름차순 그룹, 미지정 맨 끝, 그룹 내 방문→택배→퀵→수령완료→기타.
-- 각 그룹 헤더에 날짜 + 수령방식별 건수 요약 노출.
-- 행 클릭→상세, 환불, 뱃지 등 기존 동작 receipt 모드에서도 정상.
-- `npm run build` 통과. 빈 목록/미지정만 있는 목록/로딩 상태에서 깨지지 않음.
-
-## Flags (추측 금지)
-- colSpan = 13 고정.
-- receipt_status enum: RECEIVED / PICKUP_PLANNED / QUICK_PLANNED / PARCEL_PLANNED (L88). 그 외/null = 기타.
-- 날짜 비교는 문자열 그대로(이미 YYYY-MM-DD). Date 파싱·타임존 변환 금지.
+- `npm run build` 통과.
+- 참조 없는 테스트 계정 삭제 → 목록에서 사라짐("완전히 삭제됨").
+- 주문/상담 만든 직원 삭제 → "비활성 처리됨" 메시지, 토글 켜야 보임, opacity-50, 재활성 버튼.
+- 재활성 → 활성 복귀.
+- 본인/마지막 SUPER_ADMIN 삭제 시도 → 에러 메시지, 변화 없음.
+- 비본사 역할이 액션 직접 호출 시 서버에서 거부.

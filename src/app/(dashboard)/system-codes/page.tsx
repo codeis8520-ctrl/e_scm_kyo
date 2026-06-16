@@ -9,7 +9,7 @@ import {
   createCustomerGrade, updateCustomerGrade, deleteCustomerGrade,
   createCustomerTag, updateCustomerTag, deleteCustomerTag,
   createCategory, updateCategory, deleteCategory,
-  createUser, updateUser, deleteUser,
+  createUser, updateUser, deleteUser, reactivateUser,
   createChannel, updateChannel, deleteChannel,
   createInventoryUsageType, updateInventoryUsageType, deleteInventoryUsageType,
   upsertBranchPointRate,
@@ -199,6 +199,7 @@ export default function SystemCodesPage() {
   const [categoryParentPreset, setCategoryParentPreset] = useState<string | null>(null);
   const [collapsedCategoryIds, setCollapsedCategoryIds] = useState<Set<string>>(new Set());
   const [showUserModal, setShowUserModal] = useState(false);
+  const [showInactiveUsers, setShowInactiveUsers] = useState(false);
   const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
   const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
   const [editingGrade, setEditingGrade] = useState<CustomerGrade | null>(null);
@@ -375,8 +376,22 @@ export default function SystemCodesPage() {
   };
 
   const handleDeleteUser = async (id: string) => {
-    if (!confirm('정말 삭제하시겠습니까?')) return;
-    await deleteUser(id);
+    if (!confirm('이 직원을 삭제합니다.\n주문·상담 등 참조 기록이 있으면 자동으로 비활성 처리됩니다.')) return;
+    const res = await deleteUser(id);
+    if (res?.error) {
+      alert(res.error);
+    } else if (res?.deactivated) {
+      alert('참조 기록이 있어 비활성 처리되었습니다.');
+    } else if (res?.deleted) {
+      alert('직원이 완전히 삭제되었습니다.');
+    }
+    fetchData();
+  };
+
+  const handleReactivateUser = async (id: string) => {
+    if (!confirm('이 직원을 재활성하시겠습니까?')) return;
+    const res = await reactivateUser(id);
+    if (res?.error) alert(res.error);
     fetchData();
   };
 
@@ -1030,12 +1045,22 @@ export default function SystemCodesPage() {
         <div className="card">
           <div className="flex justify-between items-center mb-4">
             <h3 className="font-semibold">직원 목록</h3>
-            <button
-              onClick={() => { setEditingUser(null); setShowUserModal(true); }}
-              className="btn-primary text-sm"
-            >
-              + 직원 추가
-            </button>
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-1.5 text-sm text-slate-600 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={showInactiveUsers}
+                  onChange={(e) => setShowInactiveUsers(e.target.checked)}
+                />
+                비활성 포함 보기
+              </label>
+              <button
+                onClick={() => { setEditingUser(null); setShowUserModal(true); }}
+                className="btn-primary text-sm"
+              >
+                + 직원 추가
+              </button>
+            </div>
           </div>
 
           <div className="overflow-x-auto -mx-4 sm:mx-0">
@@ -1051,8 +1076,8 @@ export default function SystemCodesPage() {
               </tr>
             </thead>
             <tbody>
-              {users.map((user) => (
-                <tr key={user.id}>
+              {users.filter(u => showInactiveUsers || u.is_active).map((user) => (
+                <tr key={user.id} className={!user.is_active ? 'opacity-50' : ''}>
                   <td className="font-medium">{user.name}</td>
                   <td className="text-slate-500">{user.email}</td>
                   <td>
@@ -1073,16 +1098,25 @@ export default function SystemCodesPage() {
                     >
                       수정
                     </button>
-                    <button
-                      onClick={() => handleDeleteUser(user.id)}
-                      className="text-red-600 hover:underline"
-                    >
-                      삭제
-                    </button>
+                    {user.is_active ? (
+                      <button
+                        onClick={() => handleDeleteUser(user.id)}
+                        className="text-red-600 hover:underline"
+                      >
+                        삭제
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleReactivateUser(user.id)}
+                        className="text-emerald-600 hover:underline"
+                      >
+                        재활성
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
-              {users.length === 0 && (
+              {users.filter(u => showInactiveUsers || u.is_active).length === 0 && (
                 <tr>
                   <td colSpan={6} className="text-center text-slate-400 py-8">
                     등록된 직원이 없습니다
