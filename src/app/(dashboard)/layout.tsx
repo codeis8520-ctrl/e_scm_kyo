@@ -79,6 +79,18 @@ export default function DashboardLayout({
     loadUserInfo();
   }, []);
 
+  // 브라우저 탭 제목 — 현재 화면명 표시 (다중 탭 동시 작업 시 구분 용이)
+  useEffect(() => {
+    const match = [...ALL_NAV_ITEMS]
+      .sort((a, b) => b.href.length - a.href.length)
+      .find(i =>
+        i.href === '/'
+          ? pathname === '/'
+          : pathname === i.href || pathname.startsWith(i.href + '/')
+      );
+    document.title = match ? `${match.label} · 경옥채` : '경옥채 사내 통합시스템';
+  }, [pathname]);
+
   return (
     <div className="flex min-h-screen">
       {/* Mobile Header */}
