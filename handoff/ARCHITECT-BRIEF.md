@@ -1,58 +1,69 @@
-# Architect Brief — 판매현황 개선 (수령 현황 / 매출 현황 / 카페24 받는분)
+# Architect Brief — Step: 판매상세 직접 수정 (고객/수령일/받는분)
 
 ## Goal
-판매현황 탭 라벨을 '수령 현황'·'매출 현황'으로 바꾸고, 수령 현황 진입 시 수령일자별 기본 정렬, 카페24 주문 받는분(이름/연락처/주소)을 sales_orders에 저장·표시한다.
+SalesDetailDrawer에서 고객(재연결+표시명)·수령일자·받는분(이름/전화/우편/주소/상세)을 판매번호 유지한 채 수정하고 audit_logs에 변경이력을 남긴다.
 
-## Build Order (한 스텝 — 마이그 미적용 상태에서도 build·런타임 통과해야 함)
+## Locked Decisions (변경 금지)
+- **신규 서버액션 파일**: `src/lib/sales-revise-actions.ts` 에 `updateSalesOrderDetails`. (sales-cancel-actions.ts 와 동일 import 스타일: `requireSession`, `writeAuditLog` from `@/lib/session`, `createClient` from `@/lib/supabase/server`, `revalidatePath`.)
+- **RBAC = `requireSession()` 만** (역할 게이트 없음). 근거: 같은 드로어의 형제 액션(convertOrderToParcel/convertOrderToPickup/addSalesOrderItem/cancelSale)이 전부 requireSession only. 일관성. 목록은 상위에서 이미 지점 필터됨. 추가 지점 스코프 넣지 말 것.
+- **상태 게이트**: 수정 허용은 `status NOT IN ('CANCELLED','REFUNDED','PARTIALLY_REFUNDED')` 일 때만. 위반 시 `{ error: '취소/환불된 전표는 수정할 수 없습니다.' }` 반환. (cancelSale 의 status 분기 패턴 참고.)
+- **order_number 절대 불변** — payload 에 포함 금지, update 대상 아님.
+- **부분 업데이트**: payload 에 전달된(undefined 아닌) 필드만 sales_orders update 객체에 포함. 전달 안 된 필드는 건드리지 않음.
+- **받는분 양쪽 업데이트(결정)**: recipient_* 변경 시 `sales_orders.recipient_*` 항상 update + shipment 레코드가 존재하면 `shipments.recipient_*` 도 같이 update. (드로어 표시는 shipment 우선이므로 동기화 필수. shipment 없으면 sales_orders 만.) shipment 존재 여부는 `shipments` 에서 `sales_order_id=orderId` maybeSingle 로 판단.
+- **고객 재연결**: `customer_id` 가 payload 에 있으면(빈 문자열→null 허용) sales_orders.customer_id 업데이트. `buyer_name`/`buyer_phone` 텍스트도 별도 필드로 부분 업데이트(둘 다 가능 — 정책: 재연결 + 텍스트 둘 다).
+- **audit 형식(결정)**: 변경된 필드만 모아 **1건** writeAuditLog 기록. `action:'UPDATE'`, `tableName:'sales_orders'`, `recordId: orderId`, `description: \`판매상세 수정: ${order_number}, 변경: [필드라벨 목록], 사유: ${reason||'-'}\``, `oldData`/`newData` 에 변경된 필드의 전/후 값만 객체로. 한글 필드라벨 매핑(customer_id='고객연결', buyer_name='표시명', receipt_date='수령일', recipient_name='받는분', recipient_phone='연락처', recipient_zipcode='우편', recipient_address='주소', recipient_address_detail='상세주소'). 변경 0건이면 update/audit 스킵하고 success 반환.
+- **반환**: `{ success: true }` 또는 `{ error: string }`. try/catch 로 감싸 `{ error: \`수정 실패: ${err.message}\` }`.
+- **DB/마이그레이션 변경 없음**: recipient_* 는 마이그 083(적용 대기), audit_logs 기존. 새 컬럼 추가 금지. (단 083 미적용 환경 방어: sales_orders 의 recipient_* update 가 42703 나면 그 5필드만 빼고 재시도 — webhook.ts 의 083 폴백 패턴과 동일. shipments recipient_* 는 046부터 존재하므로 폴백 불필요.)
 
-### 1) 마이그 083 — Arch가 직접 적용한다. Bob은 파일만 생성.
-`supabase/migrations/083_sales_orders_recipient.sql`:
-- `ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS recipient_name TEXT, ADD COLUMN IF NOT EXISTS recipient_phone TEXT, ADD COLUMN IF NOT EXISTS recipient_zipcode TEXT, ADD COLUMN IF NOT EXISTS recipient_address TEXT, ADD COLUMN IF NOT EXISTS recipient_address_detail TEXT;`
-- 전부 nullable. shipments(마이그 012) 5컬럼 형식과 동일하게 맞춤. backfill 없음.
+## payload 시그니처
+```ts
+updateSalesOrderDetails(input: {
+  orderId: string;
+  customer_id?: string | null;   // null = 연결 해제
+  buyer_name?: string | null;
+  buyer_phone?: string | null;
+  receipt_date?: string | null;  // 'YYYY-MM-DD'
+  recipient_name?: string | null;
+  recipient_phone?: string | null;
+  recipient_zipcode?: string | null;
+  recipient_address?: string | null;
+  recipient_address_detail?: string | null;
+  reason?: string;
+}): Promise<{ success: true } | { error: string }>
+```
+서버에서 order 현재값 select(`order_number, status, customer_id, buyer_name, buyer_phone, receipt_date, recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail`) → status 게이트 → diff 계산.
 
-### 2) webhook — `src/lib/cafe24/webhook.ts`
-- L160 `extractBuyerInfo` 바로 옆/아래에 `export function extractRecipientInfo(cafe24Order): { name, phone, zipcode, address, addressDetail }` 추가. 원천 = `co.receivers?.[0]` (이미 extractBuyerInfo가 쓰는 recvObj와 동일 경로). 필드 폴백: name = `recvObj.name ?? recvObj.shipping_name`; phone = `recvObj.cellphone ?? recvObj.phone`; zipcode = `recvObj.zipcode`; address = `recvObj.address1 ?? recvObj.address_full ?? recvObj.address`; addressDetail = `recvObj.address2`. 전부 `.trim() || null`.
-- `handleOrderCreated` insert(L265~290)에 recipient_* 5필드 채움. **컬럼 누락 방어 필수**: insert가 42703/`column ... does not exist`로 실패하면 recipient_* 5필드를 뺀 객체로 재시도(L240 SalesListTab의 42703 폴백 패턴 동일 적용). 마이그 083 미적용 시점에도 주문 생성이 깨지면 안 됨.
-- memo의 `Delivery: ...`(L288)는 그대로 둠(중복이지만 회귀 방지). recipient_address가 더 정확하면 memo도 recipient_address로 채워도 무방 — 결정 위임.
+## Build Order
+1. `src/lib/sales-revise-actions.ts` 생성 — `'use server'`, 위 액션. revalidatePath('/pos').
+2. `src/app/(dashboard)/pos/SalesListTab.tsx` SalesDetailDrawer 편집 UI:
+   - 신규 state: `editing`(boolean), 편집용 필드 state(고객 검색/선택 + buyer_name 텍스트, receipt_date, recipient 5필드), `savingDetails`(boolean).
+   - 게이트 플래그: `const detailEditable = order && !['CANCELLED','REFUNDED','PARTIALLY_REFUNDED'].includes(order.status);`
+   - "기본 정보" 그리드(L1969~) 의 **고객**(L1983~), **수령** 근처에 연필 토글 버튼. editing=true 시 인라인 편집 폼 표시:
+     - 고객: 현재 표시 + '고객 변경' 버튼 → 기존 `/api/customers/search` 호출 인라인 검색 드롭다운(CustomerLookupModal L1286 의 fetch 패턴 재사용, 단 onSelect 로 customer_id+표시 세팅). + 표시명(buyer_name) 텍스트 input + '연결 해제' 옵션.
+     - 수령일자: `<input type="date">` (receipt_date).
+     - 받는분: 이름/전화/우편/주소/상세 5 input — convert 폼(L2419~)의 input 스타일 재사용.
+   - 저장 버튼 → `updateSalesOrderDetails(payload)` → 결과 error면 alert, 성공이면 `editing=false` + `await loadDetail(true)` + `onChanged()`.
+   - 취소/환불 전표: 편집 버튼 비활성 + 안내문(`취소/환불 전표는 수정할 수 없습니다`).
+   - 고객 검색 결과 타입은 기존 CustomerLookupModal 응답(`{ customers: [{id,name,phone,...}] }`) 그대로.
+3. `npm run build` 통과.
 
-### 3) SalesListTab — `src/app/(dashboard)/pos/SalesListTab.tsx`
-- **라벨** L793: `['list','수령 현황'], ['compare','매출 현황']`. subView 값 'list'/'compare'는 내부키 유지. compare 영역 헤더('지점별 일 매출 비교' 등) 텍스트도 '매출 현황' 톤으로 일관 변경(검색해서 다 잡을 것).
-- **기본 정렬** L161: `useState<'order'|'receipt'>('receipt')`로 변경(수령 현황 진입 시 수령일자별 기본). 토글로 'order' 전환 가능 유지. compare→list 전환 시 listSort는 그대로 'receipt' 유지(재설정 안 함).
-- **받는분 저장 컬럼 select**: `buildQuery` extended 분기(L201~210)에만 `recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail` 추가. 기본(fallback) 분기엔 넣지 말 것 — 기존 42703 폴백(L243)이 마이그 미적용을 그대로 흡수한다.
-- **렌더(받는분)** L558 firstShip 인근: 받는분 표시값 = `firstShip?.recipient_name`(shipment 우선) → 없으면 `o.recipient_name`(sales_order). 주소·전화도 동일 우선순위. firstShip 없는 카페24 주문도 받는분 노출되도록. 헬퍼 1개(`const recv = { name: firstShip?.recipient_name ?? o.recipient_name, phone: ..., address: ..., addressDetail: ... }`)로 묶고 기존 렌더(L655~659)·CSV(L766~768)·수령일자별 그룹 렌더 모두 그 헬퍼 사용.
-- **검색 술어** L482~492: 받는분/주소 검색이 shipment만 보던 것을 sales_order recipient_*도 포함하도록 OR 추가(shipment 없는 카페24 주문도 받는분 검색에 걸리게).
-- OrderRow 타입(L37 인근)에 recipient_name?/phone?/zipcode?/address?/address_detail? (string|null) 추가.
+## Flags (Bob: 추측 금지)
+- 고객 검색 인라인 드롭다운은 **신규 모달 만들지 말고** CustomerLookupModal 의 fetch(`/api/customers/search?q=...`) 로직만 차용해 드로어 내부 인라인으로. 모달 띄워도 되지만 onSelect 콜백이 customer_id 를 드로어 편집 state 로 넘겨야 함(현 CustomerLookupModal 은 onClose 만 받음 → 그대로 못 씀, 차용/확장 필요).
+- shipment recipient update 시 `delivery_message`/sender_* 등 다른 필드 건드리지 말 것.
+- buyer_phone 도 편집 가능하게(표시명 옆). 정책상 텍스트 스냅샷.
 
-### 4) AI Sync — `src/lib/ai/schema.ts`
-- L58 sales_orders 컬럼 나열에 recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail 추가.
-- L59 ※ 주석 뒤에 한 줄: recipient_*는 카페24 받는분(수령자) 스냅샷(마이그 083) — buyer_*(주문자)와 별개. 출고 후엔 shipments.recipient_* 우선.
-- tools.ts: 신규 enum/액션 없음 → 변경 불필요(확인만).
-
-## Out of Scope (→ BUILD-LOG Known Gaps)
-- 기존 카페24 주문 recipient_* backfill 안 함(083 이전 주문은 sales_order 받는분 비어있음 — shipment 있으면 그쪽으로 표시됨).
-- b2b_sales_orders, legacy_purchases 받는분 변경 없음.
-- compare(매출 현황) RPC(branch_sales_summary) 로직 변경 없음 — 라벨만.
+## Out of Scope (BUILD-LOG Known Gaps 행)
+- 수령방법(방문↔택배/퀵) 전환 — 이미 드로어에 존재(convertOrderToParcel/Pickup·changeDeliveryType). 신규 추가 없음. 확인만.
+- 품목/금액/결제 수정 — 별도 기존 흐름.
+- legacy_orders / 카페24 원천 역동기화 — 안 함. ERP 전표만 수정.
+- 고객 신규 생성 — 재연결만. 신규 고객 등록은 기존 별도 버튼.
 
 ## Acceptance
-- npm run build 통과. 마이그 083 적용 전/후 모두 주문 webhook 생성·판매현황 로드 정상(42703 폴백 동작).
-- 탭 라벨 '수령 현황'/'매출 현황'. 수령 현황 첫 진입 = 수령일자별 정렬.
-- 마이그 적용+신규 카페24 주문 시 shipment 없어도 받는분(이름/전화/주소) 목록·CSV·검색에 노출.
-
-## Builder Plan (Bob)
-코드 형상 검증 완료. 마이그 083은 Arch 소유 — 파일 손대지 않음.
-1. webhook.ts: `extractRecipientInfo(cafe24Order)` 추가(L178 뒤, recvObj=`co.receivers?.[0]` 경로 동일). handleOrderCreated insert에 recipient_* 5필드 채움. orderError 42703/column-missing 시 recipient_* 제거 객체로 재시도(insert 분기 헬퍼화). memo `Delivery:` 그대로 둠.
-2. SalesListTab.tsx:
-   - OrderRow 타입에 recipient_name?/phone?/zipcode?/address?/address_detail? (string|null) 추가.
-   - listSort 기본값 'order'→'receipt' (L161). compare→list 시 재설정 없음(현행 그대로).
-   - extended select(L201~210)에만 recipient_* 5컬럼 추가. fallback 분기는 손대지 않음(42703 폴백이 흡수).
-   - renderOrderRow(L546~) 안에 `recv` 헬퍼: name/phone/address/addressDetail = firstShip 우선 → 없으면 o.recipient_*. 받는분 셀(L643~665)을 firstShip 없어도 recv로 노출하도록 재작성(아이콘은 firstShip 있을 때만).
-   - CSV(L766~768): firstShip 우선 → o.recipient_* 폴백.
-   - 검색 술어 recQ/addrQ(L481~496): shipments OR sales_order recipient_* 포함.
-   - 라벨 L793: '목록'→'수령 현황', '지점비교'→'매출 현황'. subView 키 'list'/'compare' 유지. compare 헤더(L1171) '지점별 매출' 톤 유지하되 '매출 현황' 일관(아래 결정).
-3. schema.ts L58/L59: sales_orders 컬럼에 recipient_* 추가 + 주석 1줄.
-
-결정사항(위임받은 것):
-- memo Delivery 라인 = 현행 유지(회귀 방지).
-- compare 헤더 L1171 '지점별 매출 (일/월/연)'은 이미 '매출' 톤이라 라벨만 '매출 현황'으로 토글 통일하고 헤더 텍스트는 의미 명확하므로 유지. (라벨 = '매출 현황', 헤더 = '지점별 매출')
-
-진행함.
+- 취소·환불 전표: 편집 버튼 비활성 + 안내.
+- 정상 전표: 고객 재연결 후 드로어 '고객'에 새 고객명/전화 표시(loadDetail 재조회 반영), 목록(onChanged)도 갱신.
+- buyer_name 텍스트 수정 시 customer 미연결 표시명 갱신.
+- 수령일자 변경 → order.receipt_date 반영(수령일자별 그룹 재배치는 onChanged 로).
+- 받는분 변경 → shipment 있으면 배송 정보 받는분/주소도 같이 바뀜.
+- audit_logs 에 1건(변경 필드·전후값·order_number·사유) 기록.
+- order_number 불변.
+- `npm run build` 에러/경고 0.

@@ -8,7 +8,7 @@ import ReceiptModal from './ReceiptModal';
 import RefundModal from './RefundModal';
 import { fmtDateKST, fmtTimeKST, fmtDateTimeKST, kstTodayString, kstDayStart, kstDayEnd } from '@/lib/date';
 import { cancelSalesOrder } from '@/lib/sales-cancel-actions';
-import { addSalesOrderItem, removeSalesOrderItem, convertOrderToParcel, convertOrderToPickup } from '@/lib/sales-revise-actions';
+import { addSalesOrderItem, removeSalesOrderItem, convertOrderToParcel, convertOrderToPickup, updateSalesOrderDetails } from '@/lib/sales-revise-actions';
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -1437,6 +1437,25 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
   const [cvAddress, setCvAddress] = useState('');
   const [cvAddressDetail, setCvAddressDetail] = useState('');
   const [cvMessage, setCvMessage] = useState('');
+  // 전표 상세 직접 수정 (고객/표시명/수령일/받는분)
+  const [editingDetails, setEditingDetails] = useState(false);
+  const [savingDetails, setSavingDetails] = useState(false);
+  const [edCustomerId, setEdCustomerId] = useState<string | null>(null);
+  const [edCustomerLabel, setEdCustomerLabel] = useState('');   // 표시용 (이름 전화)
+  const [edBuyerName, setEdBuyerName] = useState('');
+  const [edBuyerPhone, setEdBuyerPhone] = useState('');
+  const [edReceiptDate, setEdReceiptDate] = useState('');
+  const [edRcptName, setEdRcptName] = useState('');
+  const [edRcptPhone, setEdRcptPhone] = useState('');
+  const [edRcptZipcode, setEdRcptZipcode] = useState('');
+  const [edRcptAddress, setEdRcptAddress] = useState('');
+  const [edRcptAddressDetail, setEdRcptAddressDetail] = useState('');
+  const [edReason, setEdReason] = useState('');
+  // 고객 재연결 인라인 검색 (CustomerLookupModal fetch 패턴 차용)
+  const [edCustSearchOpen, setEdCustSearchOpen] = useState(false);
+  const [edCustQuery, setEdCustQuery] = useState('');
+  const [edCustResults, setEdCustResults] = useState<any[]>([]);
+  const [edCustLoading, setEdCustLoading] = useState(false);
 
   const handleCancelSale = async () => {
     if (!order) return;
@@ -1771,7 +1790,8 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
               handler:users!sales_orders_ordered_by_fkey(id, name),
               branch:branches(id, name),
               customer:customers(id, name, phone),
-              buyer_name, buyer_phone
+              buyer_name, buyer_phone,
+              recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail
             `)
             .eq('id', orderId).single();
           if (!full.error) return full;
@@ -1855,6 +1875,71 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
 
   // 수령 전 전표만 품목 추가/삭제 가능 (status=COMPLETED + receipt_status 존재 + ≠RECEIVED)
   const editable = order?.status === 'COMPLETED' && !!order?.receipt_status && order.receipt_status !== 'RECEIVED';
+  // 전표 상세 직접 수정 가능 여부 (취소·환불 전표 제외)
+  const detailEditable = !!order && !['CANCELLED', 'REFUNDED', 'PARTIALLY_REFUNDED'].includes(order.status);
+
+  // 상세 편집 모드 진입 — 현재값으로 폼 prefill (받는분은 shipment 우선)
+  const openEditDetails = () => {
+    if (!order) return;
+    setEdCustomerId(order.customer?.id || null);
+    setEdCustomerLabel(order.customer ? `${order.customer.name} ${order.customer.phone || ''}`.trim() : '');
+    setEdBuyerName(order.buyer_name || '');
+    setEdBuyerPhone(order.buyer_phone || '');
+    setEdReceiptDate(order.receipt_date || '');
+    setEdRcptName(shipment?.recipient_name ?? order.recipient_name ?? '');
+    setEdRcptPhone(shipment?.recipient_phone ?? order.recipient_phone ?? '');
+    setEdRcptZipcode(shipment?.recipient_zipcode ?? order.recipient_zipcode ?? '');
+    setEdRcptAddress(shipment?.recipient_address ?? order.recipient_address ?? '');
+    setEdRcptAddressDetail(shipment?.recipient_address_detail ?? order.recipient_address_detail ?? '');
+    setEdReason('');
+    setEdCustSearchOpen(false);
+    setEdCustQuery('');
+    setEdCustResults([]);
+    setEditingDetails(true);
+  };
+
+  // 고객 재연결 인라인 검색 (디바운스)
+  useEffect(() => {
+    if (!editingDetails || !edCustSearchOpen) return;
+    const q = edCustQuery.trim();
+    if (!q) { setEdCustResults([]); return; }
+    const t = setTimeout(() => {
+      setEdCustLoading(true);
+      const params = new URLSearchParams({ q, page: '1', limit: '20' });
+      fetch(`/api/customers/search?${params.toString()}`)
+        .then(r => r.json())
+        .then(d => setEdCustResults(d.customers || []))
+        .catch(() => setEdCustResults([]))
+        .finally(() => setEdCustLoading(false));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [edCustQuery, edCustSearchOpen, editingDetails]);
+
+  const saveDetails = async () => {
+    if (!order || savingDetails) return;
+    setSavingDetails(true);
+    try {
+      const res = await updateSalesOrderDetails({
+        orderId: order.id,
+        customer_id: edCustomerId,
+        buyer_name: edBuyerName.trim() || null,
+        buyer_phone: edBuyerPhone.trim() || null,
+        receipt_date: edReceiptDate || null,
+        recipient_name: edRcptName.trim() || null,
+        recipient_phone: edRcptPhone.trim() || null,
+        recipient_zipcode: edRcptZipcode.trim() || null,
+        recipient_address: edRcptAddress.trim() || null,
+        recipient_address_detail: edRcptAddressDetail.trim() || null,
+        reason: edReason.trim() || undefined,
+      });
+      if ('error' in res && res.error) { alert(res.error); return; }
+      setEditingDetails(false);
+      await loadDetail(true);
+      onChanged();
+    } finally {
+      setSavingDetails(false);
+    }
+  };
   // 삭제 가능한(아직 미수령) 품목 수 — 마지막 1개 비활성 판단용
   const deletableCount = items.filter(it => (it.receipt_status || 'RECEIVED') !== 'RECEIVED').length;
 
@@ -1966,6 +2051,23 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
         ) : (
           <div className="p-5 space-y-4">
             {/* 기본 정보 */}
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold text-slate-700">기본 정보</p>
+              {detailEditable ? (
+                !editingDetails && (
+                  <button
+                    type="button"
+                    onClick={openEditDetails}
+                    className="text-xs px-2 py-1 rounded border border-slate-300 text-slate-600 hover:bg-slate-50"
+                    title="고객·수령일·받는분 수정"
+                  >
+                    ✏️ 수정
+                  </button>
+                )
+              ) : (
+                <span className="text-[11px] text-slate-400">취소/환불 전표는 수정할 수 없습니다.</span>
+              )}
+            </div>
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div>
                 <p className="text-[11px] text-slate-500">일시</p>
@@ -2027,6 +2129,163 @@ function SalesDetailDrawer({ orderId, onClose, onReprint, onRefundIntent, onChan
                 </p>
               </div>
             </div>
+
+            {/* 전표 상세 수정 폼 */}
+            {editingDetails && (
+              <div className="p-3 border border-amber-200 rounded-md bg-amber-50/40 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold text-amber-700">전표 상세 수정 — 판매번호는 변경되지 않습니다</p>
+                  <button onClick={() => setEditingDetails(false)} className="text-slate-400 hover:text-slate-600 text-sm">✕</button>
+                </div>
+
+                {/* 고객 */}
+                <div className="space-y-1.5">
+                  <label className="text-[10px] text-slate-500">고객</label>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm text-slate-700">
+                      {edCustomerId ? (edCustomerLabel || '연결됨') : <span className="text-slate-400">미연결</span>}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => { setEdCustSearchOpen(v => !v); setEdCustQuery(''); setEdCustResults([]); }}
+                      className="text-[11px] px-2 py-0.5 rounded border border-blue-300 text-blue-700 hover:bg-blue-50"
+                    >
+                      고객 변경
+                    </button>
+                    {edCustomerId && (
+                      <button
+                        type="button"
+                        onClick={() => { setEdCustomerId(null); setEdCustomerLabel(''); }}
+                        className="text-[11px] px-2 py-0.5 rounded border border-slate-300 text-slate-500 hover:bg-slate-100"
+                      >
+                        연결 해제
+                      </button>
+                    )}
+                  </div>
+                  {edCustSearchOpen && (
+                    <div className="border border-slate-200 rounded-md bg-white">
+                      <input
+                        autoFocus
+                        type="text"
+                        value={edCustQuery}
+                        onChange={e => setEdCustQuery(e.target.value)}
+                        placeholder="고객명 / 전화번호 / 주소"
+                        className="w-full text-sm border-b border-slate-200 px-2 py-1.5 outline-none"
+                      />
+                      <div className="max-h-44 overflow-y-auto">
+                        {edCustLoading ? (
+                          <div className="text-center py-3 text-xs text-slate-400">검색 중...</div>
+                        ) : !edCustQuery.trim() ? (
+                          <div className="text-center py-3 text-xs text-slate-400">검색어를 입력하세요.</div>
+                        ) : edCustResults.length === 0 ? (
+                          <div className="text-center py-3 text-xs text-slate-400">검색 결과가 없습니다.</div>
+                        ) : (
+                          <ul>
+                            {edCustResults.map((c: any) => (
+                              <li key={c.id}>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEdCustomerId(c.id);
+                                    setEdCustomerLabel(`${c.name} ${c.phone || ''}`.trim());
+                                    setEdCustSearchOpen(false);
+                                  }}
+                                  className="w-full text-left px-2.5 py-1.5 hover:bg-slate-50 border-b border-slate-100"
+                                >
+                                  <span className="text-sm text-slate-700">{c.name}</span>
+                                  <span className="ml-2 text-xs text-slate-400 font-mono">{c.phone}</span>
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] text-slate-500">표시명 (미연결 시)</label>
+                      <input type="text" value={edBuyerName} onChange={e => setEdBuyerName(e.target.value)}
+                        className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-500">연락처 (표시)</label>
+                      <input type="text" value={edBuyerPhone} onChange={e => setEdBuyerPhone(e.target.value)}
+                        className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* 수령일자 */}
+                <div>
+                  <label className="text-[10px] text-slate-500">수령일자</label>
+                  <input type="date" value={edReceiptDate} onChange={e => setEdReceiptDate(e.target.value)}
+                    className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                </div>
+
+                {/* 받는분 */}
+                <div className="space-y-2">
+                  <p className="text-[10px] font-semibold text-slate-500">받는분 (배송)</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] text-slate-500">이름</label>
+                      <input type="text" value={edRcptName} onChange={e => setEdRcptName(e.target.value)}
+                        className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-500">전화</label>
+                      <input type="text" value={edRcptPhone} onChange={e => setEdRcptPhone(e.target.value)}
+                        className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label className="text-[10px] text-slate-500">우편번호</label>
+                      <input type="text" value={edRcptZipcode} onChange={e => setEdRcptZipcode(e.target.value)}
+                        className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                    </div>
+                    <div className="col-span-2">
+                      <label className="text-[10px] text-slate-500">주소</label>
+                      <input type="text" value={edRcptAddress} onChange={e => setEdRcptAddress(e.target.value)}
+                        className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500">상세 주소</label>
+                    <input type="text" value={edRcptAddressDetail} onChange={e => setEdRcptAddressDetail(e.target.value)}
+                      className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                  </div>
+                  {shipment && (
+                    <p className="text-[10px] text-slate-400">※ 배송 레코드가 있어 받는분 변경 시 배송 정보도 함께 갱신됩니다.</p>
+                  )}
+                </div>
+
+                {/* 사유 */}
+                <div>
+                  <label className="text-[10px] text-slate-500">수정 사유 (선택)</label>
+                  <input type="text" value={edReason} onChange={e => setEdReason(e.target.value)}
+                    placeholder="예: 주문자 전화로 받는분 변경 요청"
+                    className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    onClick={saveDetails}
+                    disabled={savingDetails}
+                    className="flex-1 py-1.5 text-sm rounded bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50"
+                  >
+                    {savingDetails ? '저장 중...' : '저장'}
+                  </button>
+                  <button
+                    onClick={() => setEditingDetails(false)}
+                    disabled={savingDetails}
+                    className="px-4 py-1.5 text-sm rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    취소
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* 결제정보 (자유기입) */}
             {order.payment_info && (

@@ -1,5 +1,44 @@
 # BUILD-LOG
 
+## 판매상세 직접수정 (고객/수령일/받는분) (빌드 완료 · Must Fix 1건 반영 · 재리뷰 대기)
+시작: 2026-06-16
+
+### Build Status — npm run build ✓ Compiled successfully (에러/경고 0)
+
+### Review Fix (2026-06-16) — shipments 동기화 실패 표면화 (Must Fix)
+- REVIEW-FEEDBACK Condition: updateSalesOrderDetails(sales-revise-actions.ts ~L926)의 shipments.recipient_* 동기화 update가 반환 error를 버려, sales_orders는 이미 commit된 상태에서 shipment write 실패 시 두 테이블이 어긋나고 audit는 성공으로 기록되던 문제.
+- 수정(L925~937): `const { error: shipErr } = await db.from('shipments').update(...)` 로 error 캡처 → 실패 시 `console.error` 후 `{ error: '받는분 정보의 배송 동기화에 실패했습니다.' }` 반환. audit/revalidate 이전 분기 → shipment 실패가 audit에 성공으로 남지 않음. 형제 convertOrderToParcel(L628~631) 패턴 동일. 단일 RPC 트랜잭션 미요구(최소 에러 표면화).
+
+### 변경 파일 (3) — 마이그/툴스 변경 없음
+
+**src/lib/sales-revise-actions.ts** (기존 파일에 액션 추가 — 브리프의 "신규 파일"은 이미 존재해 동일 import 스타일로 append)
+- 신규 `export async function updateSalesOrderDetails(input)` + 내부 `finishUpdateSalesOrderDetails`.
+- requireSession only(역할 게이트 없음, 형제 액션 일관성). 상태 게이트 CANCELLED/REFUNDED/PARTIALLY_REFUNDED 차단.
+- 부분 업데이트: payload 전달(undefined 아닌) 필드만 현재값과 diff → 변경분만 update. ''→null 정규화. 변경 0건이면 update/audit 스킵하고 success.
+- 받는분 변경 시 sales_orders.recipient_* 항상 update + shipments(sales_order_id=orderId maybeSingle) 존재 시 recipient_* 동기화(delivery_message/sender_* 미변경).
+- audit 1건: action UPDATE, tableName sales_orders, recordId orderId, description=`판매상세 수정: ${order_number}, 변경: [한글라벨], 사유: …`, oldData/newData=변경필드 전/후값.
+- 083 미적용 방어: 현재값 조회·update 모두 42703 시 recipient_* 5필드 제외 재시도(isMissingColumnError 재사용). shipments는 046부터 존재 → 폴백 불필요.
+
+**src/app/(dashboard)/pos/SalesListTab.tsx** SalesDetailDrawer
+- import에 updateSalesOrderDetails 추가.
+- loadDetail 1차 order select에 recipient_* 5컬럼 추가(shipment 없는 전표 prefill용). 폴백 분기는 미변경.
+- 신규 state: editingDetails/savingDetails + 편집 필드(edCustomerId/Label, edBuyerName/Phone, edReceiptDate, edRcpt 5필드, edReason) + 인라인 고객검색(edCustSearchOpen/Query/Results/Loading).
+- detailEditable 플래그. openEditDetails(받는분 prefill = shipment 우선 → order.recipient_*). 고객검색 디바운스 useEffect(/api/customers/search 차용, 신규 모달 없음). saveDetails → updateSalesOrderDetails → loadDetail(true) + onChanged().
+- UI: 기본정보 헤더에 ✏️ 수정 토글(취소/환불 전표는 비활성+안내문). 인라인 편집 폼(고객 변경/연결해제 + 표시명/연락처, 수령일자 date, 받는분 5필드, 사유). convert 폼 input 스타일 재사용.
+
+**src/lib/ai/schema.ts**
+- BUSINESS_RULES 배송전환 줄 아래 전표 상세 직접수정 1줄 추가(수정가능 필드 + order_number 불변 + 받는분 양쪽 동기화 + audit 1건). tools.ts 미변경(신규 enum/액션 호출 불필요).
+
+### 결정 사항
+- 브리프가 "신규 파일 생성"이라 했으나 src/lib/sales-revise-actions.ts 가 이미 존재(convertOrderToParcel 등) → 동일 import·helper(isMissingColumnError) 재사용 위해 같은 파일에 append. (드로어 import도 이미 이 파일을 사용 중.)
+- 받는분 prefill은 shipment 우선(드로어 표시 정책과 일치). 저장 시에도 양쪽 동기화.
+
+### Known Gaps (Out of Scope)
+- 수령방법(방문↔택배/퀵) 전환: 기존 convertOrderToParcel/Pickup 존재 — 신규 없음. 확인만.
+- 품목/금액/결제 수정·legacy/카페24 역동기화·고객 신규생성: 범위 밖(브리프 명시).
+
+---
+
 ## 판매현황 수령/매출 분리 + 카페24 받는분 (빌드 완료 · 리뷰 대기)
 시작: 2026-06-16
 

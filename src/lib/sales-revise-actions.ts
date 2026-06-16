@@ -791,3 +791,166 @@ export async function removeSalesOrderItem(params: {
 
   return { success: true, delta: deltaFinal };
 }
+
+// ── 전표 상세 직접 수정 (고객 재연결 / 표시명 / 수령일 / 받는분) ─────────────────
+//
+// 판매번호(order_number)는 절대 불변. 취소·환불 전표는 수정 불가.
+// 부분 업데이트: payload 에 전달된(undefined 아닌) 필드만 반영.
+// 받는분(recipient_*) 변경 시 sales_orders 항상 update + shipment 존재 시 동기화.
+// 변경된 필드만 모아 audit_logs 에 1건(UPDATE) 기록. 변경 0건이면 스킵.
+const DETAIL_FIELD_LABELS: Record<string, string> = {
+  customer_id: '고객연결',
+  buyer_name: '표시명',
+  buyer_phone: '연락처(표시)',
+  receipt_date: '수령일',
+  recipient_name: '받는분',
+  recipient_phone: '연락처',
+  recipient_zipcode: '우편',
+  recipient_address: '주소',
+  recipient_address_detail: '상세주소',
+};
+const RECIPIENT_FIELDS = [
+  'recipient_name', 'recipient_phone', 'recipient_zipcode',
+  'recipient_address', 'recipient_address_detail',
+] as const;
+
+export async function updateSalesOrderDetails(input: {
+  orderId: string;
+  customer_id?: string | null;
+  buyer_name?: string | null;
+  buyer_phone?: string | null;
+  receipt_date?: string | null;
+  recipient_name?: string | null;
+  recipient_phone?: string | null;
+  recipient_zipcode?: string | null;
+  recipient_address?: string | null;
+  recipient_address_detail?: string | null;
+  reason?: string;
+}): Promise<{ success: true } | { error: string }> {
+  let session;
+  try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
+
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  // 현재값 조회
+  const { data: order, error: fetchErr } = await db
+    .from('sales_orders')
+    .select(`order_number, status, customer_id, buyer_name, buyer_phone, receipt_date,
+             recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail`)
+    .eq('id', input.orderId)
+    .single();
+
+  if (fetchErr || !order) {
+    // recipient_* 미적용(083 전) 환경 방어: 5필드 빼고 재조회
+    if (fetchErr && isMissingColumnError(fetchErr)) {
+      const retry = await db
+        .from('sales_orders')
+        .select('order_number, status, customer_id, buyer_name, buyer_phone, receipt_date')
+        .eq('id', input.orderId)
+        .single();
+      if (retry.error || !retry.data) return { error: '전표를 찾을 수 없습니다.' };
+      return finishUpdateSalesOrderDetails(db, retry.data, input, session.id);
+    }
+    return { error: '전표를 찾을 수 없습니다.' };
+  }
+
+  return finishUpdateSalesOrderDetails(db, order, input, session.id);
+}
+
+async function finishUpdateSalesOrderDetails(
+  db: any,
+  order: any,
+  input: Parameters<typeof updateSalesOrderDetails>[0],
+  userId: string,
+): Promise<{ success: true } | { error: string }> {
+  if (['CANCELLED', 'REFUNDED', 'PARTIALLY_REFUNDED'].includes(order.status)) {
+    return { error: '취소/환불된 전표는 수정할 수 없습니다.' };
+  }
+
+  try {
+    // 전달된(undefined 아닌) 필드만 비교 → 변경분만 수집
+    const updatePayload: Record<string, any> = {};
+    const oldData: Record<string, any> = {};
+    const newData: Record<string, any> = {};
+    const candidates: (keyof typeof DETAIL_FIELD_LABELS)[] = [
+      'customer_id', 'buyer_name', 'buyer_phone', 'receipt_date',
+      'recipient_name', 'recipient_phone', 'recipient_zipcode',
+      'recipient_address', 'recipient_address_detail',
+    ];
+
+    for (const key of candidates) {
+      const next = (input as any)[key];
+      if (next === undefined) continue;
+      const before = order[key] ?? null;
+      const after = next === '' ? null : next;
+      if (before === after) continue;
+      updatePayload[key] = after;
+      oldData[key] = before;
+      newData[key] = after;
+    }
+
+    const changedKeys = Object.keys(updatePayload);
+    if (changedKeys.length === 0) return { success: true };
+
+    // sales_orders update (083 미적용 방어: recipient_* 누락 시 5필드 빼고 재시도)
+    let { error: updErr } = await db
+      .from('sales_orders')
+      .update(updatePayload)
+      .eq('id', input.orderId);
+
+    if (updErr && isMissingColumnError(updErr)) {
+      const slim = { ...updatePayload };
+      for (const f of RECIPIENT_FIELDS) delete slim[f];
+      if (Object.keys(slim).length > 0) {
+        const retry = await db.from('sales_orders').update(slim).eq('id', input.orderId);
+        updErr = retry.error;
+      } else {
+        updErr = null;
+      }
+    }
+    if (updErr) return { error: `수정 실패: ${updErr.message}` };
+
+    // 받는분 변경분은 shipment 존재 시 동기화 (shipments recipient_* 는 046부터 존재 → 폴백 불필요)
+    const recipientUpdate: Record<string, any> = {};
+    for (const f of RECIPIENT_FIELDS) {
+      if (f in updatePayload) recipientUpdate[f] = updatePayload[f];
+    }
+    if (Object.keys(recipientUpdate).length > 0) {
+      const { data: ship } = await db
+        .from('shipments')
+        .select('id')
+        .eq('sales_order_id', input.orderId)
+        .maybeSingle();
+      if (ship?.id) {
+        const { error: shipErr } = await db
+          .from('shipments')
+          .update(recipientUpdate)
+          .eq('id', ship.id);
+        if (shipErr) {
+          // sales_orders는 이미 반영됨. shipment 동기화 실패 시 두 테이블이 어긋나므로
+          // audit를 성공으로 기록하지 않고 에러를 표면화한다.
+          console.error('[updateSalesOrderDetails] shipments recipient sync failed:', shipErr);
+          return { error: '받는분 정보의 배송 동기화에 실패했습니다.' };
+        }
+      }
+    }
+
+    // audit 1건
+    const labels = changedKeys.map(k => DETAIL_FIELD_LABELS[k]).join(', ');
+    writeAuditLog({
+      userId,
+      action: 'UPDATE',
+      tableName: 'sales_orders',
+      recordId: input.orderId,
+      description: `판매상세 수정: ${order.order_number}, 변경: [${labels}], 사유: ${input.reason?.trim() || '-'}`,
+      oldData,
+      newData,
+    }).catch(() => {});
+
+    revalidatePath('/pos');
+    return { success: true };
+  } catch (err: any) {
+    return { error: `수정 실패: ${err.message}` };
+  }
+}
