@@ -157,6 +157,8 @@ export default function SalesListTab() {
 
   // 서브뷰: 목록 ↔ 지점비교 (본사/관리자 전용). 지점비교는 기간 행 × 지점 열 매트릭스.
   const [subView, setSubView] = useState<'list' | 'compare'>('list');
+  // 목록 정렬 토글: 'order'=주문일순(현행 flat) / 'receipt'=수령일자별 그룹
+  const [listSort, setListSort] = useState<'order' | 'receipt'>('order');
   // 비교뷰 전용 다수선택 상태 — 기존 단일 branchFilter 와 독립. 기본값은 전체 active 지점.
   const [compareBranchIds, setCompareBranchIds] = useState<string[]>([]);
   // RPC branch_sales_summary 반환형 — legacy(<2026-05-19)+sales(>=2026-05-19) 통합 집계 행.
@@ -495,6 +497,193 @@ export default function SalesListTab() {
       return true;
     });
   }, [orders, search, productSearch, orderOptionSearch, recipientSearch, addressSearch]);
+
+  // 수령일자별 그룹 (listSort==='receipt' 렌더용). filtered 클라이언트 기준, 서버 재조회 없음.
+  // 그룹키 = receipt_date(YYYY-MM-DD 문자열) 그대로. null/빈값 = '미지정' 버킷.
+  // 날짜 오름차순(문자열 비교, ISO date) · '미지정' 그룹은 항상 맨 끝.
+  // 그룹 내 정렬 = receipt_status 우선순위. null/그 외 = 기타(4) (RECEIVED 강제 안 함).
+  const receiptGroups = useMemo(() => {
+    const STATUS_ORDER: Record<string, number> = {
+      PICKUP_PLANNED: 0, PARCEL_PLANNED: 1, QUICK_PLANNED: 2, RECEIVED: 3,
+    };
+    const rank = (o: OrderRow) => {
+      const s = o.receipt_status;
+      return s && s in STATUS_ORDER ? STATUS_ORDER[s] : 4;
+    };
+    const map = new Map<string, OrderRow[]>();
+    for (const o of filtered) {
+      const key = o.receipt_date || '미지정';
+      const arr = map.get(key);
+      if (arr) arr.push(o); else map.set(key, [o]);
+    }
+    const keys = Array.from(map.keys()).sort((a, b) => {
+      if (a === '미지정') return 1;
+      if (b === '미지정') return -1;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+    return keys.map(key => {
+      const orders = map.get(key)!.slice().sort((a, b) => rank(a) - rank(b));
+      const counts = { pickup: 0, parcel: 0, quick: 0, received: 0, other: 0 };
+      for (const o of orders) {
+        const s = o.receipt_status;
+        if (s === 'PICKUP_PLANNED') counts.pickup++;
+        else if (s === 'PARCEL_PLANNED') counts.parcel++;
+        else if (s === 'QUICK_PLANNED') counts.quick++;
+        else if (s === 'RECEIVED') counts.received++;
+        else counts.other++;
+      }
+      const isUnset = key === '미지정';
+      return {
+        date: isUnset ? null : key,
+        label: isUnset ? '수령일 미지정' : key,
+        orders,
+        counts,
+      };
+    });
+  }, [filtered]);
+
+  // 주문 1행 렌더러 — order/receipt 두 모드 공통 사용. 셀 구성·onClick·뱃지 로직 원본 그대로.
+  const renderOrderRow = (o: OrderRow) => {
+                const isCancelled = o.status === 'CANCELLED';
+                const isRefunded = o.status === 'REFUNDED' || o.status === 'PARTIALLY_REFUNDED';
+                const shipFromId = o.shipments?.[0]?.branch_id;
+                const shipFromName = shipFromId
+                  ? (branches.find(b => b.id === shipFromId)?.name || '')
+                  : '';
+                const receiptKey = (o.receipt_status as keyof typeof RECEIPT_STATUS_LABEL) || 'RECEIVED';
+                const approvalKey = (o.approval_status as keyof typeof APPROVAL_STATUS_LABEL) || 'COMPLETED';
+                const items = o.items || [];
+                const itemNames = items.map(it => it.product?.name).filter(Boolean) as string[];
+                const totalQty = items.reduce((s, it) => s + (it.quantity || 0), 0);
+                const firstShip = (o.shipments || [])[0];
+                const optionBadges = items.map(it => it.order_option).filter(Boolean) as string[];
+                return (
+                  <tr
+                    key={o.id}
+                    onClick={() => setSelectedOrderId(o.id)}
+                    className={`cursor-pointer hover:bg-slate-50 ${isCancelled || isRefunded ? 'opacity-60' : ''}`}
+                  >
+                    <td className="text-xs text-slate-600 whitespace-nowrap align-top">
+                      <p>{fmtDateKST(o.ordered_at)}</p>
+                      <p className="text-[10px] text-slate-400">{fmtTimeKST(o.ordered_at)}</p>
+                    </td>
+                    <td className="whitespace-nowrap align-top">
+                      <span className={`badge text-[10px] ${RECEIPT_STATUS_BADGE[receiptKey] || 'bg-slate-100 text-slate-600'}`}>
+                        {RECEIPT_STATUS_LABEL[receiptKey] || '-'}
+                      </span>
+                      {o.receipt_date && <p className="text-[10px] text-slate-500 mt-0.5">{o.receipt_date}</p>}
+                    </td>
+                    <td className="text-xs text-slate-700 whitespace-nowrap align-top">{o.branch?.name || '-'}</td>
+                    <td className="text-xs text-slate-700 whitespace-nowrap align-top">
+                      {shipFromName ? (
+                        shipFromId === o.branch?.id ? (
+                          <span className="text-slate-400">동일</span>
+                        ) : (
+                          <span className="inline-flex items-center px-1 text-[10px] rounded bg-indigo-50 text-indigo-700 border border-indigo-100">
+                            🚚 {shipFromName}
+                          </span>
+                        )
+                      ) : <span className="text-slate-300">-</span>}
+                    </td>
+                    <td className="text-xs text-slate-700 whitespace-nowrap align-top">{o.handler?.name || '-'}</td>
+                    <td className="align-top">
+                      {o.customer ? (
+                        <div>
+                          <p className="font-medium text-sm">{o.customer.name}</p>
+                          <p className="text-[11px] text-slate-400">{o.customer.phone}</p>
+                        </div>
+                      ) : (o.buyer_name || o.buyer_phone) ? (
+                        <div title="자사몰 주문자 (고객 미연결)">
+                          <p className="font-medium text-sm">
+                            {o.buyer_name || '-'}
+                            <span className="ml-1 text-[10px] px-1 rounded bg-slate-100 text-slate-500 align-middle">자사몰</span>
+                          </p>
+                          <p className="text-[11px] text-slate-400">{o.buyer_phone || ''}</p>
+                        </div>
+                      ) : <span className="text-slate-300 text-xs">비회원</span>}
+                    </td>
+                    <td className="align-top">
+                      {itemNames.length > 0 ? (
+                        <div className="text-xs leading-tight">
+                          <p className="text-slate-700 line-clamp-2" title={itemNames.join(', ')}>
+                            {itemNames.slice(0, 2).join(' · ')}
+                            {itemNames.length > 2 && <span className="text-slate-400"> 외 {itemNames.length - 2}</span>}
+                          </p>
+                          <p className="text-[10px] text-slate-400">{items.length}종</p>
+                        </div>
+                      ) : <span className="text-slate-300 text-xs">-</span>}
+                    </td>
+                    <td className="text-center text-xs text-slate-600 align-top">{totalQty || '-'}</td>
+                    <td className={`text-right align-top ${isRefunded || isCancelled ? 'line-through text-slate-400' : 'text-slate-800'}`}>
+                      {(o.discount_amount || 0) > 0 ? (
+                        <>
+                          <p className="text-[10px] text-slate-400 line-through leading-tight">
+                            {(o.total_amount || 0).toLocaleString()}원
+                          </p>
+                          <p className="font-semibold leading-tight">
+                            {((o.total_amount || 0) - (o.discount_amount || 0)).toLocaleString()}원
+                          </p>
+                          <p className="text-[10px] text-orange-600 leading-tight">
+                            -{(o.discount_amount || 0).toLocaleString()}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="font-semibold">{(o.total_amount || 0).toLocaleString()}원</p>
+                      )}
+                    </td>
+                    <td className="align-top whitespace-nowrap">
+                      <p className="text-xs">{PAY_LABEL[o.payment_method] || o.payment_method}</p>
+                      <span className={`badge text-[10px] mt-0.5 ${APPROVAL_STATUS_BADGE[approvalKey] || ''}`}>
+                        {APPROVAL_STATUS_LABEL[approvalKey] || '-'}
+                      </span>
+                      {o.payment_method === 'credit' && o.credit_settled === false && (
+                        <span className="ml-1 badge text-[10px] bg-orange-100 text-orange-700">외상 미정산</span>
+                      )}
+                    </td>
+                    <td className="align-top">
+                      {firstShip ? (
+                        (() => {
+                          const firstShipQuick =
+                            firstShip.delivery_type === 'QUICK'
+                            || (!firstShip.delivery_type && o.receipt_status === 'QUICK_PLANNED');
+                          return (
+                            <div className="text-xs leading-tight">
+                              <p className="text-slate-700 flex items-center gap-1">
+                                <span className={firstShipQuick ? 'text-indigo-600' : 'text-blue-600'}>
+                                  {firstShipQuick ? '🛵' : '📦'}
+                                </span>
+                                {firstShip.recipient_name || '-'}
+                              </p>
+                              <p className="text-[10px] text-slate-400">{firstShip.recipient_phone || ''}</p>
+                              <p className="text-[10px] text-slate-500 line-clamp-1" title={`${firstShip.recipient_address || ''} ${firstShip.recipient_address_detail || ''}`}>
+                                {firstShip.recipient_address || ''}
+                              </p>
+                            </div>
+                          );
+                        })()
+                      ) : <span className="text-slate-300 text-xs">-</span>}
+                    </td>
+                    <td className="align-top">
+                      {(o._consultMatch || optionBadges.length > 0) ? (
+                        <div className="space-y-1 text-[11px] max-w-[180px]">
+                          {o._consultMatch && (
+                            <p className="text-slate-600 line-clamp-2" title={o._consultMatch}>💬 {o._consultMatch}</p>
+                          )}
+                          {optionBadges.slice(0, 2).map((opt, i) => (
+                            <span key={i} className="inline-block mr-1 px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100">🎀 {opt}</span>
+                          ))}
+                          {optionBadges.length > 2 && <span className="text-[10px] text-slate-400">+{optionBadges.length - 2}</span>}
+                        </div>
+                      ) : <span className="text-slate-300 text-xs">-</span>}
+                    </td>
+                    <td className="align-top">
+                      <span className={`badge text-[10px] ${STATUS_BADGE[o.status] || ''}`}>
+                        {STATUS_LABEL[o.status] || o.status}
+                      </span>
+                    </td>
+                  </tr>
+                );
+  };
 
   // 활성 필터 카운트 (고급 검색 버튼 배지)
   const activeAdvancedCount = useMemo(() => {
@@ -901,7 +1090,22 @@ export default function SalesListTab() {
       {/* 테이블 */}
       <div className="card">
         <div className="flex items-center justify-between mb-2">
-          <h3 className="font-semibold text-slate-700">판매 내역 ({filtered.length}건)</h3>
+          <div className="flex items-center gap-3">
+            <h3 className="font-semibold text-slate-700">판매 내역 ({filtered.length}건)</h3>
+            <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1 w-fit">
+              {([['order', '주문일순'], ['receipt', '수령일자별']] as ['order' | 'receipt', string][]).map(([k, label]) => (
+                <button
+                  key={k}
+                  onClick={() => setListSort(k)}
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                    listSort === k ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
           <button onClick={() => { setRefundOrderNumber(null); setShowRefundModal(true); }}
             className="text-sm text-red-600 hover:underline">환불 처리</button>
         </div>
@@ -931,147 +1135,28 @@ export default function SalesListTab() {
                 <tr><td colSpan={13} className="text-center py-10 text-slate-400">
                   조건에 맞는 판매 내역이 없습니다
                 </td></tr>
-              ) : filtered.map(o => {
-                const isCancelled = o.status === 'CANCELLED';
-                const isRefunded = o.status === 'REFUNDED' || o.status === 'PARTIALLY_REFUNDED';
-                const shipFromId = o.shipments?.[0]?.branch_id;
-                const shipFromName = shipFromId
-                  ? (branches.find(b => b.id === shipFromId)?.name || '')
-                  : '';
-                const receiptKey = (o.receipt_status as keyof typeof RECEIPT_STATUS_LABEL) || 'RECEIVED';
-                const approvalKey = (o.approval_status as keyof typeof APPROVAL_STATUS_LABEL) || 'COMPLETED';
-                const items = o.items || [];
-                const itemNames = items.map(it => it.product?.name).filter(Boolean) as string[];
-                const totalQty = items.reduce((s, it) => s + (it.quantity || 0), 0);
-                const firstShip = (o.shipments || [])[0];
-                const optionBadges = items.map(it => it.order_option).filter(Boolean) as string[];
-                return (
-                  <tr
-                    key={o.id}
-                    onClick={() => setSelectedOrderId(o.id)}
-                    className={`cursor-pointer hover:bg-slate-50 ${isCancelled || isRefunded ? 'opacity-60' : ''}`}
-                  >
-                    <td className="text-xs text-slate-600 whitespace-nowrap align-top">
-                      <p>{fmtDateKST(o.ordered_at)}</p>
-                      <p className="text-[10px] text-slate-400">{fmtTimeKST(o.ordered_at)}</p>
-                    </td>
-                    <td className="whitespace-nowrap align-top">
-                      <span className={`badge text-[10px] ${RECEIPT_STATUS_BADGE[receiptKey] || 'bg-slate-100 text-slate-600'}`}>
-                        {RECEIPT_STATUS_LABEL[receiptKey] || '-'}
-                      </span>
-                      {o.receipt_date && <p className="text-[10px] text-slate-500 mt-0.5">{o.receipt_date}</p>}
-                    </td>
-                    <td className="text-xs text-slate-700 whitespace-nowrap align-top">{o.branch?.name || '-'}</td>
-                    <td className="text-xs text-slate-700 whitespace-nowrap align-top">
-                      {shipFromName ? (
-                        shipFromId === o.branch?.id ? (
-                          <span className="text-slate-400">동일</span>
-                        ) : (
-                          <span className="inline-flex items-center px-1 text-[10px] rounded bg-indigo-50 text-indigo-700 border border-indigo-100">
-                            🚚 {shipFromName}
-                          </span>
-                        )
-                      ) : <span className="text-slate-300">-</span>}
-                    </td>
-                    <td className="text-xs text-slate-700 whitespace-nowrap align-top">{o.handler?.name || '-'}</td>
-                    <td className="align-top">
-                      {o.customer ? (
-                        <div>
-                          <p className="font-medium text-sm">{o.customer.name}</p>
-                          <p className="text-[11px] text-slate-400">{o.customer.phone}</p>
-                        </div>
-                      ) : (o.buyer_name || o.buyer_phone) ? (
-                        <div title="자사몰 주문자 (고객 미연결)">
-                          <p className="font-medium text-sm">
-                            {o.buyer_name || '-'}
-                            <span className="ml-1 text-[10px] px-1 rounded bg-slate-100 text-slate-500 align-middle">자사몰</span>
-                          </p>
-                          <p className="text-[11px] text-slate-400">{o.buyer_phone || ''}</p>
-                        </div>
-                      ) : <span className="text-slate-300 text-xs">비회원</span>}
-                    </td>
-                    <td className="align-top">
-                      {itemNames.length > 0 ? (
-                        <div className="text-xs leading-tight">
-                          <p className="text-slate-700 line-clamp-2" title={itemNames.join(', ')}>
-                            {itemNames.slice(0, 2).join(' · ')}
-                            {itemNames.length > 2 && <span className="text-slate-400"> 외 {itemNames.length - 2}</span>}
-                          </p>
-                          <p className="text-[10px] text-slate-400">{items.length}종</p>
-                        </div>
-                      ) : <span className="text-slate-300 text-xs">-</span>}
-                    </td>
-                    <td className="text-center text-xs text-slate-600 align-top">{totalQty || '-'}</td>
-                    <td className={`text-right align-top ${isRefunded || isCancelled ? 'line-through text-slate-400' : 'text-slate-800'}`}>
-                      {(o.discount_amount || 0) > 0 ? (
-                        <>
-                          <p className="text-[10px] text-slate-400 line-through leading-tight">
-                            {(o.total_amount || 0).toLocaleString()}원
-                          </p>
-                          <p className="font-semibold leading-tight">
-                            {((o.total_amount || 0) - (o.discount_amount || 0)).toLocaleString()}원
-                          </p>
-                          <p className="text-[10px] text-orange-600 leading-tight">
-                            -{(o.discount_amount || 0).toLocaleString()}
-                          </p>
-                        </>
-                      ) : (
-                        <p className="font-semibold">{(o.total_amount || 0).toLocaleString()}원</p>
-                      )}
-                    </td>
-                    <td className="align-top whitespace-nowrap">
-                      <p className="text-xs">{PAY_LABEL[o.payment_method] || o.payment_method}</p>
-                      <span className={`badge text-[10px] mt-0.5 ${APPROVAL_STATUS_BADGE[approvalKey] || ''}`}>
-                        {APPROVAL_STATUS_LABEL[approvalKey] || '-'}
-                      </span>
-                      {o.payment_method === 'credit' && o.credit_settled === false && (
-                        <span className="ml-1 badge text-[10px] bg-orange-100 text-orange-700">외상 미정산</span>
-                      )}
-                    </td>
-                    <td className="align-top">
-                      {firstShip ? (
-                        (() => {
-                          const firstShipQuick =
-                            firstShip.delivery_type === 'QUICK'
-                            || (!firstShip.delivery_type && o.receipt_status === 'QUICK_PLANNED');
-                          return (
-                            <div className="text-xs leading-tight">
-                              <p className="text-slate-700 flex items-center gap-1">
-                                <span className={firstShipQuick ? 'text-indigo-600' : 'text-blue-600'}>
-                                  {firstShipQuick ? '🛵' : '📦'}
-                                </span>
-                                {firstShip.recipient_name || '-'}
-                              </p>
-                              <p className="text-[10px] text-slate-400">{firstShip.recipient_phone || ''}</p>
-                              <p className="text-[10px] text-slate-500 line-clamp-1" title={`${firstShip.recipient_address || ''} ${firstShip.recipient_address_detail || ''}`}>
-                                {firstShip.recipient_address || ''}
-                              </p>
-                            </div>
-                          );
-                        })()
-                      ) : <span className="text-slate-300 text-xs">-</span>}
-                    </td>
-                    <td className="align-top">
-                      {(o._consultMatch || optionBadges.length > 0) ? (
-                        <div className="space-y-1 text-[11px] max-w-[180px]">
-                          {o._consultMatch && (
-                            <p className="text-slate-600 line-clamp-2" title={o._consultMatch}>💬 {o._consultMatch}</p>
-                          )}
-                          {optionBadges.slice(0, 2).map((opt, i) => (
-                            <span key={i} className="inline-block mr-1 px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100">🎀 {opt}</span>
-                          ))}
-                          {optionBadges.length > 2 && <span className="text-[10px] text-slate-400">+{optionBadges.length - 2}</span>}
-                        </div>
-                      ) : <span className="text-slate-300 text-xs">-</span>}
-                    </td>
-                    <td className="align-top">
-                      <span className={`badge text-[10px] ${STATUS_BADGE[o.status] || ''}`}>
-                        {STATUS_LABEL[o.status] || o.status}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
+              ) : listSort === 'order' ? (
+                filtered.map(renderOrderRow)
+              ) : (
+                receiptGroups.flatMap(g => {
+                  const c = g.counts;
+                  const parts: string[] = [];
+                  if (c.pickup) parts.push(`방문 ${c.pickup}`);
+                  if (c.parcel) parts.push(`택배 ${c.parcel}`);
+                  if (c.quick) parts.push(`퀵 ${c.quick}`);
+                  if (c.received) parts.push(`수령완료 ${c.received}`);
+                  if (c.other) parts.push(`기타 ${c.other}`);
+                  return [
+                    <tr key={`h-${g.date ?? 'unset'}`} className="bg-slate-100 font-semibold text-slate-700 text-sm">
+                      <td colSpan={13} className="py-1.5">
+                        {g.label}
+                        {parts.length > 0 && <span className="font-normal text-slate-500"> · {parts.join(' · ')}</span>}
+                      </td>
+                    </tr>,
+                    ...g.orders.map(renderOrderRow),
+                  ];
+                })
+              )}
             </tbody>
           </table>
         </div>

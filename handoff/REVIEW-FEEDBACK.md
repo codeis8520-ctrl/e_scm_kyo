@@ -1,41 +1,24 @@
-# Review Feedback — Feature D: 재고 조정 권한 정리 (입고/출고 제거 · 본사만 조정)
+# Review Feedback — 판매현황 목록 수령일자별 정렬 토글
 Date: 2026-06-16
-Status: APPROVED
+Ready for Builder: YES
 
-## Conditions
+## Must Fix
 없음.
 
-## Escalate to Arch
+## Should Fix
 없음.
+
+## Escalate to Architect
+없음. (Out of Scope 2건은 BUILD-LOG 기록됨 — 필터기간=주문일 기준이라 미래 수령건 누락 가능 / '미지정' 그룹 2차정렬 없음. 코드 결함 아님, 사용자 안내 사항.)
 
 ## Cleared
-adjustInventory 서버 RBAC 가드, InventoryModal IN/OUT 제거, page.tsx 3개 진입점
-클라이언트 게이팅, schema.ts BUSINESS_RULES 1줄을 리뷰했고 모두 통과.
+SalesListTab.tsx 단일 파일 — 수령일자별 정렬 토글 + receiptGroups useMemo + renderOrderRow 추출.
 
-### 검증 상세
-- 서버 가드: actions.ts:1007 `requireSession()`이 함수 최상단(모든 DB mutation 이전)에
-  위치. session.ts:45 requireSession은 세션 없으면 throw → 미인증 차단. session.role
-  필드명 일치(SessionUser.role, line 9). 비본사는 line 1008-1010에서 `{ error }` 반환
-  후 즉시 종료. import 확인(actions.ts:9). transfer 패턴 미러 정상.
-- RAW/SUB→본사 기존 제한(1022-1037) 무변경·정상 유지.
-- 클라 게이팅: isHQUser(page.tsx:116) = userRole SUPER_ADMIN/HQ_OPERATOR, 기존
-  isBranchUser 쿠키 패턴과 동일. 3개 진입점 전부 차단 —
-  헤더 '+ 재고 조정'(513-525) `{isHQUser && ...}`,
-  그리드 셀(771) adjustBlocked = materialBlocked || !isHQUser (onClick/disabled/스타일/↓배지),
-  플랫테이블 '조정'(891-902) `{isHQUser && ...}` + 내부 materialBlocked 유지.
-  조회(재고현황) 무게이트 — 비본사도 데이터 전부 조회 가능(과게이팅 없음).
-- 방어 심층: 클라 게이트(UX) + 서버 가드(실집행) 양쪽 존재. 비본사가 액션 직접
-  호출해도 서버에서 차단.
-- InventoryModal: movement_type 기본값 'ADJUST'(45), IN/OUT 토글 3버튼 삭제,
-  남은 setFormData는 branch_id/quantity/safety_stock/memo만 → IN/OUT 제출 경로 없음.
-  라벨 '변경 후 수량 *' 고정, placeholder '조정 사유...', RAW/SUB '지점은 본사로
-  고정됩니다.'(236) 유지.
-- AI 에이전트 경로: tools.ts execAdjustInventory diff 0(미변경). 액션의 새
-  requireSession 가드는 에이전트 executor에 영향 없음(별 경로).
-- DB/마이그 변경 없음. schema.ts:159 BUSINESS_RULES 1줄만 추가 — AI Sync 충족.
-- 엣지: user_role 쿠키 부재/미지 → isHQUser false(안전·게이트). 서버 requireSession
-  throw → 안전.
-
-### 비차단 관찰(참고만, 조정 불필요)
-- actions.ts:1056-1059 movementType==='IN'/'OUT' 분기는 모달이 'ADJUST' 고정이라
-  현 UI에서 도달 불가(dead branch). 무해. 향후 정리는 스코프 밖 — BUILD-LOG 권장.
+### 검증 내역 (실측)
+- **colSpan=13 확인.** 목록 표 <th> 실측 13개(일자·수령·매출처·출고처·담당자·고객/연락처·품목·수량·합계·결제/승인·받는분·상담/옵션·상태, L1116-1128). renderOrderRow의 <td>도 13개. 로딩(L1133)·빈행(L1135)·그룹헤더(L1151) colSpan 모두 13으로 일치. Bob이 REVIEW-REQUEST에 적은 ~15개는 라벨을 쪼개 센 것일 뿐 실제 컬럼은 13개. 불일치 해소.
+- **renderOrderRow 바이트 동일.** git diff로 확인 — 기존 `filtered.map(o => {...})` 본문과 추출된 `renderOrderRow(o)` 본문이 셀·key={o.id}·onClick(상세이동)·뱃지·환불 로직까지 완전 동일. 래퍼만 인라인→named function 전환. 회귀 없음.
+- **receiptGroups 정확.** receipt_date 버킷(null/빈값→'미지정'), 키 ASC 문자열 비교(L519-523)·'미지정' 강제 맨끝, 그룹내 rank PICKUP0<PARCEL1<QUICK2<RECEIVED3<기타4(null/그외=4). `.slice().sort()`로 filtered 무변경, V8 stable sort라 동순위는 삽입(주문일)순 유지. counts 5종 정확.
+- **receipt 렌더.** 날짜헤더 tr(label+방식별 건수, 0건 방식 생략) → 그룹 주문행. loading/빈목록/미지정-only 모두 비파손. 토글은 subView==='list' fragment(L1054~1164) 내부에만 노출, compare 뷰엔 없음.
+- **문자열 날짜 비교만.** Date 파싱/TZ 변환 전무.
+- **React key 안전.** 그룹헤더 `h-${date??'unset'}` (UUID o.id와 충돌 불가), 주문행 key={o.id}. flatMap 시 중복키 없음.
+- **스코프 준수.** 코드 변경 단일 파일. DB/쿼리/필터/schema.ts/tools.ts 무변경. compare 서브뷰·기타 로직 무손상.

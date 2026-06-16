@@ -1,3 +1,27 @@
+## Feature: 판매현황 목록 수령일자별 그룹 토글 — 1 step (브리프 작성)
+
+### Locked Decisions (Project Owner 확정)
+- 정렬 토글: 기본 '주문일순'(현행 flat) / '수령일자별'(그룹). 프론트 전용, DB/쿼리/필터 무변경.
+- 수령일자별: receipt_date 그룹, 날짜 오름차순(가까운 날 먼저), 미지정 그룹 맨 끝.
+- 그룹 내 정렬: 방문(PICKUP_PLANNED) → 택배(PARCEL_PLANNED) → 퀵(QUICK_PLANNED) → 수령완료(RECEIVED) → 기타.
+- 그룹 헤더에 날짜 + 수령방식별 건수 요약 표시(예: 2026-06-20 · 방문 3 · 택배 5 · 퀵 1).
+- 대상 파일: src/app/(dashboard)/pos/SalesListTab.tsx 단일. colSpan=13.
+
+### Build Status (2026-06-16) — 빌드 완료 · 리뷰 대기
+- BUILT — npm run build ✓ Compiled successfully (에러/경고 0).
+- 단일 파일: src/app/(dashboard)/pos/SalesListTab.tsx.
+- colSpan 실측 확인 = **13** (목록 표 헤더 th 13개: 일자·수령·매출처·출고처·담당자·고객/연락처·품목·수량·합계·결제/승인·받는분·주소·상담·옵션·상태). 기존 로딩/빈행 colSpan=13과 일치.
+- 변경 내용:
+  - listSort state ('order'|'receipt', 기본 'order') subView 인근 추가.
+  - receiptGroups useMemo (deps [filtered]): receipt_date 버킷 → 키 ASC 정렬(미지정 맨끝) → 그룹 내 status rank 정렬(PICKUP0<PARCEL1<QUICK2<RECEIVED3<기타4, null=4, .slice().sort()로 안정정렬) → counts{pickup,parcel,quick,received,other}.
+  - 테이블 카드 헤더(L903 flex)에 세그먼트 토글 2개 추가(L603 패턴 축소 복제). subView==='list' 래퍼(L865) 내부라 list에서만 노출.
+  - 기존 per-order <tr> 본체를 renderOrderRow(o) 헬퍼로 **바이트 그대로 추출**(셀·onClick·뱃지 무변경). order모드=filtered.map(renderOrderRow) 픽셀동일. receipt모드=receiptGroups.flatMap([헤더tr(colSpan13, 날짜+방식별건수), ...orders.map(renderOrderRow)]).
+  - loading / filtered.length===0 분기 원본 유지. 빈목록→receiptGroups=[]→빈출력. 미지정만→'수령일 미지정' 그룹 1개.
+
+### Known Gaps (Out of Scope — 미수정)
+- 필터 기간은 **주문일 기준**. 주문일 범위가 좁으면 그 안에 없는 미래 수령건은 '수령일자별'에도 안 보임. 수령일 기반 분석을 원하면 사용자가 조회 기간을 넓혀야 함(사용자 안내 사항, 이번 스코프 아님).
+- '미지정' 그룹 내부는 status 우선순위만 적용(주문일 2차 정렬 없음).
+
 # BUILD-LOG — Feature D: 재고 조정 권한 정리 (입고/출고 제거 · 본사만 조정)
 
 ## Feature D — 1 step (빌드 완료 · 리뷰 대기)

@@ -1,49 +1,58 @@
-# Architect Brief — 재고 조정 권한 정리 (입고/출고 제거 · 본사만 조정)
+# Architect Brief — Step: 판매현황 목록 수령일자별 그룹 토글
 
 ## Goal
-재고현황 InventoryModal에서 입고(IN)/출고(OUT) 버튼을 전면 제거하고 조정(ADJUST)만 남긴다. 조정 진입(모달·서버)을 본사 역할(SUPER_ADMIN/HQ_OPERATOR)에게만 허용한다. 비권한자는 재고 조회만 가능.
+판매현황 'list' 서브뷰 목록을 '주문일순'(현행 flat) / '수령일자별'(receipt_date 그룹) 토글로 볼 수 있게 한다. 프론트 전용, DB/쿼리/필터 무변경.
 
-## Locked Decisions
-- IN/OUT 전면 삭제. ADJUST 단일 고정. movement_type 항상 'ADJUST'.
-- 조정 권한 화이트리스트 = ['SUPER_ADMIN','HQ_OPERATOR']. 그 외(BRANCH_STAFF/PHARMACY_STAFF/EXECUTIVE)는 조정 불가.
-- 서버 가드는 `requireSession()` + role 화이트리스트. transfer 액션 패턴(actions.ts L1207 `const session = await requireSession()` → 거부 시 `{ error }`) 미러.
-- **AI 에이전트 무관 — 건드리지 말 것.** `adjust_inventory` 도구는 자체 executor `execAdjustInventory`(tools.ts L1846, ToolContext RBAC) 사용, `adjustInventory` 액션을 호출하지 않음. requireSession 추가는 에이전트 경로에 영향 없음. 액션 분리 불필요.
-- RAW/SUB→본사 제한(기존 로직) 그대로 유지.
-- 마이그/DB 변경 없음.
+## Scope (한 파일만)
+`src/app/(dashboard)/pos/SalesListTab.tsx` 만 수정. 그 외 파일 손대지 말 것.
+**DB/마이그/schema.ts/tools.ts 변경 전혀 없음** — 확인됨, 손대지 말 것.
 
 ## Build Order
 
-### 1. src/lib/actions.ts — adjustInventory (L1006~)
-- 함수 맨 앞(L1007 `createClient` 위)에 서버 RBAC 추가:
-  - `const session = await requireSession();`
-  - `if (session.role !== 'SUPER_ADMIN' && session.role !== 'HQ_OPERATOR') return { error: '재고 조정은 본사 권한만 가능합니다.' };`
-- `requireSession`은 이미 import 됨(L9). 기존 RAW/SUB 본사 제한·이하 로직 변경 금지.
+### 1) 정렬 토글 state
+- `subView` state 선언부(L159 인근)에 추가:
+  `const [listSort, setListSort] = useState<'order' | 'receipt'>('order');`
 
-### 2. src/app/(dashboard)/inventory/InventoryModal.tsx
-- formData.movement_type 기본값 L45: `'IN'` → `'ADJUST'`.
-- 조정 유형 토글 3버튼(L260-302) 전체 삭제. 대신 정적 안내 한 줄만: "조정: 현재고를 입력한 수량으로 맞춥니다 (실사 반영)". movement_type은 항상 'ADJUST'로 고정(state 유지하되 변경 UI 없음).
-- 수량 라벨(L305-307): 조건 분기 제거하고 '변경 후 수량 *' 고정.
-- 힌트/placeholder 문구 '입출고' → '조정'로 정리: memo placeholder(L345) '조정 사유...'.
-- 제목(L153) '재고 조정' 유지. RAW/SUB 본사 안내(L212-214, L235-237) 유지.
+### 2) 그룹 useMemo
+- `filtered` useMemo(L442~497) 바로 뒤에 신규 useMemo `receiptGroups` 추가. deps: `[filtered]`.
+- `listSort` 분기는 useMemo 안에서 하지 말고 항상 그룹을 계산해도 됨(렌더에서 모드 분기). 로직:
+  - 그룹 키 = `o.receipt_date`(YYYY-MM-DD 문자열) 그대로. null/빈값 = '미지정' 버킷.
+  - 날짜 그룹 배열을 날짜 **오름차순**(string 비교로 충분, ISO date) 정렬. **'미지정' 그룹은 항상 맨 끝**.
+  - 각 그룹 내 주문 정렬 = receipt_status 우선순위:
+    `PICKUP_PLANNED(0) < PARCEL_PLANNED(1) < QUICK_PLANNED(2) < RECEIVED(3) < 기타(4)`.
+    (status 없거나 위 4개 외 = 4). status 없음의 기본 표시는 기존 코드가 'RECEIVED'로 폴백하나(L941, L959), **정렬 우선순위에선 null을 RECEIVED로 강제하지 말고 '기타(4)'로** 두면 됨. 동순위는 안정정렬 유지.
+  - 각 그룹마다 수령방식별 건수 요약 카운트도 함께 계산: `{ pickup, parcel, quick, received, other }`.
+  - 반환 형태 예: `{ date: string|null, label: string, orders: Order[], counts: {...} }[]`.
 
-### 3. src/app/(dashboard)/inventory/page.tsx
-- L115 아래 추가: `const isHQUser = userRole === 'SUPER_ADMIN' || userRole === 'HQ_OPERATOR';`
-- 헤더 '+ 입출고' 버튼(L514-517): `{isHQUser && (...)}`로 감싸 본사만 노출. 라벨 '+ 입출고' → '+ 재고 조정'.
-- 그리드 셀 조정 진입(L770 onClick `handleAdjust`): 비본사면 진입 막기 — `materialBlocked` 인근 조건에 `!isHQUser`도 막힘으로 합류. 비본사일 때 onClick no-op + disabled. title은 비본사면 '재고 조정은 본사 권한만 가능'.
-- 플랫 테이블 '입출고' 버튼(L888-893): `{isHQUser && (...)}`로 감싸 비본사에게 숨김(또는 disabled+title). 라벨 '입출고' → '조정'.
-- 하단 안내 문구(L805) '입출고' 표현을 '조정'으로 정리. 본사 전용 의미 반영.
+### 3) 토글 UI
+- 'list' 서브뷰에서만 노출. 위치: **테이블 카드(L902) 헤더 줄 — L903 `flex items-center justify-between` 안**, '판매 내역 (N건)' h3 옆 또는 환불 버튼 왼쪽에 토글 배치(좁은 세그먼트 버튼 2개).
+- 패턴 재사용: L603~615 subView 토글 스타일(`bg-slate-100 rounded-lg p-1`, active=`bg-white text-blue-700 shadow-sm`)을 작게 복제. 라벨: `['order','주문일순'], ['receipt','수령일자별']`.
 
-## Out of Scope
-- bulk_adjust_inventory / 에이전트 도구 description 문구 — 손대지 않음(Known Gap 후보, 이번 단계 아님).
-- TransferModal/TransferBatchPanel(창고이동) — 변경 없음.
-- inventory_movements 'IN'/'OUT' 과거 데이터 — 그대로.
+### 4) tbody 렌더 분기 (L927~ tbody, 행 본체 L934~)
+- **핵심: 기존 per-order `<tr>` 본체(L934의 `filtered.map(o => { ... return (<tr key=...>...</tr>) })`)를 절대 다시 쓰지 말 것.** 행 1줄(약 L934~끝 tr)을 `const renderOrderRow = (o) => { ... return <tr ...> }` 헬퍼로 **추출**해 재사용한다. 셀 구성·onClick 상세이동·환불·뱃지 로직 그대로 보존.
+- loading / `filtered.length===0` 분기(L928~933)는 그대로 유지.
+- 그 다음:
+  - `listSort === 'order'` → `filtered.map(renderOrderRow)` (현행과 동일 출력).
+  - `listSort === 'receipt'` → `receiptGroups.flatMap(g => [ <그룹헤더 tr key={'h-'+...}>, ...g.orders.map(renderOrderRow) ])`.
+- **그룹 헤더 행**: `<tr><td colSpan={13} className="...">...</td></tr>`.
+  - colSpan 은 반드시 **13** (헤더 th 13개 = L912~924, 기존 빈/로딩 행도 colSpan=13).
+  - 표시: 날짜(미지정 그룹은 '수령일 미지정') + 그 날짜의 수령방식별 건수 요약.
+    예: `2026-06-20 · 방문 3 · 택배 5 · 퀵 1` (건수 0인 방식은 생략 권장). 수령완료/기타도 건수 있으면 덧붙임.
+  - 스타일: 눈에 띄는 구분 행(예: `bg-slate-100 font-semibold text-slate-700 text-sm`). sticky 불필요.
 
-## AI Sync (필수 검토)
-- src/lib/ai/schema.ts BUSINESS_RULES에 한 줄 추가: "재고 조정(adjust)은 본사 역할(SUPER_ADMIN/HQ_OPERATOR)만. UI에서 수동 입고/출고 제거 — 입고=매입(purchase), 출고=판매/창고이동으로만 발생." (에이전트 자체 RBAC는 ToolContext가 별도 처리하나 정책 일치를 위해 명시.)
-- DB_SCHEMA 변경 없음(컬럼/enum 불변).
+## Out of Scope (건드리면 안 됨)
+- 필터/검색/기간/CSV/요약카드/일자별요약/compare 서브뷰 로직 — 무변경.
+- 정렬은 **이미 받은 filtered 클라이언트 기준**. 서버 재조회 없음.
+- '미지정' 그룹 내부 정렬은 status 우선순위만(주문일 정렬 불필요).
 
 ## Acceptance
-- npm run build 성공(에러/경고 0).
-- 모달에 IN/OUT 버튼 없음. ADJUST 단일.
-- 본사 계정: 조정 진입·제출 정상. 비본사 계정: 조정 버튼 미노출/비활성 + 서버 호출 시 거부 메시지.
-- 에이전트 adjust_inventory 경로 무변경(코드 diff 없음 확인).
+- 토글 '주문일순' = 현재와 픽셀 동일 출력(회귀 없음).
+- 토글 '수령일자별' = receipt_date 오름차순 그룹, 미지정 맨 끝, 그룹 내 방문→택배→퀵→수령완료→기타.
+- 각 그룹 헤더에 날짜 + 수령방식별 건수 요약 노출.
+- 행 클릭→상세, 환불, 뱃지 등 기존 동작 receipt 모드에서도 정상.
+- `npm run build` 통과. 빈 목록/미지정만 있는 목록/로딩 상태에서 깨지지 않음.
+
+## Flags (추측 금지)
+- colSpan = 13 고정.
+- receipt_status enum: RECEIVED / PICKUP_PLANNED / QUICK_PLANNED / PARCEL_PLANNED (L88). 그 외/null = 기타.
+- 날짜 비교는 문자열 그대로(이미 YYYY-MM-DD). Date 파싱·타임존 변환 금지.
