@@ -93,12 +93,14 @@ const PAY_LABEL: Record<string, string> = {
 };
 const RECEIPT_STATUS_LABEL: Record<string, string> = {
   RECEIVED: '수령', PICKUP_PLANNED: '방문예정', QUICK_PLANNED: '퀵예정', PARCEL_PLANNED: '택배예정',
+  PARCEL_SHIPPED: '택배발송',
 };
 const RECEIPT_STATUS_BADGE: Record<string, string> = {
   RECEIVED: 'bg-green-100 text-green-700',
   PICKUP_PLANNED: 'bg-slate-100 text-slate-600',
   QUICK_PLANNED: 'bg-indigo-100 text-indigo-700',
   PARCEL_PLANNED: 'bg-blue-100 text-blue-700',
+  PARCEL_SHIPPED: 'bg-teal-100 text-teal-700',
 };
 const APPROVAL_STATUS_LABEL: Record<string, string> = {
   COMPLETED: '결제완료', CARD_PENDING: '미승인(카드)', UNSETTLED: '미결',
@@ -579,7 +581,7 @@ export default function SalesListTab() {
   // 그룹 내 정렬 = receipt_status 우선순위. null/그 외 = 기타(4) (RECEIVED 강제 안 함).
   const receiptGroups = useMemo(() => {
     const STATUS_ORDER: Record<string, number> = {
-      PICKUP_PLANNED: 0, PARCEL_PLANNED: 1, QUICK_PLANNED: 2, RECEIVED: 3,
+      PICKUP_PLANNED: 0, PARCEL_PLANNED: 1, PARCEL_SHIPPED: 2, QUICK_PLANNED: 3, RECEIVED: 4,
     };
     const rank = (o: OrderRow) => {
       const s = o.receipt_status;
@@ -598,11 +600,12 @@ export default function SalesListTab() {
     });
     return keys.map(key => {
       const orders = map.get(key)!.slice().sort((a, b) => rank(a) - rank(b));
-      const counts = { pickup: 0, parcel: 0, quick: 0, received: 0, other: 0 };
+      const counts = { pickup: 0, parcel: 0, shipped: 0, quick: 0, received: 0, other: 0 };
       for (const o of orders) {
         const s = o.receipt_status;
         if (s === 'PICKUP_PLANNED') counts.pickup++;
         else if (s === 'PARCEL_PLANNED') counts.parcel++;
+        else if (s === 'PARCEL_SHIPPED') counts.shipped++;
         else if (s === 'QUICK_PLANNED') counts.quick++;
         else if (s === 'RECEIVED') counts.received++;
         else counts.other++;
@@ -1111,7 +1114,7 @@ export default function SalesListTab() {
                 <span className="text-[11px] font-medium text-slate-500">수령현황</span>
                 <select value={receiptStatusFilter} onChange={e => setReceiptStatusFilter(e.target.value)} className="input text-sm py-1">
                   <option value="">전체</option>
-                  {(['RECEIVED', 'PICKUP_PLANNED', 'QUICK_PLANNED', 'PARCEL_PLANNED'] as const).map(s =>
+                  {(['RECEIVED', 'PICKUP_PLANNED', 'QUICK_PLANNED', 'PARCEL_PLANNED', 'PARCEL_SHIPPED'] as const).map(s =>
                     <option key={s} value={s}>{RECEIPT_STATUS_LABEL[s]}</option>
                   )}
                 </select>
@@ -1221,6 +1224,7 @@ export default function SalesListTab() {
                   const parts: string[] = [];
                   if (c.pickup) parts.push(`방문 ${c.pickup}`);
                   if (c.parcel) parts.push(`택배 ${c.parcel}`);
+                  if (c.shipped) parts.push(`발송 ${c.shipped}`);
                   if (c.quick) parts.push(`퀵 ${c.quick}`);
                   if (c.received) parts.push(`수령완료 ${c.received}`);
                   if (c.other) parts.push(`기타 ${c.other}`);
@@ -2267,6 +2271,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                   <span className={`badge text-[10px] ${
                     !order.receipt_status || order.receipt_status === 'RECEIVED' ? 'bg-green-100 text-green-700'
                     : order.receipt_status === 'PARCEL_PLANNED' ? 'bg-blue-100 text-blue-700'
+                    : order.receipt_status === 'PARCEL_SHIPPED' ? 'bg-teal-100 text-teal-700'
                     : order.receipt_status === 'QUICK_PLANNED' ? 'bg-indigo-100 text-indigo-700'
                     : 'bg-slate-100 text-slate-600'
                   }`}>
@@ -2274,6 +2279,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                      : order.receipt_status === 'RECEIVED' ? '수령완료'
                      : order.receipt_status === 'PICKUP_PLANNED' ? '방문예정'
                      : order.receipt_status === 'QUICK_PLANNED' ? '퀵예정'
+                     : order.receipt_status === 'PARCEL_SHIPPED' ? '택배발송완료'
                      : '택배예정'}
                   </span>
                   {order.receipt_date && <span className="text-[11px] text-slate-500">{order.receipt_date}</span>}
@@ -2483,10 +2489,12 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                         : 'bg-slate-50 text-slate-600 border-slate-200';
                       const rLabel = itemRStatus === 'RECEIVED' ? '수령완료'
                         : itemRStatus === 'PARCEL_PLANNED' ? '택배예정'
+                        : itemRStatus === 'PARCEL_SHIPPED' ? '택배발송완료'
                         : itemRStatus === 'QUICK_PLANNED' ? '퀵예정'
                         : '방문예정';
                       const rColor = itemRStatus === 'RECEIVED' ? 'bg-green-100 text-green-700'
                         : itemRStatus === 'PARCEL_PLANNED' ? 'bg-blue-100 text-blue-700'
+                        : itemRStatus === 'PARCEL_SHIPPED' ? 'bg-teal-100 text-teal-700'
                         : itemRStatus === 'QUICK_PLANNED' ? 'bg-indigo-100 text-indigo-700'
                         : 'bg-slate-100 text-slate-600';
                       return (

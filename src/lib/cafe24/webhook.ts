@@ -6,6 +6,7 @@ import { getValidAccessToken } from './token-store';
 import { createSaleJournal } from '@/lib/accounting-actions';
 import { fireNotificationTrigger } from '@/lib/notification-triggers';
 import { kstTodayString } from '@/lib/date';
+import { syncReceiptStatusFromShipment } from '@/lib/receipt-sync';
 
 let supabase: SupabaseClient | null = null;
 
@@ -570,6 +571,8 @@ async function handleOrderShipped(
       .from('sales_orders')
       .update({ status: localStatus })
       .eq('id', order.id);
+    // 배송 → 수령상태 자동 연동(#19). 택배예정 품목만 발송완료로(가드됨, RECEIVED 무손상).
+    try { await syncReceiptStatusFromShipment(getSupabase(), order.id, 'SHIPPED'); } catch { /* noop */ }
   }
 
   // shipments 업데이트 (카페24에서 배송처리한 경우)
@@ -606,6 +609,8 @@ async function handleOrderDelivered(
       .from('sales_orders')
       .update({ status: 'DELIVERED' })
       .eq('id', order.id);
+    // 배송완료 → 수령완료 자동 연동(#19). 택배 품목만 RECEIVED+수령일(가드됨).
+    try { await syncReceiptStatusFromShipment(getSupabase(), order.id, 'DELIVERED'); } catch { /* noop */ }
   }
 
   // shipments 업데이트

@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { fireNotificationTrigger } from '@/lib/notification-triggers';
+import { syncReceiptStatusFromShipment } from '@/lib/receipt-sync';
 
 export interface ShipmentInput {
   source: 'CAFE24' | 'STORE';
@@ -69,7 +70,7 @@ export async function updateShipment(
   // 이전 상태 조회 (송장번호 신규 등록 + SHIPPED 전환 감지용)
   const { data: prev } = await supabase
     .from('shipments')
-    .select('tracking_number, status, recipient_name, recipient_phone, items_summary, cafe24_order_id')
+    .select('tracking_number, status, recipient_name, recipient_phone, items_summary, cafe24_order_id, sales_order_id')
     .eq('id', id)
     .maybeSingle();
 
@@ -83,13 +84,26 @@ export async function updateShipment(
     return { success: false, error: error.message };
   }
 
+  const prevTracking = (prev as any)?.tracking_number || null;
+  const prevStatus = (prev as any)?.status || null;
+  const newTracking = (data.tracking_number as string | null | undefined) ?? prevTracking;
+  const newStatus = (data.status as string | undefined) ?? prevStatus;
+
+  // 배송 상태 → 판매현황 수령상태 자동 연동 (#19) — 상태 전환 시에만
+  try {
+    const salesOrderId = (prev as any)?.sales_order_id;
+    if (salesOrderId && newStatus && newStatus !== prevStatus &&
+        (newStatus === 'SHIPPED' || newStatus === 'DELIVERED')) {
+      await syncReceiptStatusFromShipment(supabase, salesOrderId, newStatus);
+      revalidatePath('/pos');
+    }
+  } catch (e) {
+    console.error('updateShipment receipt-sync error:', e);
+    /* 연동 실패가 배송 처리를 막지 않음 */
+  }
+
   // 송장번호가 신규 부여되었고, 상태가 SHIPPED로 전환된 경우 알림톡 발송
   try {
-    const prevTracking = (prev as any)?.tracking_number || null;
-    const prevStatus = (prev as any)?.status || null;
-    const newTracking = (data.tracking_number as string | null | undefined) ?? prevTracking;
-    const newStatus = (data.status as string | undefined) ?? prevStatus;
-
     const becameShipped = prevStatus !== 'SHIPPED' && newStatus === 'SHIPPED';
     const gotTracking = !prevTracking && !!newTracking;
 

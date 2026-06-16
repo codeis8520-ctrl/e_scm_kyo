@@ -62,14 +62,14 @@ sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, buyer_n
   ※ status=CANCELLED 처리 경로 2가지: (a) 외상 미수금 → cancelCreditOrder, (b) 그 외 결제수단 → cancelSalesOrder. 둘 다 재고 복원 + 포인트 적립/사용 환원 + 매출 분개 역분개. inventory_movements.reference_type='SALE_CANCEL' 또는 'CREDIT_CANCEL'. journal_entries.source_type='SALE_CANCEL' 또는 'CREDIT_CANCEL'(+reversal_of=원본 분개 ID).
   ※ "취소 vs 환불" 구분: 취소는 거래 자체를 무름(잘못 등록), 환불은 매출 발생 후 반품(return_orders 생성).
   ※ 전표 수정(수령 전 품목 추가/삭제): status=COMPLETED & receipt_status≠RECEIVED 전표에 한해 품목 추가/삭제 가능(addSalesOrderItem/removeSalesOrderItem). 즉시 total_amount/taxable/exempt/vat·적립포인트·재고가 재계산됨. 재고 movement reference_type='SALE_REVISE_ADD'(차감,OUT)/'SALE_REVISE_REMOVE'(복원,IN), phantom은 'PHANTOM_DECOMPOSE'. 결제 차액은 sales_order_payments 1행(memo='전표 수정 자동 추가결제/부분환불'). 매출 분개는 차액분만 추가(journal_entries.source_type='SALE_REVISE', orderNumber 'REVISE-...'). 적립포인트 차액은 point_history type='adjust'(description='전표 수정 적립 조정'). 주문할인(discount_amount) 재배분은 없음(기존값 유지). 수령완료/마지막 품목 삭제는 거부.
-  ※ receipt_status=수령현황(수령완료/방문예정/퀵예정/택배예정). 기본 RECEIVED. 배송 활성 시 PARCEL_PLANNED/QUICK_PLANNED 자동 지정.
+  ※ receipt_status=수령현황(수령완료/방문예정/퀵예정/택배예정/택배발송완료). 기본 RECEIVED. 배송 활성 시 PARCEL_PLANNED/QUICK_PLANNED 자동 지정. 배송 SHIPPED→PARCEL_SHIPPED, DELIVERED→RECEIVED 자동연동(#19, 마이그085).
   ※ approval_status=결제 승인 라이프사이클(status와 직교). card_keyin→CARD_PENDING, credit→UNSETTLED 자동 추론 가능.
   ※ payment_info=레거시 자유기입 컬럼(2026-04 UI 제거). 신규 입력 없음. 과거 데이터 조회만 노출.
   ※ ordered_by=판매·상담 담당자.
   ※ taxable_amount/exempt_amount/vat_amount=거래 시점 스냅샷(마이그 058). 카트 내 products.is_taxable
     기준으로 라인별 분리 → finalAmount(고객 실수령)에 비례 배분. vat=round(taxable×10/110).
     세 값 합 ≒ finalAmount(반올림 1원 이내). 058 미적용 주문은 0/NULL → reports는 사후 집계로 폴백.
-sales_order_items: id, sales_order_id, product_id(nullable — 080), quantity, unit_price, discount_amount, total_price, order_option, item_text(080), delivery_type(PICKUP/PARCEL/QUICK), receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date
+sales_order_items: id, sales_order_id, product_id(nullable — 080), quantity, unit_price, discount_amount, total_price, order_option, item_text(080), delivery_type(PICKUP/PARCEL/QUICK), receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED/PARCEL_SHIPPED), receipt_date
   ※ order_option=품목별 부가 옵션(보자기 포장/쇼핑백/색상/서비스 지급 등).
   ※ item_text=카페24 텍스트 품목(우리 products 매핑 안 됨, product_id=null인 행). 렌더 폴백: product?.name || item_text.
   ※ delivery_type=품목별 배송 방식 — 같은 전표에서 품목별로 다를 수 있음(예: 3품목 중 1품목만 택배, 2품목 현장수령). 단 shipments는 주문당 1건 유지(수령지 1곳만 전제; 2곳 이상은 새 전표 분리).
@@ -195,12 +195,13 @@ sales_orders.approval_status: 결제 승인 라이프사이클 (status와 직교
 
 [수령]
 sales_orders.receipt_status: 제품 수령 흐름 (현장판매는 대부분 RECEIVED).
-  - RECEIVED=수령완료 · PICKUP_PLANNED=방문예정 · QUICK_PLANNED=퀵예정 · PARCEL_PLANNED=택배예정
+  - RECEIVED=수령완료 · PICKUP_PLANNED=방문예정 · QUICK_PLANNED=퀵예정 · PARCEL_PLANNED=택배예정 · PARCEL_SHIPPED=택배발송완료
   ※ 배송(shipments) 생성 시 delivery_type에 맞춰 receipt_status 자동 추론.
+  ※ 배송→수령 자동연동(#19): 배송목록/AI/카페24웹훅에서 shipment SHIPPED 처리 시 PARCEL_PLANNED 품목·주문→PARCEL_SHIPPED, DELIVERED 시 택배품목→RECEIVED(+receipt_date). 방문/퀵/이미수령 품목 무손상. 공용 헬퍼 syncReceiptStatusFromShipment(receipt-sync.ts).
   ※ receipt_date: 수령(예정) 날짜. 방문예정·택배예정 조회 시 핵심 축.
 sales_order_items.order_option: 품목별 주문 부가 옵션(보자기/쇼핑백/색상/서비스 등). 배송 방식 기록용 아님.
 sales_order_items.delivery_type + receipt_status: 같은 전표 내 품목별 배송·수령 추적. 3품목 중 1품목만 택배 같은 혼합 시나리오 정식 지원(수령지는 1곳만 가정).
-sales_orders.receipt_status: 품목 receipt_status 집계(우선순위 PARCEL_PLANNED > QUICK_PLANNED > PICKUP_PLANNED > RECEIVED). 품목 모두 RECEIVED이면 자동 전이.
+sales_orders.receipt_status: 품목 receipt_status 집계. 품목 모두 RECEIVED이면 자동 전이. 배송 발송완료 시 택배예정 품목은 PARCEL_SHIPPED로 승격(#19).
 전표 배송전환(방문↔택배, 수정가능 전표=COMPLETED·receipt_status∉{RECEIVED,null}만): 방문→택배는 미수령 품목을 PARCEL_PLANNED로 바꾸고 shipment(status=PENDING) 생성, 택배→방문은 shipment.status='PENDING'(송장 미발행)일 때만 shipment 삭제 후 품목 RECEIVED 전환. 금액 불변(배송비 없음). RECEIVED 품목은 보존.
 전표 상세 직접수정(updateSalesOrderDetails, 취소·환불 전표 제외): 수정 가능 필드=customer_id(재연결/해제)·buyer_name·buyer_phone(표시명)·receipt_date(수령일)·recipient_*(받는분 5필드). order_number는 절대 불변. 받는분 변경 시 sales_orders.recipient_* 항상 + shipment 존재 시 shipments.recipient_* 동기화. 변경 필드만 audit_logs에 1건(action=UPDATE, 전/후값) 기록. 금액·품목·결제는 별도 흐름.
 

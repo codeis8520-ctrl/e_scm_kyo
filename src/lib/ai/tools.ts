@@ -2,6 +2,7 @@ import type { MiniMaxTool } from './client';
 import { processRefund, getSalesOrderForRefund } from '@/lib/return-actions';
 import { refreshCafe24Token, syncCafe24PaidOrders } from '@/lib/cafe24-actions';
 import { kstDayStart, kstDayEnd, kstMonthStart, kstTodayString, kstDaysAgoStart } from '@/lib/date';
+import { syncReceiptStatusFromShipment } from '@/lib/receipt-sync';
 
 // ─── Tool Definitions ──────────────────────────────────────────────────────
 
@@ -3105,7 +3106,7 @@ async function execUpdateShipmentTracking(sb: any, args: {
 }, ctx: ToolContext): Promise<string> {
   if (!args.tracking_number) return JSON.stringify({ error: '송장번호가 필요합니다.' });
 
-  let q = sb.from('shipments').select('id, recipient_name, status, branch_id');
+  let q = sb.from('shipments').select('id, recipient_name, status, branch_id, sales_order_id');
   if (args.cafe24_order_id) {
     q = q.eq('cafe24_order_id', args.cafe24_order_id);
   } else if (args.recipient_name) {
@@ -3126,6 +3127,11 @@ async function execUpdateShipmentTracking(sb: any, args: {
     updated_at: new Date().toISOString(),
   }).eq('id', target.id);
   if (error) return JSON.stringify({ error: error.message });
+
+  // 발송완료 → 판매현황 수령상태 자동 연동 (#19). 연동 실패는 송장 등록을 막지 않음.
+  if (target.sales_order_id && target.status !== 'SHIPPED') {
+    try { await syncReceiptStatusFromShipment(sb, target.sales_order_id, 'SHIPPED'); } catch { /* noop */ }
+  }
 
   return JSON.stringify({
     성공: true,
