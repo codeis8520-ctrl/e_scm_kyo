@@ -144,13 +144,6 @@ export default function ShippingPage() {
   const [registering, setRegistering] = useState(false);
   const [registerMsg, setRegisterMsg] = useState('');
   // 카페24 매장 발송지(출고지) — 모든 카페24 주문에 공통 적용
-  const [cafe24DefaultSender, setCafe24DefaultSender] = useState<{
-    source: 'shippingorigins' | 'store' | null;
-    name: string; phone: string; zipcode: string;
-    address: string; address_detail: string;
-    warning?: string;
-  } | null>(null);
-
   // ── 직접 입력 탭 ──────────────────────────────────────────────────────────
   const [manualForm, setManualForm] = useState({
     sender_name: '', sender_phone: '', sender_address: '',
@@ -435,7 +428,7 @@ export default function ShippingPage() {
       return [
         s.recipient_name, s.recipient_phone, '',
         [s.recipient_address, s.recipient_address_detail].filter(Boolean).join(' '),
-        s.delivery_message || '', s.items_summary || '',
+        s.delivery_message || '', '',
         `KX-${s.id.replace(/-/g, '').slice(0, 8)}`,    // 내품명 ← RTC
         '', '선불',
         sender.name, sender.phone, senderFullAddress,
@@ -718,7 +711,6 @@ export default function ShippingPage() {
       if (!res.ok) throw new Error('불러오기 실패');
       const data = await res.json();
       setCafe24Orders(data.orders ?? []);
-      setCafe24DefaultSender(data.default_sender ?? null);
       setIsDemo(!!data.is_demo);
       setDemoReason(data.demo_reason ?? '');
       if (data.error) setCafe24Error(data.demo_reason || '카페24 연동 오류');
@@ -775,17 +767,16 @@ export default function ShippingPage() {
     setAddError('');
     try {
       const toAdd = cafe24Orders.filter(o => selectedOrders.has(o.cafe24_order_id));
-      // 발송지(보내는분)는 행 생성 시 빈 채로 두고, CJ 엑셀 다운로드 모달에서
-      // 지점(branches.sender_*) 선택해 일괄 적용. cafe24DefaultSender 는 더 이상 사용 안 함.
-      const sender = cafe24DefaultSender;
+      // 보내는분 성명/전화 = 구매자(주문자). 주소는 행 생성 시 빈 채로 두고
+      // CJ 엑셀 다운로드 모달에서 지점(branches.sender_*) 발송지로 일괄 적용.
       for (const order of toAdd) {
         const result = await createShipment({
           source: 'CAFE24', cafe24_order_id: order.cafe24_order_id,
-          sender_name: sender?.name || '',
-          sender_phone: sender?.phone || '',
-          sender_zipcode: sender?.zipcode || undefined,
-          sender_address: sender?.address || undefined,
-          sender_address_detail: sender?.address_detail || undefined,
+          sender_name: order.orderer_name || '',
+          sender_phone: order.orderer_phone || '',
+          sender_zipcode: undefined,
+          sender_address: undefined,
+          sender_address_detail: undefined,
           recipient_name: order.recipient_name,
           recipient_phone: order.recipient_phone,
           recipient_address: order.recipient_address,

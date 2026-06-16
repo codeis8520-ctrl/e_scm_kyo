@@ -1,70 +1,40 @@
-# Architect Brief — Step: 직원 삭제 스마트 삭제 + 비활성 토글/재활성
+# Architect Brief — Sprint A (송장 보내는분=구매자명 + 품목명 제거)
 
 ## Goal
-코드 > 직원 관리에서 삭제 버튼이 실제로 동작한다. 참조 없는 계정은 완전 삭제, 참조 있는 직원은 비활성 폴백. 비활성 직원은 목록에서 숨기되 토글로 보고 재활성 가능.
+CJ(대한통운) 엑셀 export에서 보내는분 성명/전화가 **구매자(주문자)** 로 채워지고(현재 지점명 폴백으로 구매자 누락), **품목명 컬럼(긴 카페24 옵션 원문)이 빈칸**으로 나간다.
 
-## Root Cause (확정, 재조사 금지)
-`deleteUser` (src/lib/actions.ts L1914) 가 `supabase.auth.admin.deleteUser(id)` 를 먼저 호출 → 이 앱은 Supabase Auth가 아니라 커스텀 bcrypt 세션(CLAUDE.md). 그 호출이 실패하면 early return → `users` DELETE 자체가 실행 안 됨. 그래서 "삭제 버튼 눌러도 안 됨".
+## Context (이미 조사됨 — 다시 읽지 말 것)
+파일: `src/app/(dashboard)/shipping/page.tsx`
+- `handleAddSelectedOrders` L772~ : 카페24 주문 → `createShipment` 생성. 현재 `sender_name: sender?.name||''`(L784, `cafe24DefaultSender` 사실상 빈값) → 구매자 누락.
+  - 주문 객체 `order`에 `order.orderer_name`(L36), `order.orderer_phone`(L37) 가용. recipient는 별도 필드.
+- `downloadCjExcel` L411~ : rows(L435-443). 컬럼 순서 = [받는분성명, 받는분전화, 기타연락처, 받는분주소, 배송메세지1, **F 품목명=`s.items_summary||''`(L438)**, **G 내품명=`KX-...` RTC코드(L439)**, 내품수량, 운임구분, **J 보내는분성명=sender.name(L441)**, 보내는분전화, 보내는분주소, 우편].
+- `resolveSenderForRow` L367~ : 이름/전화 = `s.sender_name||지점명폴백`, 주소 = 항상 출고지점 발송지.
+- `createShipment` (`src/lib/shipping-actions.ts` L11) `sender_name` 받음 — 시그니처 변경 불필요.
 
 ## Build Order
+1. **A1 — 신규 카페24 shipment 보내는분=구매자** (`handleAddSelectedOrders` L781~793 루프 내 `createShipment` 호출):
+   - `sender_name: order.orderer_name || ''`
+   - `sender_phone: order.orderer_phone || ''`
+   - sender 주소 관련 인자(`sender_zipcode/sender_address/sender_address_detail`)는 **현행 유지(빈값/undefined)** — 주소는 export에서 `resolveSenderForRow`가 출고지점으로 채움. 변경 금지.
+   - L780 `const sender = cafe24DefaultSender;` 및 그것을 쓰던 sender_* 라인 정리. `cafe24DefaultSender`가 더 이상 안 쓰이면 선언/관련 dead code 같이 제거(빌드 경고 방지). 단 다른 곳에서 쓰면 두기 — grep 확인 후 처리.
+2. **A2 — CJ 송장 품목명 비우기** (`downloadCjExcel` rows, L438):
+   - F(품목명) `s.items_summary || ''` → **`''`(항상 빈 문자열)**.
+   - **G(내품명) `KX-...` RTC 코드는 그대로 유지** — 임포트 매칭 필수. 절대 건드리지 말 것.
+   - `header` 배열·컬럼 개수·순서 변경 금지.
+3. **검증**: A1로 sender_name이 채워지면 `guardSenders`(L395) 가드는 정상 통과. 별도 수정 불필요 — 확인만.
 
-### 1. deleteUser 재작성 — src/lib/actions.ts (L1914~1929 전체 교체)
-- `const session = await requireSession();` (이미 L9 import 됨)
-- **RBAC 게이트** (adjustInventory L1007-1008 패턴 그대로):
-  `if (session.role !== 'SUPER_ADMIN' && session.role !== 'HQ_OPERATOR') return { error: '직원 관리는 본사 권한만 가능합니다.' };`
-- **가드 1 — 본인 금지**: `if (session.id === id) return { error: '본인 계정은 삭제할 수 없습니다.' };`
-- **가드 2 — 마지막 활성 SUPER_ADMIN 금지**: 대상 user를 먼저 select(`id, role, is_active`). 대상이 role==='SUPER_ADMIN' 이면, `users`에서 `role='SUPER_ADMIN' AND is_active=true` count 조회 → count<=1 이면 `return { error: '마지막 활성 최고관리자는 삭제/비활성할 수 없습니다.' };`
-- **auth.admin.deleteUser 호출 완전 제거.**
-- **하드 DELETE 시도**: `const { error } = await supabase.from('users').delete().eq('id', id);`
-  - 성공(error 없음) → session_tokens 그 직원 것 정리: `await supabase.from('session_tokens').delete().eq('user_id', id);` (이미 참조 없으니 안전) → `revalidatePath('/system-codes'); return { deleted: true };`
-  - **error.code === '23503'** (FK 위반) → soft-delete 폴백:
-    `await supabase.from('users').update({ is_active: false }).eq('id', id);`
-    그 직원 세션 무효화: `await supabase.from('session_tokens').delete().eq('user_id', id);`
-    → `revalidatePath('/system-codes'); return { deactivated: true };`
-  - 그 외 error → `return { error: error.message };`
-- 반환 타입: `{ deleted: true } | { deactivated: true } | { error: string }`.
-- Flag: session_tokens 컬럼명이 `user_id` 인지 grep 확인 후 사용. FK 위반 코드가 PostgREST에서 `error.code === '23503'` 로 오는지 확인(아니면 `error.code === '23503' || error.message.includes('violates foreign key')` 으로 방어).
-
-### 2. reactivateUser 신규 액션 — src/lib/actions.ts (deleteUser 바로 아래 추가)
-- `export async function reactivateUser(id: string)`
-- 동일 RBAC 게이트(SUPER_ADMIN/HQ_OPERATOR).
-- `await supabase.from('users').update({ is_active: true }).eq('id', id);`
-- 에러 시 `{ error }`, 성공 시 `revalidatePath('/system-codes'); return { success: true };`
-- Flag: updateUser(L1884)로도 가능하나 FormData 기반이라 단순 토글엔 부적합 → 전용 액션 신설이 맞음.
-
-### 3. UI — src/app/(dashboard)/system-codes/page.tsx (staff 탭)
-- import 라인(L12)에 `reactivateUser` 추가.
-- **비활성 포함 토글 state**: `const [showInactiveUsers, setShowInactiveUsers] = useState(false);` (다른 useState 근처).
-- staff 탭 헤더(L1031 영역)에 '+ 직원 추가' 옆/위에 토글 체크박스: "비활성 포함 보기".
-- 목록 렌더(L1054) 필터: `users.filter(u => showInactiveUsers || u.is_active).map(...)`.
-  - getUsers 안 쓰고 L242에서 client supabase로 직접 fetch 중 → fetch는 전체 유지(`.order created_at`), **필터는 render 단에서**. (includeInactive 파라미터 불필요.)
-- **비활성 행**: `<tr className={!user.is_active ? 'opacity-50' : ''}>`.
-- **관리 컬럼**: 비활성 직원이면 '삭제' 대신 **'재활성'** 버튼 노출(green/blue), 활성이면 기존 '삭제' 유지. '수정'은 양쪽 유지.
-- **handleDeleteUser (L377) 재작성**: 
-  - confirm 문구 갱신: '이 직원을 삭제합니다.\n주문·상담 등 참조 기록이 있으면 자동으로 비활성 처리됩니다.'
-  - `const res = await deleteUser(id);`
-  - `if (res?.error) alert(res.error);`
-  - `else if (res?.deactivated) alert('참조 기록이 있어 비활성 처리되었습니다.');`
-  - `else if (res?.deleted) alert('직원이 완전히 삭제되었습니다.');`
-  - 그 후 `fetchData();`
-- **handleReactivateUser 신규**: `if(!confirm('이 직원을 재활성하시겠습니까?'))return; const res=await reactivateUser(id); if(res?.error)alert(res.error); fetchData();`
-
-## Out of Scope (→ BUILD-LOG Known Gaps if surfaces)
-- createUser 가 `supabase.auth.signUp` + SHA256 사용(bcrypt 아님) — 기존 불일치. 이번 step에서 건드리지 않음.
-- updateUser 의 auth 동기화 없음 — 그대로 둠.
-- 비활성 직원의 과거 주문/상담 표시명 처리 — 변경 없음.
-
-## Locked Decisions
-- RBAC: 직원 삭제/비활성/재활성 = **SUPER_ADMIN 또는 HQ_OPERATOR** (adjustInventory 패턴 동일). 서버에서 게이트.
-- 가드: 본인 계정 불가 + 마지막 활성 SUPER_ADMIN 불가.
-- 폴백: 하드 DELETE → 23503 → is_active=false. soft 시 session_tokens 삭제로 강제 로그아웃.
-- 목록: 기본 활성만, render-side 필터 + 토글. getUsers 시그니처 변경 없음.
-- DB 마이그레이션 없음 (is_active 이미 존재). schema.ts/tools.ts 영향 없음(에이전트 user 도구 없음 — 확인됨).
+## Out of Scope (BUILD-LOG Known Gaps 행)
+- **기존(이미 빈 sender로 생성된) 카페24 shipment 자동 폴백 — 하지 않음.** [잠근 결정] shipments 테이블엔 buyer/orderer 컬럼이 없고(마이그 012), CAFE24 source는 `sales_order_id`=null, `getShipments`는 `select('*')` shipments 단독 — export 시점에 구매자명을 복구할 신뢰 가능한 소스 없음. **운영 워크어라운드: 해당 기존 행을 삭제 후 카페24 주문 탭에서 재추가하면 구매자명이 채워짐.**
+- **품목명 짧은 이름 대체** — Sprint B(옵션조합→내부제품 매핑). 이번엔 비우기만.
+- `exportSelectedToExcel`(L906~, '품목' 컬럼 L927)·배송 리스트 화면의 `items_summary` 노출 — **유지.** 이번 A는 **CJ export 출력만** 품목 제거.
 
 ## Acceptance
-- `npm run build` 통과.
-- 참조 없는 테스트 계정 삭제 → 목록에서 사라짐("완전히 삭제됨").
-- 주문/상담 만든 직원 삭제 → "비활성 처리됨" 메시지, 토글 켜야 보임, opacity-50, 재활성 버튼.
-- 재활성 → 활성 복귀.
-- 본인/마지막 SUPER_ADMIN 삭제 시도 → 에러 메시지, 변화 없음.
-- 비본사 역할이 액션 직접 호출 시 서버에서 거부.
+- 카페24 주문 신규 추가 → 생성된 shipment의 `sender_name`/`sender_phone` = 주문자(orderer). CJ export J열=구매자명.
+- 구매자≠수령자 선물주문도 J열(보내는분)=구매자, 받는분=수령자로 정상 분리.
+- CJ export F열(품목명) = 빈칸. G열(내품명) = `KX-xxxxxxxx` 유지.
+- `header`/컬럼 개수 불변. 일반 엑셀 export·화면 품목 표시 불변.
+- `npm run build` 통과. 미사용 `cafe24DefaultSender` 잔존 경고 없음.
+
+## Files
+- `src/app/(dashboard)/shipping/page.tsx` (A1·A2)
+- DB/마이그/`schema.ts`/`tools.ts` 변경 **없음**.

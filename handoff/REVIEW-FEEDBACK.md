@@ -1,42 +1,36 @@
-# Review Feedback — 직원 삭제 스마트 삭제 + 비활성 토글/재활성
+# Review Feedback — Sprint A (송장 보내는분=구매자명 + 품목명 제거)
 Date: 2026-06-16
 Status: APPROVED
 
 ## Conditions
-(없음)
+없음.
 
 ## Escalate to Arch
-(없음)
+없음.
 
 ## Cleared
-deleteUser/reactivateUser(src/lib/actions.ts:1914-1991)와 system-codes/page.tsx 직원 탭
-변경을 리뷰했고 보안·로직 모두 통과했다.
+shipping/page.tsx 4개 변경 전부 통과. 검증 내역:
 
-검증 완료:
-- 깨진 auth.admin.deleteUser 호출은 deleteUser에서 완전히 제거됨(L1875 잔존 호출은
-  out-of-scope createUser 롤백 경로로 이번 변경 대상 아님, Known Gap).
-- RBAC: deleteUser/reactivateUser 둘 다 requireSession() 후 화이트리스트
-  ['SUPER_ADMIN','HQ_OPERATOR']를 어떤 mutation보다 먼저 강제. session.id/role은
-  session.ts SessionUser 필드와 일치. BRANCH_STAFF/PHARMACY_STAFF/EXECUTIVE는 직접
-  액션 호출로 삭제/비활성/재활성 불가 — 서버가 실제 게이트(심층 방어 성립).
-- 자기 삭제 거부(session.id===id) 정상.
-- 마지막 활성 SUPER_ADMIN 가드: target이 SUPER_ADMIN일 때만 진입(비-super-admin 삭제는
-  이 가드에 안 걸림), count 쿼리는 role=SUPER_ADMIN AND is_active=true만 카운트(비활성
-  제외), count<=1이면 차단 — 모두 정확.
-- 스마트 삭제: 하드 DELETE 성공→session_tokens 정리 후 {deleted}. FK 위반(23503 또는
-  메시지 매칭)→is_active=false + 토큰 삭제(강제 로그아웃) 후 {deactivated}. 그 외 에러는
-  {error}로 표면화(조용한 soft-delete 아님) — 정확.
-- reactivateUser: 동일 RBAC 게이트, is_active=true만. 가드 우회 악용 경로 없음.
-- UI: showInactiveUsers 토글 기본 active-only, 렌더 필터로 활성 직원 항상 노출(과도한
-  숨김 없음), 비활성 행 opacity-50 + 재활성(emerald) 버튼, handleDeleteUser 분기 alert
-  (deleted/deactivated/error), handleReactivateUser confirm. 빈 행도 동일 필터 기준.
-- DB/마이그레이션 없음, createUser 미수정, schema.ts/tools.ts 변경 없음 — AI 동기화
-  매트릭스 해당 없음.
+- **A1 (보내는분=구매자):** L775~776 createShipment 가 sender_name=`order.orderer_name||''`,
+  sender_phone=`order.orderer_phone||''` 로 매핑. orderer_*는 Cafe24OrderForShipping 타입(L36~37)의
+  주문자(구매자) 필드로, recipient_*(수령자, L40~42)와 명확히 분리됨 → buyer≠recipient 분리 정확.
+  주소 3인자(zipcode/address/address_detail)는 undefined 유지(L777~779). resolveSenderForRow(L357,370)가
+  주소는 항상 출고지점에서 채우므로 구매자 주소가 송장에 새지 않음.
 
-## 참고(비차단)
-- 마지막 활성 SUPER_ADMIN 가드는 target.role==='SUPER_ADMIN'이면 target이 이미 비활성인
-  경우에도 활성 super_admin count<=1이면 차단한다. 즉 "비활성 super_admin 레코드 하드
-  삭제"가 막힐 수 있다. 이는 보안상 안전 방향(과보호)이며 데이터 보존 측면에서 오히려
-  바람직 — Condition 아님. 의도와 다르면 Arch가 판단.
-- Open Question(FK 코드 23503 OR 메시지 매칭 과방어 여부): PostgREST가 에러 코드를
-  누락/변형할 가능성에 대한 합리적 이중 방어. 과방어 아님, 그대로 두는 것을 권장.
+- **cafe24DefaultSender 제거:** useState 선언(구 L147~152), setter(구 L714), read(구 L770) 전부 삭제.
+  grep 결과 cafe24DefaultSender/default_sender 0건. data.default_sender 페치 잔존하나 다른 소비자 없음.
+  tsc --noEmit 0 에러.
+
+- **A2 (품목명 비움 / RTC 유지):** L431 F열(품목명) `''` 로 변경. G열(내품명) `KX-${id...}` RTC 코드 무변경(L432)
+  → import 매칭 보존. header 13개 컬럼(L414~420)·!cols 13개(L440~444)·rows 13개 셀(L429~436) 모두 불변.
+  다른 컬럼 시프트 없음.
+
+- **guardSenders:** 변경 없음(L388~399). sender_name 이 구매자명이어도 resolveSenderForRow 가
+  name=sender_name||branch, phone=sender_phone||branch, address=branch 로 해결 → 유효행 통과,
+  지점 발송지 미등록 시 빈 주소로 차단 동작 유지.
+
+- **STORE(비카페24) 회귀 없음:** STORE 행은 branch_id 보유 → resolveSenderForRow 가 저장된 sender_*/지점에서
+  해결. 이번 변경은 CAFE24 신규 행 생성 경로만 건드림. 회귀 없음.
+
+- **Out of Scope 준수:** 기존 shipment 백필 없음, exportSelectedToExcel·리스트 items_summary 표시 무변경,
+  DB/migration/schema.ts/tools.ts 미변경.

@@ -1,3 +1,24 @@
+# BUILD-LOG — Sprint A: 송장 보내는분=구매자명 + 품목명 제거
+
+## Sprint A — 1 step (빌드 완료 · 리뷰 대기)
+시작: 2026-06-16
+
+### Build Status (2026-06-16) — npm run build ✓ Compiled successfully in 6.1s (에러/경고 0)
+- 단일 파일: src/app/(dashboard)/shipping/page.tsx.
+- **A1** `handleAddSelectedOrders` createShipment 호출: 보내는분 성명/전화 = 구매자(주문자).
+  - `sender_name: order.orderer_name || ''`, `sender_phone: order.orderer_phone || ''`.
+  - 주소 인자(zipcode/address/address_detail) = undefined 유지 — export 시 resolveSenderForRow가 출고지점 발송지로 채움.
+  - dead code 정리: `const sender = cafe24DefaultSender;` 제거. cafe24DefaultSender가 더 이상 read 안 됨 → useState 선언(L147~152) 및 setCafe24DefaultSender 호출(L721) 제거. data.default_sender는 미사용(다른 소비자 없음, grep 확인).
+- **A2** `downloadCjExcel` rows: F(품목명) `s.items_summary || ''` → `''`. G(내품명) `KX-...` RTC 코드 그대로 유지. header 배열·컬럼 13개·순서 무변경.
+- **검증** guardSenders(L388~): resolveSenderForRow가 sender 이름/전화 = `s.sender_name||지점명폴백`, 주소=출고지점 → 통과 정상. 별도 수정 없음.
+
+### Known Gaps (Out of Scope — 미수정)
+- 기존(이미 빈 sender로 생성된) 카페24 shipment 자동 폴백 안 함. [잠근 결정] shipments에 buyer/orderer 컬럼 없음(마이그 012), export 시점 구매자명 복구 소스 없음. 운영 워크어라운드: 해당 행 삭제 후 카페24 주문 탭에서 재추가하면 구매자명 채워짐.
+- 품목명 짧은 이름 대체 = Sprint B(옵션조합→내부제품 매핑). 이번엔 비우기만.
+- exportSelectedToExcel '품목' 컬럼·배송 리스트 화면 items_summary 노출 = 유지. 이번 A는 CJ export 출력만.
+
+---
+
 ## Feature: 판매현황 목록 수령일자별 그룹 토글 — 1 step (브리프 작성)
 
 ### Locked Decisions (Project Owner 확정)
