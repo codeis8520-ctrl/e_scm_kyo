@@ -25,6 +25,29 @@
 
 ### 🎯 사용자 요구 3종 모두 완료: 품목 추가/삭제(S1) + 방문→택배(S2) + 택배→방문(S2).
 
+## ✅ 판매현황 수령/매출 분리 + 카페24 받는분 (커밋 4abdcf9 push + 마이그083 적용 완료)
+- 탭 목록→'수령 현황'/지점비교→'매출 현황'(내부키 유지). 수령현황 기본 정렬=수령일자별. 마이그083 sales_orders.recipient_*(5컬럼) + webhook receivers 저장 + recv 헬퍼(shipment 우선→sales_order) 렌더/CSV/검색/그룹 일관. shipment 없는 카페24도 받는분 표시. Richard APPROVED. Known Gap: 083 이전 동기화분 미반영.
+
+## 🔶 CJ 송장 카페24 품목/발송자 (Sprint A 완료, B 진행 예정)
+### ✅ Sprint A — 보내는분=구매자명 + 송장 품목명 제거 (커밋 b9b236b)
+- 카페24→배송 추가 시 sender_name/phone=주문자 저장(J열=구매자명, 구매자≠수령자 분리). CJ export F열(품목명)='' 비움, G열 RTC 유지. Richard APPROVED.
+- Known Gap: 기존 빈-sender 카페24 배송건 자동보정 안 됨(삭제 후 재추가).
+### 🔶 Sprint B — 카페24 옵션조합→내부제품 매핑
+#### ✅ Step 1 데이터층 (커밋 04c0790 push + 마이그082 적용 완료)
+- 마이그082 cafe24_product_map(code+option_value→product_id, UNIQUE/RLS/GRANT 검증). normalizeOptionValue(types.ts 단일출처). orders/route 매핑적용(짧은 이름, 미매핑 fallback)+order_items에 mapped_name 노출. CJ F열=items_summary 복원. create/list/deleteCafe24ProductMap(본사 RBAC). Richard APPROVED.
+#### ✅ Step 2 인라인 매핑 UI (커밋 650b003 push 완료)
+- 카페24 주문 행 펼치기→item별 옵션조합·수량+매핑상태. 미매핑→'내부 제품 연결'(getProducts 검색→createCafe24ProductMap), 매핑됨→'✓ 해제'(delete). 성공 시 전체 재조회 반영. 본사 역할만(이중가드), 품목코드 없으면 비활성. 단일파일. Richard APPROVED. → **Sprint B 완성**.
+
+## ✅ 직원 삭제 정상화 (커밋 fab598e push 완료)
+- deleteUser 잘못된 supabase.auth.admin.deleteUser 호출 제거(근본원인 — 커스텀 bcrypt라 실패→early return). requireSession+RBAC(SUPER_ADMIN/HQ_OPERATOR)+본인/마지막 SUPER_ADMIN 가드. 하드DELETE→FK위반(23503)이면 is_active=false soft+session_tokens 정리. reactivateUser 신규. system-codes 직원탭 비활성 토글·재활성·결과 메시지 분기. Richard APPROVED.
+- 📌 Known Gap: createUser도 auth.signUp/SHA256 불일치(잠재버그, 범위 밖) — 신규 직원 등록/로그인 문제 시 후속 수정.
+
+## ✅ 재고 조정 권한 정리 (커밋 25f4cf2 push 완료)
+- InventoryModal 입고/출고 제거·조정(ADJUST)만. 조정 권한=본사 역할(SUPER_ADMIN/HQ_OPERATOR)만 — page isHQUser 게이트 + adjustInventory 서버 RBAC(requireSession+화이트리스트, 쓰기 전). RAW/SUB→본사 유지. AI execAdjustInventory 무영향. Richard APPROVED. 지점은 입출고 안 함, 재고이동=창고이동 전표로만.
+
+## ✅ 판매현황 목록 수령일자별 정렬 (커밋 5ac363a push 완료)
+- '주문일순↔수령일자별' 토글. 수령일자별=receipt_date 그룹·날짜 오름차순(미지정 끝)·날짜헤더에 수령방식 건수(방문/택배/퀵)·날짜 내 방문→택배→퀵→수령완료 정렬. renderOrderRow 추출(주문일순 무회귀). 단일 파일. Richard APPROVED(colSpan=13). 한계=기간필터 주문일 기준.
+
 ## ✅ 지점별 매출 통합 조회 (커밋 0719e5b push + 마이그081 적용·RPC 검증 완료)
 - 판매현황 지점비교 서브뷰 → legacy(2018~)+sales 통합 일/월/연. RPC branch_sales_summary(컷오프 2026-05-19, KST, 미매칭 NULL 보존, SECURITY DEFINER). 매트릭스 기간×지점+미매칭 열+합계. Richard Must Fix(컷오프 KST 9시간 갭)→해결. 자세히 [[project_branch_sales_analytics]].
 
