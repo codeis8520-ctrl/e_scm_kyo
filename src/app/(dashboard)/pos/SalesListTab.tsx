@@ -1132,12 +1132,10 @@ export default function SalesListTab() {
 
       {/* 목록 뷰 본문 */}
       {subView === 'list' && (<>
-      {/* 요약 카드 */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      {/* 요약 카드 — 총 매출 중심(할인·포인트 적립은 제외, 최종 결제 기준 매출만) */}
+      <div className="grid grid-cols-2 gap-3">
         <SummaryCard label="판매 건수" value={`${summary.count}건`} sub={summary.cancelledCount > 0 ? `취소·환불 ${summary.cancelledCount}건` : undefined} />
         <SummaryCard label="매출 합계" value={`${summary.total.toLocaleString()}원`} accent="blue" />
-        <SummaryCard label="할인 합계" value={`${summary.discount.toLocaleString()}원`} accent="orange" />
-        <SummaryCard label="포인트 적립" value={`${summary.pointsEarned.toLocaleString()}P`} accent="green" />
       </div>
 
       {/* 일자별 요약 (여러 날일 때) */}
