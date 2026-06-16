@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { Cafe24WebhookEvent, CAFE24_STATUS_TO_LOCAL, cafe24OrderTotal, normalizeOptionValue, extractItemOptions } from './types';
+import { Cafe24WebhookEvent, CAFE24_STATUS_TO_LOCAL, cafe24OrderTotal, cafe24OrderDiscount, normalizeOptionValue, extractItemOptions } from './types';
 import { Cafe24Client, generateCafe24OrderCode } from './client';
 import { getValidAccessToken } from './token-store';
 import { createSaleJournal } from '@/lib/accounting-actions';
@@ -396,13 +396,11 @@ async function handleOrderCreated(
     recipient_address: recipient.address,
     recipient_address_detail: recipient.addressDetail,
     ordered_by: orderedById,
-    total_amount: cafe24OrderTotal(cafe24Order),
-    discount_amount:
-      Number(
-        (cafe24Order as any).total_discount_price ??
-        (cafe24Order as any).order_discount_amount ??
-        0
-      ) || 0,
+    // 매출 통일 기준(#18): total_amount = 상품총액(할인 전 gross) = 실결제(tender합) + 할인.
+    //   → 매출(net) = total_amount − discount_amount = cafe24OrderTotal(실결제)로 환원.
+    //   cafe24OrderTotal은 쿠폰 차감 후 실결제라 여기에 할인을 더해 gross로 저장한다.
+    total_amount: cafe24OrderTotal(cafe24Order) + cafe24OrderDiscount(cafe24Order),
+    discount_amount: cafe24OrderDiscount(cafe24Order),
     status: 'PENDING',
     payment_method: mapPaymentMethod(cafe24Order.payment_method),
     cafe24_order_id: orderNo.toString(),

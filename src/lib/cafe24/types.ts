@@ -144,6 +144,14 @@ export function cafe24OrderTotal(order: unknown): number {
   );
 }
 
+// 카페24 주문 할인액(쿠폰 등). cafe24OrderTotal은 할인 차감 후 실결제라,
+// gross(상품총액) = cafe24OrderTotal + 할인 으로 환원할 때 사용(#18 매출 통일).
+export function cafe24OrderDiscount(order: unknown): number {
+  const o = order as any;
+  const n = Number(o?.total_discount_price ?? o?.order_discount_amount ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 // ─── 카페24 옵션조합 정규화 (매핑 키 단일 출처) ───────────────────────────────
 // 카페24 item의 원본 option_value 문자열(예 "보자기포장=선택안함&쇼핑백=선택안함")을
 // cafe24_product_map의 매칭 키로 변환한다. route.ts(조회)와 cafe24-actions.ts(저장)가

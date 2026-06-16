@@ -114,6 +114,12 @@ function fmtDate(d: Date): string {
   return fmtDateKST(d);
 }
 function todayStr(): string { return kstTodayString(); }
+// 매출 통일 기준(#18) — 고객 실결제 = total_amount(상품총액·할인 전) − discount_amount.
+//   POS/백화점=총액 gross 저장, cafe24 웹훅=gross 저장(할인 별도), legacy=할인 없는 net.
+//   할인·포인트·쿠폰을 별도 매출로 분리하지 않고 '최종 결제금액' 하나로 집계·표시한다.
+function netSales(o: { total_amount?: number | null; discount_amount?: number | null }): number {
+  return (o.total_amount || 0) - (o.discount_amount || 0);
+}
 function daysAgo(n: number): string {
   const d = new Date(); d.setDate(d.getDate() - n); return fmtDateKST(d);
 }
@@ -692,21 +698,15 @@ export default function SalesListTab() {
                     </td>
                     <td className="text-center text-xs text-slate-600 align-top">{totalQty || '-'}</td>
                     <td className={`text-right align-top ${isRefunded || isCancelled ? 'line-through text-slate-400' : 'text-slate-800'}`}>
-                      {(o.discount_amount || 0) > 0 ? (
-                        <>
-                          <p className="text-[10px] text-slate-400 line-through leading-tight">
-                            {(o.total_amount || 0).toLocaleString()}원
-                          </p>
-                          <p className="font-semibold leading-tight">
-                            {((o.total_amount || 0) - (o.discount_amount || 0)).toLocaleString()}원
-                          </p>
-                          <p className="text-[10px] text-orange-600 leading-tight">
-                            -{(o.discount_amount || 0).toLocaleString()}
-                          </p>
-                        </>
-                      ) : (
-                        <p className="font-semibold">{(o.total_amount || 0).toLocaleString()}원</p>
-                      )}
+                      {/* 최종 결제금액 단일 표시(#18) — 할인·포인트는 별도 매출항목으로 분리하지 않음 */}
+                      <p
+                        className="font-semibold"
+                        title={(o.discount_amount || 0) > 0
+                          ? `상품 ${(o.total_amount || 0).toLocaleString()}원 − 할인 ${(o.discount_amount || 0).toLocaleString()}원`
+                          : undefined}
+                      >
+                        {netSales(o).toLocaleString()}원
+                      </p>
                     </td>
                     <td className="align-top whitespace-nowrap">
                       <p className="text-xs">{PAY_LABEL[o.payment_method] || o.payment_method}</p>
@@ -787,7 +787,7 @@ export default function SalesListTab() {
     const valid = filtered.filter(o => !['CANCELLED', 'REFUNDED'].includes(o.status));
     return {
       count: valid.length,
-      total: valid.reduce((s, o) => s + (o.total_amount || 0), 0),
+      total: valid.reduce((s, o) => s + netSales(o), 0),   // 최종 결제금액 기준(#18)
       discount: valid.reduce((s, o) => s + (o.discount_amount || 0), 0),
       pointsEarned: valid.reduce((s, o) => s + (o.points_earned || 0), 0),
       cancelledCount: filtered.length - valid.length,
@@ -802,7 +802,7 @@ export default function SalesListTab() {
       const d = fmtDateKST(o.ordered_at);   // KST 기준 일자 그룹핑(UTC 슬라이스 금지)
       const cur = map.get(d) || { count: 0, total: 0 };
       cur.count += 1;
-      cur.total += o.total_amount || 0;
+      cur.total += netSales(o);   // 최종 결제금액 기준(#18)
       map.set(d, cur);
     }
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
@@ -839,7 +839,7 @@ export default function SalesListTab() {
         o.order_number,
         itemLabel,
         totalQty,
-        o.total_amount,
+        netSales(o),   // 매출 = 최종 결제금액(#18)
         PAY_LABEL[o.payment_method] || o.payment_method,
         APPROVAL_STATUS_LABEL[o.approval_status || 'COMPLETED'] || '',
         (o.payment_info || '').replace(/\n/g, ' '),

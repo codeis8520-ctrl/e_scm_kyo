@@ -1632,8 +1632,9 @@ async function execGetSalesSummary(sb: any, args: { date_from?: string; date_to?
   if (error) return JSON.stringify({ error: error.message });
 
   const orders = (data || []) as any[];
-  const totalRevenue = orders.reduce((s, o) => s + (o.total_amount || 0), 0);
-  const totalDiscount = orders.reduce((s, o) => s + (o.discount_amount || 0), 0);
+  // 매출 통일 기준(#18): 매출 = total_amount(상품총액 할인전) − discount_amount = 최종 결제금액.
+  const net = (o: any) => (o.total_amount || 0) - (o.discount_amount || 0);
+  const totalRevenue = orders.reduce((s, o) => s + net(o), 0);
 
   // 채널별
   const channelLabels: Record<string, string> = { STORE: '한약국', DEPT_STORE: '백화점', ONLINE: '자사몰', EVENT: '이벤트' };
@@ -1642,20 +1643,18 @@ async function execGetSalesSummary(sb: any, args: { date_from?: string; date_to?
   for (const o of orders) {
     const ch = o.channel || 'STORE';
     if (!byChannel[ch]) byChannel[ch] = { amount: 0, count: 0 };
-    byChannel[ch].amount += o.total_amount || 0;
+    byChannel[ch].amount += net(o);
     byChannel[ch].count++;
 
     const bn = o.branches?.name || o.branch_id;
     if (!byBranch[bn]) byBranch[bn] = { name: bn, amount: 0, count: 0 };
-    byBranch[bn].amount += o.total_amount || 0;
+    byBranch[bn].amount += net(o);
     byBranch[bn].count++;
   }
 
   return JSON.stringify({
     기간: `${from} ~ ${to}`,
-    총매출: `${totalRevenue.toLocaleString()}원`,
-    총할인: `${totalDiscount.toLocaleString()}원`,
-    순매출: `${(totalRevenue - totalDiscount).toLocaleString()}원`,
+    매출: `${totalRevenue.toLocaleString()}원`,   // 최종 결제금액(할인·포인트·쿠폰 미분리) — 판매현황과 동일 기준
     주문건수: orders.length,
     채널별: Object.entries(byChannel).map(([k, v]) => ({
       채널: channelLabels[k] || k, 매출: `${v.amount.toLocaleString()}원`, 건수: v.count,
@@ -2696,9 +2695,9 @@ async function execCompareSales(sb: any, args: {
     if (branchId) q = q.eq('branch_id', branchId);
     const { data } = await q;
     const orders = (data || []) as any[];
-    const revenue = orders.reduce((s: number, o: any) => s + (o.total_amount || 0), 0);
-    const discount = orders.reduce((s: number, o: any) => s + (o.discount_amount || 0), 0);
-    return { 건수: orders.length, 매출: revenue, 할인: discount };
+    // 매출 통일 기준(#18): 매출 = total_amount − discount_amount = 최종 결제금액.
+    const revenue = orders.reduce((s: number, o: any) => s + ((o.total_amount || 0) - (o.discount_amount || 0)), 0);
+    return { 건수: orders.length, 매출: revenue };
   }
 
   const [p1, p2] = await Promise.all([
