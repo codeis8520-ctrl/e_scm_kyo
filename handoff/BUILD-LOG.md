@@ -1,5 +1,32 @@
 # BUILD-LOG
 
+## 판매현황 탭·필터 영속화 (req #12) (빌드 완료 · 리뷰 대기)
+시작: 2026-06-16
+
+### Build Status — npm run build ✓ Compiled successfully in 6.2s (에러/경고 0)
+
+### 변경 파일 (2) — DB/마이그/schema.ts/tools.ts 무변경
+
+**src/app/(dashboard)/pos/page.tsx** — mainTab 영속화 (localStorage 'pos.mainTab')
+- 모듈 스코프 `readMainTab()` 추가(MainTab type 아래): window 가드 + try/catch, 저장값 'list'면 'list' 외 모두 'checkout'.
+- `useState<MainTab>('checkout')` → `useState<MainTab>(readMainTab)` lazy-init.
+- mainTab 변경 useEffect 1개 추가(draftBanner state 아래): `localStorage.setItem('pos.mainTab', mainTab)` try/catch. 기존 setMainTab('checkout') 호출(L618/705/1454 등)은 effect가 자동 반영 — 무수정.
+
+**src/app/(dashboard)/pos/SalesListTab.tsx** — 조회조건 묶음 영속화 (localStorage 'salesList.filters' JSON)
+- 모듈 스코프 `interface PersistedFilters`(20필드) + `readSalesFilters(): Partial<PersistedFilters>`(window 가드 + JSON.parse try/catch + object 체크, 실패 시 {}).
+- 컴포넌트 상단 `const saved = readSalesFilters()` 1회 로드.
+- 20개 useState lazy-init 전환(`?? 기존기본값` 폴백): period/startDate/endDate, search, paymentFilter/statusFilter, includeCancelled, showAdvanced + 고급검색 7필드, receiptStatusFilter/approvalStatusFilter, subView, listSort.
+- branchFilter: `isBranchUser ? (userBranchId ?? '') : (saved.branchFilter ?? '')` — 지점 사용자는 저장값 무시·자기 지점 고정(보안 잠금).
+- debouncedSearch: `saved.search ?? ''` 로 seed → 복원 직후 첫 loadOrders가 검색 즉시 반영.
+- 저장 effect 1개 추가(compareInit state 아래): 20필드 객체 직렬화 저장, deps 동일 20개. 기존 effect 무변경.
+
+### 제외(영속화 안 함, 브리프대로): compareBranchIds/compareGrain/compareInit/compareRows 등 비교뷰 파생·로딩, selectedOrderId·모달, orders/branches/staff/loading.
+
+### Known Gaps
+- 비교뷰(subView='compare') 복원 시 기간이 compareInit 가드로 올해1/1~오늘로 리셋될 수 있음 — 브리프 허용(부차). subView 자체는 복원됨.
+
+---
+
 ## 판매상세 직접수정 (고객/수령일/받는분) (빌드 완료 · Must Fix 1건 반영 · 재리뷰 대기)
 시작: 2026-06-16
 

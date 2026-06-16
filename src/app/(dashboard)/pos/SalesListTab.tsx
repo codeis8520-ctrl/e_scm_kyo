@@ -119,41 +119,83 @@ function daysAgo(n: number): string {
 
 type Period = 'today' | '7d' | '30d' | 'custom';
 
+// 새로고침 생존용 조회조건 영속화 (localStorage 'salesList.filters').
+// branchFilter는 복원 시 isBranchUser 가드를 별도 적용 — 여기선 단순 저장/로드만.
+interface PersistedFilters {
+  period: Period;
+  startDate: string;
+  endDate: string;
+  search: string;
+  branchFilter: string;
+  paymentFilter: string;
+  statusFilter: string;
+  subView: 'list' | 'compare';
+  listSort: 'order' | 'receipt';
+  receiptStatusFilter: string;
+  approvalStatusFilter: string;
+  includeCancelled: boolean;
+  showAdvanced: boolean;
+  consultSearch: string;
+  productSearch: string;
+  orderOptionSearch: string;
+  recipientSearch: string;
+  addressSearch: string;
+  handlerFilter: string;
+  shipFromFilter: string;
+}
+
+function readSalesFilters(): Partial<PersistedFilters> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem('salesList.filters');
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 export default function SalesListTab() {
   const router = useRouter();
   const userRole = getCookie('user_role');
   const userBranchId = getCookie('user_branch_id');
   const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
 
+  // 새로고침 복원값 1회 로드 (lazy-init 폴백용)
+  const saved = readSalesFilters();
+
   const [branches, setBranches] = useState<Branch[]>([]);
   const [staff, setStaff] = useState<StaffUser[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const [period, setPeriod] = useState<Period>('today');
-  const [startDate, setStartDate] = useState(todayStr());
-  const [endDate, setEndDate] = useState(todayStr());
+  const [period, setPeriod] = useState<Period>(() => saved.period ?? 'today');
+  const [startDate, setStartDate] = useState(() => saved.startDate ?? todayStr());
+  const [endDate, setEndDate] = useState(() => saved.endDate ?? todayStr());
 
   // 기본(축약) 필터
-  const [branchFilter, setBranchFilter] = useState(isBranchUser && userBranchId ? userBranchId : '');
-  const [paymentFilter, setPaymentFilter] = useState<string>('');
-  const [statusFilter, setStatusFilter] = useState<string>('');
-  const [search, setSearch] = useState('');                  // 고객명·전화·주문번호·메모 통합
-  const [debouncedSearch, setDebouncedSearch] = useState(''); // loadOrders 트리거용 debounced 값
-  const [includeCancelled, setIncludeCancelled] = useState(true);
+  // 지점 사용자는 저장값 무시하고 자기 지점 고정 (지점 잠금 침해 방지)
+  const [branchFilter, setBranchFilter] = useState(() =>
+    isBranchUser ? (userBranchId ?? '') : (saved.branchFilter ?? ''));
+  const [paymentFilter, setPaymentFilter] = useState<string>(() => saved.paymentFilter ?? '');
+  const [statusFilter, setStatusFilter] = useState<string>(() => saved.statusFilter ?? '');
+  const [search, setSearch] = useState(() => saved.search ?? '');                  // 고객명·전화·주문번호·메모 통합
+  const [debouncedSearch, setDebouncedSearch] = useState(() => saved.search ?? ''); // loadOrders 트리거용 debounced 값 (복원 search로 seed)
+  const [includeCancelled, setIncludeCancelled] = useState(() => saved.includeCancelled ?? true);
   const [showCustomerLookup, setShowCustomerLookup] = useState(false);
 
   // 고급 검색 필터 (PDF 중요도 순 상위 먼저 노출)
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [consultSearch, setConsultSearch] = useState('');     // 상담내역
-  const [productSearch, setProductSearch] = useState('');     // 품목
-  const [orderOptionSearch, setOrderOptionSearch] = useState(''); // 주문옵션
-  const [recipientSearch, setRecipientSearch] = useState(''); // 받는 분
-  const [addressSearch, setAddressSearch] = useState('');     // 주소
-  const [handlerFilter, setHandlerFilter] = useState('');     // 담당자
-  const [shipFromFilter, setShipFromFilter] = useState('');   // 출고처
-  const [receiptStatusFilter, setReceiptStatusFilter] = useState('');
-  const [approvalStatusFilter, setApprovalStatusFilter] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(() => saved.showAdvanced ?? false);
+  const [consultSearch, setConsultSearch] = useState(() => saved.consultSearch ?? '');     // 상담내역
+  const [productSearch, setProductSearch] = useState(() => saved.productSearch ?? '');     // 품목
+  const [orderOptionSearch, setOrderOptionSearch] = useState(() => saved.orderOptionSearch ?? ''); // 주문옵션
+  const [recipientSearch, setRecipientSearch] = useState(() => saved.recipientSearch ?? ''); // 받는 분
+  const [addressSearch, setAddressSearch] = useState(() => saved.addressSearch ?? '');     // 주소
+  const [handlerFilter, setHandlerFilter] = useState(() => saved.handlerFilter ?? '');     // 담당자
+  const [shipFromFilter, setShipFromFilter] = useState(() => saved.shipFromFilter ?? '');   // 출고처
+  const [receiptStatusFilter, setReceiptStatusFilter] = useState(() => saved.receiptStatusFilter ?? '');
+  const [approvalStatusFilter, setApprovalStatusFilter] = useState(() => saved.approvalStatusFilter ?? '');
 
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [showRefundModal, setShowRefundModal] = useState(false);
@@ -161,9 +203,9 @@ export default function SalesListTab() {
   const [reprintReceipt, setReprintReceipt] = useState<any>(null);
 
   // 서브뷰: 목록 ↔ 지점비교 (본사/관리자 전용). 지점비교는 기간 행 × 지점 열 매트릭스.
-  const [subView, setSubView] = useState<'list' | 'compare'>('list');
+  const [subView, setSubView] = useState<'list' | 'compare'>(() => saved.subView ?? 'list');
   // 목록 정렬 토글: 'order'=주문일순(현행 flat) / 'receipt'=수령일자별 그룹
-  const [listSort, setListSort] = useState<'order' | 'receipt'>('receipt');
+  const [listSort, setListSort] = useState<'order' | 'receipt'>(() => saved.listSort ?? 'receipt');
   // 비교뷰 전용 다수선택 상태 — 기존 단일 branchFilter 와 독립. 기본값은 전체 active 지점.
   const [compareBranchIds, setCompareBranchIds] = useState<string[]>([]);
   // RPC branch_sales_summary 반환형 — legacy(<2026-05-19)+sales(>=2026-05-19) 통합 집계 행.
@@ -174,6 +216,23 @@ export default function SalesListTab() {
   const [compareGrain, setCompareGrain] = useState<'day' | 'month' | 'year'>('month');
   // compare 진입 시 기본기간(올해 1/1~오늘) 1회 세팅 가드.
   const [compareInit, setCompareInit] = useState(false);
+
+  // 조회조건 변경 시 localStorage 저장 → 새로고침 후 복원. (compare 파생/모달/로딩 상태는 제외)
+  useEffect(() => {
+    try {
+      const payload: PersistedFilters = {
+        period, startDate, endDate, search,
+        branchFilter, paymentFilter, statusFilter,
+        subView, listSort, receiptStatusFilter, approvalStatusFilter,
+        includeCancelled, showAdvanced, consultSearch, productSearch,
+        orderOptionSearch, recipientSearch, addressSearch, handlerFilter, shipFromFilter,
+      };
+      localStorage.setItem('salesList.filters', JSON.stringify(payload));
+    } catch {}
+  }, [period, startDate, endDate, search, branchFilter, paymentFilter, statusFilter,
+      subView, listSort, receiptStatusFilter, approvalStatusFilter, includeCancelled,
+      showAdvanced, consultSearch, productSearch, orderOptionSearch, recipientSearch,
+      addressSearch, handlerFilter, shipFromFilter]);
 
   // 초기 — 지점·직원 목록
   useEffect(() => {

@@ -19,6 +19,16 @@ const SalesListTab = dynamic(() => import('./SalesListTab'), {
 
 type MainTab = 'checkout' | 'list';
 
+// 새로고침 시 직전 탭 복원 (저장값이 'list'면 list, 그 외/없음/SSR → checkout)
+function readMainTab(): MainTab {
+  if (typeof window === 'undefined') return 'checkout';
+  try {
+    return localStorage.getItem('pos.mainTab') === 'list' ? 'list' : 'checkout';
+  } catch {
+    return 'checkout';
+  }
+}
+
 declare global {
   interface Window {
     daum: any;
@@ -316,7 +326,7 @@ function POSPageInner() {
   const [extraPayments, setExtraPayments] = useState<PaymentRow[]>([]);
 
   const [cartOpen, setCartOpen] = useState(false);
-  const [mainTab, setMainTab] = useState<MainTab>('checkout');
+  const [mainTab, setMainTab] = useState<MainTab>(readMainTab);
 
   // ── 임시저장 (결제 직전 상태를 통째로 저장 → 나중에 다시 불러오기) ────────
   const [currentDraftId, setCurrentDraftId] = useState<string | null>(null);
@@ -326,6 +336,13 @@ function POSPageInner() {
   const [savingDraft, setSavingDraft] = useState(false);
   const [draftCount, setDraftCount] = useState(0);
   const [draftBanner, setDraftBanner] = useState<string | null>(null);
+
+  // 탭 변경 시 localStorage에 저장 → 새로고침 후 복원
+  useEffect(() => {
+    try {
+      localStorage.setItem('pos.mainTab', mainTab);
+    } catch {}
+  }, [mainTab]);
 
   const searchRef = useRef<HTMLInputElement>(null);
   const customerInputRef = useRef<HTMLInputElement>(null);
