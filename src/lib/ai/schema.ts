@@ -264,6 +264,11 @@ sales_orders.receipt_status: 품목 receipt_status 집계(우선순위 PARCEL_PL
 - VAT: 공급가=price÷1.1, 부가세=price×10/110
 - accounting_period_closes: 월 마감 후 해당 기간 수정 차단
 
+[지점별 매출(통합 조회)]
+- 지점별 매출 = legacy_orders(ordered_at<2026-05-19) + sales_orders(ordered_at>=2026-05-19, status NOT IN CANCELLED/REFUNDED/PARTIALLY_REFUNDED) 통합. 컷오프 경계로 이중집계 없음.
+- RPC branch_sales_summary(p_from date, p_to date, p_grain text 'day'|'month'|'year') → (period_date, branch_id, total). 판매현황 '지점비교'에서 호출.
+- legacy branch_id NULL = '미매칭' 그룹(제외 안 함). 날짜는 KST 일자 기준 grain 집계.
+
 [자사몰(카페24) 매출 동기화 — 주문자 고객 표시/등록]
 - 동기화 시 주문자(orderer)를 sales_orders.buyer_name/buyer_phone 에 항상 스냅샷 저장 → 판매현황에서 customer_id 없어도 주문자명/전화 표시(과거 "비회원" 노출 해소).
 - sync(webhook.ts linkOrCreateCustomer)는 **기존 고객 자동 "연결"만** 함: ①cafe24_member_id 일치 ②이름 AND 전화(대시포맷) 일치 → 연결(+member_id 백필). **자동 "생성"은 안 함**(allowCreate=false).

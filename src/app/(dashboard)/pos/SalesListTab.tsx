@@ -155,12 +155,18 @@ export default function SalesListTab() {
   const [refundOrderNumber, setRefundOrderNumber] = useState<string | null>(null);
   const [reprintReceipt, setReprintReceipt] = useState<any>(null);
 
-  // 서브뷰: 목록 ↔ 지점비교 (본사/관리자 전용). 지점비교는 날짜 행 × 지점 열 매트릭스.
+  // 서브뷰: 목록 ↔ 지점비교 (본사/관리자 전용). 지점비교는 기간 행 × 지점 열 매트릭스.
   const [subView, setSubView] = useState<'list' | 'compare'>('list');
   // 비교뷰 전용 다수선택 상태 — 기존 단일 branchFilter 와 독립. 기본값은 전체 active 지점.
   const [compareBranchIds, setCompareBranchIds] = useState<string[]>([]);
-  const [compareRows, setCompareRows] = useState<{ branch_id: string | null; ordered_at: string; total_amount: number }[]>([]);
+  // RPC branch_sales_summary 반환형 — legacy(<2026-05-19)+sales(>=2026-05-19) 통합 집계 행.
+  const [compareRows, setCompareRows] = useState<{ period_date: string; branch_id: string | null; total: number }[]>([]);
   const [compareLoading, setCompareLoading] = useState(false);
+  const [compareError, setCompareError] = useState<string | null>(null);
+  // 집계 단위 — 일/월/연. 기본 'month'.
+  const [compareGrain, setCompareGrain] = useState<'day' | 'month' | 'year'>('month');
+  // compare 진입 시 기본기간(올해 1/1~오늘) 1회 세팅 가드.
+  const [compareInit, setCompareInit] = useState(false);
 
   // 초기 — 지점·직원 목록
   useEffect(() => {
@@ -315,69 +321,110 @@ export default function SalesListTab() {
     setCompareBranchIds(branches.map(b => b.id));
   }, [branches]);
 
-  // 지점비교 집계 로드 (loadOrders 와 별개). 경량 컬럼만, 기간 동일(startDate/endDate, KST 경계).
-  // 1000행 캡 우회 페이지네이션 필수 — loadOrders 의 .limit() 패턴은 집계에 부적합.
+  // 일수 차이 (day grain 가드용). 둘 다 'YYYY-MM-DD' KST 일자 문자열.
+  const compareDaySpan = useMemo(() => {
+    const a = Date.parse(`${startDate}T00:00:00Z`);
+    const b = Date.parse(`${endDate}T00:00:00Z`);
+    if (Number.isNaN(a) || Number.isNaN(b)) return 0;
+    return Math.round((b - a) / 86400000);
+  }, [startDate, endDate]);
+
+  // 지점비교 집계 로드 — RPC branch_sales_summary 1회 호출 (legacy+sales 통합, grain별 집계).
+  // 지점 선택 필터는 클라이언트(compareMatrix)에서 처리 — RPC 는 전 지점 반환.
   const loadCompare = useCallback(async () => {
-    if (compareBranchIds.length === 0) { setCompareRows([]); return; }
-    setCompareLoading(true);
-    const sb = createClient() as any;
-    const PAGE = 1000;
-    let all: { branch_id: string | null; ordered_at: string; total_amount: number }[] = [];
-    for (let from = 0; ; from += PAGE) {
-      const { data, error } = await sb
-        .from('sales_orders')
-        .select('branch_id, ordered_at, status, total_amount')
-        .gte('ordered_at', kstDayStart(startDate))
-        .lte('ordered_at', kstDayEnd(endDate))
-        .in('branch_id', compareBranchIds)
-        // 매출 정의: 취소·환불·부분환불 제외 (목록 일별 집계와 동일 기준)
-        .not('status', 'in', '(CANCELLED,REFUNDED,PARTIALLY_REFUNDED)')
-        .order('ordered_at', { ascending: true })
-        .range(from, from + PAGE - 1);
-      if (error) { console.error('[SalesListTab] compare load error:', error); break; }
-      const rows = (data as any[]) || [];
-      if (rows.length === 0) break;
-      all = all.concat(rows.map(r => ({ branch_id: r.branch_id, ordered_at: r.ordered_at, total_amount: r.total_amount || 0 })));
-      if (rows.length < PAGE) break;
+    // day grain 가드: 기간 366일 초과면 폭주 방지로 조회 차단.
+    if (compareGrain === 'day' && compareDaySpan > 366) {
+      setCompareRows([]);
+      setCompareError('일별 조회는 366일 이내에서만 가능합니다. 기간을 줄이거나 월/연 단위를 선택하세요.');
+      return;
     }
-    setCompareRows(all);
+    setCompareLoading(true);
+    setCompareError(null);
+    const sb = createClient() as any;
+    const { data, error } = await sb.rpc('branch_sales_summary', {
+      p_from: startDate,
+      p_to: endDate,
+      p_grain: compareGrain,
+    });
+    if (error) {
+      console.error('[SalesListTab] compare rpc error:', error);
+      setCompareRows([]);
+      setCompareError('지점별 매출 집계를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.');
+      setCompareLoading(false);
+      return;
+    }
+    const rows = ((data as any[]) || []).map(r => ({
+      period_date: String(r.period_date),
+      branch_id: r.branch_id ?? null,
+      total: Number(r.total) || 0,
+    }));
+    setCompareRows(rows);
     setCompareLoading(false);
-  }, [startDate, endDate, compareBranchIds]);
+  }, [startDate, endDate, compareGrain, compareDaySpan]);
 
   // 비교뷰 진입 시에만 페치 (목록 진입 시 불필요 페치 금지).
   useEffect(() => {
     if (subView === 'compare') loadCompare();
   }, [subView, loadCompare]);
 
-  // 매트릭스 빌드 — rows=날짜(오름차순), cols=compareBranchIds 순서.
+  // compare 최초 진입 시 기본기간(올해 1/1~오늘)·월 단위로 1회 세팅. 사용자가 이미 바꿨으면 덮지 않음.
+  useEffect(() => {
+    if (subView === 'compare' && !compareInit) {
+      const year = kstTodayString().slice(0, 4);
+      setStartDate(`${year}-01-01`);
+      setEndDate(kstTodayString());
+      setPeriod('custom');
+      setCompareInit(true);
+    }
+  }, [subView, compareInit]);
+
+  // 매트릭스 빌드 — rows=기간(period_date 오름차순), cols=선택 지점 + 고정 '미매칭'(branch_id NULL) 열.
+  // RPC 가 이미 period+branch_id 로 집계했으므로 여기선 열 매핑·합계만.
+  const UNMATCHED = '__unmatched__';
   const compareMatrix = useMemo(() => {
     const branchName = new Map(branches.map(b => [b.id, b.name]));
-    const cols = compareBranchIds.map(id => ({ id, name: branchName.get(id) || id }));
-    // cell[date][branch_id] = total_amount 합
+    const selectedCols = compareBranchIds.map(id => ({ id, name: branchName.get(id) || id }));
+    // 미매칭 합계 존재 여부 — NULL branch_id 행이 1개라도 있으면 열 노출.
+    const hasUnmatched = compareRows.some(r => !r.branch_id);
+    const cols = hasUnmatched
+      ? [...selectedCols, { id: UNMATCHED, name: '미매칭' }]
+      : selectedCols;
+
+    // cell[period][colId] = total 합
     const cell = new Map<string, Map<string, number>>();
-    const dateSet = new Set<string>();
+    const periodSet = new Set<string>();
     const colTotals = new Map<string, number>();
     let grandTotal = 0;
     for (const r of compareRows) {
-      if (!r.branch_id) continue;
-      const d = fmtDateKST(r.ordered_at);   // KST 기준 일자 그룹핑(UTC 슬라이스 금지)
-      dateSet.add(d);
-      let row = cell.get(d);
-      if (!row) { row = new Map(); cell.set(d, row); }
-      row.set(r.branch_id, (row.get(r.branch_id) || 0) + r.total_amount);
-      colTotals.set(r.branch_id, (colTotals.get(r.branch_id) || 0) + r.total_amount);
-      grandTotal += r.total_amount;
+      const colId = r.branch_id ?? UNMATCHED;
+      // 미매칭이 아닌데 선택 안 된 지점은 제외 (미매칭 열은 항상 합산).
+      if (colId !== UNMATCHED && !compareBranchIds.includes(colId)) continue;
+      const p = r.period_date;
+      periodSet.add(p);
+      let row = cell.get(p);
+      if (!row) { row = new Map(); cell.set(p, row); }
+      row.set(colId, (row.get(colId) || 0) + r.total);
+      colTotals.set(colId, (colTotals.get(colId) || 0) + r.total);
+      grandTotal += r.total;
     }
-    const dates = [...dateSet].sort((a, b) => a.localeCompare(b));
-    const rows = dates.map(d => {
-      const row = cell.get(d);
+    const periods = [...periodSet].sort((a, b) => a.localeCompare(b));
+    const rows = periods.map(p => {
+      const row = cell.get(p);
       const values = cols.map(c => row?.get(c.id) || 0);
       const rowTotal = values.reduce((s, v) => s + v, 0);
-      return { date: d, values, rowTotal };
+      return { period: p, values, rowTotal };
     });
     const colTotalValues = cols.map(c => colTotals.get(c.id) || 0);
     return { cols, rows, colTotalValues, grandTotal };
   }, [compareRows, compareBranchIds, branches]);
+
+  // 기간 라벨 — grain 따라 일/월/연 표시 형식.
+  const fmtPeriodLabel = useCallback((iso: string) => {
+    // iso = 'YYYY-MM-DD' (date_trunc 결과). grain 별로 잘라서 표시.
+    if (compareGrain === 'year') return iso.slice(0, 4);
+    if (compareGrain === 'month') return iso.slice(0, 7);
+    return iso;
+  }, [compareGrain]);
 
   const toggleCompareBranch = (id: string) => {
     setCompareBranchIds(prev =>
@@ -664,24 +711,45 @@ export default function SalesListTab() {
         </div>
         )}
 
-        {/* 지점비교 — 지점 다수선택 */}
+        {/* 지점비교 — 집계 단위(일/월/연) + 지점 다수선택 */}
         {subView === 'compare' && (
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <div className="space-y-2">
             <div className="flex items-center gap-2">
-              <button onClick={() => setCompareBranchIds(branches.map(b => b.id))}
-                className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50">전체</button>
-              <button onClick={() => setCompareBranchIds([])}
-                className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50">해제</button>
+              <span className="text-xs text-slate-500">집계 단위</span>
+              <div className="flex items-center gap-1 bg-slate-100 rounded-md p-0.5">
+                {([['day', '일'], ['month', '월'], ['year', '연']] as ['day' | 'month' | 'year', string][]).map(([k, label]) => (
+                  <button
+                    key={k}
+                    onClick={() => setCompareGrain(k)}
+                    className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                      compareGrain === k ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {compareGrain === 'day' && (
+                <span className="text-[11px] text-slate-400">일별은 366일 이내</span>
+              )}
             </div>
-            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-              {branches.map(b => (
-                <label key={b.id} className="flex items-center gap-1.5 text-sm text-slate-700">
-                  <input type="checkbox" className="w-4 h-4"
-                    checked={compareBranchIds.includes(b.id)}
-                    onChange={() => toggleCompareBranch(b.id)} />
-                  {b.name}
-                </label>
-              ))}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <div className="flex items-center gap-2">
+                <button onClick={() => setCompareBranchIds(branches.map(b => b.id))}
+                  className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50">전체</button>
+                <button onClick={() => setCompareBranchIds([])}
+                  className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50">해제</button>
+              </div>
+              <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                {branches.map(b => (
+                  <label key={b.id} className="flex items-center gap-1.5 text-sm text-slate-700">
+                    <input type="checkbox" className="w-4 h-4"
+                      checked={compareBranchIds.includes(b.id)}
+                      onChange={() => toggleCompareBranch(b.id)} />
+                    {b.name}
+                  </label>
+                ))}
+              </div>
             </div>
           </div>
         )}
@@ -1010,14 +1078,18 @@ export default function SalesListTab() {
       </div>
       </>)}
 
-      {/* 지점비교 매트릭스 (본사/관리자) */}
+      {/* 지점비교 매트릭스 (본사/관리자) — legacy+sales 통합, 일/월/연 */}
       {subView === 'compare' && (
         <div className="card">
           <div className="flex items-center justify-between mb-2">
-            <h3 className="font-semibold text-slate-700">지점별 일 매출 비교</h3>
-            <span className="text-xs text-slate-400">{startDate} ~ {endDate} · 선택 {compareMatrix.cols.length}개 지점</span>
+            <h3 className="font-semibold text-slate-700">
+              지점별 매출 ({compareGrain === 'day' ? '일' : compareGrain === 'month' ? '월' : '연'})
+            </h3>
+            <span className="text-xs text-slate-400">{startDate} ~ {endDate} · 선택 {compareBranchIds.length}개 지점</span>
           </div>
-          {compareLoading ? (
+          {compareError ? (
+            <div className="text-center py-10 text-amber-600 text-sm">{compareError}</div>
+          ) : compareLoading ? (
             <div className="text-center py-10 text-slate-400">로딩 중...</div>
           ) : compareMatrix.cols.length === 0 ? (
             <div className="text-center py-10 text-slate-400">비교할 지점을 1개 이상 선택하세요</div>
@@ -1028,7 +1100,9 @@ export default function SalesListTab() {
               <table className="table text-sm min-w-[480px]">
                 <thead>
                   <tr className="text-xs text-slate-500">
-                    <th className="whitespace-nowrap">일자</th>
+                    <th className="whitespace-nowrap">
+                      {compareGrain === 'day' ? '일자' : compareGrain === 'month' ? '월' : '연'}
+                    </th>
                     {compareMatrix.cols.map(c => (
                       <th key={c.id} className="text-right whitespace-nowrap">{c.name}</th>
                     ))}
@@ -1037,8 +1111,8 @@ export default function SalesListTab() {
                 </thead>
                 <tbody>
                   {compareMatrix.rows.map(row => (
-                    <tr key={row.date}>
-                      <td className="font-mono whitespace-nowrap">{row.date}</td>
+                    <tr key={row.period}>
+                      <td className="font-mono whitespace-nowrap">{fmtPeriodLabel(row.period)}</td>
                       {row.values.map((v, i) => (
                         <td key={compareMatrix.cols[i].id} className="text-right">{v.toLocaleString()}원</td>
                       ))}

@@ -1,3 +1,37 @@
+# BUILD-LOG — Feature C: 지점별 매출 통합 조회 (legacy+sales, day/month/year)
+
+## Feature C — 1 step (빌드 완료 · 리뷰 대기)
+시작: 2026-06-16
+
+### Build Status (2026-06-16)
+- BUILT — npm run build ✓ Compiled successfully in 8.2s (에러/경고 없음).
+- 마이그 081 (branch_sales_summary RPC)은 Arch 소유 — Bob 미작성. **현재 미적용** 상태에서 빌드/런 정상 (RPC 에러 시 compareError 안내 + 빈 매트릭스, 크래시 없음).
+- 마이그 081 작성 완료 (2026-06-16, Arch) — `supabase/migrations/081_branch_sales_summary.sql`. **Supabase 미적용** 상태. 적용 전까지 RPC 에러→빈 매트릭스 폴백 유지. 배포 게이트 시 Supabase 실행 필수.
+  - 검증 사항: legacy_orders.ordered_at=DATE(KST 일자, 변환 없음) / sales_orders.ordered_at=timestamptz(AT TIME ZONE 'Asia/Seoul'). 컷오프 2026-05-19. status 제외=CANCELLED,REFUNDED,PARTIALLY_REFUNDED(마이그 019 확장 확인). period_date=date_trunc(grain,…)::date. grain 화이트리스트 가드. SECURITY DEFINER + GRANT anon,authenticated.
+- 변경 파일:
+  - src/app/(dashboard)/pos/SalesListTab.tsx — compare 서브뷰 전면 교체 (state·loadCompare·matrix·UI·render).
+  - src/lib/ai/schema.ts — BUSINESS_RULES 에 [지점별 매출(통합 조회)] 블록 추가.
+
+### Review Fix (2026-06-16, Arch) — 컷오프 경계 off-by-9h 누락 (Must Fix)
+- 마이그 081 라인 63 `so.ordered_at >= cutoff::timestamptz` 수정.
+  `cutoff`=DATE 2026-05-19, `::timestamptz` 캐스트가 UTC 자정(=KST 09:00)으로 해석 → legacy(`< cutoff` KST일자)와 sales(`>= cutoff::timestamptz`) 사이 KST 2026-05-19 00:00~09:00 매출 9시간치 누락(legacy·sales 양쪽 다 미포함).
+- 수정: `WHERE (so.ordered_at AT TIME ZONE 'Asia/Seoul')::date >= cutoff` 로 교체. legacy `< cutoff` / sales `>= cutoff` 가 동일 KST 캘린더 일자 경계에서 맞물림 → 누락·중복 모두 제거. (라인 65 BETWEEN 표현식과 동일 표현식 재사용.)
+- 헤더 주석(라인 9~)도 KST 캘린더 경계로 갱신. legacy 측 `lo.ordered_at < cutoff`(DATE) 무변경(원래 정확). CREATE OR REPLACE 멱등.
+- npm 빌드 영향 없음(.sql 마이그, Supabase 미적용 유지). 배포 게이트 시 적용.
+
+### Locked Decisions (Arch brief 그대로 구현)
+- 컷오프 2026-05-19 · legacy 상태필터 없음 · sales status NOT IN(CANCELLED/REFUNDED/PARTIALLY_REFUNDED) — 전부 RPC 내부(Arch). 프론트는 RPC 결과만 매핑.
+- RPC 시그니처 = (p_from, p_to, p_grain) 만. 지점 선택은 클라이언트(compareMatrix)에서 필터. 미매칭(branch_id NULL) 열은 compareBranchIds 토글과 무관하게 항상 합산, NULL 행 존재 시에만 열 노출.
+- day grain 366일 초과 → 조회 차단 + 안내(compareError). month/year 무제한.
+- compare 진입 시 기본기간 올해 1/1~오늘 + grain='month' 1회 세팅(compareInit 가드, 사용자 변경 덮지 않음). list 서브뷰 기본 미변경.
+
+### Known Gaps (Out of Scope — 미수정)
+- legacy 취소/환불 미반영(과거 신뢰가능 플래그 없음) — 의도된 가정.
+- compare CSV 내보내기 없음(list 만 보유).
+- 지점선택 RPC 인자화 최적화 안 함(클라 필터 유지).
+
+---
+
 # BUILD-LOG — Feature B: 다건 지점 재고 이동
 
 ## Feature A (완료·배포)
