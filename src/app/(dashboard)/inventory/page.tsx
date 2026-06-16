@@ -185,7 +185,14 @@ export default function InventoryPage() {
     if (res.error) {
       res = await supabase.from('branches').select('id, name').eq('is_active', true).order('name');
     }
-    setBranches(res.data || []);
+    // 재고현황 그리드 지점 열 순서 — 운영 우선순위 고정. 미지정 지점은 뒤에(이름순).
+    const BRANCH_ORDER = ['본사', '청담점', '한남점', '강남신세계', '대구신세계', '명동신세계', '대전신세계', '경옥가(제품)', '경옥가(생산)'];
+    const orderIdx = (n: string) => { const i = BRANCH_ORDER.indexOf(n); return i === -1 ? BRANCH_ORDER.length : i; };
+    const sortedBranches = (res.data || []).slice().sort((a: any, b: any) => {
+      const d = orderIdx(a.name) - orderIdx(b.name);
+      return d !== 0 ? d : String(a.name).localeCompare(String(b.name), 'ko');
+    });
+    setBranches(sortedBranches);
   };
 
   // 검색·필터 매칭 product_id 만 페치 — 전체 페치 X (사용자 요청: 검색 위주, 첫 로드 즉시)
