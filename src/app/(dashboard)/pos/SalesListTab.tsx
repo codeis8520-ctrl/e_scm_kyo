@@ -1465,6 +1465,15 @@ function SummaryCard({ label, value, sub, accent }: {
   );
 }
 
+// 상담 content(JSONB)에서 표시 텍스트 추출 — 고객상세 page.tsx extractText와 동일 규칙
+function consultText(content: any): string {
+  if (!content) return '';
+  if (typeof content === 'string') return content;
+  if (typeof content.text === 'string') return content.text;
+  if (typeof content.summary === 'string') return content.summary;
+  try { return JSON.stringify(content); } catch { return ''; }
+}
+
 // ── 상세 드로어 ────────────────────────────────────────────────────────────────
 function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundIntent, onChanged }: {
   orderId: string;
@@ -1520,6 +1529,33 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
   const [edCustQuery, setEdCustQuery] = useState('');
   const [edCustResults, setEdCustResults] = useState<any[]>([]);
   const [edCustLoading, setEdCustLoading] = useState(false);
+  // 상담내역 인라인 조회 (#17 — 판매 상세에서 고객 상담을 바로 확인, 조제·CS 판단 연결)
+  const [showConsults, setShowConsults] = useState(false);
+  const [consults, setConsults] = useState<any[]>([]);
+  const [consultsLoading, setConsultsLoading] = useState(false);
+  const [consultsLoaded, setConsultsLoaded] = useState(false);
+
+  const toggleConsults = async () => {
+    const next = !showConsults;
+    setShowConsults(next);
+    const cid = order?.customer?.id;
+    if (next && !consultsLoaded && cid) {
+      setConsultsLoading(true);
+      try {
+        const sb = createClient() as any;
+        const { data } = await sb
+          .from('customer_consultations')
+          .select('id, consultation_type, content, created_at, consulted_by:users(name)')
+          .eq('customer_id', cid)
+          .order('created_at', { ascending: false })
+          .limit(20);
+        setConsults((data as any[]) || []);
+      } finally {
+        setConsultsLoaded(true);
+        setConsultsLoading(false);
+      }
+    }
+  };
 
   const handleCancelSale = async () => {
     if (!order) return;
@@ -1935,6 +1971,10 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
 
   useEffect(() => {
     loadDetail(true);
+    // 주문 전환 시 상담 패널 상태 초기화 (다른 고객 상담 잔존 방지)
+    setShowConsults(false);
+    setConsults([]);
+    setConsultsLoaded(false);
   }, [loadDetail]);
 
   // 수령 전 전표만 품목 추가/삭제 가능 (status=COMPLETED + receipt_status 존재 + ≠RECEIVED)
@@ -2148,9 +2188,19 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
               <div>
                 <p className="text-[11px] text-slate-500">고객</p>
                 {order.customer ? (
-                  <Link href={`/customers/${order.customer.id}`} className="text-blue-600 hover:underline">
-                    {order.customer.name} <span className="text-xs text-slate-400">{order.customer.phone}</span>
-                  </Link>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Link href={`/customers/${order.customer.id}`} className="text-blue-600 hover:underline">
+                      {order.customer.name} <span className="text-xs text-slate-400">{order.customer.phone}</span>
+                    </Link>
+                    <button
+                      type="button"
+                      onClick={toggleConsults}
+                      className="text-[11px] px-2 py-0.5 rounded border border-violet-300 text-violet-700 hover:bg-violet-50"
+                      title="이 고객의 상담내역을 바로 확인 (조제·CS 판단용)"
+                    >
+                      💬 상담내역 {showConsults ? '닫기' : '보기'}
+                    </button>
+                  </div>
                 ) : (order.buyer_name || order.buyer_phone) ? (
                   <span title="자사몰 주문자 (고객 미연결)">
                     {order.buyer_name || '-'} <span className="text-xs text-slate-400">{order.buyer_phone || ''}</span>
@@ -2158,6 +2208,43 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                   </span>
                 ) : <span className="text-slate-400">비회원</span>}
               </div>
+              {/* 상담내역 인라인 패널 (#17) — 그리드 전체폭. 고객 연결건만 노출. */}
+              {showConsults && order.customer && (
+                <div className="col-span-2 rounded-lg border border-violet-200 bg-violet-50/40 p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs font-semibold text-violet-800">상담내역 (최근 20건)</p>
+                    <Link
+                      href={`/customers/${order.customer.id}?tab=consultations`}
+                      className="text-[11px] text-blue-600 hover:underline"
+                    >
+                      고객 상담 전체 보기 →
+                    </Link>
+                  </div>
+                  {consultsLoading ? (
+                    <p className="text-xs text-slate-400 py-2">상담내역 불러오는 중…</p>
+                  ) : consults.length === 0 ? (
+                    <p className="text-xs text-slate-400 py-2">상담 기록이 없습니다.</p>
+                  ) : (
+                    <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                      {consults.map((c) => (
+                        <div key={c.id} className="rounded border border-violet-100 bg-white px-2.5 py-1.5">
+                          <div className="flex items-center justify-between gap-2 mb-0.5">
+                            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">
+                              {c.consultation_type || '기타'}
+                            </span>
+                            <span className="text-[10px] text-slate-400 whitespace-nowrap">
+                              {c.consulted_by?.name ? `${c.consulted_by.name} · ` : ''}{fmtDateTimeKST(c.created_at)}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-700 whitespace-pre-wrap leading-relaxed">
+                            {consultText(c.content) || <span className="text-slate-400">(내용 없음)</span>}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               <div>
                 <p className="text-[11px] text-slate-500">상태</p>
                 <div className="flex flex-wrap gap-1">
