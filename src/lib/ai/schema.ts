@@ -278,7 +278,7 @@ sales_orders.receipt_status: 품목 receipt_status 집계(우선순위 PARCEL_PL
 - sync(webhook.ts linkOrCreateCustomer)는 **기존 고객 자동 "연결"만** 함: ①cafe24_member_id 일치 ②이름 AND 전화(대시포맷) 일치 → 연결(+member_id 백필). **자동 "생성"은 안 함**(allowCreate=false).
 - 모르는 주문자 고객 등록은 **수동**: 배송 카페24 주문탭에서 (이름+전화) 매칭으로 "✓고객/미등록" 표시 → 미등록 체크 후 registerCafe24Customers(cafe24-actions)로 고객 생성(이름+전화+주소+이메일, source='CAFE24', phone 충돌 시 스킵) + 해당 sales_order.customer_id 연결.
 - 매칭/중복 기준 = 이름 AND 전화. 전화만 같고 이름 다르면 연결/등록 안 함(오귀속 방지). customers.phone UNIQUE·대시포맷(010-XXXX-XXXX).
-- cafe24 total_amount = 결제수단 무관 주문상품금액(포인트 전액결제 시에도 order_price_amount 사용, 0 아님).
+- cafe24 매출 total_amount = 모든 결제수단 합(payment_amount + naver_point + points_spent_amount + credits_spent_amount). 포인트/적립금/예치금도 결제수단으로 매출 포함(예: 카드 50000 + 네이버포인트 12000 = 62000). 쿠폰은 할인(제외). 합이 0이면 firstPositiveAmount 폴백(전액 정보없음 방어).
 - 카페24 품목(product_code + 옵션조합 정규화) → 내부 product 매핑(cafe24_product_map), 송장/배송 짧은 품목명(이카운트식). 미매핑은 원본 옵션정리 표시.
 - 카페24 주문 동기화(webhook.ts) 시 sales_order_items 도 생성: 매핑되면 product_id 연결, 미매핑은 item_text(원본 품목명) 텍스트. **재고 미차감**(inventory_movements·point_history 없음 — 별도 스프린트).
 

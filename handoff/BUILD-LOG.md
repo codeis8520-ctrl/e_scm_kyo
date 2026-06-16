@@ -1,5 +1,39 @@
 # BUILD-LOG
 
+## Step 1 (forward) 구현 완료 — 2026-06-16
+완료: 2026-06-16 · Build Status: npm run build ✓ (Compiled successfully 7.0s, 에러/경고 0)
+
+### 변경 파일 (4) — DB/마이그/tools.ts 무변경, 신규 패키지 없음
+- **src/lib/cafe24/types.ts** L132~145 — `firstPositiveAmount` 바로 아래 신규 `export function cafe24OrderTotal(order: unknown): number`. 공식=payment_amount + naver_point + actual_order_amount.points_spent_amount + actual_order_amount.credits_spent_amount, num(v)=유한 Number 아니면 0. 합 0이면 firstPositiveAmount(payment_amount, order_price_amount, total_order_price, actual_payment_amount) 폴백. 주석 4줄(매출=결제수단 합·쿠폰 제외·필드 위치·폴백).
+- **src/lib/cafe24/webhook.ts** L3, L399 — import에 cafe24OrderTotal 추가. `total_amount: cafe24OrderTotal(cafe24Order)`로 교체(기존 firstPositiveAmount 4-arg 인라인 삭제).
+- **src/app/api/cafe24/orders/route.ts** L4, L375 — import을 cafe24OrderTotal로 교체(firstPositiveAmount 제거). `total_price: cafe24OrderTotal(detailOrder ?? o)` — 중첩 actual_order_amount는 detail에만 있어 detailOrder 우선.
+- **src/lib/ai/schema.ts** L281 — BUSINESS_RULES 카페24 매출 라인 1줄 교체(모든 결제수단 합 공식 + 쿠폰 제외 + 폴백).
+
+### 검증
+- firstPositiveAmount 직접 호출 0건 — types.ts cafe24OrderTotal 내부 폴백으로만 잔존(grep 확인). 헬퍼 자체는 유지(삭제 안 함).
+- cafe24OrderTotal 단일 출처, 3 적용지점(webhook total_amount · route total_price) 모두 헬퍼 경유.
+
+### Known Gaps (Out of Scope, 이번 단계)
+- 기존 행 금액 백필 = Step 2 (별도).
+- 회계 createSaleJournal 재게시 안 함.
+
+## 카페24 매출 부분결제분 누락 (2-step) — 2026-06-16
+**증상**: 네이버페이 포인트 등 부분결제분이 판매현황 매출(total_amount)에서 누락. 예 주문 20260615-0000016 = 카드 50,000 + 네이버포인트 12,000 = 62,000인데 50,000만 집계.
+**원인**: webhook/orders가 firstPositiveAmount(payment_amount, order_price_amount, total_order_price, actual_payment_amount) 사용 → top-level order_price_amount/total_order_price는 임베드 응답에 없어 payment_amount(카드 실결제)=50000만 채택. naver_point·points_spent_amount·credits_spent_amount 미합산.
+
+### 잠근 결정 (LOCKED)
+- 매출 total_amount = **모든 결제수단 합** = payment_amount + naver_point + actual_order_amount.points_spent_amount + actual_order_amount.credits_spent_amount. 포인트/적립금도 결제수단으로 매출 포함. 쿠폰=할인(tender 아님, 제외).
+- 합이 0이면 기존 firstPositiveAmount 폴백(전액 정보없음 방어). 헬퍼 유지.
+- 신규(forward) = Step 1. 기존 전체 백필 = Step 2.
+- 백필 메커니즘: **신규 라우트 /api/cafe24/backfill-amount**(기존 backfill은 깨진행 필터라 금액엔 부적합 — 금액 틀린 건은 recipient 정상일 수 있음). 전체 ONLINE 비취소 주문을 ?offset+?limit 페이지네이션 재조회→cafe24OrderTotal 재계산→다르면 update, 멱등(같으면 0). 변경분 카운트 반환.
+- discount_amount(total_discount_price)·payment_method 현행 유지 — total만 보정.
+
+### Known Gaps (Out of Scope)
+- **회계분개 무조정** — total_amount 바뀌어도 createSaleJournal 재게시 안 함(Step 1·2 공통). 매출 회계 정합성은 별도 후속.
+- (Step 1 시점) 기존 행 금액 백필 → Step 2에서 처리.
+
+# BUILD-LOG
+
 ## #14 Step 2: 과거 카페24 주문 인플레이스 백필 — 2026-06-16
 시작/완료: 2026-06-16 · Build Status: npm run build ✓ (에러/경고 0, /api/cafe24/backfill 등록)
 

@@ -129,6 +129,21 @@ export function firstPositiveAmount(...vals: unknown[]): number {
   return 0;
 }
 
+// 카페24 매출 total = 모든 결제수단 합(payment_amount + naver_point + 적립금 + 예치금).
+// 포인트/적립금/예치금도 결제수단이므로 매출에 포함(예: 카드 50000 + 네이버포인트 12000 = 62000).
+// 쿠폰은 tender 아님(할인) → 제외. naver_point는 top-level, points/credits_spent_amount는
+// actual_order_amount 중첩(detail 응답에만 존재). 합이 0이면(전액 정보없음 방어) firstPositiveAmount 폴백.
+export function cafe24OrderTotal(order: unknown): number {
+  const o = order as any;
+  const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  const sum = num(o?.payment_amount) + num(o?.naver_point)
+    + num(o?.actual_order_amount?.points_spent_amount)
+    + num(o?.actual_order_amount?.credits_spent_amount);
+  return sum > 0 ? sum : firstPositiveAmount(
+    o?.payment_amount, o?.order_price_amount, o?.total_order_price, o?.actual_payment_amount,
+  );
+}
+
 // ─── 카페24 옵션조합 정규화 (매핑 키 단일 출처) ───────────────────────────────
 // 카페24 item의 원본 option_value 문자열(예 "보자기포장=선택안함&쇼핑백=선택안함")을
 // cafe24_product_map의 매칭 키로 변환한다. route.ts(조회)와 cafe24-actions.ts(저장)가

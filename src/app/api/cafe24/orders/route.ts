@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { getValidAccessToken, forceRefreshAccessToken } from '@/lib/cafe24/token-store';
-import { firstPositiveAmount, normalizeOptionValue, extractItemOptions } from '@/lib/cafe24/types';
+import { cafe24OrderTotal, normalizeOptionValue, extractItemOptions } from '@/lib/cafe24/types';
 import { kstTodayString, fmtDateKST } from '@/lib/date';
 
 // extractItemOptions(옵션 표시 텍스트 추출)는 src/lib/cafe24/types.ts로 이동(단일 출처).
@@ -372,11 +372,7 @@ ${optValue}`;
             option_value: normalizeOptionValue(i?.option_value), // 정규화 매핑 키
             mapped_name: resolveMappedName(i),
           })),
-          total_price: firstPositiveAmount(
-            o.payment_amount, detailOrder?.payment_amount,
-            o.order_price_amount, detailOrder?.order_price_amount,
-            o.total_order_price, detailOrder?.total_order_price,
-          ),
+          total_price: cafe24OrderTotal(detailOrder ?? o),
           already_added: existingIds.has(orderId),
           cafe24_status: rawStatus,
           customer_match: null as { id: string; name: string } | null,

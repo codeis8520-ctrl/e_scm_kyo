@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { Cafe24WebhookEvent, CAFE24_STATUS_TO_LOCAL, firstPositiveAmount, normalizeOptionValue, extractItemOptions } from './types';
+import { Cafe24WebhookEvent, CAFE24_STATUS_TO_LOCAL, cafe24OrderTotal, normalizeOptionValue, extractItemOptions } from './types';
 import { Cafe24Client, generateCafe24OrderCode } from './client';
 import { getValidAccessToken } from './token-store';
 import { createSaleJournal } from '@/lib/accounting-actions';
@@ -396,12 +396,7 @@ async function handleOrderCreated(
     recipient_address: recipient.address,
     recipient_address_detail: recipient.addressDetail,
     ordered_by: orderedById,
-    total_amount: firstPositiveAmount(
-      (cafe24Order as any).payment_amount,
-      (cafe24Order as any).order_price_amount,
-      (cafe24Order as any).total_order_price,
-      (cafe24Order as any).actual_payment_amount,
-    ),
+    total_amount: cafe24OrderTotal(cafe24Order),
     discount_amount:
       Number(
         (cafe24Order as any).total_discount_price ??
