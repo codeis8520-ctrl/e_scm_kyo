@@ -1,5 +1,34 @@
 # BUILD-LOG
 
+## Sprint B Step 2 — 카페24 주문 탭 인라인 매핑 UI (빌드 완료 · 리뷰 대기)
+시작: 2026-06-16
+
+### Build Status — npm run build ✓ Compiled successfully in 7.0s (에러/경고 0)
+
+### 변경 파일 (1) — src/app/(dashboard)/shipping/page.tsx
+- L3 import에 `Fragment` 추가(키 있는 확장 sub-row 래핑 — `<>`는 key 불가).
+- L6~7 import: cafe24-actions에서 `createCafe24ProductMap, deleteCafe24ProductMap` 추가, `@/lib/actions`에서 `getProducts` 추가.
+- L12~19 `getCookie` 헬퍼 추가(inventory/page.tsx 패턴 그대로 복제, 모듈 스코프).
+- 인터페이스 `order_items`: route 실제 shape로 확장 — `product_code: string; option_value: string; mapped_name: string | null` 추가.
+- 신규 state: `userRole`/`isHQ`(SUPER_ADMIN|HQ_OPERATOR), `allProducts`, `productsLoaded`, `expandedOrders` Set, `mappingKey`(order_id::idx), `mappingSearch`, `mappingBusy`, `mappingError`.
+- 신규 useEffect: cafe24 탭+isHQ 진입 시 `getProducts()` 1회 로드(lazy, productsLoaded 가드) → id/name/code만 추출.
+- 핸들러 3종: `toggleExpandOrder`(Set 토글), `handleConnectProduct(item, productId)` → createCafe24ProductMap → 성공 시 mappingKey 닫고 `handleLoadCafe24Orders()` 전체 재조회, `handleDisconnectProduct(item)` → deleteCafe24ProductMap → 재조회. 둘 다 `{error}` 인라인 표시.
+- 테이블: 행 map을 `Fragment`로 감싸고 품목 td에 ▸/▾ 확장 토글 추가. 확장 시 colSpan=11 보조 tr — 안내문 1줄 + item별 `품목명·옵션·x수량` + 매핑상태(`→ mapped_name ✓ [해제]` / `미매핑 [내부 제품 연결]` 드롭다운). 드롭다운은 senderResults onMouseDown/onBlur(200ms) 패턴 재사용, 클라 필터(name/code includes, 30개 캡).
+
+### 결정 사항
+- 연결/해제 버튼은 `isHQ`에게만 노출(서버 화이트리스트와 이중 가드). 비-HQ는 매핑상태 조회만 + 제품목록 미로드.
+- option_value/product_code = item 값 그대로 전달(action이 저장 직전 재정규화, idempotent — LOCKED).
+- 갱신 = handleLoadCafe24Orders() 전체 재조회(같은 키 다른 주문에도 반영되므로 부분 patch 미사용 — LOCKED).
+- product_code 빈 품목: isHQ에게도 연결버튼 대신 "품목코드 없음 (매핑 불가)" 안내.
+
+### Known Gaps (Out of Scope — 미수정)
+- mappingError는 단일 공유 상태 — 확장된 다른 주문 패널에도 노출 가능하나 연결/해제·패널 오픈 시마다 클리어되는 transient 메시지라 허용.
+- 기존 저장된 shipment.items_summary 소급 갱신 없음(Step 1 한계 유지 — 재조회·재추가해야 반영).
+- 제품 검색 서버 페이지네이션/가상화 없음(클라 필터 30캡으로 충분).
+- 매핑 대량 일괄 편집 화면 별도(미구현).
+
+---
+
 ## Sprint B Step 1 — 카페24 옵션조합→내부제품 매핑 데이터층 (빌드 완료 · 리뷰 대기)
 시작: 2026-06-16
 

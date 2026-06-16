@@ -1,28 +1,35 @@
-# Review Feedback — Sprint B Step 1 (카페24 옵션조합→내부제품 매핑 데이터층)
+# Review Feedback — Sprint B Step 2: 카페24 주문 탭 인라인 매핑 UI
 Date: 2026-06-16
 Status: APPROVED
 
 ## Conditions
-없음.
+(없음)
 
 ## Escalate to Arch
-없음.
+(없음)
 
 ## Cleared
-무결성 핵심(매핑 키 일관성) 검증 완료:
+shipping/page.tsx 단일 파일 인라인 매핑 UI 검증 완료:
 
-- **normalizeOptionValue 단일 출처(types.ts:144-165)** — LOCKED 규칙 정확. null/non-string→'', '&' split, eq 없으면 토큰 전체를 value, '선택안함'(공백제거)·빈값 페어 제거, key localeCompare 사전순 정렬, key=value(키없으면 value) '&' join. 결정론적·순서무관(정렬이 마지막). route.ts(조회 line 4 import, 323·357 사용)와 cafe24-actions.ts(저장 line 5 import, 176·228 사용) 둘 다 **동일 모듈 import** — 분기 재구현 없음.
+- **인터페이스 동기화** — L55 `order_items` 타입(product_code/option_value/mapped_name)이
+  `/api/cafe24/orders/route.ts` 실제 반환 shape(route L407-414)와 정확히 일치. option_value는
+  route에서 이미 normalizeOptionValue 적용된 키. 타입 불일치 없음, build 통과.
+- **RBAC / 방어심층** — isHQ(getCookie + SUPER_ADMIN/HQ_OPERATOR)는 inventory/page.tsx L113-116
+  기존 패턴 그대로. 연결/해제 버튼·검색 패널 모두 isHQ 가드. 서버 액션도 PRODUCT_MAP_ROLES로
+  독립 게이트(cafe24-actions L166-168, L222-224). 비-HQ는 mapped_name 조회만 가능, mutate 불가.
+- **액션 시그니처** — handleConnectProduct → createCafe24ProductMap({cafe24_product_code,
+  option_value, product_id}), handleDisconnectProduct → deleteCafe24ProductMap({cafe24_product_code,
+  option_value}). 인자 구조가 액션 파라미터와 정확히 일치. 성공 시 'error' in res 가드 후
+  handleLoadCafe24Orders() 전체 재조회 → 같은 옵션조합이 모든 주문에 반영(route가 매핑 재계산).
+- **product_code 빈 품목** — noCode 분기로 매핑 비활성 + "품목코드 없음 (매핑 불가)" 안내.
+- **제품 로드** — getProducts() lazy 1회(cafe24 탭+isHQ+!productsLoaded), 클라이언트 필터
+  (slice 30), N+1/refetch storm 없음. getProducts 반환 {data:[...]} shape 일치.
+- **확장 토글** — expandedOrders Set(cafe24_order_id 키) 토글 정확. mapped_name 기준
+  매핑(→내부명 ✓ [해제]) vs 미매핑([내부 제품 연결]) 분기 정확.
+- **무회귀 / 키** — colSpan=11 = 헤더 11열 일치. Fragment/li/match 버튼 key 모두 고유.
+  onMouseDown(선택) vs onBlur 200ms(닫기) 순서 정확. 주문자 고객등록·주문추가·CJ export·
+  shipments 리스트 불변. loading/empty/failure 처리됨. build 0 error/0 warn.
+- **DB/마이그/schema.ts/tools.ts 무변경** 확인.
 
-- **mapKey 구분자 '\n' 일관성** — route.ts:314-315 mapKey(code, optValue)가 '\n'으로 결합. DB 행 적재(334) `mapKey(code, m.option_value)`와 조회(358) `mapKey(code, normalizeOptionValue(item.option_value))` 동일 tuple/구분자. 저장 경로(actions.ts:176)가 upsert 직전 정규화를 강제하므로 DB의 option_value는 이미 정규화 상태 → 양측 byte 일치. **NUL 바이트 잔존 0건 확인**(tr -dc '\000' | wc -c = 0, 3개 파일 모두). Bob의 self-fix 정상.
-
-- **Graceful degrade** — route.ts:312-352 cafe24_product_map 1회 + products 1회 조회(N+1 없음), try/catch + error 무시 → 빈 Map 폴백. 미적용 테이블/조회실패 시 크래시 없이 itemsSummary가 extractItemOptions 현행 경로로 폴백(369-371).
-
-- **itemsSummary** — 매핑 시 `${mappedName} x${qty}`(369), 미매핑 시 기존 경로 불변. order_items[] 인터페이스(types.ts:63-71 + route 응답 407-415)에 product_code/option_value(정규화)/mapped_name 추가. DEMO_ORDERS 3건(156·173·191) 신규 필드 충족. 기존 소비자 registerCafe24Customers(cafe24-actions.ts:56 별도 narrow 타입, .name/.quantity/.price만 사용) 구조적 타이핑상 미파손.
-
-- **CJ export** — shipping/page.tsx:431 F열 `s.items_summary || ''` 복원, G열 RTC(432) `KX-...` 불변, 13컬럼 유지.
-
-- **서버액션 RBAC** — create/delete 모두 requireSession + 화이트리스트 [SUPER_ADMIN, HQ_OPERATOR](153·166·222) 쓰기 전 강제. upsert onConflict 'cafe24_product_code,option_value'(184). delete 동일 게이트·정규화 키.
-
-- **AI Sync** — schema.ts:141 cafe24_product_map 테이블(컬럼+UNIQUE 주석), schema.ts:280 BUSINESS_RULES [자사몰] 1줄. tools.ts 무변경 — 매핑은 표현 전용이라 적정.
-
-참고(차단 아님): route.ts:334에서 DB 행 적재 시 m.option_value를 재정규화하지 않음. 저장 경로가 항상 정규화를 보장하므로 현 스코프에선 안전. DB에 액션 우회 직접 INSERT가 발생하면 키 불일치 가능성 — Step 2 UI가 유일한 쓰기 경로를 유지하는 한 무관.
+Bob self-review 항목(공유 mappingError transient, 비-HQ allProducts 미로드) — 의도된 동작이며
+BUILD-LOG Gap으로 기록됨, 차단 사유 아님.

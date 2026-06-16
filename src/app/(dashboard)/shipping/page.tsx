@@ -1,12 +1,22 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { getShipments, createShipment, updateShipment, deleteShipment } from '@/lib/shipping-actions';
-import { refreshCafe24Token, registerCafe24Customers } from '@/lib/cafe24-actions';
+import { refreshCafe24Token, registerCafe24Customers, createCafe24ProductMap, deleteCafe24ProductMap } from '@/lib/cafe24-actions';
+import { getProducts } from '@/lib/actions';
 import * as XLSX from 'xlsx';
 import { fmtDateKST, kstTodayString } from '@/lib/date';
 import PageTabs from '@/components/PageTabs';
+
+function getCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  return document.cookie.split(';').reduce((acc, c) => {
+    const [k, v] = c.trim().split('=');
+    acc[k] = decodeURIComponent(v || '');
+    return acc;
+  }, {} as Record<string, string>)[name] || null;
+}
 
 interface Shipment {
   id: string;
@@ -42,7 +52,7 @@ interface Cafe24OrderForShipping {
   recipient_address: string;
   delivery_message: string;
   items_summary: string;
-  order_items?: { name: string; quantity: number; price: number; option: string }[];
+  order_items?: { name: string; quantity: number; price: number; option: string; product_code: string; option_value: string; mapped_name: string | null }[];
   total_price: number;
   already_added: boolean;
   cafe24_status: string;
@@ -168,6 +178,18 @@ export default function ShippingPage() {
   const [cafe24Search, setCafe24Search]           = useState('');
   const [cafe24StatusFilter, setCafe24StatusFilter] = useState('');
   const [cafe24HideAdded, setCafe24HideAdded]     = useState(false);
+
+  // ── 카페24 품목 매핑 (본사 전용 연결/해제) ────────────────────────────────
+  const userRole = getCookie('user_role');
+  const isHQ = userRole === 'SUPER_ADMIN' || userRole === 'HQ_OPERATOR';
+  const [allProducts, setAllProducts] = useState<{ id: string; name: string; code: string }[]>([]);
+  const [productsLoaded, setProductsLoaded] = useState(false);
+  const [expandedOrders, setExpandedOrders] = useState<Set<string>>(new Set());
+  // 현재 제품 검색 패널이 열린 item 키(order_id::index) + 검색어
+  const [mappingKey, setMappingKey] = useState<string | null>(null);
+  const [mappingSearch, setMappingSearch] = useState('');
+  const [mappingBusy, setMappingBusy] = useState(false);
+  const [mappingError, setMappingError] = useState('');
 
   // ── 카페24 토큰 갱신 상태 ─────────────────────────────────────────────────
   // 결제완료 매출 동기화는 GitHub Actions(매일 08:00 / 18:00 KST)가 자동 처리.
@@ -727,8 +749,56 @@ export default function ShippingPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
+  // 카페24 탭(본사) 진입 시 제품 목록 1회 로드 — 매핑 제품 선택용
+  useEffect(() => {
+    if (activeTab !== 'cafe24' || !isHQ || productsLoaded) return;
+    (async () => {
+      const { data } = await getProducts();
+      setAllProducts((data ?? []).map((p: any) => ({ id: p.id, name: p.name, code: p.code })));
+      setProductsLoaded(true);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
   const toggleOrderSelect = (id: string) =>
     setSelectedOrders(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  // ── 카페24 품목 ↔ 내부 제품 매핑 ──────────────────────────────────────────
+  const toggleExpandOrder = (id: string) =>
+    setExpandedOrders(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  const handleConnectProduct = async (
+    item: { product_code: string; option_value: string },
+    productId: string,
+  ) => {
+    setMappingBusy(true); setMappingError('');
+    try {
+      const res = await createCafe24ProductMap({
+        cafe24_product_code: item.product_code,
+        option_value: item.option_value,
+        product_id: productId,
+      });
+      if ('error' in res && res.error) { setMappingError(res.error); return; }
+      setMappingKey(null); setMappingSearch('');
+      await handleLoadCafe24Orders();
+    } catch (e: any) {
+      setMappingError(e.message ?? '연결 중 오류가 발생했습니다.');
+    } finally { setMappingBusy(false); }
+  };
+
+  const handleDisconnectProduct = async (item: { product_code: string; option_value: string }) => {
+    setMappingBusy(true); setMappingError('');
+    try {
+      const res = await deleteCafe24ProductMap({
+        cafe24_product_code: item.product_code,
+        option_value: item.option_value,
+      });
+      if ('error' in res && res.error) { setMappingError(res.error); return; }
+      await handleLoadCafe24Orders();
+    } catch (e: any) {
+      setMappingError(e.message ?? '해제 중 오류가 발생했습니다.');
+    } finally { setMappingBusy(false); }
+  };
 
   // ── 주문자 고객 등록(미등록만) ──────────────────────────────────────────
   const toggleCustSelect = (id: string) =>
@@ -1057,8 +1127,12 @@ export default function ShippingPage() {
                     <th>주문일</th><th>주문자</th><th>고객</th><th>수령자</th><th>주소</th><th>배송메모</th><th>품목</th><th>금액</th><th>카페24 상태</th><th></th>
                   </tr></thead>
                   <tbody>
-                    {filteredCafe24Orders.map(order => (
-                      <tr key={order.cafe24_order_id} className={`align-top ${order.already_added ? 'opacity-40' : ''}`}>
+                    {filteredCafe24Orders.map(order => {
+                      const isExpanded = expandedOrders.has(order.cafe24_order_id);
+                      const items = order.order_items ?? [];
+                      return (
+                      <Fragment key={order.cafe24_order_id}>
+                      <tr className={`align-top ${order.already_added ? 'opacity-40' : ''}`}>
                         <td><input type="checkbox" checked={selectedOrders.has(order.cafe24_order_id)} onChange={() => toggleOrderSelect(order.cafe24_order_id)} disabled={order.already_added} className="w-4 h-4" /></td>
                         <td className="text-sm text-slate-600 whitespace-nowrap">{order.order_date?.slice(0, 10)}</td>
                         <td className="text-sm"><div>{order.orderer_name}</div><div className="text-slate-400 text-xs">{order.orderer_phone}</div></td>
@@ -1084,13 +1158,120 @@ export default function ShippingPage() {
                           <TruncatedCell text={order.delivery_message} className="text-amber-700" />
                         </td>
                         <td className="text-sm text-slate-600 max-w-[200px]">
-                          <TruncatedCell text={order.items_summary} className="text-slate-600" />
+                          <button
+                            type="button"
+                            onClick={() => toggleExpandOrder(order.cafe24_order_id)}
+                            className="flex items-start gap-1 text-left w-full hover:text-blue-600 transition-colors"
+                            title={isExpanded ? '품목 매핑 접기' : '품목 매핑 펼치기'}
+                          >
+                            <span className="text-slate-400 mt-0.5 shrink-0">{isExpanded ? '▾' : '▸'}</span>
+                            <span className={isExpanded ? 'whitespace-pre-wrap break-words' : 'truncate'}>{order.items_summary || <span className="text-slate-300">-</span>}</span>
+                          </button>
                         </td>
                         <td className="text-sm text-slate-700 whitespace-nowrap">{order.total_price.toLocaleString()}원</td>
                         <td><span className={`${CAFE24_STATUS_BADGE[order.cafe24_status] ?? 'badge'} text-xs`}>{CAFE24_STATUS_LABEL[order.cafe24_status] ?? order.cafe24_status}</span></td>
                         <td>{order.already_added && <span className="badge badge-info text-xs">추가됨</span>}</td>
                       </tr>
-                    ))}
+                      {isExpanded && (
+                        <tr className="bg-slate-50/70">
+                          <td colSpan={11} className="px-6 py-3">
+                            <p className="text-xs text-slate-400 mb-2">같은 옵션조합은 모든 주문에 한 번에 반영됩니다.</p>
+                            {mappingError && <p className="text-xs text-red-500 mb-2">{mappingError}</p>}
+                            {items.length === 0 ? (
+                              <p className="text-sm text-slate-400">품목 정보가 없습니다.</p>
+                            ) : (
+                              <ul className="space-y-1.5">
+                                {items.map((item, idx) => {
+                                  const itemKey = `${order.cafe24_order_id}::${idx}`;
+                                  const noCode = !item.product_code;
+                                  return (
+                                    <li key={itemKey} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm border-b border-slate-100 last:border-b-0 pb-1.5 last:pb-0">
+                                      <span className="font-medium text-slate-700">{item.name}</span>
+                                      {item.option && <span className="text-xs text-slate-400">{item.option}</span>}
+                                      <span className="text-xs text-slate-400">x{item.quantity}</span>
+                                      <span className="text-slate-300">·</span>
+                                      {item.mapped_name ? (
+                                        <span className="inline-flex items-center gap-2">
+                                          <span className="text-emerald-700">→ {item.mapped_name} ✓</span>
+                                          {isHQ && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleDisconnectProduct(item)}
+                                              disabled={mappingBusy}
+                                              className="text-xs text-red-500 hover:underline disabled:opacity-40"
+                                            >
+                                              해제
+                                            </button>
+                                          )}
+                                        </span>
+                                      ) : (
+                                        <span className="inline-flex items-center gap-2">
+                                          <span className="text-amber-600">미매핑</span>
+                                          {isHQ && (
+                                            noCode ? (
+                                              <span className="text-xs text-slate-400" title="이 품목은 카페24 품목코드가 없어 매핑할 수 없습니다.">품목코드 없음 (매핑 불가)</span>
+                                            ) : mappingKey === itemKey ? (
+                                              <span className="relative inline-block">
+                                                <input
+                                                  type="text"
+                                                  autoFocus
+                                                  className="input text-xs py-1 w-56"
+                                                  placeholder="제품명 / 코드 검색"
+                                                  value={mappingSearch}
+                                                  onChange={e => setMappingSearch(e.target.value)}
+                                                  onBlur={() => setTimeout(() => { setMappingKey(null); setMappingSearch(''); }, 200)}
+                                                />
+                                                {(() => {
+                                                  const q = mappingSearch.trim().toLowerCase();
+                                                  const matches = q
+                                                    ? allProducts.filter(p => p.name.toLowerCase().includes(q) || (p.code ?? '').toLowerCase().includes(q)).slice(0, 30)
+                                                    : allProducts.slice(0, 30);
+                                                  return matches.length > 0 ? (
+                                                    <div className="absolute z-50 w-72 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-56 overflow-auto">
+                                                      {matches.map(p => (
+                                                        <button
+                                                          key={p.id}
+                                                          type="button"
+                                                          disabled={mappingBusy}
+                                                          onMouseDown={() => handleConnectProduct(item, p.id)}
+                                                          className="w-full text-left px-3 py-1.5 hover:bg-blue-50 border-b border-slate-100 last:border-b-0 disabled:opacity-40"
+                                                        >
+                                                          <span className="font-medium text-sm">{p.name}</span>
+                                                          {p.code && <span className="text-xs text-slate-400 ml-2">{p.code}</span>}
+                                                        </button>
+                                                      ))}
+                                                    </div>
+                                                  ) : (
+                                                    <div className="absolute z-50 w-72 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg px-3 py-2 text-xs text-slate-400">
+                                                      일치하는 제품이 없습니다.
+                                                    </div>
+                                                  );
+                                                })()}
+                                              </span>
+                                            ) : (
+                                              <button
+                                                type="button"
+                                                onClick={() => { setMappingKey(itemKey); setMappingSearch(''); setMappingError(''); }}
+                                                disabled={mappingBusy}
+                                                className="text-xs text-blue-600 hover:underline disabled:opacity-40"
+                                              >
+                                                내부 제품 연결
+                                              </button>
+                                            )
+                                          )}
+                                        </span>
+                                      )}
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                      </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
