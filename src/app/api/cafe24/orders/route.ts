@@ -381,7 +381,11 @@ ${optValue}`;
         };
       });
 
-    // 우리 고객DB 매칭 (이름 AND 전화). customers.phone 은 대시포맷 저장.
+    // 고객 매칭 판정
+    //  1) 확정(배송추가/전표생성)된 주문 → 실제 sales_orders.customer_id 연결 상태로 판정.
+    //     연결돼 있으면 ✓고객, 아니면 미등록(이름·전화가 기존 고객과 같아도 미연결이면 등록 대상).
+    //     → 등록 후 customer_id 가 채워지면 즉시 ✓고객으로 전환(요청: 미등록→고객 상태 변경).
+    //  2) 미확정 주문 → 이름 AND 전화 휴리스틱(기존 동작).
     const digitsOf = (s: string) => (s || '').replace(/\D/g, '');
     const toDashed = (s: string) => {
       const d = digitsOf(s);
@@ -389,15 +393,51 @@ ${optValue}`;
       if (d.length === 10) return `${d.slice(0, 3)}-${d.slice(3, 6)}-${d.slice(6)}`;
       return '';
     };
+
+    // 확정 주문의 sales_order 연결 상태 일괄 조회
+    const orderIds = [...new Set(orders.map(o => o.cafe24_order_id).filter(Boolean))];
+    const soByOrderId = new Map<string, { customer_id: string | null }>();
+    if (orderIds.length > 0) {
+      const { data: sos } = await supabase
+        .from('sales_orders')
+        .select('cafe24_order_id, customer_id')
+        .in('cafe24_order_id', orderIds);
+      for (const s of (sos ?? []) as any[]) {
+        // 동일 cafe24_order_id 다건이면 연결된(customer_id 있는) 행 우선
+        const prev = soByOrderId.get(String(s.cafe24_order_id));
+        if (!prev || (!prev.customer_id && s.customer_id)) {
+          soByOrderId.set(String(s.cafe24_order_id), { customer_id: s.customer_id ?? null });
+        }
+      }
+    }
+    // 연결된 고객 이름 조회
+    const linkedCustIds = [...new Set([...soByOrderId.values()].map(s => s.customer_id).filter((v): v is string => !!v))];
+    const custNameById = new Map<string, string>();
+    if (linkedCustIds.length > 0) {
+      const { data: cs } = await supabase.from('customers').select('id, name').in('id', linkedCustIds);
+      for (const c of (cs ?? []) as any[]) custNameById.set(c.id, c.name);
+    }
+
+    // 미확정 주문용 이름+전화 휴리스틱 맵
     const dashedPhones = [...new Set(orders.map(o => toDashed(o.orderer_phone)).filter(Boolean))];
+    const byKey = new Map<string, { id: string; name: string }>();
     if (dashedPhones.length > 0) {
       const { data: custs } = await supabase
         .from('customers').select('id, name, phone').in('phone', dashedPhones);
-      const byKey = new Map<string, { id: string; name: string }>();
       for (const c of (custs ?? []) as any[]) {
         byKey.set(`${digitsOf(c.phone)}|${c.name}`, { id: c.id, name: c.name });
       }
-      for (const o of orders) {
+    }
+
+    for (const o of orders) {
+      const so = soByOrderId.get(o.cafe24_order_id);
+      if (so) {
+        // 확정 주문 — 실제 연결 상태로 판정
+        o.customer_match = so.customer_id
+          ? { id: so.customer_id, name: custNameById.get(so.customer_id) ?? o.orderer_name }
+          : null;
+      } else {
+        // 미확정 주문 — 휴리스틱
         o.customer_match = byKey.get(`${digitsOf(o.orderer_phone)}|${o.orderer_name}`) ?? null;
       }
     }

@@ -27,6 +27,7 @@ inventories: id, branch_id, product_id, quantity, safety_stock  [UNIQUE(branch_i
   ※ quantity·safety_stock 은 NUMERIC(14,4) (마이그 087) — REST 응답에서 JS 문자열로 옴. 산술·비교 전 반드시 숫자 변환(앱은 toNum 사용). 소수는 allow_decimal_stock=true 제품에만 발생.
 inventory_movements: id, branch_id, product_id, movement_type(IN/OUT/ADJUST/TRANSFER/PRODUCTION), quantity(NUMERIC(14,4), 마이그 087·문자열 직렬화 주의), memo, created_at, usage_type_id(소모 사용유형 FK, reference_type=USAGE 일 때만 값 존재; 그 외 NULL)
   ※ reference_type(VARCHAR free-form): POS_SALE / ONLINE_SALE(자사몰 판매차감, reference_id=sales_order_items.id) / PHANTOM_DECOMPOSE / PACK_UNPACK / USAGE(재고 소모=로스·자가사용·시음용 등) / TRANSFER / SALE_CANCEL 등.
+  ※ TRANSFER(지점이동, #31): 사용자가 이동일자를 직접 선택 가능 → created_at 이 곧 이동일자(삽입시각 아님). OUT 기록=출발(출고)일, IN 기록=도착예정일. 미입력 시 now(). 즉 이동 기록의 날짜 질의/집계는 created_at 기준이면 정확.
 inventory_usage_types(마이그 079): id, code(UNIQUE), name, sort_order, is_system(true=삭제금지·비활성만), is_active
   ※ 재고 소모 사용유형 코드(로스/자가사용/시음용/기타). 판매 아님. 소모 기록은 inventory_movements.movement_type='OUT' + reference_type='USAGE' + usage_type_id.
 
@@ -283,8 +284,10 @@ sales_orders.receipt_status: 품목 receipt_status 집계. 품목 모두 RECEIVE
 - **수집/매출인식 분리(#25, 이카운트식)**: ONLINE(카페24/자사몰) 주문은 배송화면 '배송 추가' 확정(confirmCafe24OrderAsSale) 시에만 sales_order·sales_order_items·매출분개(SALE) 생성. 확정 시 receipt_status='PARCEL_PLANNED', receipt_date=확정일(KST 오늘). shipment.sales_order_id 로 직접 연결. 재확정(중복)해도 COMPLETED면 분개 재생성 안 함(멱등). 크론(syncCafe24PaidOrdersCore)은 수집·재고차감(확정주문만)·배송상태 동기화만, 매출은 미생성(created 항상 0).
 - 동기화 시 주문자(orderer)를 sales_orders.buyer_name/buyer_phone 에 항상 스냅샷 저장 → 판매현황에서 customer_id 없어도 주문자명/전화 표시(과거 "비회원" 노출 해소).
 - sync(webhook.ts linkOrCreateCustomer)는 **기존 고객 자동 "연결"만** 함: ①cafe24_member_id 일치 ②이름 AND 전화(대시포맷) 일치 → 연결(+member_id 백필). **자동 "생성"은 안 함**(allowCreate=false).
-- 모르는 주문자 고객 등록은 **수동**: 배송 카페24 주문탭에서 (이름+전화) 매칭으로 "✓고객/미등록" 표시 → 미등록 체크 후 registerCafe24Customers(cafe24-actions)로 고객 생성(이름+전화+주소+이메일, source='CAFE24', phone 충돌 시 스킵) + 해당 sales_order.customer_id 연결.
-- 매칭/중복 기준 = 이름 AND 전화. 전화만 같고 이름 다르면 연결/등록 안 함(오귀속 방지). customers.phone UNIQUE·대시포맷(010-XXXX-XXXX).
+- 모르는 주문자 고객 등록은 **수동**: 배송 카페24 주문탭에서 "✓고객/미등록" 표시 → 미등록 체크 후 registerCafe24Customers(cafe24-actions)로 고객 생성(이름+전화+주소+이메일, source='CAFE24') + 해당 sales_order.customer_id 연결. **배송추가/전표생성이 끝난 주문도 등록 가능**(미연결 전표를 연결).
+- **수동등록 매칭(#34)**: customers.phone UNIQUE → 전화가 강한 식별키. **전화 일치 시 이름이 달라도 기존 고객으로 "연결"**(신규 생성 안 함). 단 기존 고객의 name 은 절대 덮어쓰지 않고 빈 주소/이메일만 보강(오귀속·이름오염 방지). 미연결(customer_id=null) 전표만 연결, 이미 다른 고객에 연결된 전표는 비건드림.
+- 배송 카페24 주문탭 "✓고객/미등록" 판정: 확정(배송추가)주문은 **실제 sales_orders.customer_id 연결 상태** 기준(미연결이면 미등록=등록대상, 등록 후 즉시 ✓), 미확정주문은 이름 AND 전화 휴리스틱. customers.phone 대시포맷(010-XXXX-XXXX).
+- sync(webhook.ts linkOrCreateCustomer) 자동연결 기준은 여전히 이름 AND 전화(보수적): ①member_id ②이름AND전화. 수동등록만 전화 단독 연결 허용.
 - cafe24 실결제(cafe24OrderTotal) = 모든 결제수단 합(payment_amount + naver_point + points_spent_amount + credits_spent_amount). 포인트/적립금/예치금도 결제수단으로 매출 포함(예: 카드 50000 + 네이버포인트 12000 = 62000). 쿠폰은 할인(제외). 합이 0이면 firstPositiveAmount 폴백.
 - 단, sales_orders 저장 시 gross 규약(#18): total_amount = cafe24OrderTotal + 할인(cafe24OrderDiscount), discount_amount = 할인. → 매출 = total_amount − discount_amount = cafe24OrderTotal(실결제)로 환원, POS와 동일 규약. 배송탭 표시 total_price는 cafe24OrderTotal(실결제) 그대로.
 - 카페24 품목(product_code + 옵션조합 정규화) → 내부 product 매핑(cafe24_product_map), 송장/배송 짧은 품목명(이카운트식). 미매핑은 원본 옵션정리 표시.
