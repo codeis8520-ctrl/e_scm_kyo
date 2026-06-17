@@ -949,7 +949,7 @@ function POSPageInner() {
           .limit(20),
         supabase
           .from('sales_orders')
-          .select('id, order_number, total_amount, ordered_at, status, branch:branches(name), items:sales_order_items(quantity, product:products(name))')
+          .select('id, order_number, total_amount, discount_amount, ordered_at, status, branch:branches(name), items:sales_order_items(quantity, product:products(name))')
           .eq('customer_id', customerId)
           .order('ordered_at', { ascending: false })
           .limit(20),
@@ -1883,9 +1883,22 @@ function POSPageInner() {
                             <p className="text-slate-700 truncate" title={names.join(', ')}>{head || '-'}{extra}</p>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
-                            <span className={`whitespace-nowrap font-medium text-xs ${cancelled ? 'line-through text-slate-400' : 'text-slate-700'}`}>
-                              {Number(o.total_amount || 0).toLocaleString()}원
-                            </span>
+                            {(() => {
+                              const gross = Number(o.total_amount || 0);
+                              const disc = Number(o.discount_amount || 0);
+                              const net = gross - disc;
+                              // 할인이 있으면 할인전(취소선·회색)+할인후(강조) 둘 다, 없으면 단일.
+                              return disc > 0 ? (
+                                <span className="flex flex-col items-end leading-tight whitespace-nowrap">
+                                  <span className="text-[10px] line-through text-slate-400">{gross.toLocaleString()}원</span>
+                                  <span className={`font-bold text-xs ${cancelled ? 'line-through text-slate-400' : 'text-blue-700'}`}>{net.toLocaleString()}원</span>
+                                </span>
+                              ) : (
+                                <span className={`whitespace-nowrap font-medium text-xs ${cancelled ? 'line-through text-slate-400' : 'text-slate-700'}`}>
+                                  {gross.toLocaleString()}원
+                                </span>
+                              );
+                            })()}
                             {!cancelled && (
                               <button
                                 type="button"
