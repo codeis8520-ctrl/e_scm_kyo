@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { createPurchaseOrder, getLatestSupplierPrice, getSupplierPricesForProduct } from '@/lib/purchase-actions';
+import { useEscClose } from '@/hooks/useEscClose';
 
 interface Props {
   onClose: () => void;
@@ -47,6 +48,7 @@ function getCookie(name: string): string | null {
 }
 
 export default function PurchaseOrderModal({ onClose, onSuccess }: Props) {
+  useEscClose(onClose);
   const userRole = getCookie('user_role');
   const userBranchId = getCookie('user_branch_id');
   const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';

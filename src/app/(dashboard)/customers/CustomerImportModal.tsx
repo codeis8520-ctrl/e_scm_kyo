@@ -3,6 +3,7 @@
 import { useState, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { bulkImportCustomers, type CustomerImportRow } from '@/lib/actions';
+import { useEscClose } from '@/hooks/useEscClose';
 
 // 헤더 라벨 → 내부 키 매핑 (가이드 양식과 동일)
 const HEADER_MAP: Record<string, keyof CustomerImportRow> = {
@@ -35,6 +36,7 @@ export default function CustomerImportModal({
   onClose: () => void;
   onSuccess: () => void;
 }) {
+  useEscClose(onClose);
   const [step, setStep] = useState<'idle' | 'preview' | 'importing' | 'done'>('idle');
   const [rows, setRows] = useState<PreviewRow[]>([]);
   const [parseError, setParseError] = useState('');

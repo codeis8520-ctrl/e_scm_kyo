@@ -3,6 +3,7 @@
 import { useState, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { bulkImportProducts, type ProductImportRow } from '@/lib/actions';
+import { useEscClose } from '@/hooks/useEscClose';
 
 const HEADER_MAP: Record<string, keyof ProductImportRow> = {
   '제품명': 'name',
@@ -56,6 +57,7 @@ export default function ProductImportModal({
   onClose: () => void;
   onSuccess: () => void;
 }) {
+  useEscClose(onClose);
   const [step, setStep] = useState<'idle' | 'preview' | 'importing' | 'done'>('idle');
   const [rows, setRows] = useState<PreviewRow[]>([]);
   const [parseError, setParseError] = useState('');

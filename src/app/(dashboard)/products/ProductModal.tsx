@@ -7,6 +7,7 @@ import { getWhereUsed } from '@/lib/production-actions';
 import { createClient } from '@/lib/supabase/client';
 import { validators } from '@/lib/validators';
 import { buildCategoryInfo, sortedCategoryOptions, categoryOptionLabel, type CategoryRow } from '@/lib/category-tree';
+import { useEscClose } from '@/hooks/useEscClose';
 
 type ProductType = 'FINISHED' | 'RAW' | 'SUB' | 'SERVICE';
 type CostSource = 'MANUAL' | 'BOM';
@@ -49,6 +50,7 @@ interface Props {
 }
 
 export default function ProductModal({ product, onClose, onSuccess }: Props) {
+  useEscClose(onClose);
   const [categories, setCategories] = useState<any[]>([]);
   const [formData, setFormData] = useState<Product>({
     name: product?.name || '',

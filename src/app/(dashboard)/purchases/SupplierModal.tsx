@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { createSupplier, updateSupplier } from '@/lib/purchase-actions';
+import { useEscClose } from '@/hooks/useEscClose';
 
 interface Supplier {
   id: string;
@@ -28,6 +29,7 @@ interface Props {
 }
 
 export default function SupplierModal({ supplier, onClose, onSuccess }: Props) {
+  useEscClose(onClose);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [form, setForm] = useState({

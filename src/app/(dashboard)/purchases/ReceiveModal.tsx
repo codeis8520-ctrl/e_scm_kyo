@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { receivePurchaseOrder } from '@/lib/purchase-actions';
+import { useEscClose } from '@/hooks/useEscClose';
 
 interface POItem {
   id: string;
@@ -22,6 +23,7 @@ interface Props {
 }
 
 export default function ReceiveModal({ purchaseOrderId, branchId, branchName, items, onClose, onSuccess }: Props) {
+  useEscClose(onClose);
   const remaining = items.map(i => ({
     ...i,
     remaining: i.ordered_quantity - i.received_quantity,

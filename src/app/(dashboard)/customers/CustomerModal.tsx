@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { createCustomer, updateCustomer, deleteCustomer } from '@/lib/actions';
 import { createClient } from '@/lib/supabase/client';
 import { validators, formatPhone } from '@/lib/validators';
+import { useEscClose } from '@/hooks/useEscClose';
 
 declare global {
   interface Window {
@@ -38,6 +39,7 @@ function splitAddress(address: string | null): [string, string] {
 }
 
 export default function CustomerModal({ customer, onClose, onSuccess }: Props) {
+  useEscClose(onClose);
   const [branches, setBranches] = useState<any[]>([]);
   const [grades, setGrades] = useState<any[]>([]);
 
