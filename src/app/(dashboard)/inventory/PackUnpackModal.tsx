@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { packUnpackInventory } from '@/lib/inventory-actions';
 import { createClient } from '@/lib/supabase/client';
 import { useEscClose } from '@/hooks/useEscClose';
+import { toNum } from '@/lib/validators';
 
 interface Branch {
   id: string;
@@ -69,8 +70,8 @@ export default function PackUnpackModal({ parentProduct, branches, initialBranch
         const rows = (data || []) as Array<{ product_id: string; quantity: number }>;
         const p = rows.find(r => r.product_id === parentProduct.id);
         const c = rows.find(r => r.product_id === parentProduct.packChildId);
-        setParentStock(p ? p.quantity : 0);
-        setChildStock(c ? c.quantity : 0);
+        setParentStock(p ? toNum(p.quantity) : 0);
+        setChildStock(c ? toNum(c.quantity) : 0);
       });
   }, [branchId, parentProduct.id, parentProduct.packChildId]);
 

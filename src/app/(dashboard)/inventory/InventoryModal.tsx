@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { adjustInventory } from '@/lib/actions';
 import { useEscClose } from '@/hooks/useEscClose';
+import { fmtStock } from '@/lib/validators';
 
 interface Props {
   inventory?: any;
@@ -15,6 +16,7 @@ interface Product {
   name: string;
   code: string;
   product_type?: 'FINISHED' | 'RAW' | 'SUB' | null;
+  allow_decimal_stock?: boolean;
 }
 
 interface Branch {
@@ -39,6 +41,7 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
       name: inventory.product?.name,
       code: inventory.product?.code,
       product_type: inventory.product?.product_type ?? null,
+      allow_decimal_stock: inventory.product?.allow_decimal_stock ?? false,
     } : null
   );
   const [formData, setFormData] = useState({
@@ -78,8 +81,11 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
   const loadProducts = async () => {
     const { createClient } = await import('@/lib/supabase/client');
     const client = createClient();
-    // product_type 포함 시도 → 마이그 042 미적용 폴백
-    let res: any = await client.from('products').select('id, name, code, product_type').eq('is_active', true).order('name');
+    // product_type · allow_decimal_stock 포함 시도 → 마이그 042/087 미적용 폴백
+    let res: any = await client.from('products').select('id, name, code, product_type, allow_decimal_stock').eq('is_active', true).order('name');
+    if (res.error) {
+      res = await client.from('products').select('id, name, code, product_type').eq('is_active', true).order('name');
+    }
     if (res.error) {
       res = await client.from('products').select('id, name, code').eq('is_active', true).order('name');
     }
@@ -89,6 +95,9 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
 
   const hqBranch = branches.find(b => b.is_headquarters) || null;
   const selectedIsMaterial = isMaterialType(selectedProduct?.product_type);
+  // 소수점 재고 허용 제품이면 수량/안전재고를 소수(4자리)로 입력·표시. 비허용은 정수 강제.
+  const allowDecimal = selectedProduct?.allow_decimal_stock === true
+    || inventory?.product?.allow_decimal_stock === true;
   // RAW/SUB 제품 선택 + 본사 지정 존재 + 수정 모드(지점 고정) 아닐 때만 지점 드롭다운 제한
   const branchesForSelect = (selectedIsMaterial && hqBranch && !inventory) ? [hqBranch] : branches;
 
@@ -169,7 +178,7 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
           <div className="mb-4 p-3 bg-slate-100 rounded-lg">
             <p className="font-medium">{inventory.product?.name}</p>
             <p className="text-sm text-slate-500">{inventory.branch?.name}</p>
-            <p className="text-sm">현재고: <span className="font-semibold">{inventory.quantity}</span></p>
+            <p className="text-sm">현재고: <span className="font-semibold">{fmtStock(inventory.quantity, allowDecimal)}</span></p>
           </div>
         )}
 
@@ -279,10 +288,11 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
             <input
               type="number"
               value={formData.quantity}
-              onChange={(e) => setFormData({ ...formData, quantity: parseInt(e.target.value) || 0 })}
+              onChange={(e) => setFormData({ ...formData, quantity: (allowDecimal ? parseFloat(e.target.value) : parseInt(e.target.value)) || 0 })}
               onFocus={(e) => e.target.select()}
               required
               min="0"
+              step={allowDecimal ? 'any' : 1}
               className="mt-1 input"
             />
           </div>
@@ -296,9 +306,10 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
               <input
                 type="number"
                 value={formData.safety_stock}
-                onChange={(e) => setFormData({ ...formData, safety_stock: parseInt(e.target.value) || 0 })}
+                onChange={(e) => setFormData({ ...formData, safety_stock: (allowDecimal ? parseFloat(e.target.value) : parseInt(e.target.value)) || 0 })}
                 onFocus={(e) => e.target.select()}
                 min="0"
+                step={allowDecimal ? 'any' : 1}
                 className="mt-1 input"
               />
               <p className="mt-1 text-xs text-slate-500">

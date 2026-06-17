@@ -7,6 +7,7 @@ import { fireNotificationTrigger } from '@/lib/notification-triggers';
 import { computeBomCost } from '@/lib/production-actions';
 import { kstTodayString } from '@/lib/date';
 import { requireSession, type SessionUser } from '@/lib/session';
+import { toNum, parseStockInput } from '@/lib/validators';
 
 // ============ Products ============
 
@@ -78,6 +79,10 @@ export async function createProduct(formData: FormData) {
     ? (productType === 'FINISHED' && !isPhantom)
     : rawPosWidget === 'true';
 
+  // 소수점 재고 허용(#28) — 폼값 우선, 부재 시 false. 비허용 제품은 기존 정수 동작 유지.
+  const rawAllowDecimal = formData.get('allow_decimal_stock');
+  const allowDecimalStock = rawAllowDecimal == null ? false : rawAllowDecimal === 'true';
+
   // 박스 분해/재포장 — pack_child_id 와 pack_child_qty 는 짝으로만 의미. Phantom 과 배타.
   const rawPackChildId = formData.get('pack_child_id');
   const rawPackChildQty = formData.get('pack_child_qty');
@@ -105,13 +110,19 @@ export async function createProduct(formData: FormData) {
     track_inventory: finalTrackInventory,
     is_phantom: isPhantom,
     pos_widget: posWidget,
+    allow_decimal_stock: allowDecimalStock,
     pack_child_id: finalPackChildId,
     pack_child_qty: finalPackChildId ? packChildQty : null,
   };
 
-  // 마이그 071/066/061/059 미적용 폴백 — 컬럼이 없으면 단계적으로 제거 후 재시도
+  // 마이그 087/071/066/061/059 미적용 폴백 — 컬럼이 없으면 단계적으로 제거 후 재시도
   let { data: newProduct, error } = await (supabase as any)
     .from('products').insert(productData).select().single();
+  if (error && /allow_decimal_stock/i.test(String(error.message))) {
+    delete productData.allow_decimal_stock;
+    const retry = await (supabase as any).from('products').insert(productData).select().single();
+    newProduct = retry.data; error = retry.error;
+  }
   if (error && /pos_widget/i.test(String(error.message))) {
     delete productData.pos_widget;
     const retry = await (supabase as any).from('products').insert(productData).select().single();
@@ -206,6 +217,10 @@ export async function updateProduct(id: string, formData: FormData) {
     ? rawPosWidget === 'true'
     : (productType !== undefined ? (productType === 'FINISHED' && isPhantom !== true) : undefined);
 
+  // 소수점 재고 허용(#28) — 폼값 있을 때만 갱신(없으면 미변경).
+  const rawAllowDecimal = formData.get('allow_decimal_stock');
+  const allowDecimalStock = rawAllowDecimal == null ? undefined : rawAllowDecimal === 'true';
+
   // 박스 분해/재포장 — pack_child_id / pack_child_qty 짝으로만 의미.
   const rawPackChildId = formData.get('pack_child_id');
   const rawPackChildQty = formData.get('pack_child_qty');
@@ -236,13 +251,19 @@ export async function updateProduct(id: string, formData: FormData) {
     ...(finalTrackInventory !== undefined ? { track_inventory: finalTrackInventory } : {}),
     ...(isPhantom !== undefined ? { is_phantom: isPhantom } : {}),
     ...(posWidget !== undefined ? { pos_widget: posWidget } : {}),
+    ...(allowDecimalStock !== undefined ? { allow_decimal_stock: allowDecimalStock } : {}),
     // pack_child_* 는 폼에 포함되어 있을 때만(=명시적으로 비우려는 의도 포함) 갱신
     ...(packChildIdPresent ? { pack_child_id: finalPackChildId, pack_child_qty: finalPackChildId ? packChildQty : null } : {}),
   };
 
-  // 마이그 071/066/061/059 미적용 폴백 — 단계적으로 컬럼 제거 후 재시도
+  // 마이그 087/071/066/061/059 미적용 폴백 — 단계적으로 컬럼 제거 후 재시도
   let res = await (supabase as any).from('products').update(productData).eq('id', id);
   let error = res.error;
+  if (error && /allow_decimal_stock/i.test(String(error.message))) {
+    delete productData.allow_decimal_stock;
+    res = await (supabase as any).from('products').update(productData).eq('id', id);
+    error = res.error;
+  }
   if (error && /pos_widget/i.test(String(error.message))) {
     delete productData.pos_widget;
     res = await (supabase as any).from('products').update(productData).eq('id', id);
@@ -1015,16 +1036,33 @@ export async function adjustInventory(formData: FormData) {
   const branchId = formData.get('branch_id') as string;
   const productId = formData.get('product_id') as string;
   const movementType = formData.get('movement_type') as string;
-  const quantity = parseInt(formData.get('quantity') as string);
-  const safetyStock = parseInt(formData.get('safety_stock') as string) || 0;
   const memo = formData.get('memo') as string;
+
+  // ── 소수점 재고 허용 제품 판정 (#28) ──
+  //   allow_decimal_stock=true 면 수량/안전재고를 소수(4자리)로 파싱·저장. 비허용은 정수 강제.
+  //   폴백: 마이그 087 미적용 시 컬럼 부재 → 정수 동작 유지.
+  let allowDecimal = false;
+  let productType: string | null = null;
+  try {
+    let prodRes: any = await db
+      .from('products').select('product_type, allow_decimal_stock').eq('id', productId).maybeSingle();
+    if (prodRes?.error && /allow_decimal_stock/i.test(String(prodRes.error.message))) {
+      prodRes = await db.from('products').select('product_type').eq('id', productId).maybeSingle();
+    }
+    productType = prodRes?.data?.product_type ?? null;
+    allowDecimal = prodRes?.data?.allow_decimal_stock === true;
+  } catch {
+    // 폴백 — 정수 동작 유지
+  }
+
+  const quantity = parseStockInput(formData.get('quantity') as string, allowDecimal);
+  const safetyStock = parseStockInput(formData.get('safety_stock') as string, allowDecimal);
 
   // ── 원자재·부자재는 본사(is_headquarters=true)에서만 입출고·조정 허용 ──
   //   OEM 위탁 생산 모델에서 RAW/SUB는 본사 관리 원칙(CLAUDE.md 생산관리 섹션).
   //   폴백: 마이그 042(product_type) 또는 047(is_headquarters) 미적용 시 제한 생략.
   try {
-    const prodRes = await db.from('products').select('product_type').eq('id', productId).maybeSingle();
-    const pt: string | null = prodRes?.data?.product_type ?? null;
+    const pt: string | null = productType;
     if (pt === 'RAW' || pt === 'SUB') {
       const hqRes = await db.from('branches').select('id').eq('is_headquarters', true).maybeSingle();
       const hqId: string | null = hqRes?.data?.id ?? null;
@@ -1054,9 +1092,9 @@ export async function adjustInventory(formData: FormData) {
   } else {
     let newQuantity: number;
     if (movementType === 'IN') {
-      newQuantity = (current.quantity || 0) + quantity;
+      newQuantity = toNum(current.quantity) + quantity;
     } else if (movementType === 'OUT') {
-      newQuantity = (current.quantity || 0) - quantity;
+      newQuantity = toNum(current.quantity) - quantity;
     } else {
       newQuantity = quantity;
     }
@@ -1156,7 +1194,7 @@ export async function recordStockUsage(input: {
         safety_stock: 0,
       });
     } else {
-      const newQuantity = (current.quantity || 0) - item.quantity; // 음수 허용
+      const newQuantity = toNum(current.quantity) - item.quantity; // 음수 허용
       await db
         .from('inventories')
         .update({ quantity: newQuantity })
@@ -1228,7 +1266,7 @@ export async function transferInventory(formData: FormData) {
     .eq('product_id', productId)
     .single();
 
-  if (!fromInventory.data || fromInventory.data.quantity < quantity) {
+  if (!fromInventory.data || toNum(fromInventory.data.quantity) < quantity) {
     return { error: '이동 수량이 출고 지점의 재고보다 많습니다.' };
   }
 
@@ -1242,7 +1280,7 @@ export async function transferInventory(formData: FormData) {
   if (toInventory.data) {
     await db
       .from('inventories')
-      .update({ quantity: toInventory.data.quantity + quantity })
+      .update({ quantity: toNum(toInventory.data.quantity) + quantity })
       .eq('id', toInventory.data.id);
   } else {
     await db.from('inventories').insert({
@@ -1255,7 +1293,7 @@ export async function transferInventory(formData: FormData) {
 
   await db
     .from('inventories')
-    .update({ quantity: fromInventory.data.quantity - quantity })
+    .update({ quantity: toNum(fromInventory.data.quantity) - quantity })
     .eq('branch_id', fromBranchId)
     .eq('product_id', productId);
 
@@ -1324,7 +1362,7 @@ export async function transferInventoryBatch(input: {
       .eq('branch_id', fromBranchId)
       .eq('product_id', item.product_id);
     const inv = invArr?.[0];
-    if (!inv || (inv.quantity ?? 0) < item.quantity) {
+    if (!inv || toNum(inv.quantity) < item.quantity) {
       const label: string = inv?.product?.name ?? item.product_id;
       return { error: `'${label}' 이동 수량이 출고 지점의 재고보다 많습니다.` };
     }
@@ -1351,7 +1389,7 @@ export async function transferInventoryBatch(input: {
     if (toCurrent) {
       await db
         .from('inventories')
-        .update({ quantity: (toCurrent.quantity || 0) + q })
+        .update({ quantity: toNum(toCurrent.quantity) + q })
         .eq('id', toCurrent.id);
     } else {
       await db.from('inventories').insert({
@@ -1364,7 +1402,7 @@ export async function transferInventoryBatch(input: {
 
     await db
       .from('inventories')
-      .update({ quantity: (fromCurrent?.quantity || 0) - q })
+      .update({ quantity: toNum(fromCurrent?.quantity) - q })
       .eq('branch_id', fromBranchId)
       .eq('product_id', item.product_id);
 
@@ -2448,6 +2486,26 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     }
   }
 
+  // 분해 차감 대상(material) 의 소수점 재고 허용 여부 사전 로드 (#28).
+  //   허용 제품은 BOM 분수 수량(예: 0.0333)을 반올림 없이 그대로 차감, 비허용은 기존 Math.ceil.
+  //   폴백: 마이그 087 미적용(컬럼 부재) 시 전부 false → 기존 정수 동작 유지.
+  const decimalByMaterial = new Map<string, boolean>();
+  {
+    const materialIds = Array.from(
+      new Set(Array.from(bomByPhantom.values()).flat().map(c => c.material_id)),
+    );
+    if (materialIds.length > 0) {
+      const adRes: any = await db
+        .from('products').select('id, allow_decimal_stock').in('id', materialIds);
+      if (!adRes.error && Array.isArray(adRes.data)) {
+        for (const p of adRes.data as any[]) {
+          decimalByMaterial.set(p.id, p.allow_decimal_stock === true);
+        }
+      }
+      // 컬럼 부재(폴백) 시 map 비어있음 → 아래 분기에서 전부 비허용(Math.ceil) 처리.
+    }
+  }
+
   // ① 재고 사전 확인 (출고 지점 기준)
   //   ※ 음수 재고 허용 — 부족해도 차단하지 않고 마이너스로 반영, 누적 시 자동 복원.
   //     레코드가 아예 없는 경우만 ④ 단계에서 음수로 자동 생성.
@@ -2726,7 +2784,7 @@ export async function processPosCheckout(payload: CheckoutPayload) {
       .from('inventories').select('id, quantity')
       .eq('branch_id', stockBranchId).eq('product_id', productId).maybeSingle();
     const inv_ = inv as any;
-    const before = inv_?.quantity ?? 0;
+    const before = toNum(inv_?.quantity);
     const after = before - qty;
     if (inv_) {
       await db.from('inventories').update({ quantity: after }).eq('id', inv_.id);
@@ -2768,7 +2826,11 @@ export async function processPosCheckout(payload: CheckoutPayload) {
         const phantomMemo = [movementMemo, `세트분해: ${item.name} ×${item.quantity}`]
           .filter(Boolean).join(' · ');
         for (const c of components) {
-          const totalQty = Math.ceil(c.quantity * item.quantity);
+          // 소수점 재고 허용 material 은 분수 그대로(4자리 반올림), 비허용은 기존 Math.ceil 유지.
+          const raw = c.quantity * item.quantity;
+          const totalQty = decimalByMaterial.get(c.material_id)
+            ? Math.round(raw * 10000) / 10000
+            : Math.ceil(raw);
           if (totalQty <= 0) continue;
           const prev = phantomMap.get(c.material_id);
           phantomMap.set(c.material_id, { qty: (prev?.qty || 0) + totalQty, memo: phantomMemo });

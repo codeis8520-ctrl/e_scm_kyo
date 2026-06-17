@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { requireSession, writeAuditLog } from '@/lib/session';
 import { kstTodayString } from '@/lib/date';
+import { toNum } from '@/lib/validators';
 
 /**
  * 판매 취소 (CANCELLED) — 거래 자체를 무르는 처리
@@ -79,7 +80,7 @@ export async function cancelSalesOrder(params: {
 
       if (inv) {
         await db.from('inventories')
-          .update({ quantity: inv.quantity + item.quantity })
+          .update({ quantity: toNum(inv.quantity) + item.quantity })
           .eq('id', inv.id);
       } else {
         await db.from('inventories').insert({

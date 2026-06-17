@@ -27,6 +27,7 @@ interface Product {
   track_inventory: boolean;
   is_phantom?: boolean;
   pos_widget?: boolean;
+  allow_decimal_stock?: boolean;
   pack_child_id?: string | null;
   pack_child_qty?: number | null;
   image_url?: string | null;
@@ -70,6 +71,7 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
     pos_widget: product?.pos_widget
       ?? (((product?.product_type as ProductType) || 'FINISHED') === 'FINISHED'
         && !(product?.is_phantom ?? false)),
+    allow_decimal_stock: product?.allow_decimal_stock ?? false,
     pack_child_id: product?.pack_child_id ?? null,
     pack_child_qty: product?.pack_child_qty ?? null,
     image_url: product?.image_url || null,
@@ -472,6 +474,23 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
               판매등록 위젯 표시
               <span className="text-xs text-slate-400 ml-2">
                 POS 판매등록 그리드에 노출 (해제해도 검색으로는 등록 가능)
+              </span>
+            </label>
+          </div>
+
+          {/* 소수점 재고 허용 (#28) — 환/g 등 분수 단위로 차감·관리되는 제품용 */}
+          <div className="flex items-center gap-2 p-3 bg-slate-50 border border-slate-200 rounded-md">
+            <input
+              type="checkbox"
+              id="allow_decimal_stock"
+              checked={!!formData.allow_decimal_stock}
+              onChange={e => setFormData({ ...formData, allow_decimal_stock: e.target.checked })}
+              className="w-4 h-4"
+            />
+            <label htmlFor="allow_decimal_stock" className="text-sm text-slate-700 flex-1 cursor-pointer">
+              소수점 재고 허용
+              <span className="text-xs text-slate-400 ml-2">
+                재고를 소수(최대 4자리)로 차감·표시·조정 (예: 산삼/침향 base 환 단위 묶음 차감). 미체크 시 정수로만 처리됩니다.
               </span>
             </label>
           </div>

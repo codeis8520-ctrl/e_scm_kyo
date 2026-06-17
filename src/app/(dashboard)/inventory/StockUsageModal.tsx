@@ -3,13 +3,14 @@
 import { useState, useMemo } from 'react';
 import { recordStockUsage } from '@/lib/actions';
 import { useEscClose } from '@/hooks/useEscClose';
+import { toNum, fmtStock } from '@/lib/validators';
 
 interface Inventory {
   id: string;
   branch_id: string;
   product_id: string;
   quantity: number;
-  product?: { id: string; name: string; code: string };
+  product?: { id: string; name: string; code: string; allow_decimal_stock?: boolean };
 }
 
 interface UsageType {
@@ -60,8 +61,11 @@ export default function StockUsageModal({
     const inv = inventories.find(
       (i) => i.branch_id === branchId && i.product_id === productId
     );
-    return inv ? inv.quantity : null;
+    return inv ? toNum(inv.quantity) : null;
   };
+  // 제품의 소수점 재고 허용 여부 (표시 포맷용)
+  const allowDecimalOf = (productId: string): boolean =>
+    inventories.find((i) => i.product_id === productId)?.product?.allow_decimal_stock === true;
 
   // 제품 검색 후보 — inventories 의 product 로 필터 (이미 추가된 품목 제외)
   const candidates = useMemo(() => {
@@ -248,7 +252,7 @@ export default function StockUsageModal({
                       <p className="text-xs text-slate-500">
                         {r.code} · 현재고:{' '}
                         <span className="font-semibold">
-                          {stock === null ? '없음(0)' : stock}
+                          {stock === null ? '없음(0)' : fmtStock(stock, allowDecimalOf(r.product_id))}
                         </span>
                         {over && (
                           <span className="ml-2 px-1.5 py-0.5 rounded bg-red-100 text-red-700">

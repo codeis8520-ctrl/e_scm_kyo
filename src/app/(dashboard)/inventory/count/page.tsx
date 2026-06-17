@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import { kstTodayString } from '@/lib/date';
+import { toNum, fmtStock, parseStockInput } from '@/lib/validators';
 
 interface CountRow {
   inventoryId: string;
@@ -14,6 +15,7 @@ interface CountRow {
   systemQty: number;
   countQty: number | '';
   diff: number;
+  allowDecimal: boolean;
 }
 
 function getCookie(name: string): string | null {
@@ -58,12 +60,22 @@ export default function InventoryCountPage() {
     if (!selectedBranch) return;
     setLoading(true);
     const sb = createClient() as any;
-    const { data } = await sb
+    // allow_decimal_stock 포함 시도 → 마이그 087 미적용 폴백
+    let res: any = await sb
       .from('inventories')
-      .select('id, quantity, product:products(id, name, code, unit, is_active, track_inventory)')
+      .select('id, quantity, product:products(id, name, code, unit, is_active, track_inventory, allow_decimal_stock)')
       .eq('branch_id', selectedBranch)
       .order('product(name)')
       .range(0, 99999);
+    if (res.error) {
+      res = await sb
+        .from('inventories')
+        .select('id, quantity, product:products(id, name, code, unit, is_active, track_inventory)')
+        .eq('branch_id', selectedBranch)
+        .order('product(name)')
+        .range(0, 99999);
+    }
+    const data = res.data;
 
     setRows(
       (data || [])
@@ -75,9 +87,10 @@ export default function InventoryCountPage() {
           productName: inv.product.name,
           productCode: inv.product.code,
           unit: inv.product.unit || '개',
-          systemQty: inv.quantity,
+          systemQty: toNum(inv.quantity),
           countQty: '',
           diff: 0,
+          allowDecimal: inv.product.allow_decimal_stock === true,
         }))
     );
     setDone(false);
@@ -90,8 +103,9 @@ export default function InventoryCountPage() {
   const updateCountQty = (inventoryId: string, val: string) => {
     setRows(prev => prev.map(r => {
       if (r.inventoryId !== inventoryId) return r;
-      const num = val === '' ? '' : Math.max(0, parseInt(val) || 0);
-      const diff = num === '' ? 0 : (num as number) - r.systemQty;
+      const num = val === '' ? '' : Math.max(0, parseStockInput(val, r.allowDecimal));
+      // 부동소수 오차 제거 — 4자리 반올림 후 비교(둘 다 같은 정밀도)
+      const diff = num === '' ? 0 : Math.round(((num as number) - r.systemQty) * 10000) / 10000;
       return { ...r, countQty: num, diff };
     }));
   };
@@ -179,7 +193,8 @@ export default function InventoryCountPage() {
 
   const countedCount  = rows.filter(r => r.countQty !== '').length;
   const diffCount     = rows.filter(r => r.countQty !== '' && r.diff !== 0).length;
-  const totalDiffQty  = rows.reduce((s, r) => s + (r.diff || 0), 0);
+  const totalDiffQty  = Math.round(rows.reduce((s, r) => s + (r.diff || 0), 0) * 10000) / 10000;
+  const anyDecimal    = rows.some(r => r.allowDecimal);
   const allCounted    = rows.length > 0 && countedCount === rows.length;
 
   return (
@@ -229,7 +244,7 @@ export default function InventoryCountPage() {
         <div className="card text-center">
           <p className="text-xs sm:text-sm text-slate-500">순 차이 수량</p>
           <p className={`text-xl sm:text-2xl font-bold mt-1 ${totalDiffQty > 0 ? 'text-green-600' : totalDiffQty < 0 ? 'text-red-600' : 'text-slate-400'}`}>
-            {totalDiffQty > 0 ? '+' : ''}{totalDiffQty}
+            {totalDiffQty > 0 ? '+' : ''}{fmtStock(totalDiffQty, anyDecimal)}
           </p>
         </div>
       </div>
@@ -272,11 +287,12 @@ export default function InventoryCountPage() {
                       <p className="text-xs text-slate-400">{row.productCode}</p>
                     </td>
                     <td className="text-center text-sm text-slate-500">{row.unit}</td>
-                    <td className="text-center font-medium">{row.systemQty}</td>
+                    <td className="text-center font-medium">{fmtStock(row.systemQty, row.allowDecimal)}</td>
                     <td>
                       <input
                         type="number"
                         min={0}
+                        step={row.allowDecimal ? 'any' : 1}
                         value={row.countQty}
                         onChange={e => updateCountQty(row.inventoryId, e.target.value)}
                         placeholder="직접 입력"
@@ -292,7 +308,7 @@ export default function InventoryCountPage() {
                         <span className="text-green-600 text-sm">일치 ✓</span>
                       ) : (
                         <span className={row.diff > 0 ? 'text-green-600' : 'text-red-600'}>
-                          {row.diff > 0 ? '+' : ''}{row.diff}
+                          {row.diff > 0 ? '+' : ''}{fmtStock(row.diff, row.allowDecimal)}
                         </span>
                       )}
                     </td>

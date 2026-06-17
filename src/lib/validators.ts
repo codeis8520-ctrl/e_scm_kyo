@@ -105,6 +105,46 @@ export function parseCurrency(value: string): number {
   return parseInt(value.replace(/[^\d]/g, ''), 10) || 0;
 }
 
+// ── 재고 수량 공용 헬퍼 (#28 소수점 재고) ─────────────────────────────────────
+//   Supabase 는 NUMERIC(14,4) 컬럼을 JS 문자열("30.0000")로 반환한다.
+//   inventories.quantity / inventory_movements.quantity / safety_stock 을
+//   읽어 산술·비교할 때 반드시 toNum() 으로 감싸 문자열 연결 회귀를 차단한다.
+//   null/undefined/빈문자/NaN 은 모두 0 으로 정규화한다.
+export function toNum(v: unknown): number {
+  if (v == null) return 0;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// 재고 수량 표시: 저장 4자리 / 표시 2자리.
+//   allowDecimal=true  → 소수 2자리 반올림 후 trailing-zero 제거 (0.9667→"0.97", 30→"30")
+//   allowDecimal=false → 정수(반올림) + 천단위 구분 (기존 동작 유지)
+export function fmtStock(v: unknown, allowDecimal?: boolean): string {
+  const n = toNum(v);
+  if (!allowDecimal) {
+    return Math.round(n).toLocaleString('ko-KR');
+  }
+  // 소수 2자리로 반올림 → trailing-zero 제거. 정수면 정수로.
+  const rounded = Math.round(n * 100) / 100;
+  if (Number.isInteger(rounded)) return rounded.toLocaleString('ko-KR');
+  return parseFloat(rounded.toFixed(2)).toString();
+}
+
+// 재고 입력 파싱: allowDecimal=true 면 parseFloat + 4자리 반올림, 아니면 정수.
+//   빈문자/NaN 은 0. 음수는 호출부 정책에 맡긴다(여기선 부호 보존).
+export function parseStockInput(value: string, allowDecimal?: boolean): number {
+  if (value == null || value === '') return 0;
+  if (!allowDecimal) {
+    const i = parseInt(value, 10);
+    return Number.isFinite(i) ? i : 0;
+  }
+  const f = parseFloat(value);
+  if (!Number.isFinite(f)) return 0;
+  // 저장 정밀도 4자리로 반올림
+  return Math.round(f * 10000) / 10000;
+}
+
 export interface ValidationResult {
   isValid: boolean;
   errors: Record<string, string>;

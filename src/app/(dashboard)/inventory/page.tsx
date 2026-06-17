@@ -13,6 +13,7 @@ import { getInventoryUsageTypes } from '@/lib/actions';
 import { updateSafetyStock } from '@/lib/inventory-actions';
 import { backfillMissingInventories } from '@/lib/inventory-backfill-actions';
 import { buildCategoryInfo, type CategoryRow } from '@/lib/category-tree';
+import { toNum, fmtStock } from '@/lib/validators';
 
 type ProductType = 'FINISHED' | 'RAW' | 'SUB' | 'SERVICE';
 
@@ -23,7 +24,7 @@ interface Inventory {
   quantity: number;
   safety_stock: number;
   branch?: { id: string; name: string; is_headquarters?: boolean };
-  product?: { id: string; name: string; code: string; barcode?: string; product_type?: ProductType | null; category_id?: string | null; track_inventory?: boolean; is_phantom?: boolean; pack_child_id?: string | null; pack_child_qty?: number | null; price?: number | null };
+  product?: { id: string; name: string; code: string; barcode?: string; product_type?: ProductType | null; category_id?: string | null; track_inventory?: boolean; is_phantom?: boolean; pack_child_id?: string | null; pack_child_qty?: number | null; price?: number | null; allow_decimal_stock?: boolean };
 }
 
 interface Branch {
@@ -45,6 +46,7 @@ interface ProductRow {
   packChildId: string | null;
   packChildQty: number | null;
   price: number;
+  allowDecimal: boolean;
   byBranch: Record<string, Inventory>;
 }
 
@@ -262,6 +264,7 @@ export default function InventoryPage() {
     };
 
     const trySelects = [
+      '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory, is_phantom, pack_child_id, pack_child_qty, price, allow_decimal_stock)',
       '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory, is_phantom, pack_child_id, pack_child_qty, price)',
       '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory, is_phantom)',
       '*, branch:branches(id, name, is_headquarters), product:products(id, name, code, barcode, product_type, category_id, track_inventory)',
@@ -336,6 +339,7 @@ export default function InventoryPage() {
           packChildId: inv.product.pack_child_id ?? null,
           packChildQty: inv.product.pack_child_qty ?? null,
           price: inv.product.price ?? 0,
+          allowDecimal: inv.product.allow_decimal_stock === true,
           byBranch: {},
         });
       }
@@ -356,11 +360,12 @@ export default function InventoryPage() {
         packChildId: p.packChildId,
         packChildQty: p.packChildQty,
         price: 0,
+        allowDecimal: false,
         byBranch: {},
       });
     }
     const arr = Array.from(map.values());
-    const pivotQty = (r: ProductRow) => Object.values(r.byBranch).reduce((s, i) => s + (i.quantity || 0), 0);
+    const pivotQty = (r: ProductRow) => Object.values(r.byBranch).reduce((s, i) => s + toNum(i.quantity), 0);
     arr.sort((a, b) => {
       if (sortMode === 'name') {
         return a.productName.localeCompare(b.productName, 'ko');
@@ -422,7 +427,7 @@ export default function InventoryPage() {
         return (a.branch?.name || '').localeCompare(b.branch?.name || '', 'ko');
       }
       if (sortMode === 'stockDesc' || sortMode === 'stockAsc') {
-        const diff = (a.quantity || 0) - (b.quantity || 0);
+        const diff = toNum(a.quantity) - toNum(b.quantity);
         const q = sortMode === 'stockDesc' ? -diff : diff;
         if (q !== 0) return q;
         return (a.product?.name || '').localeCompare(b.product?.name || '', 'ko');
@@ -480,7 +485,7 @@ export default function InventoryPage() {
   // 재고 부족 수 (지점 사용자는 자기 지점만)
   const lowCount = inventories.filter(i =>
     i.product?.track_inventory !== false &&
-    i.quantity < i.safety_stock &&
+    toNum(i.quantity) < toNum(i.safety_stock) &&
     (!isBranchUser || !userBranchId || i.branch_id === userBranchId)
   ).length;
 
@@ -681,12 +686,13 @@ export default function InventoryPage() {
                   </tr>
                 );
 
-                // 카테고리 소계 — 지점별 합계
+                // 카테고리 소계 — 지점별 합계. 그룹 내 소수점 허용 제품이 있으면 소수 표시.
+                const groupHasDecimal = group.rows.some(r => r.allowDecimal);
                 const branchTotals: Record<string, number> = {};
                 for (const r of group.rows) {
                   for (const b of branches) {
                     const inv = r.byBranch[b.id];
-                    branchTotals[b.id] = (branchTotals[b.id] || 0) + (inv?.quantity ?? 0);
+                    branchTotals[b.id] = (branchTotals[b.id] || 0) + toNum(inv?.quantity);
                   }
                 }
                 const subtotalRow = (
@@ -696,7 +702,7 @@ export default function InventoryPage() {
                     </td>
                     {branches.map(b => (
                       <td key={b.id} className="text-center text-xs font-semibold text-slate-700">
-                        {(branchTotals[b.id] || 0).toLocaleString()}
+                        {fmtStock(branchTotals[b.id], groupHasDecimal)}
                       </td>
                     ))}
                   </tr>
@@ -705,7 +711,7 @@ export default function InventoryPage() {
                 const dataRows = group.rows.map(row => {
                   const hasAnyLow = branches.some(b => {
                     const inv = row.byBranch[b.id];
-                    return inv && inv.quantity < inv.safety_stock;
+                    return inv && toNum(inv.quantity) < toNum(inv.safety_stock);
                   });
                   return (
                     <tr key={row.productId} className={hasAnyLow ? 'bg-red-50/30' : ''}>
@@ -774,7 +780,7 @@ export default function InventoryPage() {
                         branch: b,
                         product: { id: row.productId, name: row.productName, code: row.productCode, barcode: row.barcode, product_type: row.productType },
                       };
-                      const isLow = effective.quantity < effective.safety_stock;
+                      const isLow = toNum(effective.quantity) < toNum(effective.safety_stock);
                       const isMissing = !inv;
                       // 원자재·부자재는 본사에서만 입출고·조정 가능. 본사 지정이 없으면 제한 생략.
                       const materialBlocked = isMaterialType(row.productType) && !!hqBranchId && b.id !== hqBranchId;
@@ -790,7 +796,7 @@ export default function InventoryPage() {
                                 ? '재고 조정은 본사 권한만 가능'
                                 : materialBlocked
                                   ? '원자재·부자재는 본사에서만 조정 가능'
-                                  : isMissing ? '재고 없음 · 클릭하여 조정' : `재고 조정 · 안전재고 ${effective.safety_stock}`
+                                  : isMissing ? '재고 없음 · 클릭하여 조정' : `재고 조정 · 안전재고 ${fmtStock(effective.safety_stock, row.allowDecimal)}`
                             }
                             className={`w-full h-full px-3 py-2 font-semibold transition-colors rounded ${
                               adjustBlocked
@@ -804,8 +810,8 @@ export default function InventoryPage() {
                                   }`
                             }`}
                           >
-                            {effective.quantity}
-                            {isLow && !isMissing && !adjustBlocked && <span className="ml-1 text-xs font-normal">↓{effective.safety_stock}</span>}
+                            {fmtStock(effective.quantity, row.allowDecimal)}
+                            {isLow && !isMissing && !adjustBlocked && <span className="ml-1 text-xs font-normal">↓{fmtStock(effective.safety_stock, row.allowDecimal)}</span>}
                           </button>
                         </td>
                       );
@@ -857,17 +863,19 @@ export default function InventoryPage() {
                   </td>
                 </tr>
               );
-              // 카테고리 소계 — 수량 합계
-              const totalQty = group.rows.reduce((s, r) => s + (r.quantity || 0), 0);
+              // 카테고리 소계 — 수량 합계. 그룹 내 소수점 허용 제품이 있으면 소수 표시.
+              const groupHasDecimal = group.rows.some(r => r.product?.allow_decimal_stock === true);
+              const totalQty = group.rows.reduce((s, r) => s + toNum(r.quantity), 0);
               const subtotalRow = (
                 <tr key={`fsub-${group.categoryId || 'none'}-${gIdx}`} className="bg-slate-100/70 border-t border-slate-200">
                   <td colSpan={4} className="px-3 py-1.5 text-xs text-slate-500 font-medium">└ 소계</td>
-                  <td className="text-xs font-semibold text-slate-700">{totalQty.toLocaleString()}</td>
+                  <td className="text-xs font-semibold text-slate-700">{fmtStock(totalQty, groupHasDecimal)}</td>
                   <td colSpan={3}></td>
                 </tr>
               );
               const dataRows = group.rows.map((item) => {
-                const isLow = item.quantity < item.safety_stock;
+                const allowDecimal = item.product?.allow_decimal_stock === true;
+                const isLow = toNum(item.quantity) < toNum(item.safety_stock);
                 const pt = item.product?.product_type ?? null;
                 const materialBlocked = isMaterialType(pt) && !!hqBranchId && item.branch_id !== hqBranchId;
                 return (
@@ -884,13 +892,14 @@ export default function InventoryPage() {
                   </td>
                   <td className="font-mono text-xs text-slate-500">{item.product?.barcode || '-'}</td>
                   <td className={isLow ? 'text-red-600 font-semibold' : ''}>
-                    {item.quantity}
+                    {fmtStock(item.quantity, allowDecimal)}
                   </td>
                   <td>
                     <SafetyStockCell
                       inventoryId={item.id}
                       productId={item.product_id}
-                      value={item.safety_stock}
+                      value={toNum(item.safety_stock)}
+                      allowDecimal={allowDecimal}
                       onSaved={fetchInventory}
                     />
                   </td>
@@ -995,10 +1004,11 @@ export default function InventoryPage() {
 
 // ── 안전재고 인라인 편집 셀 ────────────────────────────────────────────────
 
-function SafetyStockCell({ inventoryId, productId, value, onSaved }: {
+function SafetyStockCell({ inventoryId, productId, value, allowDecimal, onSaved }: {
   inventoryId: string;
   productId: string;
   value: number;
+  allowDecimal?: boolean;
   onSaved: () => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -1007,7 +1017,9 @@ function SafetyStockCell({ inventoryId, productId, value, onSaved }: {
   const [showBulk, setShowBulk] = useState(false);
 
   const handleSave = async (bulk: boolean) => {
-    const num = parseInt(input);
+    const num = allowDecimal
+      ? Math.round((parseFloat(input) || 0) * 10000) / 10000
+      : parseInt(input);
     if (isNaN(num) || num < 0) return;
     if (num === value && !bulk) { setEditing(false); return; }
     setSaving(true);
@@ -1032,7 +1044,7 @@ function SafetyStockCell({ inventoryId, productId, value, onSaved }: {
         className="text-slate-600 hover:text-blue-600 hover:underline cursor-pointer"
         title="클릭하여 안전재고 수정"
       >
-        {value}
+        {fmtStock(value, allowDecimal)}
       </button>
     );
   }
@@ -1043,6 +1055,7 @@ function SafetyStockCell({ inventoryId, productId, value, onSaved }: {
         <input
           type="number"
           min={0}
+          step={allowDecimal ? 'any' : 1}
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') handleSave(false); if (e.key === 'Escape') setEditing(false); }}

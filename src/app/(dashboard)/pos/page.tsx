@@ -10,6 +10,7 @@ import { saveDraft, listDrafts, getDraft, deleteDraft, type DraftRow } from '@/l
 import ReceiptModal from './ReceiptModal';
 import { kstTodayString } from '@/lib/date';
 import { buildCategoryInfo, type CategoryInfo } from '@/lib/category-tree';
+import { toNum, fmtStock } from '@/lib/validators';
 import PageTabs from '@/components/PageTabs';
 
 const SalesListTab = dynamic(() => import('./SalesListTab'), {
@@ -431,12 +432,20 @@ function POSPageInner() {
 
     // ── Tier 1 — 즉시 화면 표시용 (products, branches, grades, users) ─────
     const loadTier1 = async () => {
-      // product_type + pos_widget 포함 시도 → 마이그 071/042 미적용 DB 폴백
+      // product_type + pos_widget + allow_decimal_stock 포함 시도 → 마이그 087/071/042 미적용 DB 폴백
       let productsRes: any = await supabase
         .from('products')
-        .select('id, name, code, barcode, price, unit, product_type, pos_widget, category_id')
+        .select('id, name, code, barcode, price, unit, product_type, pos_widget, category_id, allow_decimal_stock')
         .eq('is_active', true)
         .order('name');
+      if (productsRes.error) {
+        // 마이그 087 미적용 — allow_decimal_stock 빼고 재시도
+        productsRes = await supabase
+          .from('products')
+          .select('id, name, code, barcode, price, unit, product_type, pos_widget, category_id')
+          .eq('is_active', true)
+          .order('name');
+      }
       if (productsRes.error) {
         // 마이그 071 미적용 — pos_widget 빼고 재시도 (product_type 은 유지)
         productsRes = await supabase
@@ -516,7 +525,8 @@ function POSPageInner() {
       const t0 = performance.now();
       const allInv = await fetchAllParallel<any>('inventories', 'product_id, branch_id, quantity');
       const invMap = new Map<string, number>();
-      for (const inv of allInv) invMap.set(`${inv.branch_id}_${inv.product_id}`, inv.quantity);
+      // NUMERIC 재고는 문자열로 옴 — toNum 으로 정규화해 산술·비교 회귀 차단(#28).
+      for (const inv of allInv) invMap.set(`${inv.branch_id}_${inv.product_id}`, toNum(inv.quantity));
       setInventoryMap(invMap);
       console.log(`[POS] 재고 ${allInv.length}행 — ${(performance.now() - t0).toFixed(0)}ms`);
     };
@@ -2092,7 +2102,7 @@ function POSPageInner() {
                         isOutOfStock ? 'text-red-500 font-semibold' :
                         isLow ? 'text-orange-500' : 'text-slate-400'
                       }`}>
-                        {stock === null ? '\u00A0' : stock === 0 ? '품절 (판매 가능)' : stock < 0 ? `재고 ${stock} (판매 가능)` : `재고 ${stock}`}
+                        {stock === null ? '\u00A0' : stock === 0 ? '품절 (판매 가능)' : stock < 0 ? `재고 ${fmtStock(stock, product.allow_decimal_stock)} (판매 가능)` : `재고 ${fmtStock(stock, product.allow_decimal_stock)}`}
                       </p>
                     </button>
                   )];

@@ -3,13 +3,14 @@
 import { useState, useEffect } from 'react';
 import { transferInventory } from '@/lib/actions';
 import { useEscClose } from '@/hooks/useEscClose';
+import { toNum, fmtStock } from '@/lib/validators';
 
 interface Props {
   inventory: {
     id: string;
     product_id: string;
     quantity: number;
-    product?: { name: string; code: string };
+    product?: { name: string; code: string; allow_decimal_stock?: boolean };
     branch?: { id: string; name: string };
   };
   branches: { id: string; name: string }[];
@@ -44,7 +45,7 @@ export default function TransferModal({ inventory, branches, onClose, onSuccess 
       return;
     }
 
-    if (formData.quantity > inventory.quantity) {
+    if (formData.quantity > toNum(inventory.quantity)) {
       setError('이동 수량이 현재 재고보다 많습니다.');
       setLoading(false);
       return;
@@ -86,7 +87,7 @@ export default function TransferModal({ inventory, branches, onClose, onSuccess 
         <div className="mb-4 p-3 bg-slate-100 rounded-lg">
           <p className="font-medium">{inventory.product?.name}</p>
           <p className="text-sm text-slate-500">
-            {inventory.product?.code} · 현재고: <span className="font-semibold">{inventory.quantity}</span>
+            {inventory.product?.code} · 현재고: <span className="font-semibold">{fmtStock(inventory.quantity, inventory.product?.allow_decimal_stock)}</span>
           </p>
           <p className="text-sm text-slate-500">출고 지점: {inventory.branch?.name}</p>
         </div>
@@ -115,11 +116,11 @@ export default function TransferModal({ inventory, branches, onClose, onSuccess 
               onChange={(e) => setFormData({ ...formData, quantity: parseInt(e.target.value) || 0 })}
               required
               min="1"
-              max={inventory.quantity}
+              max={toNum(inventory.quantity)}
               className="mt-1 input"
             />
             <p className="mt-1 text-xs text-slate-500">
-              이동 가능 수량: {inventory.quantity}개
+              이동 가능 수량: {fmtStock(inventory.quantity, inventory.product?.allow_decimal_stock)}개
             </p>
           </div>
 

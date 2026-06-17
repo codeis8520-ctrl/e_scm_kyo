@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { requireSession } from '@/lib/session';
+import { toNum } from '@/lib/validators';
 
 export async function updateSafetyStock(inventoryId: string, safetyStock: number) {
   try {
@@ -173,7 +174,7 @@ export async function packUnpackInventory(params: {
       .eq('product_id', productId)
       .maybeSingle();
     if (inv) {
-      const next = (inv.quantity ?? 0) + delta;
+      const next = toNum(inv.quantity) + delta;
       const { error } = await supabase.from('inventories').update({ quantity: next }).eq('id', inv.id);
       if (error) throw new Error(error.message);
     } else {

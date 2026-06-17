@@ -4,7 +4,8 @@ export const DB_SCHEMA = `
 --- 지점·제품·재고 ---
 branches: id, name, code, channel(STORE/DEPT_STORE/ONLINE/EVENT), address, phone, is_active, is_headquarters, sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail
   ※ sender_*: 택배 보내는분 정보 (대한통운 엑셀 임포트용). 미입력 시 sender_name←"경옥채 "+name, sender_phone←phone, sender_address←address 로 폴백.
-products: id, name, code, barcode, unit, price(판매가), cost(원가), cost_source(MANUAL/BOM), product_type(FINISHED/RAW/SUB/SERVICE), track_inventory(bool), is_phantom(bool), pack_child_id(uuid|null), pack_child_qty(int|null), pos_widget(bool, POS 판매등록 위젯 그리드 노출 여부·검색 등록은 무관), is_active
+products: id, name, code, barcode, unit, price(판매가), cost(원가), cost_source(MANUAL/BOM), product_type(FINISHED/RAW/SUB/SERVICE), track_inventory(bool), is_phantom(bool), pack_child_id(uuid|null), pack_child_qty(int|null), pos_widget(bool, POS 판매등록 위젯 그리드 노출 여부·검색 등록은 무관), allow_decimal_stock(bool, 마이그 087), is_active
+  ※ allow_decimal_stock(마이그 087): true면 이 제품 재고를 소수(NUMERIC 4자리)로 차감·표시·조정 허용(예: 산삼/침향 base 환 단위 묶음 분해 차감). false면 정수만. phantom-BOM 분해 시 허용 material 은 BOM 분수 수량(예: 0.0333)을 반올림 없이 그대로 차감, 비허용은 Math.ceil.
   ※ pack_child_id / pack_child_qty (마이그 066): 박스 ↔ 소포장 수동 분해/재포장. 부모 SKU(박스) 가 자식 SKU(소포장)
     pack_child_qty 개를 담는다는 메타. 예: 침향 30(박스).pack_child_id=침향 10(소포장), pack_child_qty=3.
     재고 화면 "📦 분해/재포장" 버튼으로 사용자가 수동 호출 — reference_type='PACK_UNPACK' 으로 inventory_movements 기록.
@@ -23,7 +24,8 @@ products: id, name, code, barcode, unit, price(판매가), cost(원가), cost_so
 product_files: id, product_id, file_url, file_name, file_type(image/document), sort_order
 inventories: id, branch_id, product_id, quantity, safety_stock  [UNIQUE(branch_id, product_id)]
   ※ quantity 음수 허용 (CHECK 제약 없음). 판매·생산 시 부족해도 차단하지 않고 마이너스로 차감, 입고/반품 시 누적 복원.
-inventory_movements: id, branch_id, product_id, movement_type(IN/OUT/ADJUST/TRANSFER/PRODUCTION), quantity, memo, created_at, usage_type_id(소모 사용유형 FK, reference_type=USAGE 일 때만 값 존재; 그 외 NULL)
+  ※ quantity·safety_stock 은 NUMERIC(14,4) (마이그 087) — REST 응답에서 JS 문자열로 옴. 산술·비교 전 반드시 숫자 변환(앱은 toNum 사용). 소수는 allow_decimal_stock=true 제품에만 발생.
+inventory_movements: id, branch_id, product_id, movement_type(IN/OUT/ADJUST/TRANSFER/PRODUCTION), quantity(NUMERIC(14,4), 마이그 087·문자열 직렬화 주의), memo, created_at, usage_type_id(소모 사용유형 FK, reference_type=USAGE 일 때만 값 존재; 그 외 NULL)
   ※ reference_type(VARCHAR free-form): POS_SALE / ONLINE_SALE(자사몰 판매차감, reference_id=sales_order_items.id) / PHANTOM_DECOMPOSE / PACK_UNPACK / USAGE(재고 소모=로스·자가사용·시음용 등) / TRANSFER / SALE_CANCEL 등.
 inventory_usage_types(마이그 079): id, code(UNIQUE), name, sort_order, is_system(true=삭제금지·비활성만), is_active
   ※ 재고 소모 사용유형 코드(로스/자가사용/시음용/기타). 판매 아님. 소모 기록은 inventory_movements.movement_type='OUT' + reference_type='USAGE' + usage_type_id.

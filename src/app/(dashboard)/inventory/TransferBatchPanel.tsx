@@ -2,13 +2,14 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { transferInventoryBatch, getInventory } from '@/lib/actions';
+import { toNum, fmtStock } from '@/lib/validators';
 
 interface Inventory {
   id: string;
   branch_id: string;
   product_id: string;
   quantity: number;
-  product?: { id: string; name: string; code: string };
+  product?: { id: string; name: string; code: string; allow_decimal_stock?: boolean };
 }
 
 interface Props {
@@ -70,8 +71,10 @@ export default function TransferBatchPanel({
     const inv = srcInventories.find(
       (i) => i.branch_id === fromBranchId && i.product_id === productId
     );
-    return inv ? inv.quantity : null;
+    return inv ? toNum(inv.quantity) : null;
   };
+  const allowDecimalOf = (productId: string): boolean =>
+    srcInventories.find((i) => i.product_id === productId)?.product?.allow_decimal_stock === true;
 
   // 둘러보기 목록 — 출발 지점(fromBranchId) 재고>0 품목 전체. search 는 필터로만 동작.
   // 이미 담긴 품목도 목록에 남긴다(체크 상태로 표시). 이름 한글 오름차순 정렬, 상위 200개 캡.
@@ -84,7 +87,7 @@ export default function TransferBatchPanel({
       const p = inv.product;
       if (!p) continue;
       if (inv.branch_id !== fromBranchId) continue;
-      if (inv.quantity <= 0) continue;
+      if (toNum(inv.quantity) <= 0) continue;
       if (seen.has(inv.product_id)) continue;
       seen.add(inv.product_id);
       out.push({ product_id: inv.product_id, name: p.name, code: p.code });
@@ -345,7 +348,7 @@ export default function TransferBatchPanel({
                           <span className="text-slate-500"> · {c.code}</span>
                         </span>
                         <span className="text-xs text-slate-500 shrink-0">
-                          현재고 <span className="font-semibold">{stock === null ? 0 : stock}</span>
+                          현재고 <span className="font-semibold">{stock === null ? 0 : fmtStock(stock, allowDecimalOf(c.product_id))}</span>
                         </span>
                       </label>
                     );
@@ -372,7 +375,7 @@ export default function TransferBatchPanel({
                     <p className="text-xs text-slate-500">
                       {r.code} · 현재고:{' '}
                       <span className="font-semibold">
-                        {stock === null ? '없음(0)' : stock}
+                        {stock === null ? '없음(0)' : fmtStock(stock, allowDecimalOf(r.product_id))}
                       </span>
                       {over && (
                         <span className="ml-2 px-1.5 py-0.5 rounded bg-red-100 text-red-700">
