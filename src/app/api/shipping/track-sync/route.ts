@@ -38,7 +38,11 @@ export async function GET(req: NextRequest) {
   }
 
   const apiKey = process.env.SWEETTRACKER_API_KEY;
-  if (!apiKey) return NextResponse.json({ error: 'SWEETTRACKER_API_KEY 미설정' }, { status: 500 });
+  // 키 미설정이면 실패(500)가 아니라 건너뜀(200) — 일일 크론이 false 실패로 뜨지 않게.
+  //   추후 SWEETTRACKER_API_KEY 등록 시 코드 변경 없이 자동 작동.
+  if (!apiKey) {
+    return NextResponse.json({ skipped: true, message: 'SWEETTRACKER_API_KEY 미설정 — 자동추적 건너뜀(수동 배송완료 사용)' });
+  }
 
   const limit = Math.min(parseInt(req.nextUrl.searchParams.get('limit') || '40', 10) || 40, 80);
 
