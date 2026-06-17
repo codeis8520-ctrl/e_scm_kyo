@@ -214,6 +214,8 @@ export default function SalesListTab() {
 
   // 서브뷰: 목록 ↔ 지점비교 (본사/관리자 전용). 지점비교는 기간 행 × 지점 열 매트릭스.
   const [subView, setSubView] = useState<'list' | 'compare'>(() => saved.subView ?? 'list');
+  // 일자별 요약 표시 토글 — 기본 숨김(고객별 내역 우선, 일자별 요약은 옵션)
+  const [showDailySummary, setShowDailySummary] = useState(false);
   // 목록 정렬 토글: 'order'=주문일순(현행 flat) / 'receipt'=수령일자별 그룹
   const [listSort, setListSort] = useState<'order' | 'receipt'>(() => saved.listSort ?? 'receipt');
   // 비교뷰 전용 다수선택 상태 — 기존 단일 branchFilter 와 독립. 기본값은 전체 active 지점.
@@ -874,7 +876,7 @@ export default function SalesListTab() {
       {/* 서브뷰 토글 — 본사/관리자 전용 (지점직원은 목록만) */}
       {!isBranchUser && (
         <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1 w-fit">
-          {([['list', '수령 현황'], ['compare', '매출 현황']] as ['list' | 'compare', string][]).map(([k, label]) => (
+          {([['list', '매출 현황'], ['compare', '지점별 매출']] as ['list' | 'compare', string][]).map(([k, label]) => (
             <button
               key={k}
               onClick={() => setSubView(k)}
@@ -1142,33 +1144,6 @@ export default function SalesListTab() {
         <SummaryCard label="매출 합계" value={`${summary.total.toLocaleString()}원`} accent="blue" />
       </div>
 
-      {/* 일자별 요약 (여러 날일 때) */}
-      {isMultiDay && perDay.length > 0 && (
-        <div className="card">
-          <p className="text-sm font-semibold text-slate-700 mb-2">일자별 요약</p>
-          <div className="overflow-x-auto">
-            <table className="table text-sm min-w-[400px]">
-              <thead>
-                <tr>
-                  <th>일자</th>
-                  <th className="text-right">건수</th>
-                  <th className="text-right">매출</th>
-                </tr>
-              </thead>
-              <tbody>
-                {perDay.map(([d, v]) => (
-                  <tr key={d}>
-                    <td className="font-mono">{d}</td>
-                    <td className="text-right">{v.count}건</td>
-                    <td className="text-right font-medium">{v.total.toLocaleString()}원</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
       {/* 테이블 */}
       <div className="card">
         <div className="flex items-center justify-between mb-2">
@@ -1244,6 +1219,42 @@ export default function SalesListTab() {
           </table>
         </div>
       </div>
+
+      {/* 일자별 요약 — 옵션(여러 날일 때만, 기본 숨김). 고객별 내역 아래에 표시 */}
+      {isMultiDay && perDay.length > 0 && (
+        <div className="card">
+          <button
+            type="button"
+            onClick={() => setShowDailySummary(v => !v)}
+            className="flex items-center gap-1.5 text-sm font-semibold text-slate-700 hover:text-blue-700"
+          >
+            <span className="text-slate-400">{showDailySummary ? '▾' : '▸'}</span>
+            📅 일자별 요약 ({perDay.length}일)
+          </button>
+          {showDailySummary && (
+            <div className="overflow-x-auto mt-2">
+              <table className="table text-sm min-w-[400px]">
+                <thead>
+                  <tr>
+                    <th>일자</th>
+                    <th className="text-right">건수</th>
+                    <th className="text-right">매출</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {perDay.map(([d, v]) => (
+                    <tr key={d}>
+                      <td className="font-mono">{d}</td>
+                      <td className="text-right">{v.count}건</td>
+                      <td className="text-right font-medium">{v.total.toLocaleString()}원</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
       </>)}
 
       {/* 지점비교 매트릭스 (본사/관리자) — legacy+sales 통합, 일/월/연 */}
