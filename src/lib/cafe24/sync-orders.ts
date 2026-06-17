@@ -3,7 +3,6 @@
 
 import { revalidatePath } from 'next/cache';
 import { getValidAccessToken } from '@/lib/cafe24/token-store';
-import { processCafe24Webhook } from '@/lib/cafe24/webhook';
 import { createClient } from '@supabase/supabase-js';
 import { syncReceiptStatusFromShipment } from '@/lib/receipt-sync';
 import { deductOnlineOrderInventory } from '@/lib/cafe24/online-inventory';
@@ -17,8 +16,7 @@ export interface SyncPaidOrdersResult {
   success: boolean;
   message: string;
   processed: number;
-  created?: number;
-  updated?: number;
+  created?: number;       // 매출 인식 분리(#25) 이후 항상 0 — 매출은 배송 추가 확정 시 생성.
   errors?: number;
   shippingSynced?: number;
 }
@@ -55,8 +53,9 @@ export async function syncCafe24PaidOrdersCore(params: {
       (o: any) => o.paid === 'T' && o.canceled !== 'T'
     );
 
-    let created = 0;
-    let updated = 0;
+    // 매출 인식 분리(#25): 크론은 더 이상 sales_order·분개를 만들지 않으므로 created=0 고정.
+    // 매출은 배송화면 "배송 추가" 확정(confirmCafe24OrderAsSale) 시점에만 생성된다.
+    const created = 0;
     let errors = 0;
     let shippingSynced = 0;
     let invDeducted = 0;
@@ -72,28 +71,10 @@ export async function syncCafe24PaidOrdersCore(params: {
       if (!orderNo) continue;
 
       try {
-        await processCafe24Webhook({
-          event_type: 'order.created',
-          order_no: orderNo,
-          member_id: o.member_id || '',
-          status_code: o.order_status || '',
-        } as any);
-
-        const r = await processCafe24Webhook({
-          event_type: 'order.paid',
-          order_no: orderNo,
-          member_id: o.member_id || '',
-          status_code: o.order_status || 'F',
-        } as any);
-
-        if (r.success) {
-          if (r.message?.includes('already exists')) updated++;
-          else created++;
-        } else {
-          errors++;
-        }
-
         // ── 자사몰 재고 차감(#14) + 배송상태 연동(방법 B) ──
+        //   매출 인식 분리(#25): 여기서 sales_order 를 생성하지 않는다(확정은 배송 추가 시점).
+        //   아래는 sales_orders 를 cafe24_order_id 로 조회 후 so?.id 있을 때만 동작하므로,
+        //   아직 확정(배송 추가)되지 않은 주문은 so 가 없어 자연스럽게 skip 된다.
         if (sb) {
           try {
             const { data: so } = await sb
@@ -139,10 +120,9 @@ export async function syncCafe24PaidOrdersCore(params: {
 
     return {
       success: true,
-      message: `동기화 완료 — 신규 ${created}건, 기존 ${updated}건, 배송반영 ${shippingSynced}건, 재고차감 ${invDeducted}품목, 실패 ${errors}건 (대상 ${paidOrders.length}건)`,
+      message: `수집 완료(매출 미생성) — 확정주문 재고차감 ${invDeducted}품목, 배송반영 ${shippingSynced}건, 실패 ${errors}건 (대상 ${paidOrders.length}건). 매출은 배송 추가 확정 시 생성됩니다.`,
       processed: paidOrders.length,
       created,
-      updated,
       errors,
       shippingSynced,
     };

@@ -4,11 +4,13 @@ import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { fireNotificationTrigger } from '@/lib/notification-triggers';
 import { syncReceiptStatusFromShipment } from '@/lib/receipt-sync';
+import { confirmCafe24OrderAsSale } from '@/lib/cafe24/webhook';
 
 export interface ShipmentInput {
   source: 'CAFE24' | 'STORE';
   cafe24_order_id?: string;
   sales_order_id?: string;
+  member_id?: string;       // confirm 전용(카페24 주문 확정 시 고객 dedup). shipments 컬럼 아님 — insert payload 제외.
   sender_name: string;
   sender_phone: string;
   sender_zipcode?: string;
@@ -50,7 +52,24 @@ export async function getShipments(status?: string) {
 export async function createShipment(data: ShipmentInput) {
   const supabase = await createClient() as any;
 
-  const { error } = await supabase.from('shipments').insert([data]);
+  // member_id 는 confirm 전용 입력(shipments 컬럼 아님) — insert payload 에서 제외.
+  const { member_id, ...shipmentData } = data;
+  let salesOrderId = shipmentData.sales_order_id;
+
+  // 매출 인식 분리(#25): 카페24 주문은 "배송 추가" 확정 시점에만 sales_order·매출분개 생성.
+  //   confirm 호출로 전표 생성 후 그 sales_order.id 를 shipment 에 직접 연결한다.
+  //   confirm 실패 시 배송도 만들지 않는다(전표 없는 배송 방지).
+  if (shipmentData.source === 'CAFE24' && shipmentData.cafe24_order_id) {
+    const confirm = await confirmCafe24OrderAsSale(shipmentData.cafe24_order_id, member_id || '');
+    if (!confirm.success || !confirm.orderId) {
+      return { success: false, error: confirm.message || '판매전표 생성 실패' };
+    }
+    salesOrderId = confirm.orderId;
+  }
+
+  const { error } = await supabase
+    .from('shipments')
+    .insert([{ ...shipmentData, sales_order_id: salesOrderId }]);
 
   if (error) {
     console.error('createShipment error:', error);

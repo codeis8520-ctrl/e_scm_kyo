@@ -42,6 +42,7 @@ interface Shipment {
 
 interface Cafe24OrderForShipping {
   cafe24_order_id: string;
+  member_id?: string;
   order_date: string;
   orderer_name: string;
   orderer_phone: string;
@@ -845,6 +846,7 @@ export default function ShippingPage() {
       for (const order of toAdd) {
         const result = await createShipment({
           source: 'CAFE24', cafe24_order_id: order.cafe24_order_id,
+          member_id: order.member_id || '',   // 확정 시 고객 dedup(없으면 '' — phone dedup로 동작)
           sender_name: order.orderer_name || '',
           sender_phone: order.orderer_phone || '',
           sender_zipcode: undefined,
@@ -1109,11 +1111,15 @@ export default function ShippingPage() {
                     title="선택한 미등록 주문자를 고객으로 등록하고 해당 주문에 연결">
                     {registering ? '등록 중...' : `주문자 고객 등록 (${custSelected.size}건)`}
                   </button>
-                  <button className="btn-primary" onClick={handleAddSelectedOrders} disabled={selectedOrders.size === 0 || addingOrders}>
-                    {addingOrders ? '추가 중...' : `선택한 주문 배송 추가 (${selectedOrders.size}건)`}
+                  <button className="btn-primary" onClick={handleAddSelectedOrders} disabled={selectedOrders.size === 0 || addingOrders}
+                    title="배송 추가 시 판매전표·매출분개가 생성됩니다(매출 확정).">
+                    {addingOrders ? '추가 중...' : `배송 추가 + 판매전표 생성 (${selectedOrders.size}건)`}
                   </button>
                 </div>
               </div>
+              <p className="px-4 pt-2 pb-1 text-xs text-amber-600">
+                ※ &quot;배송 추가&quot; 클릭 시 해당 주문의 판매전표와 매출분개가 생성됩니다(매출 확정). 수집만으로는 매출이 잡히지 않습니다.
+              </p>
               <div className="overflow-x-auto">
                 <table className="table w-full">
                   <thead><tr>

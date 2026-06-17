@@ -9,6 +9,7 @@ import { kstTodayString, fmtDateKST } from '@/lib/date';
 
 interface Cafe24OrderForShipping {
   cafe24_order_id: string;
+  member_id?: string;       // 확정(배송 추가) 시 고객 dedup용. 비회원이면 ''.
   order_date: string;
   orderer_name: string;
   orderer_phone: string;
@@ -344,6 +345,7 @@ ${optValue}`;
         const buyerAddr = [buyer?.address1, buyer?.address2].filter(Boolean).join(' ');
         return {
           cafe24_order_id: orderId,
+          member_id: (o.member_id ?? detailOrder?.member_id ?? '').toString().trim(),
           order_date: (o.order_date ?? '').split('T')[0],
           // 주문자(orderer): buyer 임베드 우선, 폴백 billing_name/수령자
           orderer_name: buyer?.name ?? o.billing_name ?? detailOrder?.billing_name ?? '',

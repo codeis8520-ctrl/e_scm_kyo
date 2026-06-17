@@ -300,6 +300,79 @@ ${optValue}`;
   }
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// 확정(배송 추가) 시 매출 인식 — 이카운트식 수집/매출인식 분리 (#25, 방식 A).
+//
+//   크론(syncCafe24PaidOrdersCore)은 더 이상 sales_order·분개를 만들지 않는다.
+//   배송 화면 "배송 추가" 클릭 = 이 함수 호출 = 그 시점에 sales_order + items + 매출분개 생성.
+//
+//   기존 handleOrderCreated/handleOrderPaid 를 포크 없이 그대로 재사용한다:
+//     - handleOrderCreated : sales_order + items insert (cafe24_order_id 기존 시 재생성 안 함)
+//     - handleOrderPaid    : COMPLETED 전환 + 고객 연결 + createSaleJournal(매출분개)
+//   확정 후 receipt_status='PARCEL_PLANNED'·receipt_date=KST today 를 단일 UPDATE로 오버라이드.
+//
+//   멱등: 이미 sales_order 가 COMPLETED 면 분개 재생성 금지(즉시 return). receipt_status 가
+//   비어있을 때만 PARCEL_PLANNED+오늘로 채운다 → 재확정(중복 클릭/재시도) 시 분개 중복 없음.
+// ──────────────────────────────────────────────────────────────────────────
+export async function confirmCafe24OrderAsSale(
+  orderNo: string | number,
+  memberId: string
+): Promise<{ success: boolean; message: string; orderId?: string }> {
+  const sb = getSupabase();
+  const orderCode = generateCafe24OrderCode(process.env.CAFE24_MALL_ID || '', orderNo as any);
+
+  try {
+    // 1) 이미 확정된 주문이면(COMPLETED) 분개 재생성 금지. receipt_status만 비어있으면 채우고 return.
+    const { data: existing } = await sb
+      .from('sales_orders')
+      .select('id, status, receipt_status')
+      .eq('cafe24_order_id', String(orderNo))
+      .maybeSingle();
+
+    if (existing && existing.status === 'COMPLETED') {
+      if (!existing.receipt_status) {
+        await sb
+          .from('sales_orders')
+          .update({ receipt_status: 'PARCEL_PLANNED', receipt_date: kstTodayString() })
+          .eq('id', existing.id);
+      }
+      return { success: true, message: '이미 확정된 주문(분개 재생성 안 함)', orderId: existing.id };
+    }
+
+    // 2) sales_order + items 생성(멱등: 기존 행 있으면 재생성 안 함).
+    const created = await handleOrderCreated(orderNo as any, memberId, {
+      event_type: 'order.created',
+      order_no: orderNo as any,
+      member_id: memberId,
+      status_code: 'F',
+    } as Cafe24WebhookEvent);
+    if (!created.success) {
+      return { success: false, message: `전표 생성 실패: ${created.message}` };
+    }
+
+    // 3) COMPLETED 전환 + 고객 연결 + 매출분개.
+    const paid = await handleOrderPaid(orderCode, 'F');
+    if (!paid.success) {
+      return { success: false, message: `매출 인식 실패: ${paid.message}` };
+    }
+
+    // 4) 확정 시점 수령현황 = 택배예정, 수령(확정)일 = 오늘(KST). 단일 UPDATE 오버라이드.
+    const orderId = paid.orderId ?? created.orderId;
+    if (orderId) {
+      await sb
+        .from('sales_orders')
+        .update({ receipt_status: 'PARCEL_PLANNED', receipt_date: kstTodayString() })
+        .eq('id', orderId);
+    }
+
+    return { success: true, message: '판매전표 생성 완료', orderId };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    await logSyncEvent('order_confirm_error', String(orderNo), { memberId, error: msg }, 'failed', msg);
+    return { success: false, message: msg };
+  }
+}
+
 async function handleOrderCreated(
   orderNo: number,
   memberId: string,
