@@ -1237,6 +1237,16 @@ function assertFromBranchOwnership(
   return null;
 }
 
+// 이동일자(YYYY-MM-DD) → inventory_movements.created_at 타임스탬프.
+//   재고이동 기록의 날짜는 created_at(이력 모달·필터 기준)이라, 사용자가 고른 이동일자를
+//   created_at 에 그대로 반영한다. 정오(KST)로 고정 — UTC/KST 어느 쪽에서 봐도 같은 날짜.
+//   유효한 날짜가 아니면 undefined → DB 기본값 now() 사용.
+function transferDateToTimestamp(dateStr?: string | null): string | undefined {
+  const s = (dateStr || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return undefined;
+  return `${s}T12:00:00+09:00`;
+}
+
 export async function transferInventory(formData: FormData) {
   const supabase = await createClient();
   const db = supabase as any;
@@ -1246,6 +1256,9 @@ export async function transferInventory(formData: FormData) {
   const productId = formData.get('product_id') as string;
   const quantity = parseInt(formData.get('quantity') as string);
   const memo = formData.get('memo') as string;
+  // 출발(출고)일 = OUT 기록 날짜, 도착예정일 = IN 기록 날짜. 미입력 시 now().
+  const shipAt = transferDateToTimestamp(formData.get('ship_date') as string);
+  const arriveAt = transferDateToTimestamp(formData.get('arrival_date') as string) ?? shipAt;
 
   const session = await requireSession();
   const denied = assertFromBranchOwnership(session, fromBranchId);
@@ -1304,6 +1317,7 @@ export async function transferInventory(formData: FormData) {
     quantity: quantity,
     reference_type: 'TRANSFER',
     memo: `지점 이동: ${memo || '출고'}`,
+    ...(shipAt ? { created_at: shipAt } : {}),
   });
 
   await db.from('inventory_movements').insert({
@@ -1313,6 +1327,7 @@ export async function transferInventory(formData: FormData) {
     quantity: quantity,
     reference_type: 'TRANSFER',
     memo: `지점 이동: ${memo || '입고'}`,
+    ...(arriveAt ? { created_at: arriveAt } : {}),
   });
 
   revalidatePath('/inventory');
@@ -1327,6 +1342,8 @@ export async function transferInventoryBatch(input: {
   from_branch_id: string;
   to_branch_id: string;
   memo?: string;
+  ship_date?: string;      // 출발(출고)일 — OUT 기록 날짜
+  arrival_date?: string;   // 도착예정일 — IN 기록 날짜
   items: { product_id: string; quantity: number }[];
 }) {
   const supabase = await createClient();
@@ -1336,6 +1353,8 @@ export async function transferInventoryBatch(input: {
   const toBranchId = input.to_branch_id;
   const memo = input.memo;
   const items = input.items || [];
+  const shipAt = transferDateToTimestamp(input.ship_date);
+  const arriveAt = transferDateToTimestamp(input.arrival_date) ?? shipAt;
 
   // ── pass 1: 검증 (전체 거부, 처리 전) ──
   if (!fromBranchId) return { error: '출발 지점을 선택하세요.' };
@@ -1413,6 +1432,7 @@ export async function transferInventoryBatch(input: {
       quantity: q,
       reference_type: 'TRANSFER',
       memo: `지점 이동: ${memo || '출고'}`,
+      ...(shipAt ? { created_at: shipAt } : {}),
     });
     await db.from('inventory_movements').insert({
       branch_id: toBranchId,
@@ -1421,6 +1441,7 @@ export async function transferInventoryBatch(input: {
       quantity: q,
       reference_type: 'TRANSFER',
       memo: `지점 이동: ${memo || '입고'}`,
+      ...(arriveAt ? { created_at: arriveAt } : {}),
     });
   }
 

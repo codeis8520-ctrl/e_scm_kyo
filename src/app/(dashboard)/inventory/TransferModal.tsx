@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { transferInventory } from '@/lib/actions';
 import { useEscClose } from '@/hooks/useEscClose';
 import { toNum, fmtStock } from '@/lib/validators';
+import { fmtDateKST } from '@/lib/date';
 
 interface Props {
   inventory: {
@@ -24,6 +25,8 @@ export default function TransferModal({ inventory, branches, onClose, onSuccess 
     to_branch_id: '',
     quantity: 1,
     memo: '',
+    ship_date: fmtDateKST(new Date()),  // 출발(출고)일, 기본=오늘(KST)
+    arrival_date: '',                    // 도착예정일(선택)
   });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -51,12 +54,20 @@ export default function TransferModal({ inventory, branches, onClose, onSuccess 
       return;
     }
 
+    if (formData.arrival_date && formData.ship_date && formData.arrival_date < formData.ship_date) {
+      setError('도착예정일은 출발일과 같거나 이후여야 합니다.');
+      setLoading(false);
+      return;
+    }
+
     const form = new FormData();
     form.append('from_branch_id', formData.from_branch_id);
     form.append('to_branch_id', formData.to_branch_id);
     form.append('product_id', inventory.product_id);
     form.append('quantity', String(formData.quantity));
     form.append('memo', formData.memo);
+    form.append('ship_date', formData.ship_date);
+    form.append('arrival_date', formData.arrival_date);
 
     const result = await transferInventory(form);
 
@@ -122,6 +133,29 @@ export default function TransferModal({ inventory, branches, onClose, onSuccess 
             <p className="mt-1 text-xs text-slate-500">
               이동 가능 수량: {fmtStock(inventory.quantity, inventory.product?.allow_decimal_stock)}개
             </p>
+          </div>
+
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <label className="block text-sm font-medium text-gray-700">출발(출고)일 *</label>
+              <input
+                type="date"
+                value={formData.ship_date}
+                onChange={(e) => setFormData({ ...formData, ship_date: e.target.value })}
+                required
+                className="mt-1 input"
+              />
+            </div>
+            <div className="flex-1">
+              <label className="block text-sm font-medium text-gray-700">도착예정일</label>
+              <input
+                type="date"
+                value={formData.arrival_date}
+                min={formData.ship_date || undefined}
+                onChange={(e) => setFormData({ ...formData, arrival_date: e.target.value })}
+                className="mt-1 input"
+              />
+            </div>
           </div>
 
           <div>

@@ -3,6 +3,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { transferInventoryBatch, getInventory } from '@/lib/actions';
 import { toNum, fmtStock } from '@/lib/validators';
+import { fmtDateKST } from '@/lib/date';
 
 interface Inventory {
   id: string;
@@ -35,6 +36,8 @@ export default function TransferBatchPanel({
   const [fromBranchId, setFromBranchId] = useState(defaultFromBranchId || '');
   const [toBranchId, setToBranchId] = useState('');
   const [memo, setMemo] = useState('');
+  const [shipDate, setShipDate] = useState(fmtDateKST(new Date()));  // 출발(출고)일, 기본=오늘(KST)
+  const [arrivalDate, setArrivalDate] = useState('');                // 도착예정일(선택, 미입력=출발일과 동일)
   const [search, setSearch] = useState('');
   const [rows, setRows] = useState<TransferRow[]>([]);
   const [error, setError] = useState('');
@@ -196,11 +199,18 @@ export default function TransferBatchPanel({
       }
     }
 
+    if (arrivalDate && shipDate && arrivalDate < shipDate) {
+      setError('도착예정일은 출발일과 같거나 이후여야 합니다.');
+      return;
+    }
+
     setLoading(true);
     const result = await transferInventoryBatch({
       from_branch_id: fromBranchId,
       to_branch_id: toBranchId,
       memo: memo || undefined,
+      ship_date: shipDate || undefined,
+      arrival_date: arrivalDate || undefined,
       items: rows.map((r) => ({ product_id: r.product_id, quantity: r.quantity })),
     });
 
@@ -211,6 +221,7 @@ export default function TransferBatchPanel({
       setRows([]);
       setMemo('');
       setSearch('');
+      setArrivalDate('');
       setLoading(false);
       onSuccess();
     }
@@ -268,6 +279,31 @@ export default function TransferBatchPanel({
         {sameBranch && (
           <p className="text-sm text-red-600">동일 지점 간 이동은 할 수 없습니다.</p>
         )}
+
+        {/* 이동일자 — 출발(출고)일 / 도착예정일 */}
+        <div className="flex flex-col sm:flex-row gap-3">
+          <div className="flex-1">
+            <label className="block text-sm font-medium text-gray-700">출발(출고)일 *</label>
+            <input
+              type="date"
+              value={shipDate}
+              onChange={(e) => setShipDate(e.target.value)}
+              required
+              className="mt-1 input"
+            />
+          </div>
+          <div className="flex-1">
+            <label className="block text-sm font-medium text-gray-700">도착예정일</label>
+            <input
+              type="date"
+              value={arrivalDate}
+              min={shipDate || undefined}
+              onChange={(e) => setArrivalDate(e.target.value)}
+              className="mt-1 input"
+            />
+            <p className="mt-1 text-xs text-slate-400">미입력 시 출발일과 동일하게 기록됩니다.</p>
+          </div>
+        </div>
 
         <div>
           <label className="block text-sm font-medium text-gray-700">메모</label>
