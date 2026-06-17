@@ -802,6 +802,10 @@ const DETAIL_FIELD_LABELS: Record<string, string> = {
   customer_id: '고객연결',
   buyer_name: '표시명',
   buyer_phone: '연락처(표시)',
+  ordered_at: '판매일시',
+  branch_id: '매출처',
+  ordered_by: '담당자',
+  receipt_status: '수령상태',
   receipt_date: '수령일',
   recipient_name: '받는분',
   recipient_phone: '연락처',
@@ -819,6 +823,10 @@ export async function updateSalesOrderDetails(input: {
   customer_id?: string | null;
   buyer_name?: string | null;
   buyer_phone?: string | null;
+  ordered_at?: string | null;
+  branch_id?: string | null;
+  ordered_by?: string | null;
+  receipt_status?: string | null;
   receipt_date?: string | null;
   recipient_name?: string | null;
   recipient_phone?: string | null;
@@ -836,7 +844,8 @@ export async function updateSalesOrderDetails(input: {
   // 현재값 조회
   const { data: order, error: fetchErr } = await db
     .from('sales_orders')
-    .select(`order_number, status, customer_id, buyer_name, buyer_phone, receipt_date,
+    .select(`order_number, status, customer_id, buyer_name, buyer_phone,
+             ordered_at, branch_id, ordered_by, receipt_status, receipt_date,
              recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail`)
     .eq('id', input.orderId)
     .single();
@@ -846,7 +855,7 @@ export async function updateSalesOrderDetails(input: {
     if (fetchErr && isMissingColumnError(fetchErr)) {
       const retry = await db
         .from('sales_orders')
-        .select('order_number, status, customer_id, buyer_name, buyer_phone, receipt_date')
+        .select('order_number, status, customer_id, buyer_name, buyer_phone, ordered_at, branch_id, ordered_by, receipt_status, receipt_date')
         .eq('id', input.orderId)
         .single();
       if (retry.error || !retry.data) return { error: '전표를 찾을 수 없습니다.' };
@@ -874,7 +883,8 @@ async function finishUpdateSalesOrderDetails(
     const oldData: Record<string, any> = {};
     const newData: Record<string, any> = {};
     const candidates: (keyof typeof DETAIL_FIELD_LABELS)[] = [
-      'customer_id', 'buyer_name', 'buyer_phone', 'receipt_date',
+      'customer_id', 'buyer_name', 'buyer_phone',
+      'ordered_at', 'branch_id', 'ordered_by', 'receipt_status', 'receipt_date',
       'recipient_name', 'recipient_phone', 'recipient_zipcode',
       'recipient_address', 'recipient_address_detail',
     ];

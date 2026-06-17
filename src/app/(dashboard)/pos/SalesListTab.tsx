@@ -124,6 +124,18 @@ function todayStr(): string { return kstTodayString(); }
 function netSales(o: { total_amount?: number | null; discount_amount?: number | null }): number {
   return (o.total_amount || 0) - (o.discount_amount || 0);
 }
+// ISO(timestamptz) ↔ datetime-local(KST 벽시계 'YYYY-MM-DDTHH:mm') 변환 — 전표 판매일시 수정용(#23)
+function isoToKstLocal(iso?: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  return new Date(d.getTime() + 9 * 3600 * 1000).toISOString().slice(0, 16);
+}
+function kstLocalToIso(local: string): string | null {
+  if (!local) return null;
+  const d = new Date(`${local}:00+09:00`);
+  return isNaN(d.getTime()) ? null : d.toISOString();
+}
 function daysAgo(n: number): string {
   const d = new Date(); d.setDate(d.getDate() - n); return fmtDateKST(d);
 }
@@ -1518,6 +1530,13 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
   const [edBuyerName, setEdBuyerName] = useState('');
   const [edBuyerPhone, setEdBuyerPhone] = useState('');
   const [edReceiptDate, setEdReceiptDate] = useState('');
+  // #23: 기본정보 확대 수정 (판매일시·매출처·담당자·수령상태)
+  const [edOrderedAt, setEdOrderedAt] = useState('');       // datetime-local 값
+  const [edBranchId, setEdBranchId] = useState('');
+  const [edOrderedBy, setEdOrderedBy] = useState('');
+  const [edReceiptStatus, setEdReceiptStatus] = useState('');
+  const [edBranchOptions, setEdBranchOptions] = useState<{ id: string; name: string }[]>([]);
+  const [edStaffOptions, setEdStaffOptions] = useState<{ id: string; name: string }[]>([]);
   const [edRcptName, setEdRcptName] = useState('');
   const [edRcptPhone, setEdRcptPhone] = useState('');
   const [edRcptZipcode, setEdRcptZipcode] = useState('');
@@ -1990,6 +2009,18 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
     setEdBuyerName(order.buyer_name || '');
     setEdBuyerPhone(order.buyer_phone || '');
     setEdReceiptDate(order.receipt_date || '');
+    // #23: 판매일시·매출처·담당자·수령상태 prefill + 지점/담당자 목록 지연 로드
+    setEdOrderedAt(isoToKstLocal(order.ordered_at));
+    setEdBranchId(order.branch?.id || '');
+    setEdOrderedBy(order.handler?.id || '');
+    setEdReceiptStatus(order.receipt_status || 'RECEIVED');
+    if (edBranchOptions.length === 0 || edStaffOptions.length === 0) {
+      const sb = createClient() as any;
+      sb.from('branches').select('id, name').eq('is_active', true).order('name')
+        .then((r: any) => setEdBranchOptions((r.data as any[]) || []));
+      sb.from('users').select('id, name').eq('is_active', true).order('name')
+        .then((r: any) => setEdStaffOptions((r.data as any[]) || []));
+    }
     setEdRcptName(shipment?.recipient_name ?? order.recipient_name ?? '');
     setEdRcptPhone(shipment?.recipient_phone ?? order.recipient_phone ?? '');
     setEdRcptZipcode(shipment?.recipient_zipcode ?? order.recipient_zipcode ?? '');
@@ -2028,6 +2059,11 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
         customer_id: edCustomerId,
         buyer_name: edBuyerName.trim() || null,
         buyer_phone: edBuyerPhone.trim() || null,
+        // 판매일시는 실제 변경 시에만 전송(datetime-local 초 절삭으로 인한 무의미 변경 방지)
+        ordered_at: edOrderedAt && edOrderedAt !== isoToKstLocal(order.ordered_at) ? kstLocalToIso(edOrderedAt) : undefined,
+        branch_id: edBranchId || null,
+        ordered_by: edOrderedBy || null,
+        receipt_status: edReceiptStatus || null,
         receipt_date: edReceiptDate || null,
         recipient_name: edRcptName.trim() || null,
         recipient_phone: edRcptPhone.trim() || null,
@@ -2357,6 +2393,40 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                       <input type="text" value={edBuyerPhone} onChange={e => setEdBuyerPhone(e.target.value)}
                         className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
                     </div>
+                  </div>
+                </div>
+
+                {/* #23: 판매일시 · 수령상태 · 매출처 · 담당자 */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-slate-500">판매일시</label>
+                    <input type="datetime-local" value={edOrderedAt} onChange={e => setEdOrderedAt(e.target.value)}
+                      className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500">수령상태</label>
+                    <select value={edReceiptStatus} onChange={e => setEdReceiptStatus(e.target.value)}
+                      className="w-full text-sm border border-slate-300 rounded px-2 py-1">
+                      {([['RECEIVED', '수령완료'], ['PICKUP_PLANNED', '방문예정'], ['QUICK_PLANNED', '퀵예정'], ['PARCEL_PLANNED', '택배예정'], ['PARCEL_SHIPPED', '택배발송완료']] as [string, string][]).map(([v, l]) => (
+                        <option key={v} value={v}>{l}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500">매출처</label>
+                    <select value={edBranchId} onChange={e => setEdBranchId(e.target.value)}
+                      className="w-full text-sm border border-slate-300 rounded px-2 py-1">
+                      <option value="">미지정</option>
+                      {edBranchOptions.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500">담당자</label>
+                    <select value={edOrderedBy} onChange={e => setEdOrderedBy(e.target.value)}
+                      className="w-full text-sm border border-slate-300 rounded px-2 py-1">
+                      <option value="">미지정</option>
+                      {edStaffOptions.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                    </select>
                   </div>
                 </div>
 
