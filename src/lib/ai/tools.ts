@@ -1512,8 +1512,9 @@ async function execGetCustomer(sb: any, args: { name?: string; phone?: string })
     const points = await getPoints(sb, c.id);
     // 최근 주문 합산
     const { data: orders } = await sb.from('sales_orders')
-      .select('total_amount').eq('customer_id', c.id).eq('status', 'COMPLETED');
-    const totalPurchase = ((orders || []) as any[]).reduce((s: number, o: any) => s + (o.total_amount || 0), 0);
+      .select('total_amount, discount_amount').eq('customer_id', c.id).eq('status', 'COMPLETED');
+    // 누적구매액 = 실결제 합(#18: total − discount)
+    const totalPurchase = ((orders || []) as any[]).reduce((s: number, o: any) => s + (Number(o.total_amount || 0) - Number(o.discount_amount || 0)), 0);
     return {
       이름: c.name, 전화: c.phone, 이메일: c.email || '-',
       등급: gradeLabels[c.grade] || c.grade,
@@ -3210,7 +3211,7 @@ async function execCustomerSegmentAnalysis(sb: any, args: {
 
   // top_spenders / frequent_buyers
   let soQ = sb.from('sales_orders')
-    .select('customer_id, total_amount, customers(name, phone, grade)')
+    .select('customer_id, total_amount, discount_amount, customers(name, phone, grade)')
     .eq('status', 'COMPLETED')
     .gte('ordered_at', sinceIso)
     .not('customer_id', 'is', null);
@@ -3225,7 +3226,7 @@ async function execCustomerSegmentAnalysis(sb: any, args: {
       grade: o.customers?.grade || 'NORMAL',
       spent: 0, count: 0,
     };
-    cur.spent += Number(o.total_amount) || 0;
+    cur.spent += (Number(o.total_amount) || 0) - (Number(o.discount_amount) || 0);  // 실결제(#18)
     cur.count += 1;
     agg.set(id, cur);
   }

@@ -214,7 +214,7 @@ export default function CustomerDetailPage() {
         .single(),
       supabase
         .from('sales_orders')
-        .select(`id, order_number, ordered_at, status, total_amount, payment_method, credit_settled, credit_settled_method, points_earned, points_used, branch_id, branch:branches(name, id), items:sales_order_items(id, quantity, unit_price, total_price, order_option, item_text, product:products(name))`)
+        .select(`id, order_number, ordered_at, status, total_amount, discount_amount, payment_method, credit_settled, credit_settled_method, points_earned, points_used, branch_id, branch:branches(name, id), items:sales_order_items(id, quantity, unit_price, total_price, order_option, item_text, product:products(name))`)
         .eq('customer_id', customerId)
         .gte('ordered_at', kstDayStart(purchaseDateRange.start))
         .lte('ordered_at', kstDayEnd(purchaseDateRange.end))
@@ -330,7 +330,8 @@ export default function CustomerDetailPage() {
 
   const purchaseStats = useMemo(() => {
     const validOrders = purchaseOrders.filter(o => !['CANCELLED', 'REFUNDED'].includes(o.status));
-    const totalAmount = validOrders.reduce((s: number, o: any) => s + (o.total_amount || 0), 0);
+    // LTV·누적구매액 = 실결제 합(#18: total_amount − discount_amount)
+    const totalAmount = validOrders.reduce((s: number, o: any) => s + (Number(o.total_amount || 0) - Number(o.discount_amount || 0)), 0);
     const orderCount = validOrders.length;
     const lastDate = purchaseOrders.length > 0 ? purchaseOrders[0].ordered_at?.slice(0, 10) : null;
 
@@ -975,7 +976,7 @@ export default function CustomerDetailPage() {
                               {extraCount > 0 && <span className="text-slate-400"> 외 {extraCount}종</span>}
                             </p>
                             <span className={`font-semibold text-sm ${isRefunded || isCancelled ? 'line-through text-slate-400' : 'text-slate-800'}`}>
-                              {(o.total_amount || 0).toLocaleString()}원
+                              {(Number(o.total_amount || 0) - Number(o.discount_amount || 0)).toLocaleString()}원
                             </span>
                           </div>
                           <div className="flex gap-3 mt-1 text-xs text-slate-500">

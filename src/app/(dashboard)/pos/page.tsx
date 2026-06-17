@@ -961,9 +961,10 @@ function POSPageInner() {
           .limit(500),
       ]);
       const orders = (ordersRes.data || []) as any[];
+      // LTV = 실결제 합(#18: total_amount − discount_amount). 할인전 총액 아님.
       const totalLtv = orders
         .filter(o => !['CANCELLED', 'REFUNDED'].includes(o.status))
-        .reduce((s: number, o: any) => s + (o.total_amount || 0), 0);
+        .reduce((s: number, o: any) => s + (Number(o.total_amount || 0) - Number(o.discount_amount || 0)), 0);
       setHistory({
         loading: false,
         consultations: (consultRes.data as any[]) || [],

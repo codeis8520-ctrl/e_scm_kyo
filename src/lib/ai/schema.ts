@@ -49,7 +49,7 @@ legacy_purchases(마이그 064+069): id, legacy_order_no(주문묶음=일자+순
   ※ recipient_*: 구매자(customer)≠수령자인 선물배송 정보. 전화 무(無)인 익명거래는 customer_id=NULL.
   ※ mapped_to_sales_order_id: 향후 사람이 매핑 검수해 sales_orders로 승격한 경우 그 ID. NULL이면 legacy 전용.
   ※ 고객 상세 화면의 "과거 구매" 탭에서 표시.
-  ※ 고객 분석(/customers/analytics)의 RFM·재구매주기·이탈위험은 sales_orders(COMPLETED) + legacy_purchases 를 통합 집계해 LTV/F/M 계산.
+  ※ 고객 분석(/customers/analytics)의 RFM·재구매주기·이탈위험은 sales_orders(COMPLETED) + legacy_purchases 를 통합 집계해 LTV/F/M 계산. **LTV·누적구매액은 실결제(#18: sales는 total−discount, legacy는 total) 기준** — POS 고객패널·고객상세·분석·AI(getCustomerDetail·customer_segment_analysis) 모두 동일.
   ※ 070 에서 legacy_orders/legacy_order_items 로 정규화됨(주문헤더+품목). 앱 read 는 이 테이블 유지, 후속 단계 이전 예정.
 legacy_orders(마이그 070): id, legacy_order_no(UNIQUE 주문키=일자+순번+거래처코드), customer_id, phone, ordered_at, channel_text, branch_id, branch_code_raw, staff_code, recipient_name/recipient_phone/recipient_address(선물배송 수령자), received_at, payment_status, note, total_amount(주문합계=라인합 VAT포함), source_file, metadata, created_at/updated_at
   ※ 주문당 1행(47,268). legacy_purchases 를 주문 단위로 정규화한 헤더.

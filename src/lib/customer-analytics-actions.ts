@@ -73,7 +73,7 @@ export async function getRfmAnalysis(branchId?: string) {
   const [orders, legacyOrders] = await Promise.all([
     fetchAll((f, t) => {
       let q = sb.from('sales_orders')
-        .select('customer_id, total_amount, ordered_at, branch_id')
+        .select('customer_id, total_amount, discount_amount, ordered_at, branch_id')
         .eq('status', 'COMPLETED').not('customer_id', 'is', null).range(f, t);
       if (branchId) q = q.eq('branch_id', branchId);
       return q;
@@ -91,7 +91,8 @@ export async function getRfmAnalysis(branchId?: string) {
   const orderMap = new Map<string, { totalAmount: number; count: number; lastDate: string; firstDate: string }>();
   const accumulate = (rows: any[] | null) => {
     for (const o of (rows || [])) {
-      const amt = Number(o.total_amount) || 0;
+      // 실결제 합(#18): sales는 total−discount, legacy는 discount 컬럼 없어 total 그대로(이미 net)
+      const amt = (Number(o.total_amount) || 0) - (Number(o.discount_amount) || 0);
       const at = String(o.ordered_at);
       const existing = orderMap.get(o.customer_id);
       if (!existing) {
@@ -238,7 +239,7 @@ export async function getChurnRiskCustomers(branchId?: string) {
   const [orders, legacyOrders] = await Promise.all([
     fetchAll((f, t) => {
       let q = sb.from('sales_orders')
-        .select('customer_id, ordered_at, total_amount, branch_id')
+        .select('customer_id, ordered_at, total_amount, discount_amount, branch_id')
         .eq('status', 'COMPLETED').not('customer_id', 'is', null).range(f, t);
       if (branchId) q = q.eq('branch_id', branchId);
       return q;
@@ -256,7 +257,8 @@ export async function getChurnRiskCustomers(branchId?: string) {
   const customerMap = new Map<string, { lastDate: string; count: number; totalAmount: number }>();
   const aggregate = (rows: any[] | null) => {
     for (const o of (rows || [])) {
-      const amt = Number(o.total_amount) || 0;
+      // 실결제 합(#18): sales는 total−discount, legacy는 discount 없어 total 그대로
+      const amt = (Number(o.total_amount) || 0) - (Number(o.discount_amount) || 0);
       const at = String(o.ordered_at);
       const e = customerMap.get(o.customer_id);
       if (!e) {
