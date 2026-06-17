@@ -83,8 +83,8 @@ const STATUS_LABEL: Record<string, string> = {
   COMPLETED: '완료', CANCELLED: '취소', REFUNDED: '환불', PARTIALLY_REFUNDED: '부분환불',
 };
 const STATUS_BADGE: Record<string, string> = {
-  COMPLETED: 'bg-green-100 text-green-700',
-  CANCELLED: 'bg-slate-100 text-slate-500',
+  COMPLETED: 'bg-slate-100 text-slate-500',   // 완료 = 낮은 강조(회색)
+  CANCELLED: 'bg-slate-100 text-slate-400',
   REFUNDED: 'bg-red-100 text-red-600',
   PARTIALLY_REFUNDED: 'bg-amber-100 text-amber-700',
 };
@@ -96,20 +96,21 @@ const RECEIPT_STATUS_LABEL: Record<string, string> = {
   RECEIVED: '수령', PICKUP_PLANNED: '방문예정', QUICK_PLANNED: '퀵예정', PARCEL_PLANNED: '택배예정',
   PARCEL_SHIPPED: '택배발송',
 };
+// 색상 기준(#24): 완료=낮은 강조(회색), 확인·처리 필요(예정)=강조.
 const RECEIPT_STATUS_BADGE: Record<string, string> = {
-  RECEIVED: 'bg-green-100 text-green-700',
-  PICKUP_PLANNED: 'bg-slate-100 text-slate-600',
-  QUICK_PLANNED: 'bg-indigo-100 text-indigo-700',
-  PARCEL_PLANNED: 'bg-blue-100 text-blue-700',
-  PARCEL_SHIPPED: 'bg-teal-100 text-teal-700',
+  RECEIVED: 'bg-slate-100 text-slate-500',          // 수령완료 = 회색(낮음)
+  PICKUP_PLANNED: 'bg-amber-100 text-amber-800',    // 방문예정 = 강조(임박 응대)
+  QUICK_PLANNED: 'bg-purple-100 text-purple-700',   // 퀵예정 = 강조
+  PARCEL_PLANNED: 'bg-blue-100 text-blue-700',      // 택배예정 = 강조
+  PARCEL_SHIPPED: 'bg-cyan-50 text-cyan-700',       // 택배발송완료 = 중간(진행중)
 };
 const APPROVAL_STATUS_LABEL: Record<string, string> = {
   COMPLETED: '결제완료', CARD_PENDING: '미승인(카드)', UNSETTLED: '미결',
 };
 const APPROVAL_STATUS_BADGE: Record<string, string> = {
-  COMPLETED: 'bg-green-50 text-green-700 border border-green-200',
-  CARD_PENDING: 'bg-indigo-50 text-indigo-700 border border-indigo-200',
-  UNSETTLED: 'bg-amber-50 text-amber-700 border border-amber-200',
+  COMPLETED: 'bg-slate-100 text-slate-500 border border-slate-200',     // 결제완료 = 회색(낮음)
+  CARD_PENDING: 'bg-amber-100 text-amber-800 border border-amber-300',  // 미승인(카드) = 강조
+  UNSETTLED: 'bg-red-100 text-red-700 border border-red-300',           // 미결 = 강한 강조(미수금)
 };
 
 // KST "YYYY-MM-DD". 클라이언트 실행이지만 사용자 TZ에 의존하지 않도록 KST 고정.
@@ -2251,10 +2252,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                     {STATUS_LABEL[order.status] || order.status}
                   </span>
                   {order.approval_status && order.approval_status !== 'COMPLETED' && (
-                    <span className={`badge text-[10px] ${
-                      order.approval_status === 'UNSETTLED' ? 'bg-amber-100 text-amber-700'
-                      : 'bg-indigo-100 text-indigo-700'
-                    }`}>
+                    <span className={`badge text-[10px] ${APPROVAL_STATUS_BADGE[order.approval_status] || 'bg-amber-100 text-amber-800'}`}>
                       {order.approval_status === 'UNSETTLED' ? '미결' : '미승인(카드)'}
                     </span>
                   )}
@@ -2263,13 +2261,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
               <div>
                 <p className="text-[11px] text-slate-500">수령</p>
                 <p className="flex items-center gap-1.5">
-                  <span className={`badge text-[10px] ${
-                    !order.receipt_status || order.receipt_status === 'RECEIVED' ? 'bg-green-100 text-green-700'
-                    : order.receipt_status === 'PARCEL_PLANNED' ? 'bg-blue-100 text-blue-700'
-                    : order.receipt_status === 'PARCEL_SHIPPED' ? 'bg-teal-100 text-teal-700'
-                    : order.receipt_status === 'QUICK_PLANNED' ? 'bg-indigo-100 text-indigo-700'
-                    : 'bg-slate-100 text-slate-600'
-                  }`}>
+                  <span className={`badge text-[10px] ${RECEIPT_STATUS_BADGE[order.receipt_status || 'RECEIVED'] || 'bg-slate-100 text-slate-500'}`}>
                     {!order.receipt_status ? '수령완료'
                      : order.receipt_status === 'RECEIVED' ? '수령완료'
                      : order.receipt_status === 'PICKUP_PLANNED' ? '방문예정'
@@ -2487,11 +2479,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                         : itemRStatus === 'PARCEL_SHIPPED' ? '택배발송완료'
                         : itemRStatus === 'QUICK_PLANNED' ? '퀵예정'
                         : '방문예정';
-                      const rColor = itemRStatus === 'RECEIVED' ? 'bg-green-100 text-green-700'
-                        : itemRStatus === 'PARCEL_PLANNED' ? 'bg-blue-100 text-blue-700'
-                        : itemRStatus === 'PARCEL_SHIPPED' ? 'bg-teal-100 text-teal-700'
-                        : itemRStatus === 'QUICK_PLANNED' ? 'bg-indigo-100 text-indigo-700'
-                        : 'bg-slate-100 text-slate-600';
+                      const rColor = RECEIPT_STATUS_BADGE[itemRStatus] || 'bg-amber-100 text-amber-800';
                       return (
                         <tr key={it.id} className="border-t border-slate-100">
                           <td className="px-3 py-1.5">
