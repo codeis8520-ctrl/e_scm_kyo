@@ -578,49 +578,40 @@ export default function SalesListTab() {
     });
   }, [orders, search, productSearch, orderOptionSearch, recipientSearch, addressSearch]);
 
-  // 수령일자별 그룹 (listSort==='receipt' 렌더용). filtered 클라이언트 기준, 서버 재조회 없음.
-  // 그룹키 = receipt_date(YYYY-MM-DD 문자열) 그대로. null/빈값 = '미지정' 버킷.
-  // 날짜 오름차순(문자열 비교, ISO date) · '미지정' 그룹은 항상 맨 끝.
-  // 그룹 내 정렬 = receipt_status 우선순위. null/그 외 = 기타(4) (RECEIVED 강제 안 함).
+  // 수령 상태별 그룹 (listSort==='receipt' 렌더용). 수령 업무 흐름 기준 정렬.
+  //   1차: 수령 상태 — 방문예정 → 퀵예정 → 택배예정 → 택배발송완료 → 수령완료 → 기타
+  //   각 상태 내: 수령일자 내림차순(없으면 맨 뒤), 동일하면 판매일자(ordered_at) 내림차순
   const receiptGroups = useMemo(() => {
-    const STATUS_ORDER: Record<string, number> = {
-      PICKUP_PLANNED: 0, PARCEL_PLANNED: 1, PARCEL_SHIPPED: 2, QUICK_PLANNED: 3, RECEIVED: 4,
+    const ORDER = ['PICKUP_PLANNED', 'QUICK_PLANNED', 'PARCEL_PLANNED', 'PARCEL_SHIPPED', 'RECEIVED'];
+    const LABEL: Record<string, string> = {
+      PICKUP_PLANNED: '방문예정', QUICK_PLANNED: '퀵예정', PARCEL_PLANNED: '택배예정',
+      PARCEL_SHIPPED: '택배발송완료', RECEIVED: '수령완료', 기타: '기타',
     };
-    const rank = (o: OrderRow) => {
-      const s = o.receipt_status;
-      return s && s in STATUS_ORDER ? STATUS_ORDER[s] : 4;
-    };
-    const map = new Map<string, OrderRow[]>();
+    const buckets = new Map<string, OrderRow[]>();
     for (const o of filtered) {
-      const key = o.receipt_date || '미지정';
-      const arr = map.get(key);
-      if (arr) arr.push(o); else map.set(key, [o]);
+      const key = o.receipt_status && ORDER.includes(o.receipt_status) ? o.receipt_status : '기타';
+      const arr = buckets.get(key);
+      if (arr) arr.push(o); else buckets.set(key, [o]);
     }
-    const keys = Array.from(map.keys()).sort((a, b) => {
-      if (a === '미지정') return 1;
-      if (b === '미지정') return -1;
-      return a < b ? -1 : a > b ? 1 : 0;
-    });
-    return keys.map(key => {
-      const orders = map.get(key)!.slice().sort((a, b) => rank(a) - rank(b));
-      const counts = { pickup: 0, parcel: 0, shipped: 0, quick: 0, received: 0, other: 0 };
-      for (const o of orders) {
-        const s = o.receipt_status;
-        if (s === 'PICKUP_PLANNED') counts.pickup++;
-        else if (s === 'PARCEL_PLANNED') counts.parcel++;
-        else if (s === 'PARCEL_SHIPPED') counts.shipped++;
-        else if (s === 'QUICK_PLANNED') counts.quick++;
-        else if (s === 'RECEIVED') counts.received++;
-        else counts.other++;
+    // 그룹 내 정렬: 수령일 DESC(null 맨 뒤) → 판매일 DESC
+    const cmp = (a: OrderRow, b: OrderRow) => {
+      const ra = a.receipt_date || '', rb = b.receipt_date || '';
+      if (ra !== rb) {
+        if (!ra) return 1;
+        if (!rb) return -1;
+        return ra < rb ? 1 : -1;
       }
-      const isUnset = key === '미지정';
-      return {
-        date: isUnset ? null : key,
-        label: isUnset ? '수령일 미지정' : key,
-        orders,
-        counts,
-      };
-    });
+      const oa = a.ordered_at || '', ob = b.ordered_at || '';
+      return oa < ob ? 1 : oa > ob ? -1 : 0;
+    };
+    return [...ORDER, '기타']
+      .filter(k => buckets.has(k))
+      .map(k => ({
+        statusKey: k,
+        label: LABEL[k] ?? k,
+        orders: buckets.get(k)!.slice().sort(cmp),
+        count: buckets.get(k)!.length,
+      }));
   }, [filtered]);
 
   // 주문 1행 렌더러 — order/receipt 두 모드 공통 사용. 셀 구성·onClick·뱃지 로직 원본 그대로.
@@ -1150,7 +1141,7 @@ export default function SalesListTab() {
           <div className="flex items-center gap-3">
             <h3 className="font-semibold text-slate-700">판매 내역 ({filtered.length}건)</h3>
             <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1 w-fit">
-              {([['order', '주문일순'], ['receipt', '수령일자별']] as ['order' | 'receipt', string][]).map(([k, label]) => (
+              {([['order', '주문일순'], ['receipt', '수령 상태순']] as ['order' | 'receipt', string][]).map(([k, label]) => (
                 <button
                   key={k}
                   onClick={() => setListSort(k)}
@@ -1195,25 +1186,17 @@ export default function SalesListTab() {
               ) : listSort === 'order' ? (
                 filtered.map(renderOrderRow)
               ) : (
-                receiptGroups.flatMap(g => {
-                  const c = g.counts;
-                  const parts: string[] = [];
-                  if (c.pickup) parts.push(`방문 ${c.pickup}`);
-                  if (c.parcel) parts.push(`택배 ${c.parcel}`);
-                  if (c.shipped) parts.push(`발송 ${c.shipped}`);
-                  if (c.quick) parts.push(`퀵 ${c.quick}`);
-                  if (c.received) parts.push(`수령완료 ${c.received}`);
-                  if (c.other) parts.push(`기타 ${c.other}`);
-                  return [
-                    <tr key={`h-${g.date ?? 'unset'}`} className="bg-slate-100 font-semibold text-slate-700 text-sm">
-                      <td colSpan={13} className="py-1.5">
+                receiptGroups.flatMap(g => [
+                  <tr key={`h-${g.statusKey}`} className="bg-slate-100 font-semibold text-slate-700 text-sm">
+                    <td colSpan={13} className="py-1.5">
+                      <span className={`badge text-[10px] mr-2 ${RECEIPT_STATUS_BADGE[g.statusKey] || 'bg-slate-200 text-slate-600'}`}>
                         {g.label}
-                        {parts.length > 0 && <span className="font-normal text-slate-500"> · {parts.join(' · ')}</span>}
-                      </td>
-                    </tr>,
-                    ...g.orders.map(renderOrderRow),
-                  ];
-                })
+                      </span>
+                      <span className="font-normal text-slate-500">{g.count}건</span>
+                    </td>
+                  </tr>,
+                  ...g.orders.map(renderOrderRow),
+                ])
               )}
             </tbody>
           </table>
