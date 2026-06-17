@@ -24,7 +24,7 @@ product_files: id, product_id, file_url, file_name, file_type(image/document), s
 inventories: id, branch_id, product_id, quantity, safety_stock  [UNIQUE(branch_id, product_id)]
   ※ quantity 음수 허용 (CHECK 제약 없음). 판매·생산 시 부족해도 차단하지 않고 마이너스로 차감, 입고/반품 시 누적 복원.
 inventory_movements: id, branch_id, product_id, movement_type(IN/OUT/ADJUST/TRANSFER/PRODUCTION), quantity, memo, created_at, usage_type_id(소모 사용유형 FK, reference_type=USAGE 일 때만 값 존재; 그 외 NULL)
-  ※ reference_type(VARCHAR free-form): PHANTOM_DECOMPOSE / PACK_UNPACK / USAGE(재고 소모=로스·자가사용·시음용 등) 등.
+  ※ reference_type(VARCHAR free-form): POS_SALE / ONLINE_SALE(자사몰 판매차감, reference_id=sales_order_items.id) / PHANTOM_DECOMPOSE / PACK_UNPACK / USAGE(재고 소모=로스·자가사용·시음용 등) / TRANSFER / SALE_CANCEL 등.
 inventory_usage_types(마이그 079): id, code(UNIQUE), name, sort_order, is_system(true=삭제금지·비활성만), is_active
   ※ 재고 소모 사용유형 코드(로스/자가사용/시음용/기타). 판매 아님. 소모 기록은 inventory_movements.movement_type='OUT' + reference_type='USAGE' + usage_type_id.
 
@@ -283,7 +283,8 @@ sales_orders.receipt_status: 품목 receipt_status 집계. 품목 모두 RECEIVE
 - cafe24 실결제(cafe24OrderTotal) = 모든 결제수단 합(payment_amount + naver_point + points_spent_amount + credits_spent_amount). 포인트/적립금/예치금도 결제수단으로 매출 포함(예: 카드 50000 + 네이버포인트 12000 = 62000). 쿠폰은 할인(제외). 합이 0이면 firstPositiveAmount 폴백.
 - 단, sales_orders 저장 시 gross 규약(#18): total_amount = cafe24OrderTotal + 할인(cafe24OrderDiscount), discount_amount = 할인. → 매출 = total_amount − discount_amount = cafe24OrderTotal(실결제)로 환원, POS와 동일 규약. 배송탭 표시 total_price는 cafe24OrderTotal(실결제) 그대로.
 - 카페24 품목(product_code + 옵션조합 정규화) → 내부 product 매핑(cafe24_product_map), 송장/배송 짧은 품목명(이카운트식). 미매핑은 원본 옵션정리 표시.
-- 카페24 주문 동기화(webhook.ts) 시 sales_order_items 도 생성: 매핑되면 product_id 연결, 미매핑은 item_text(원본 품목명) 텍스트. **재고 미차감**(inventory_movements·point_history 없음 — 별도 스프린트).
+- 카페24 주문 동기화(webhook.ts) 시 sales_order_items 도 생성: 매핑되면 product_id 연결, 미매핑은 item_text(원본 품목명) 텍스트.
+- **자사몰 재고 차감(#14, deductOnlineOrderInventory)**: 매핑된(product_id 있는) 품목을 **주문 branch_id=자사몰 지점**에서 차감 + inventory_movements(movement_type='OUT', reference_type='ONLINE_SALE', reference_id=sales_order_items.id) 기록. 멱등(품목당 movement 존재 시 skip) → 매 동기화·나중 매핑 모두 안전. 미매핑 품목은 매핑 시점(createCafe24ProductMap 백필)에 차감. track_inventory=false 제외. point_history(적립)는 여전히 없음. ⚠️ 주문 취소 시 재고 복원은 미구현(동기화는 취소건 미처리).
 
 [배송]
 - shipments: source=CAFE24(자사몰)/STORE(직접입력)

@@ -6,6 +6,7 @@ import { getValidAccessToken } from '@/lib/cafe24/token-store';
 import { processCafe24Webhook } from '@/lib/cafe24/webhook';
 import { createClient } from '@supabase/supabase-js';
 import { syncReceiptStatusFromShipment } from '@/lib/receipt-sync';
+import { deductOnlineOrderInventory } from '@/lib/cafe24/online-inventory';
 
 // 카페24 shipping_status → 우리 shipments.status / 수령상태 매핑(방법 B).
 //   F=배송전, W=배송보류 → 무시 / M=배송중 → SHIPPED(택배발송완료) / T=배송완료 → DELIVERED(수령완료)
@@ -58,6 +59,7 @@ export async function syncCafe24PaidOrdersCore(params: {
     let updated = 0;
     let errors = 0;
     let shippingSynced = 0;
+    let invDeducted = 0;
 
     // 배송상태 동기화용 Supabase 클라이언트 (방법 B)
     const sb = (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
@@ -91,10 +93,8 @@ export async function syncCafe24PaidOrdersCore(params: {
           errors++;
         }
 
-        // ── 배송상태 연동(방법 B): cafe24 shipping_status → shipments.status + 수령상태 ──
-        //   카페24 관리자에서 배송 처리한 건을 우리 시스템에 반영. 다운그레이드 방지(전진만).
-        const target = SHIPPING_STATUS_MAP[String(o.shipping_status ?? '')];
-        if (sb && target) {
+        // ── 자사몰 재고 차감(#14) + 배송상태 연동(방법 B) ──
+        if (sb) {
           try {
             const { data: so } = await sb
               .from('sales_orders')
@@ -102,24 +102,30 @@ export async function syncCafe24PaidOrdersCore(params: {
               .eq('cafe24_order_id', String(orderNo))
               .maybeSingle();
             if (so?.id) {
-              const { data: shipRow } = await sb
-                .from('shipments')
-                .select('id, status')
-                .eq('cafe24_order_id', String(orderNo))
-                .maybeSingle();
-              // shipment 있으면 전진 시에만 상태 갱신
-              if (shipRow?.id && (SHIP_RANK[target] ?? 0) > (SHIP_RANK[shipRow.status as string] ?? 0)) {
-                await sb
+              // #14: 자사몰 주문 재고 차감(자사몰 지점, 멱등). 매핑된 품목만.
+              const d = await deductOnlineOrderInventory(sb, so.id);
+              if (d > 0) invDeducted += d;
+
+              // 방법 B: cafe24 shipping_status → shipments.status(전진만) + 수령상태
+              const target = SHIPPING_STATUS_MAP[String(o.shipping_status ?? '')];
+              if (target) {
+                const { data: shipRow } = await sb
                   .from('shipments')
-                  .update({ status: target, updated_at: new Date().toISOString() })
-                  .eq('id', shipRow.id);
+                  .select('id, status')
+                  .eq('cafe24_order_id', String(orderNo))
+                  .maybeSingle();
+                if (shipRow?.id && (SHIP_RANK[target] ?? 0) > (SHIP_RANK[shipRow.status as string] ?? 0)) {
+                  await sb
+                    .from('shipments')
+                    .update({ status: target, updated_at: new Date().toISOString() })
+                    .eq('id', shipRow.id);
+                }
+                await syncReceiptStatusFromShipment(sb, so.id, target);
+                shippingSynced++;
               }
-              // 판매현황 수령상태 반영(#19 공용헬퍼) — shipment 없어도 sales_order_items 직접 갱신
-              await syncReceiptStatusFromShipment(sb, so.id, target);
-              shippingSynced++;
             }
           } catch {
-            /* 배송 동기화 실패가 매출 동기화를 막지 않음 */
+            /* 재고/배송 동기화 실패가 매출 동기화를 막지 않음 */
           }
         }
       } catch {
@@ -133,7 +139,7 @@ export async function syncCafe24PaidOrdersCore(params: {
 
     return {
       success: true,
-      message: `동기화 완료 — 신규 ${created}건, 기존 ${updated}건, 배송반영 ${shippingSynced}건, 실패 ${errors}건 (대상 ${paidOrders.length}건)`,
+      message: `동기화 완료 — 신규 ${created}건, 기존 ${updated}건, 배송반영 ${shippingSynced}건, 재고차감 ${invDeducted}품목, 실패 ${errors}건 (대상 ${paidOrders.length}건)`,
       processed: paidOrders.length,
       created,
       updated,

@@ -4,6 +4,7 @@ import { requireSession } from '@/lib/session';
 import { loadTokens, refreshAccessToken } from '@/lib/cafe24/token-store';
 import { normalizeOptionValue } from '@/lib/cafe24/types';
 import { syncCafe24PaidOrdersCore } from '@/lib/cafe24/sync-orders';
+import { deductOnlineOrderInventory } from '@/lib/cafe24/online-inventory';
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 
@@ -213,8 +214,15 @@ export async function createCafe24ProductMap(params: {
         const opt = (params.option_display ?? '').trim();
         q = opt ? q.eq('order_option', opt) : q.is('order_option', null);
 
-        const { data: updated, error: bfErr } = await q.select('id');
-        if (!bfErr && Array.isArray(updated)) backfilled = updated.length;
+        const { data: updated, error: bfErr } = await q.select('id, sales_order_id');
+        if (!bfErr && Array.isArray(updated)) {
+          backfilled = updated.length;
+          // 매핑되어 product_id가 채워진 자사몰 주문은 즉시 재고 차감(#14, 멱등).
+          const orderIds = [...new Set(updated.map((r: any) => r.sales_order_id).filter(Boolean))];
+          for (const oid of orderIds) {
+            try { await deductOnlineOrderInventory(sb, oid as string); } catch { /* 차감 실패가 매핑을 무효화하지 않음 */ }
+          }
+        }
       }
     } catch {
       /* 백필 실패가 매핑 저장을 무효화하지 않음(미매핑 degrade) */
