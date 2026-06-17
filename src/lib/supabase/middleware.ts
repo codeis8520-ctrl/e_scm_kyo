@@ -9,7 +9,7 @@ export async function updateSession(request: NextRequest) {
   const sessionToken = request.cookies.get('session_token')?.value;
   const userId = request.cookies.get('user_id')?.value;
 
-  const publicPaths = ['/login', '/join', '/api/cafe24', '/api/solapi', '/api/webhooks', '/api/notifications/batch'];
+  const publicPaths = ['/login', '/join', '/api/cafe24', '/api/solapi', '/api/webhooks', '/api/notifications/batch', '/api/shipping/track-sync'];
   const isPublicPath = publicPaths.some(path => request.nextUrl.pathname.startsWith(path));
 
   if (!sessionToken && !userId && !isPublicPath) {
