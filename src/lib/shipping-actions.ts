@@ -122,9 +122,23 @@ export async function updateShipment(
     .eq('id', id)
     .maybeSingle();
 
+  // 실제 shipments 컬럼만 허용 — 호출부가 파생필드(sale_branch_name·sale_receipt_date)나
+  // 임베드 객체(sales_order)가 섞인 전체 객체를 넘겨도 update 가 깨지지 않도록 방어.
+  const UPDATABLE = new Set([
+    'source', 'cafe24_order_id', 'sales_order_id',
+    'sender_name', 'sender_phone', 'sender_zipcode', 'sender_address', 'sender_address_detail',
+    'recipient_name', 'recipient_phone', 'recipient_zipcode', 'recipient_address', 'recipient_address_detail',
+    'delivery_message', 'items_summary', 'branch_id', 'created_by',
+    'tracking_number', 'status',
+  ]);
+  const clean: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (UPDATABLE.has(k)) clean[k] = v;
+  }
+
   const { error } = await supabase
     .from('shipments')
-    .update({ ...data, updated_at: new Date().toISOString() })
+    .update({ ...clean, updated_at: new Date().toISOString() })
     .eq('id', id);
 
   if (error) {

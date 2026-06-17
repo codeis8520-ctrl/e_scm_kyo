@@ -1040,7 +1040,18 @@ export default function ShippingPage() {
     if (!editShipment) return;
     setEditSaving(true); setEditError('');
     try {
-      await updateShipment(editShipment.id, editForm as any);
+      // 송장번호를 새로 넣었는데 상태가 아직 대기중이면 발송완료로 자동 연결
+      // (출력완료는 유지 — 이미 출력 후 송장만 채운 경우) → #19 판매현황 수령상태 연동도 함께 발화
+      const newTracking = (editForm.tracking_number ?? '').toString().trim();
+      const hadTracking = !!editShipment.tracking_number;
+      let status = editForm.status ?? editShipment.status;
+      if (newTracking && !hadTracking && status === 'PENDING') status = 'SHIPPED';
+
+      const res = await updateShipment(editShipment.id, { ...editForm, tracking_number: newTracking || null, status } as any);
+      if (res && (res as any).success === false) {
+        setEditError((res as any).error || '저장에 실패했습니다.');
+        return;
+      }
       await fetchShipments(); handleEditClose();
     } catch (e: any) {
       setEditError(e.message || '저장 중 오류');
