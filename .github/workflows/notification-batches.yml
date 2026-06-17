@@ -15,6 +15,7 @@ on:
     - cron: '0 0 * * *'    # 생일 알림톡 09:00 KST
     - cron: '0 1 * * 1'    # 휴면 재유치 월 10:00 KST
     - cron: '0 17 * * *'   # 카페24 토큰 갱신 02:00 KST
+    - cron: '0 6 * * *'    # 배송완료 자동추적 15:00 KST
     - cron: '*/10 * * * *' # 캠페인 예약 발송 10분 간격
   workflow_dispatch:
     inputs:
@@ -29,6 +30,7 @@ on:
           - dormant
           - cafe24-refresh
           - campaign-scheduler
+          - track-sync
 
 jobs:
   cafe24-sync:
@@ -122,6 +124,30 @@ jobs:
           RESPONSE=$(curl -sSL -w "\n%{http_code}" \
             -H "Authorization: Bearer $CRON_SECRET" \
             "$APP_URL/api/cafe24/refresh")
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          CODE=$(echo "$RESPONSE" | tail -n 1)
+          echo "HTTP: $CODE  Body: $BODY"
+          if [ "$CODE" != "200" ]; then exit 1; fi
+
+  track-sync:
+    if: >-
+      github.event_name == 'schedule' && github.event.schedule == '0 6 * * *' ||
+      github.event_name == 'workflow_dispatch' && inputs.job == 'track-sync'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 배송완료 자동추적 (송장 기반)
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "⚠ APP_URL 또는 CRON_SECRET 미설정 — 건너뜀"
+            exit 0
+          fi
+          echo "▶ 배송완료 자동추적 호출"
+          RESPONSE=$(curl -sSL -w "\n%{http_code}" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$APP_URL/api/shipping/track-sync?limit=60")
           BODY=$(echo "$RESPONSE" | head -n -1)
           CODE=$(echo "$RESPONSE" | tail -n 1)
           echo "HTTP: $CODE  Body: $BODY"

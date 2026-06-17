@@ -34,7 +34,7 @@ export async function getShipments(status?: string) {
   //   매출처 = 연결된 sales_order.branch. 신규는 sales_order_id(FK), 과거 카페24는 cafe24_order_id.
   let query = supabase
     .from('shipments')
-    .select('*, sales_order:sales_orders(branch:branches(id, name))')
+    .select('*, sales_order:sales_orders(receipt_date, receipt_status, branch:branches(id, name))')
     .order('created_at', { ascending: false });
   if (status) query = query.eq('status', status);
 
@@ -50,25 +50,30 @@ export async function getShipments(status?: string) {
 
   const rows: any[] = data || [];
 
-  // sales_order_id 로 매출처를 못 얻은 카페24 행은 cafe24_order_id 로 보강
-  const needCafe24 = rows.filter(r => !r?.sales_order?.branch?.name && r.cafe24_order_id);
-  const cafe24BranchMap = new Map<string, string>();
+  // sales_order_id 로 매출처/수령일을 못 얻은 카페24 행은 cafe24_order_id 로 보강
+  const needCafe24 = rows.filter(r => !r?.sales_order && r.cafe24_order_id);
+  const cafe24Map = new Map<string, { name?: string; receipt_date?: string | null }>();
   if (needCafe24.length > 0) {
     const ids = [...new Set(needCafe24.map(r => String(r.cafe24_order_id)))];
     const { data: sos } = await supabase
       .from('sales_orders')
-      .select('cafe24_order_id, branch:branches(name)')
+      .select('cafe24_order_id, receipt_date, branch:branches(name)')
       .in('cafe24_order_id', ids);
     for (const s of (sos as any[]) || []) {
-      if (s.branch?.name) cafe24BranchMap.set(String(s.cafe24_order_id), s.branch.name);
+      cafe24Map.set(String(s.cafe24_order_id), { name: s.branch?.name, receipt_date: s.receipt_date });
     }
   }
 
-  const result = rows.map(r => ({
-    ...r,
-    // 매출처명: sales_order.branch → cafe24_order_id 매칭 → null(미연결)
-    sale_branch_name: r?.sales_order?.branch?.name ?? cafe24BranchMap.get(String(r.cafe24_order_id)) ?? null,
-  }));
+  const result = rows.map(r => {
+    const cm = cafe24Map.get(String(r.cafe24_order_id));
+    return {
+      ...r,
+      // 매출처명: sales_order.branch → cafe24_order_id 매칭 → null(미연결)
+      sale_branch_name: r?.sales_order?.branch?.name ?? cm?.name ?? null,
+      // 수령일/택배예정일(#26): 연결 sales_order.receipt_date
+      sale_receipt_date: r?.sales_order?.receipt_date ?? cm?.receipt_date ?? null,
+    };
+  });
 
   return { data: result };
 }

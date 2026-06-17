@@ -22,6 +22,7 @@ interface Shipment {
   id: string;
   source: 'CAFE24' | 'STORE';
   sale_branch_name?: string | null;   // 매출처(연결 sales_order의 지점) — #21
+  sale_receipt_date?: string | null;   // 수령일/택배예정일(연결 sales_order) — #26
   cafe24_order_id: string | null;
   branch_id: string | null;
   sender_name: string;
@@ -952,6 +953,15 @@ export default function ShippingPage() {
       );
     }
     return true;
+  }).sort((a, b) => {
+    // 발송 준비 순서(#26): 수령일/택배예정일 오름차순(임박한 것 먼저), 없으면 맨 뒤. 동일하면 등록일 최신순.
+    const ra = a.sale_receipt_date || '', rb = b.sale_receipt_date || '';
+    if (ra !== rb) {
+      if (!ra) return 1;
+      if (!rb) return -1;
+      return ra < rb ? -1 : 1;
+    }
+    return (b.created_at || '') < (a.created_at || '') ? -1 : (b.created_at || '') > (a.created_at || '') ? 1 : 0;
   });
 
   const toggleShipmentSelect = (id: string) => {
@@ -979,6 +989,7 @@ export default function ShippingPage() {
       const sender = resolveSenderForRow(s);
       return {
       '등록일': s.created_at?.slice(0, 10) ?? '',
+      '수령예정일': s.sale_receipt_date ?? '',
       '매출처': s.sale_branch_name ?? (s.source === 'CAFE24' ? '자사몰' : '직접입력'),
       '발송자': sender.name,
       '발송자 전화': sender.phone,
@@ -1508,6 +1519,7 @@ export default function ShippingPage() {
                         />
                       </th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-24">등록일</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-blue-600 uppercase tracking-wide w-24">수령/택배예정일</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">수령자</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">발송자</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">배송지 주소</th>
@@ -1529,6 +1541,11 @@ export default function ShippingPage() {
                           />
                         </td>
                         <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{s.created_at?.slice(0, 10)}</td>
+                        <td className="px-3 py-3 text-xs whitespace-nowrap">
+                          {s.sale_receipt_date
+                            ? <span className="font-semibold text-blue-700">{s.sale_receipt_date}</span>
+                            : <span className="text-slate-300">미지정</span>}
+                        </td>
                         <td className="px-3 py-3">
                           <div className="font-medium text-sm text-slate-800">{s.recipient_name}</div>
                           <div className="text-xs text-slate-400 mt-0.5">{s.recipient_phone}</div>
