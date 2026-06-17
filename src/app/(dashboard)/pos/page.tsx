@@ -218,6 +218,7 @@ function POSPageInner() {
   const [products, setProducts] = useState<any[]>([]);
   const [categoryInfo, setCategoryInfo] = useState<Map<string, CategoryInfo>>(new Map());
   const [widgetSort, setWidgetSort] = useState<'category' | 'name' | 'price' | 'stock'>('category');
+  const [searchIncludeAll, setSearchIncludeAll] = useState(false);  // 검색 시 옵션·세트 포함 여부(#27)
   const [productMap, setProductMap] = useState<Map<string, any>>(new Map());
   const [inventoryMap, setInventoryMap] = useState<Map<string, number>>(new Map());
   // 매트릭스 067: `${branchId}|${gradeCode}` → 적립율(%). 매칭되면 등급 기본보다 우선.
@@ -826,9 +827,11 @@ function POSPageInner() {
   // pos_widget 컬럼 부재(마이그 071 미적용) 폴백 = 전부 노출.
   // 정렬은 검색/위젯 모드 동일 적용. 원본 products 는 mutate 하지 않음([...].sort).
   const filteredProducts = useMemo(() => {
+    const isWidget = (p: any) => p.pos_widget === undefined || p.pos_widget === true;
     const base = search.trim()
-      ? products.filter(p => p.name.includes(search) || p.code.includes(search))
-      : products.filter(p => p.pos_widget === undefined || p.pos_widget === true);
+      // 검색 기본은 판매제품(pos_widget)만 — 옵션성/세트 SKU 미노출(#27). 토글 시 전체.
+      ? products.filter(p => (p.name.includes(search) || p.code.includes(search)) && (searchIncludeAll || isWidget(p)))
+      : products.filter(isWidget);
 
     // stock 정렬용 — getStock 동일 로직 인라인(getStock 은 아래에서 선언됨)
     const stockOf = (id: string): number | null =>
@@ -858,7 +861,7 @@ function POSPageInner() {
         }
       }
     });
-  }, [products, search, widgetSort, categoryInfo, selectedBranch, inventoryMap]);
+  }, [products, search, searchIncludeAll, widgetSort, categoryInfo, selectedBranch, inventoryMap]);
 
   // 매출처 검색 결과
   const isBranchLocked = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
@@ -2035,9 +2038,18 @@ function POSPageInner() {
               </select>
             </div>
             {search && (
-              <p className="text-xs text-slate-400 mt-1 pl-1">
-                {filteredProducts.length}개 · Enter키로 첫 번째 항목 담기
-              </p>
+              <div className="flex items-center justify-between mt-1 pl-1">
+                <p className="text-xs text-slate-400">
+                  {filteredProducts.length}개 · Enter키로 첫 번째 항목 담기
+                </p>
+                {/* #27: 검색 기본은 판매제품만, 옵션·세트 SKU는 토글로 */}
+                <label className="flex items-center gap-1 text-xs text-slate-500 cursor-pointer">
+                  <input type="checkbox" className="w-3.5 h-3.5"
+                    checked={searchIncludeAll}
+                    onChange={e => setSearchIncludeAll(e.target.checked)} />
+                  옵션·세트 포함
+                </label>
+              </div>
             )}
           </div>
           <div className="flex-1 overflow-auto pb-24 lg:pb-0">
@@ -2046,28 +2058,30 @@ function POSPageInner() {
             ) : filteredProducts.length === 0 && search ? (
               <p className="text-center text-slate-400 py-8">검색 결과가 없습니다</p>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3 gap-2">
-                {filteredProducts.map(product => {
+              // #27: 4~5열 밀집 그리드 + 카테고리 구분 헤더(col-span-full)
+              <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-1.5">
+                {(() => { let lastCat = ' '; const showCat = widgetSort === 'category' && !search.trim(); return filteredProducts.flatMap(product => {
                   const stock = getStock(product.id);
                   const inCart = cart.find(i => i.productId === product.id)?.quantity ?? 0;
                   // 음수 재고 정책: 품절(0) 또는 음수여도 클릭 가능. 빨강 배지로 시각 안내만.
                   const isOutOfStock = stock !== null && stock <= 0;
                   const isLow = stock !== null && stock > 0 && stock < 10;
-                  return (
+                  const hdr: React.ReactNode[] = [];
+                  if (showCat) {
+                    const c = categoryInfo.get(product.category_id)?.pathName ?? '미분류';
+                    if (c !== lastCat) { lastCat = c; hdr.push(<div key={`h-${c}`} className="col-span-full mt-1.5 first:mt-0"><span className="text-[11px] font-bold text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded">{c}</span></div>); }
+                  }
+                  return [...hdr, (
                     <button
                       key={product.id}
                       onClick={() => addToCart(product)}
-                      className={`bg-white p-2 rounded-md shadow-sm text-left border transition-all hover:border-blue-300 hover:shadow-md active:scale-95 ${
+                      className={`bg-white p-1.5 rounded-md shadow-sm text-left border transition-all hover:border-blue-300 hover:shadow-md active:scale-95 ${
                         isOutOfStock ? 'border-red-200 bg-red-50/30' : 'border-slate-100'
                       } ${inCart > 0 ? 'ring-2 ring-blue-400 ring-inset' : ''}`}
                     >
-                      {product.barcode && (
-                        <p className="text-[10px] text-slate-400 font-mono mb-0.5 truncate">{product.barcode}</p>
-                      )}
-                      <p className="font-medium text-slate-800 text-xs leading-tight line-clamp-2">{product.name}</p>
-                      <p className="text-[10px] text-slate-400">{product.code}</p>
-                      <div className="flex items-center justify-between mt-1">
-                        <p className="text-sm font-bold text-blue-600">{product.price.toLocaleString()}원</p>
+                      <p className="font-medium text-slate-800 text-xs leading-tight line-clamp-2 min-h-[2rem]">{product.name}</p>
+                      <div className="flex items-center justify-between mt-0.5">
+                        <p className="text-xs font-bold text-blue-600">{product.price.toLocaleString()}원</p>
                         {inCart > 0 && (
                           <span className="text-[10px] bg-blue-600 text-white px-1.5 py-0.5 rounded-full">{inCart}</span>
                         )}
@@ -2079,8 +2093,8 @@ function POSPageInner() {
                         {stock === null ? '\u00A0' : stock === 0 ? '품절 (판매 가능)' : stock < 0 ? `재고 ${stock} (판매 가능)` : `재고 ${stock}`}
                       </p>
                     </button>
-                  );
-                })}
+                  )];
+                }); })()}
               </div>
             )}
           </div>
