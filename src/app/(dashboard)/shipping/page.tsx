@@ -444,19 +444,21 @@ export default function ShippingPage() {
       '보내는분우편번호',
     ];
 
-    // Round-trip code — shipment.id 앞 8자리 hex 를 "내품명" 컬럼(7번째)에 박음.
-    // CJ 임포트 양식이 컬럼을 그대로 보존하므로 출력 후 다시 export 된 엑셀에도 유지됨.
-    // Import 시 이 코드로 1:1 매칭 → 동일 전화 다건 / 행 순서 변경 / 동명이인 사고 방지.
+    // #30: 내품명(G열)은 비움 — 송장에 코드성 문자열 노출 금지. (이전 RTC 매칭 제거)
+    //   보내는분성명(J열): 받는분=보내는분(본인 발송)이면 '더경옥'(회사명), 다르면 실제 보내는분(선물 등).
     const rows = targets.map(s => {
       const sender = resolveSenderForRow(s);
       const senderFullAddress = [sender.address, sender.addressDetail].filter(Boolean).join(' ');
+      const senderName = (sender.name && s.recipient_name && sender.name.trim() === s.recipient_name.trim())
+        ? '더경옥'
+        : sender.name;
       return [
         s.recipient_name, s.recipient_phone, '',
         [s.recipient_address, s.recipient_address_detail].filter(Boolean).join(' '),
         s.delivery_message || '', s.items_summary || '',
-        `KX-${s.id.replace(/-/g, '').slice(0, 8)}`,    // 내품명 ← RTC
+        '',                 // 내품명 — 비움(#30)
         '', '선불',
-        sender.name, sender.phone, senderFullAddress,
+        senderName, sender.phone, senderFullAddress,
         sender.zipcode || '',
       ];
     });
@@ -987,11 +989,14 @@ export default function ShippingPage() {
     if (!guardSenders(toExport)) return;
     const rows = toExport.map(s => {
       const sender = resolveSenderForRow(s);
+      // 발송자(#30): 받는분=보내는분(본인 발송)이면 '더경옥', 다르면 실제 보내는분
+      const senderName = (sender.name && s.recipient_name && sender.name.trim() === s.recipient_name.trim())
+        ? '더경옥' : sender.name;
       return {
       '등록일': s.created_at?.slice(0, 10) ?? '',
       '수령예정일': s.sale_receipt_date ?? '',
       '매출처': s.sale_branch_name ?? (s.source === 'CAFE24' ? '자사몰' : '직접입력'),
-      '발송자': sender.name,
+      '발송자': senderName,
       '발송자 전화': sender.phone,
       '발송자 우편번호': sender.zipcode,
       '발송자 주소': sender.address,
