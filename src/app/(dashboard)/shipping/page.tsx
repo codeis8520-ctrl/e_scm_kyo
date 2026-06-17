@@ -73,15 +73,18 @@ const CAFE24_STATUS_BADGE: Record<string, string> = {
 };
 
 // 매칭 신뢰도 단계
-//   rtc        — 내품명 컬럼에 박힌 round-trip code(KX-xxxxxxxx) 가 정확히 일치 → 신뢰
-//   phone_one  — RTC 못 찾았지만 수령자 전화 매칭이 후보 1건 → 합리적
-//   ambiguous  — 수령자 전화 매칭이 2건 이상 → 사용자 명시적 선택 필요
-//   unmatched  — RTC 도, 전화 매칭도 없음 → 대응 shipment 없음
-type ImportConfidence = 'rtc' | 'phone_one' | 'ambiguous' | 'unmatched';
+//   rtc        — 내품명 컬럼에 박힌 round-trip code(KX-xxxxxxxx) 가 정확히 일치 → 신뢰 (구 export 파일 하위호환)
+//   name_item  — 받는분 이름 + 품목명 조합이 정확히 일치하는 배송이 1건 → 자동 반영
+//   ambiguous  — 이름+품목이 2건 이상 일치, 또는 품목은 다르나 이름이 일치(불확실) → 사용자 명시적 선택 필요
+//   unmatched  — RTC·이름+품목·이름 어느 것으로도 대응 shipment 없음
+// ※ 택배사 프로그램 다운로드 시 전화번호가 010-1111-****로 마스킹되어 전화 매칭이 부정확 → 이름+품목 기준으로 전환(#32)
+type ImportConfidence = 'rtc' | 'name_item' | 'ambiguous' | 'unmatched';
 
 interface ImportRow {
   trackingNo: string;
-  matchPhone: string;
+  matchName: string;                 // 임포트 행의 받는분 이름
+  matchItems: string;                // 임포트 행의 품목명
+  matchPhone: string;                // 참고용(마스킹 가능)
   matchRtc: string | null;          // 행에서 추출한 RTC (예: 'a3b1c2d4'), 없으면 null
   rawRow: string[];
   matched: Shipment | null;          // 확정 매칭. ambiguous면 사용자 선택 후 채워짐
@@ -103,8 +106,6 @@ const STATUS_BADGE: Record<string, string> = {
 const SOURCE_BADGE: Record<string, string> = {
   CAFE24: 'badge badge-info', STORE: 'badge badge-success',
 };
-
-const normalPhone = (p: string) => p.replace(/\D/g, '');
 
 // 그리드 셀 잘림 텍스트 — 클릭하면 펼쳐지고(줄바꿈), 다시 클릭하면 접힘. 호버 시 title로 미리보기.
 function TruncatedCell({
@@ -226,7 +227,9 @@ export default function ShippingPage() {
   const [importHeaders, setImportHeaders] = useState<string[]>([]);
   const [importRawRows, setImportRawRows] = useState<string[][]>([]);
   const [importTrackingCol, setImportTrackingCol] = useState(0);
-  const [importPhoneCol, setImportPhoneCol] = useState(1);
+  const [importNameCol, setImportNameCol] = useState(1);   // 받는분 이름 열 (#32 매칭 기준)
+  const [importItemCol, setImportItemCol] = useState(2);   // 품목명 열 (#32 매칭 기준)
+  const [importPhoneCol, setImportPhoneCol] = useState(-1); // 참고용(마스킹 가능), 없으면 -1
   const [importPreview, setImportPreview] = useState<ImportRow[]>([]);
   const [importSaving, setImportSaving] = useState(false);
 
@@ -515,41 +518,58 @@ export default function ShippingPage() {
       const dataRows = rows.slice(1).filter(r => r.some(c => String(c).trim()));
       setImportHeaders(headers);
       setImportRawRows(dataRows.map(r => r.map(String)));
-      // 자동 감지: 10자리 이상 숫자 컬럼 → 송장번호, 010 포함 → 전화번호
+      // 자동 감지: 10자리 이상 숫자 컬럼 → 송장번호
       const trackIdx = headers.findIndex((_, i) =>
         dataRows.slice(0, 5).some(r => /^\d{10,13}$/.test(String(r[i] || '').replace(/\D/g, '')))
       );
-      const phoneIdx = headers.findIndex((_, i) =>
-        dataRows.slice(0, 5).some(r => /^0\d{9,10}$/.test(String(r[i] || '').replace(/\D/g, '')))
-      );
+      // 받는분 이름 열: 헤더에 받는/수령/수취/성명/이름/고객 포함 (CJ export 헤더 '받는분성명')
+      const nameIdx = headers.findIndex(h => /받는|수령|수취|성명|이름|고객/.test(String(h)));
+      // 품목명 열: 헤더에 품목/품명/상품/내품 포함 (CJ export 헤더 '품목명'). '내품명'(RTC)보다 '품목명' 우선
+      const itemIdx = (() => {
+        const exact = headers.findIndex(h => /품목|품명|상품/.test(String(h)));
+        if (exact >= 0) return exact;
+        return headers.findIndex(h => /내품/.test(String(h)));
+      })();
+      // 전화번호 열(참고용 표시): 헤더에 전화/연락처 포함 (마스킹돼도 표시는 가능)
+      const phoneIdx = headers.findIndex(h => /전화|연락처|휴대/.test(String(h)));
       setImportTrackingCol(trackIdx >= 0 ? trackIdx : 0);
-      setImportPhoneCol(phoneIdx >= 0 ? phoneIdx : 1);
+      setImportNameCol(nameIdx >= 0 ? nameIdx : (trackIdx === 1 ? 0 : 1));
+      setImportItemCol(itemIdx >= 0 ? itemIdx : 2);
+      setImportPhoneCol(phoneIdx);
       setImportStep(1);
     };
     reader.readAsArrayBuffer(file);
     e.target.value = '';
   };
 
+  // 매칭용 정규화 — 공백·구분자 제거 후 소문자 (이름/품목 양쪽 동일 적용)
+  const normMatch = (s: string) => String(s || '').replace(/\s+/g, '').replace(/[,·\-_/]/g, '').toLowerCase();
+  // 후보 정렬 — 수령일/택배예정일 최신 우선(동명이인·동일품목 구분 보조)
+  const byReceiptDesc = (a: Shipment, b: Shipment) =>
+    String(b.sale_receipt_date || b.created_at || '').localeCompare(String(a.sale_receipt_date || a.created_at || ''));
+
   const handleImportPreview = () => {
-    // RTC 패턴 — KX-{8자 hex}. 어느 컬럼이든 행 안에 있으면 인식.
+    // RTC 패턴 — KX-{8자 hex}. 구 export 파일 하위호환용(어느 컬럼이든 행 안에 있으면 인식).
     const RTC_PAT = /KX-([0-9a-fA-F]{8})/;
 
     // 1) shipment.id 앞 8자리 → shipment 매핑 (O(1) 조회용)
     const rtcMap = new Map<string, Shipment>();
     for (const s of shipments) {
       const code = s.id.replace(/-/g, '').slice(0, 8).toLowerCase();
-      // 동일 RTC 충돌은 사실상 0 (8 hex = 약 42억 분의 1) — 그래도 첫 행 우선
       if (!rtcMap.has(code)) rtcMap.set(code, s);
     }
 
-    // 2) 수령자 전화 → shipment 후보 목록 (중복 가능)
-    const phoneMap = new Map<string, Shipment[]>();
+    // 2) 이름+품목 → 후보, 이름만 → 후보 (둘 다 중복 가능)
+    const pushMap = (m: Map<string, Shipment[]>, k: string, v: Shipment) => {
+      const a = m.get(k); if (a) a.push(v); else m.set(k, [v]);
+    };
+    const nameItemMap = new Map<string, Shipment[]>();
+    const nameMap = new Map<string, Shipment[]>();
     for (const s of shipments) {
-      const p = normalPhone(s.recipient_phone || '');
-      if (!p) continue;
-      const arr = phoneMap.get(p) || [];
-      arr.push(s);
-      phoneMap.set(p, arr);
+      const nm = normMatch(s.recipient_name || '');
+      if (!nm) continue;
+      pushMap(nameItemMap, nm + '|' + normMatch(s.items_summary || ''), s);
+      pushMap(nameMap, nm, s);
     }
 
     // 이번 임포트 안에서 같은 shipment 가 여러 행에 매핑되지 않도록 사용 추적
@@ -557,55 +577,51 @@ export default function ShippingPage() {
 
     const preview: ImportRow[] = importRawRows.map(row => {
       const trackingNo = String(row[importTrackingCol] || '').trim();
-      const phoneRaw = String(row[importPhoneCol] || '');
-      const phoneNorm = normalPhone(phoneRaw);
+      const nameRaw = String(row[importNameCol] || '').trim();
+      const itemRaw = String(row[importItemCol] || '').trim();
+      const phoneRaw = importPhoneCol >= 0 ? String(row[importPhoneCol] || '') : '';
 
-      // RTC: 행의 모든 셀을 합쳐서 패턴 검색 (사용자가 어느 컬럼인지 지정할 필요 없음)
+      // RTC: 행의 모든 셀을 합쳐서 패턴 검색 (구 파일 하위호환)
       const joined = row.join(' ');
       const rtcMatch = joined.match(RTC_PAT);
       const matchRtc = rtcMatch ? rtcMatch[1].toLowerCase() : null;
 
-      // 1순위 — RTC 매칭
+      const base = {
+        trackingNo, matchName: nameRaw, matchItems: itemRaw,
+        matchPhone: phoneRaw, matchRtc, rawRow: row,
+      };
+
+      // 1순위 — RTC 매칭(구 export 파일)
       if (matchRtc) {
         const s = rtcMap.get(matchRtc);
         if (s && !claimed.has(s.id)) {
           claimed.add(s.id);
-          return {
-            trackingNo, matchPhone: phoneRaw, matchRtc,
-            rawRow: row, matched: s, candidates: [s],
-            confidence: 'rtc' as ImportConfidence,
-            alreadyHas: !!s.tracking_number,
-          };
+          return { ...base, matched: s, candidates: [s], confidence: 'rtc' as ImportConfidence, alreadyHas: !!s.tracking_number };
         }
       }
 
-      // 2순위 — 전화 매칭
-      const candidates = (phoneMap.get(phoneNorm) || []).filter(s => !claimed.has(s.id));
-      if (candidates.length === 1) {
-        claimed.add(candidates[0].id);
-        return {
-          trackingNo, matchPhone: phoneRaw, matchRtc,
-          rawRow: row, matched: candidates[0], candidates,
-          confidence: 'phone_one' as ImportConfidence,
-          alreadyHas: !!candidates[0].tracking_number,
-        };
-      }
-      if (candidates.length > 1) {
-        return {
-          trackingNo, matchPhone: phoneRaw, matchRtc,
-          rawRow: row, matched: null, candidates,
-          confidence: 'ambiguous' as ImportConfidence,
-          alreadyHas: false,
-        };
+      const nm = normMatch(nameRaw);
+      if (nm) {
+        // 2순위 — 이름 + 품목 정확 일치
+        const exact = (nameItemMap.get(nm + '|' + normMatch(itemRaw)) || [])
+          .filter(s => !claimed.has(s.id)).sort(byReceiptDesc);
+        if (exact.length === 1) {
+          claimed.add(exact[0].id);
+          return { ...base, matched: exact[0], candidates: exact, confidence: 'name_item' as ImportConfidence, alreadyHas: !!exact[0].tracking_number };
+        }
+        if (exact.length > 1) {
+          // 동일 이름+품목 다건 → 자동 반영 금지, 수령일로 구분해 직접 선택
+          return { ...base, matched: null, candidates: exact, confidence: 'ambiguous' as ImportConfidence, alreadyHas: false };
+        }
+        // 3순위 — 품목 불일치, 이름만 일치 → 불확실, 확인 목록으로 분리
+        const byName = (nameMap.get(nm) || []).filter(s => !claimed.has(s.id)).sort(byReceiptDesc);
+        if (byName.length >= 1) {
+          return { ...base, matched: null, candidates: byName, confidence: 'ambiguous' as ImportConfidence, alreadyHas: false };
+        }
       }
 
-      // 3순위 — 미매칭
-      return {
-        trackingNo, matchPhone: phoneRaw, matchRtc,
-        rawRow: row, matched: null, candidates: [],
-        confidence: 'unmatched' as ImportConfidence,
-        alreadyHas: false,
-      };
+      // 4순위 — 미매칭
+      return { ...base, matched: null, candidates: [], confidence: 'unmatched' as ImportConfidence, alreadyHas: false };
     }).filter(r => r.trackingNo);
 
     setImportPreview(preview);
@@ -628,7 +644,7 @@ export default function ShippingPage() {
       return prev.map((r, i) => i === rowIdx ? {
         ...r,
         matched: pick,
-        confidence: 'phone_one' as ImportConfidence,  // 사용자 선택 = 확정
+        confidence: 'name_item' as ImportConfidence,  // 사용자 선택 = 확정
         alreadyHas: !!pick.tracking_number,
       } : r);
     });
@@ -1629,21 +1645,33 @@ export default function ShippingPage() {
 
             {importStep === 1 && (
               <div className="space-y-4">
-                <p className="text-sm text-slate-500">엑셀에서 송장번호와 전화번호가 있는 열을 선택하세요.</p>
-                <div className="grid grid-cols-2 gap-4">
+                <p className="text-sm text-slate-500">
+                  송장번호 열과 매칭 기준(<b>받는분 이름 + 품목명</b>) 열을 선택하세요.
+                </p>
+                <div className="px-3 py-2 rounded bg-blue-50 border border-blue-200 text-xs text-blue-800">
+                  💡 택배사 다운로드 파일은 전화번호가 마스킹(010-1111-****)되어 부정확하므로 <b>받는분 이름 + 품목명</b> 조합으로 매칭합니다.
+                </div>
+                <div className="grid grid-cols-3 gap-3">
                   <div>
                     <label className="text-xs text-slate-500 block mb-1">송장번호 열</label>
                     <select className="input w-full" value={importTrackingCol} onChange={e => setImportTrackingCol(Number(e.target.value))}>
                       {importHeaders.map((h, i) => <option key={i} value={i}>{h || `열 ${i + 1}`}</option>)}
                     </select>
-                    <p className="text-xs text-slate-400 mt-1">예시: {importRawRows[0]?.[importTrackingCol]}</p>
+                    <p className="text-xs text-slate-400 mt-1 truncate" title={importRawRows[0]?.[importTrackingCol]}>예시: {importRawRows[0]?.[importTrackingCol]}</p>
                   </div>
                   <div>
-                    <label className="text-xs text-slate-500 block mb-1">매칭 기준 열 (전화번호)</label>
-                    <select className="input w-full" value={importPhoneCol} onChange={e => setImportPhoneCol(Number(e.target.value))}>
+                    <label className="text-xs text-slate-500 block mb-1">받는분 이름 열</label>
+                    <select className="input w-full" value={importNameCol} onChange={e => setImportNameCol(Number(e.target.value))}>
                       {importHeaders.map((h, i) => <option key={i} value={i}>{h || `열 ${i + 1}`}</option>)}
                     </select>
-                    <p className="text-xs text-slate-400 mt-1">예시: {importRawRows[0]?.[importPhoneCol]}</p>
+                    <p className="text-xs text-slate-400 mt-1 truncate" title={importRawRows[0]?.[importNameCol]}>예시: {importRawRows[0]?.[importNameCol]}</p>
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">품목명 열</label>
+                    <select className="input w-full" value={importItemCol} onChange={e => setImportItemCol(Number(e.target.value))}>
+                      {importHeaders.map((h, i) => <option key={i} value={i}>{h || `열 ${i + 1}`}</option>)}
+                    </select>
+                    <p className="text-xs text-slate-400 mt-1 truncate" title={importRawRows[0]?.[importItemCol]}>예시: {importRawRows[0]?.[importItemCol]}</p>
                   </div>
                 </div>
                 <div className="flex gap-2">
@@ -1657,7 +1685,7 @@ export default function ShippingPage() {
               const summary = {
                 total: importPreview.length,
                 rtc: importPreview.filter(r => r.confidence === 'rtc').length,
-                phone: importPreview.filter(r => r.confidence === 'phone_one').length,
+                nameItem: importPreview.filter(r => r.confidence === 'name_item').length,
                 ambiguous: importPreview.filter(r => r.confidence === 'ambiguous').length,
                 unmatched: importPreview.filter(r => r.confidence === 'unmatched').length,
                 ready: importPreview.filter(r => r.matched && !r.alreadyHas).length,
@@ -1668,16 +1696,16 @@ export default function ShippingPage() {
                 {/* 카운트 박스 — 한눈 검증 */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
                   <div className="rounded bg-emerald-50 border border-emerald-200 px-2 py-1.5">
-                    <div className="font-bold text-emerald-700">{summary.rtc}</div>
-                    <div className="text-emerald-600">🟢 RTC 매칭</div>
+                    <div className="font-bold text-emerald-700">{summary.nameItem}</div>
+                    <div className="text-emerald-600">🟢 이름+품목</div>
                   </div>
-                  <div className="rounded bg-amber-50 border border-amber-200 px-2 py-1.5">
-                    <div className="font-bold text-amber-700">{summary.phone}</div>
-                    <div className="text-amber-600">🟡 전화 1:1</div>
+                  <div className="rounded bg-sky-50 border border-sky-200 px-2 py-1.5">
+                    <div className="font-bold text-sky-700">{summary.rtc}</div>
+                    <div className="text-sky-600">🔵 코드(구파일)</div>
                   </div>
                   <div className="rounded bg-rose-50 border border-rose-200 px-2 py-1.5">
                     <div className="font-bold text-rose-700">{summary.ambiguous}</div>
-                    <div className="text-rose-600">🔴 선택 필요</div>
+                    <div className="text-rose-600">🔴 확인 필요</div>
                   </div>
                   <div className="rounded bg-slate-50 border border-slate-200 px-2 py-1.5">
                     <div className="font-bold text-slate-700">{summary.unmatched}</div>
@@ -1686,8 +1714,8 @@ export default function ShippingPage() {
                 </div>
                 {summary.ambiguous > 0 && (
                   <div className="px-3 py-2 rounded bg-rose-50 border border-rose-200 text-xs text-rose-800">
-                    ⚠️ 같은 수령자 전화로 매칭되는 배송이 여러 건인 행이 <b>{summary.ambiguous}건</b> 있습니다.
-                    아래에서 각 행에 맞는 배송을 직접 선택하세요. (Round-trip code 가 없는 임포트 엑셀에서 발생)
+                    ⚠️ 이름+품목이 여러 배송과 일치하거나 품목이 정확히 맞지 않는 행이 <b>{summary.ambiguous}건</b> 있습니다.
+                    자동 반영되지 않으니, 아래에서 <b>수령일</b>을 참고해 각 행에 맞는 배송을 직접 선택하세요.
                   </div>
                 )}
 
@@ -1697,16 +1725,16 @@ export default function ShippingPage() {
                       <tr>
                         <th>상태</th>
                         <th>송장번호</th>
-                        <th>수령자 전화</th>
+                        <th>받는분 / 품목</th>
                         <th>매칭 배송</th>
                       </tr>
                     </thead>
                     <tbody>
                       {importPreview.map((row, i) => {
                         const badge =
-                          row.confidence === 'rtc'        ? <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px]">🟢 RTC</span>
-                          : row.confidence === 'phone_one' ? <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px]">🟡 전화</span>
-                          : row.confidence === 'ambiguous' ? <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 text-[10px]">🔴 선택</span>
+                          row.confidence === 'rtc'        ? <span className="px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 text-[10px]">🔵 코드</span>
+                          : row.confidence === 'name_item' ? <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px]">🟢 이름+품목</span>
+                          : row.confidence === 'ambiguous' ? <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 text-[10px]">🔴 확인</span>
                           :                                 <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-[10px]">⚪ 미매칭</span>;
                         return (
                           <tr key={i} className={!row.matched && row.confidence !== 'ambiguous' ? 'opacity-50' : ''}>
@@ -1715,7 +1743,10 @@ export default function ShippingPage() {
                               {row.alreadyHas && <span className="ml-1 px-1 rounded bg-amber-100 text-amber-700 text-[10px]">중복</span>}
                             </td>
                             <td className="font-mono text-xs">{row.trackingNo}</td>
-                            <td className="font-mono text-xs">{row.matchPhone}</td>
+                            <td className="text-xs">
+                              <div className="font-medium text-slate-700">{row.matchName || '-'}</div>
+                              <div className="text-slate-400 truncate max-w-[160px]" title={row.matchItems}>{row.matchItems || ''}</div>
+                            </td>
                             <td>
                               {row.confidence === 'ambiguous' ? (
                                 <select
@@ -1726,14 +1757,15 @@ export default function ShippingPage() {
                                   <option value="">— 선택 —</option>
                                   {row.candidates.map(c => (
                                     <option key={c.id} value={c.id}>
-                                      {c.recipient_name} · {c.items_summary?.slice(0, 30) || '품목 없음'} · {c.created_at?.slice(0, 10)}
+                                      {c.recipient_name} · {c.items_summary?.slice(0, 24) || '품목 없음'} · 수령일 {(c.sale_receipt_date || c.created_at)?.slice(0, 10) || '-'}
                                       {c.tracking_number ? ` (이미 송장 ${c.tracking_number.slice(0, 8)}...)` : ''}
                                     </option>
                                   ))}
                                 </select>
                               ) : row.matched ? (
                                 <span className="text-xs">
-                                  {row.matched.recipient_name} · <span className="text-slate-400">{row.matched.items_summary?.slice(0, 30) || ''}</span>
+                                  {row.matched.recipient_name} · <span className="text-slate-400">{row.matched.items_summary?.slice(0, 24) || ''}</span>
+                                  {row.matched.sale_receipt_date && <span className="text-slate-400"> · {row.matched.sale_receipt_date.slice(0, 10)}</span>}
                                 </span>
                               ) : (
                                 <span className="text-xs text-slate-400">대응되는 배송 없음</span>
