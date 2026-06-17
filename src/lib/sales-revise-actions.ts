@@ -792,6 +792,112 @@ export async function removeSalesOrderItem(params: {
   return { success: true, delta: deltaFinal };
 }
 
+/**
+ * 품목 수량/단가 수정 (#36)
+ *
+ * 대상: 수정 가능 전표(COMPLETED + 미수령) 의 미수령 품목. 판매번호(order_number) 불변.
+ * 수량 변경 → 차액만큼 재고 차감(증가)/복원(감소, phantom은 BOM 분해). 단가 변경 → 금액만.
+ * 변경 후 totals·과세·적립포인트 재계산 + 결제/분개 차액 기록 + audit 기록(수정 이력).
+ * 결제 차액은 sales_order_payments 행으로 기록(추가결제/부분환불) — 실제 PG/단말기는 수기 안내.
+ */
+export async function updateSalesOrderItem(params: {
+  orderId: string;
+  itemId: string;
+  quantity?: number;   // 새 수량(정수). 미지정 시 기존 유지.
+  unitPrice?: number;  // 새 단가. 미지정 시 기존 유지.
+  discount?: number;   // 새 품목 할인. 미지정 시 기존 유지.
+}): Promise<{ success?: true; delta?: number; error?: string }> {
+  let session;
+  try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
+
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  const guard = await loadEditableOrder(db, params.orderId);
+  if ('error' in guard) return { error: guard.error };
+  const order = guard.order;
+
+  const items = (order.order_items || []) as any[];
+  const target = items.find(it => it.id === params.itemId);
+  if (!target) return { error: '해당 품목을 찾을 수 없습니다.' };
+  if (target.receipt_status === 'RECEIVED') {
+    return { error: '이미 수령된 품목은 수정할 수 없습니다.' };
+  }
+
+  const oldQty = Number(target.quantity);
+  const oldUnit = Number(target.unit_price);
+  const oldDiscount = Number(target.discount_amount || 0);
+  const newQty = params.quantity !== undefined ? Math.floor(params.quantity) : oldQty;
+  const newUnit = params.unitPrice !== undefined ? Number(params.unitPrice) : oldUnit;
+  const newDiscount = params.discount !== undefined ? Number(params.discount) : oldDiscount;
+
+  if (!Number.isFinite(newQty) || newQty <= 0) return { error: '수량을 올바르게 입력해주세요.' };
+  if (!Number.isFinite(newUnit) || newUnit < 0) return { error: '단가를 올바르게 입력해주세요.' };
+  if (!Number.isFinite(newDiscount) || newDiscount < 0) return { error: '할인 금액을 올바르게 입력해주세요.' };
+
+  // 변경 없음 → no-op
+  if (newQty === oldQty && newUnit === oldUnit && newDiscount === oldDiscount) {
+    return { success: true, delta: 0 };
+  }
+
+  const meta = await loadProductMeta(db, target.product_id);
+  const stockMeta = ('error' in meta) ? { track: true, phantom: false } : { track: meta.track, phantom: meta.phantom };
+  const productName = ('error' in meta) ? target.product_id : meta.name;
+
+  const stockBranchId = await resolveStockBranchId(db, order);
+
+  // 1) 수량 차액만큼 재고 조정 (증가→OUT 차감, 감소→IN 복원). 단가만 바뀌면 재고 불변.
+  const qtyDelta = newQty - oldQty;
+  if (qtyDelta !== 0) {
+    try {
+      await applyStockForItem(
+        db, stockBranchId, stockMeta, target.product_id,
+        productName, Math.abs(qtyDelta), qtyDelta > 0 ? 'OUT' : 'IN',
+        'SALE_REVISE_EDIT', 'PHANTOM_DECOMPOSE', order.id,
+        `전표 수정 수량변경 ${oldQty}→${newQty} (${order.order_number})`,
+      );
+    } catch (e: any) {
+      console.error('[updateSalesOrderItem] stock adjust failed:', e?.message);
+    }
+  }
+
+  // 2) 품목 update (discount_amount 컬럼 누락 방어)
+  const itemPayload: any = {
+    quantity: newQty,
+    unit_price: newUnit,
+    discount_amount: newDiscount,
+    total_price: newUnit * newQty - newDiscount,
+  };
+  let upErr = (await db.from('sales_order_items').update(itemPayload).eq('id', params.itemId)).error;
+  if (upErr && isMissingColumnError(upErr)) {
+    delete itemPayload.discount_amount;
+    itemPayload.total_price = newUnit * newQty;
+    upErr = (await db.from('sales_order_items').update(itemPayload).eq('id', params.itemId)).error;
+  }
+  if (upErr) return { error: '품목 수정에 실패했습니다.' };
+
+  // 3) 재계산 + 결제/분개 차액 (recalc 가 갱신된 품목을 재조회해 totals·포인트 갱신)
+  const { deltaFinal, deltaTaxable } = await recalcSalesOrderTotals(db, order);
+  const payRes = await recordPaymentDelta(db, order, deltaFinal, session.id);
+  if (payRes.error) return { error: payRes.error };
+  await recordJournalDelta(db, order, deltaFinal, deltaTaxable, session.id);
+
+  writeAuditLog({
+    userId: session.id,
+    action: 'UPDATE',
+    tableName: 'sales_orders',
+    recordId: order.id,
+    description: `전표 품목 수정: ${order.order_number}, ${productName} 수량 ${oldQty}→${newQty}, 단가 ${oldUnit.toLocaleString()}→${newUnit.toLocaleString()}원, 차액 ${deltaFinal.toLocaleString()}원`,
+  }).catch(() => {});
+
+  revalidatePath('/pos');
+  revalidatePath('/inventory');
+  revalidatePath('/reports');
+  revalidatePath('/accounting');
+
+  return { success: true, delta: deltaFinal };
+}
+
 // ── 전표 상세 직접 수정 (고객 재연결 / 표시명 / 수령일 / 받는분) ─────────────────
 //
 // 판매번호(order_number)는 절대 불변. 취소·환불 전표는 수정 불가.

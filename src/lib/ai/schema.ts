@@ -64,7 +64,7 @@ sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, buyer_n
   ※ 매출 기준 통일(#18): total_amount = 상품총액(할인 전 gross). **매출(실결제) = total_amount − discount_amount** 로 전 채널 통일(POS/백화점/cafe24 동일). 할인·포인트·쿠폰을 별도 매출항목으로 분리하지 않음. points_used는 결제수단(tender)이라 매출에서 빼지 않음. legacy_orders.total_amount는 이미 net(할인 컬럼 없음). 집계 SQL은 항상 (total_amount − COALESCE(discount_amount,0)) 사용.
   ※ status=CANCELLED 처리 경로 2가지: (a) 외상 미수금 → cancelCreditOrder, (b) 그 외 결제수단 → cancelSalesOrder. 둘 다 재고 복원 + 포인트 적립/사용 환원 + 매출 분개 역분개. inventory_movements.reference_type='SALE_CANCEL' 또는 'CREDIT_CANCEL'. journal_entries.source_type='SALE_CANCEL' 또는 'CREDIT_CANCEL'(+reversal_of=원본 분개 ID).
   ※ "취소 vs 환불" 구분: 취소는 거래 자체를 무름(잘못 등록), 환불은 매출 발생 후 반품(return_orders 생성).
-  ※ 전표 수정(수령 전 품목 추가/삭제): status=COMPLETED & receipt_status≠RECEIVED 전표에 한해 품목 추가/삭제 가능(addSalesOrderItem/removeSalesOrderItem). 즉시 total_amount/taxable/exempt/vat·적립포인트·재고가 재계산됨. 재고 movement reference_type='SALE_REVISE_ADD'(차감,OUT)/'SALE_REVISE_REMOVE'(복원,IN), phantom은 'PHANTOM_DECOMPOSE'. 결제 차액은 sales_order_payments 1행(memo='전표 수정 자동 추가결제/부분환불'). 매출 분개는 차액분만 추가(journal_entries.source_type='SALE_REVISE', orderNumber 'REVISE-...'). 적립포인트 차액은 point_history type='adjust'(description='전표 수정 적립 조정'). 주문할인(discount_amount) 재배분은 없음(기존값 유지). 수령완료/마지막 품목 삭제는 거부.
+  ※ 전표 수정(수령 전 품목 추가/삭제/수량·단가수정): status=COMPLETED & receipt_status≠RECEIVED 전표에 한해 품목 추가/삭제/수정 가능(addSalesOrderItem/removeSalesOrderItem/updateSalesOrderItem). 즉시 total_amount/taxable/exempt/vat·적립포인트·재고가 재계산됨. 재고 movement reference_type='SALE_REVISE_ADD'(차감,OUT)/'SALE_REVISE_REMOVE'(복원,IN)/'SALE_REVISE_EDIT'(수량변경 차액 OUT or IN), phantom은 'PHANTOM_DECOMPOSE'. 결제 차액은 sales_order_payments 1행(memo='전표 수정 자동 추가결제/부분환불'). 매출 분개는 차액분만 추가(journal_entries.source_type='SALE_REVISE', orderNumber 'REVISE-...'). 적립포인트 차액은 point_history type='adjust'(description='전표 수정 적립 조정'). 주문할인(discount_amount) 재배분은 없음(기존값 유지). 수령완료 품목/마지막 품목 삭제는 거부. 품목수정(#36): 수량 변경=차액만큼 재고 OUT/IN, 단가만 변경=재고 불변·금액만, 판매번호(order_number) 불변·audit_logs에 수정이력.
   ※ receipt_status=수령현황(수령완료/방문예정/퀵예정/택배예정/택배발송완료). 기본 RECEIVED. 배송 활성 시 PARCEL_PLANNED/QUICK_PLANNED 자동 지정. 배송 SHIPPED→PARCEL_SHIPPED, DELIVERED→RECEIVED 자동연동(#19, 마이그085).
   ※ approval_status=결제 승인 라이프사이클(status와 직교). card_keyin→CARD_PENDING, credit→UNSETTLED 자동 추론 가능.
   ※ payment_info=레거시 자유기입 컬럼(2026-04 UI 제거). 신규 입력 없음. 과거 데이터 조회만 노출.
@@ -300,6 +300,7 @@ sales_orders.receipt_status: 품목 receipt_status 집계. 품목 모두 RECEIVE
 - status: PENDING→PRINTED→SHIPPED→DELIVERED (QUICK은 PRINTED 생략, SHIPPED부터 운영 일반적)
 - tracking_number 등록 + SHIPPED 전환 시 알림톡 자동 발송 (PARCEL 한정)
 - shipments.branch_id = 출고 지점(재고 차감 지점). POS 배송 주문에서 판매 지점(sales_orders.branch_id)과 다를 수 있음. "어느 지점에서 팔렸나"는 sales_orders.branch_id로, "어느 지점에서 나갔나"는 shipments.branch_id로 집계.
+- 출고처(판매 전표의 재고 차감 지점) 일관 도출(#35) = shipments.branch_id(배송 있으면) ?? sales_orders.branch_id. 방문수령·자사몰은 배송 레코드 없어 sales_orders.branch_id(=차감지점)로 폴백. 즉 출고처는 항상 존재. 자사몰(ONLINE) 주문은 자사몰 지점 재고에서 차감(현행 유지) → 출고처=자사몰.
 - 에이전트 배송 등록(create_shipment): source는 STORE(직접입력) 고정, CAFE24는 자사몰 동기화 전용. 발송인(sender_name/phone)은 출고 지점 정보로 자동 채움(지점 phone 없으면 ''). 단순 insert만 — 외부 발송 없음. 송장번호 등록·SHIPPED 전환(알림톡 발송)은 update_shipment_tracking 별도 처리.
 
 [반품]

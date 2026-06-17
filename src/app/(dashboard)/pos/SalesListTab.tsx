@@ -8,7 +8,8 @@ import ReceiptModal from './ReceiptModal';
 import RefundModal from './RefundModal';
 import { fmtDateKST, fmtTimeKST, fmtDateTimeKST, kstTodayString, kstDayStart, kstDayEnd } from '@/lib/date';
 import { cancelSalesOrder } from '@/lib/sales-cancel-actions';
-import { addSalesOrderItem, removeSalesOrderItem, convertOrderToParcel, convertOrderToPickup, updateSalesOrderDetails } from '@/lib/sales-revise-actions';
+import { addSalesOrderItem, removeSalesOrderItem, updateSalesOrderItem, convertOrderToParcel, convertOrderToPickup, updateSalesOrderDetails } from '@/lib/sales-revise-actions';
+import { bulkUpdateReceiptStatus } from '@/lib/shipping-actions';
 import { useEscClose } from '@/hooks/useEscClose';
 
 function getCookie(name: string): string | null {
@@ -231,6 +232,10 @@ export default function SalesListTab() {
   const [showDailySummary, setShowDailySummary] = useState(false);
   // 목록 정렬 토글: 'order'=주문일순(현행 flat) / 'receipt'=수령일자별 그룹
   const [listSort, setListSort] = useState<'order' | 'receipt'>(() => saved.listSort ?? 'receipt');
+  // #38 수령상태 일괄변경 — 수령현황 뷰 다중선택
+  const [selectedReceiptIds, setSelectedReceiptIds] = useState<Set<string>>(new Set());
+  const [bulkTarget, setBulkTarget] = useState<'PARCEL_SHIPPED' | 'RECEIVED'>('PARCEL_SHIPPED');
+  const [bulkSaving, setBulkSaving] = useState(false);
   // 비교뷰 전용 다수선택 상태 — 기존 단일 branchFilter 와 독립. 기본값은 전체 active 지점.
   const [compareBranchIds, setCompareBranchIds] = useState<string[]>([]);
   // RPC branch_sales_summary 반환형 — legacy(<2026-05-19)+sales(>=2026-05-19) 통합 집계 행.
@@ -619,22 +624,63 @@ export default function SalesListTab() {
     };
     return [...ORDER, '기타']
       .filter(k => buckets.has(k))
-      .map(k => ({
-        statusKey: k,
-        label: LABEL[k] ?? k,
-        orders: buckets.get(k)!.slice().sort(cmp),
-        count: buckets.get(k)!.length,
-      }));
+      .map(k => {
+        const orders = buckets.get(k)!.slice().sort(cmp);
+        // #37 수령일자별 소계 — 위 정렬로 같은 수령일이 인접하므로 연속 묶음으로 분할.
+        //   수령일 없으면 '미정'(맨 뒤). 같은 상태 안에서도 날짜별 헤더/건수로 구분.
+        const dateGroups: { dateKey: string; label: string; orders: OrderRow[]; count: number }[] = [];
+        for (const o of orders) {
+          const dk = o.receipt_date || '미정';
+          const last = dateGroups[dateGroups.length - 1];
+          if (last && last.dateKey === dk) { last.orders.push(o); last.count++; }
+          else dateGroups.push({ dateKey: dk, label: dk === '미정' ? '수령일 미정' : dk, orders: [o], count: 1 });
+        }
+        return {
+          statusKey: k,
+          label: LABEL[k] ?? k,
+          orders,
+          count: orders.length,
+          dateGroups,
+        };
+      });
   }, [filtered]);
+
+  // #38 수령상태 일괄변경 — 선택/그룹선택/적용
+  const toggleReceiptSelect = (id: string) =>
+    setSelectedReceiptIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleGroupSelect = (groupOrders: OrderRow[]) =>
+    setSelectedReceiptIds(prev => {
+      const n = new Set(prev);
+      const allSel = groupOrders.length > 0 && groupOrders.every(o => n.has(o.id));
+      for (const o of groupOrders) { if (allSel) n.delete(o.id); else n.add(o.id); }
+      return n;
+    });
+  const clearReceiptSel = () => setSelectedReceiptIds(new Set());
+  const handleBulkReceipt = async () => {
+    const ids = [...selectedReceiptIds];
+    if (ids.length === 0) return;
+    const label = bulkTarget === 'RECEIVED' ? '수령완료' : '발송완료';
+    if (!confirm(`선택한 ${ids.length}건의 수령상태를 '${label}'(으)로 일괄 변경하시겠습니까?\n연결된 배송 상태도 함께 갱신됩니다.`)) return;
+    setBulkSaving(true);
+    try {
+      const res = await bulkUpdateReceiptStatus(ids, bulkTarget);
+      if (res.error) { alert('일괄 변경 실패: ' + res.error); return; }
+      const skipMsg = res.skipped ? `\n(${res.skipped}건은 대상 상태가 아니어서 제외됨)` : '';
+      alert(`✅ ${res.updated ?? 0}건을 '${label}'(으)로 변경했습니다.${skipMsg}`);
+      clearReceiptSel();
+      await loadOrders();
+    } finally {
+      setBulkSaving(false);
+    }
+  };
 
   // 주문 1행 렌더러 — order/receipt 두 모드 공통 사용. 셀 구성·onClick·뱃지 로직 원본 그대로.
   const renderOrderRow = (o: OrderRow) => {
                 const isCancelled = o.status === 'CANCELLED';
                 const isRefunded = o.status === 'REFUNDED' || o.status === 'PARTIALLY_REFUNDED';
-                const shipFromId = o.shipments?.[0]?.branch_id;
-                const shipFromName = shipFromId
-                  ? (branches.find(b => b.id === shipFromId)?.name || '')
-                  : '';
+                // 출고처(재고 차감 지점) = 배송 출고지점 → 없으면 판매지점(방문수령·자사몰은 판매지점=차감지점). 항상 표시.
+                const shipFromId = o.shipments?.[0]?.branch_id || o.branch?.id;
+                const shipFromName = (branches.find(b => b.id === shipFromId)?.name) || o.branch?.name || '';
                 const receiptKey = (o.receipt_status as keyof typeof RECEIPT_STATUS_LABEL) || 'RECEIVED';
                 const approvalKey = (o.approval_status as keyof typeof APPROVAL_STATUS_LABEL) || 'COMPLETED';
                 const items = o.items || [];
@@ -657,8 +703,21 @@ export default function SalesListTab() {
                     className={`cursor-pointer hover:bg-slate-50 ${isCancelled || isRefunded ? 'opacity-60' : ''}`}
                   >
                     <td className="text-xs text-slate-600 whitespace-nowrap align-top">
-                      <p>{fmtDateKST(o.ordered_at)}</p>
-                      <p className="text-[10px] text-slate-400">{fmtTimeKST(o.ordered_at)}</p>
+                      <div className="flex items-start gap-1.5">
+                        {listSort === 'receipt' && (
+                          <input
+                            type="checkbox"
+                            className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                            checked={selectedReceiptIds.has(o.id)}
+                            onClick={e => e.stopPropagation()}
+                            onChange={e => { e.stopPropagation(); toggleReceiptSelect(o.id); }}
+                          />
+                        )}
+                        <div>
+                          <p>{fmtDateKST(o.ordered_at)}</p>
+                          <p className="text-[10px] text-slate-400">{fmtTimeKST(o.ordered_at)}</p>
+                        </div>
+                      </div>
                     </td>
                     <td className="whitespace-nowrap align-top">
                       <span className={`badge text-[10px] ${RECEIPT_STATUS_BADGE[receiptKey] || 'bg-slate-100 text-slate-600'}`}>
@@ -831,9 +890,9 @@ export default function SalesListTab() {
     ];
     const rows = filtered.map(o => {
       const firstShip = (o.shipments || [])[0];
-      const shipFromBranch = firstShip?.branch_id
-        ? (branches.find(b => b.id === firstShip.branch_id)?.name || '')
-        : '';
+      // 출고처: 배송 출고지점 → 없으면 판매지점(방문수령·자사몰=차감지점). 항상 값 존재.
+      const shipFromId = firstShip?.branch_id || o.branch?.id;
+      const shipFromBranch = (branches.find(b => b.id === shipFromId)?.name) || o.branch?.name || '';
       const itemNames = (o.items || []).map(it => it.product?.name || '').filter(Boolean);
       const itemLabel = itemNames.slice(0, 3).join(' / ') + (itemNames.length > 3 ? ` 외 ${itemNames.length - 3}` : '');
       const totalQty = (o.items || []).reduce((s, it) => s + (it.quantity || 0), 0);
@@ -1170,6 +1229,38 @@ export default function SalesListTab() {
           <button onClick={() => { setRefundOrderNumber(null); setShowRefundModal(true); }}
             className="text-sm text-red-600 hover:underline">환불 처리</button>
         </div>
+
+        {/* #38 수령상태 일괄변경 바 — 수령현황 뷰에서 선택 시 노출 */}
+        {listSort === 'receipt' && selectedReceiptIds.size > 0 && (
+          <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm">
+            <span className="font-semibold text-blue-800">{selectedReceiptIds.size}건 선택됨</span>
+            <span className="text-slate-400">→</span>
+            <select
+              value={bulkTarget}
+              onChange={e => setBulkTarget(e.target.value as 'PARCEL_SHIPPED' | 'RECEIVED')}
+              className="input py-1 text-sm w-auto"
+            >
+              <option value="PARCEL_SHIPPED">발송완료(택배발송)</option>
+              <option value="RECEIVED">수령완료</option>
+            </select>
+            <button
+              onClick={handleBulkReceipt}
+              disabled={bulkSaving}
+              className="btn-primary text-sm px-3 py-1 disabled:opacity-50"
+            >
+              {bulkSaving ? '변경 중...' : '일괄 변경'}
+            </button>
+            <button
+              onClick={clearReceiptSel}
+              disabled={bulkSaving}
+              className="text-xs text-slate-500 hover:text-slate-700 underline"
+            >
+              선택 해제
+            </button>
+            <span className="text-xs text-slate-500">· 연결된 배송 상태도 함께 갱신됩니다</span>
+          </div>
+        )}
+
         <div className="overflow-x-auto">
           <table className="table text-sm min-w-[1180px]">
             <thead>
@@ -1202,13 +1293,31 @@ export default function SalesListTab() {
                 receiptGroups.flatMap(g => [
                   <tr key={`h-${g.statusKey}`} className="bg-slate-100 font-semibold text-slate-700 text-sm">
                     <td colSpan={13} className="py-1.5">
-                      <span className={`badge text-[10px] mr-2 ${RECEIPT_STATUS_BADGE[g.statusKey] || 'bg-slate-200 text-slate-600'}`}>
-                        {g.label}
-                      </span>
+                      <label className="inline-flex items-center gap-2 cursor-pointer mr-2" title="이 상태 전체 선택/해제">
+                        <input
+                          type="checkbox"
+                          className="h-3.5 w-3.5"
+                          checked={g.orders.length > 0 && g.orders.every(o => selectedReceiptIds.has(o.id))}
+                          onChange={() => toggleGroupSelect(g.orders)}
+                        />
+                        <span className={`badge text-[10px] ${RECEIPT_STATUS_BADGE[g.statusKey] || 'bg-slate-200 text-slate-600'}`}>
+                          {g.label}
+                        </span>
+                      </label>
                       <span className="font-normal text-slate-500">{g.count}건</span>
                     </td>
                   </tr>,
-                  ...g.orders.map(renderOrderRow),
+                  // #37 같은 상태 안에서 수령일자별 소계 헤더 + 구분선
+                  ...g.dateGroups.flatMap(dg => [
+                    <tr key={`dh-${g.statusKey}-${dg.dateKey}`} className="bg-slate-50 border-t-2 border-slate-200">
+                      <td colSpan={13} className="py-1 pl-6 text-xs text-slate-500">
+                        <span className="mr-1">📅</span>
+                        <span className="font-medium text-slate-600">{dg.label}</span>
+                        <span className="text-slate-400"> · {dg.count}건</span>
+                      </td>
+                    </tr>,
+                    ...dg.orders.map(renderOrderRow),
+                  ]),
                 ])
               )}
             </tbody>
@@ -1511,6 +1620,10 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
   const [addPrice, setAddPrice] = useState('');
   const [addOption, setAddOption] = useState('');
   const [addDeliveryType, setAddDeliveryType] = useState<'PICKUP' | 'PARCEL' | 'QUICK'>('PICKUP');
+  // 품목 수량/단가 인라인 수정 (#36)
+  const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [editItemQty, setEditItemQty] = useState('');
+  const [editItemPrice, setEditItemPrice] = useState('');
   // 방문↔택배 배송전환
   const [converting, setConverting] = useState(false);
   const [showConvertForm, setShowConvertForm] = useState(false);
@@ -2143,6 +2256,36 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
     }
   };
 
+  // #36 품목 수량/단가 인라인 수정
+  const startEditItem = (it: any) => {
+    setEditingItemId(it.id);
+    setEditItemQty(String(it.quantity ?? ''));
+    setEditItemPrice(String(Number(it.unit_price ?? 0)));
+  };
+  const cancelEditItem = () => {
+    setEditingItemId(null); setEditItemQty(''); setEditItemPrice('');
+  };
+  const handleSaveItemEdit = async (itemId: string) => {
+    if (revising || !order) return;
+    const qty = Number(editItemQty);
+    const price = Number(editItemPrice);
+    if (!Number.isInteger(qty) || qty <= 0) { alert('수량은 1개 이상의 정수여야 합니다.'); return; }
+    if (!Number.isFinite(price) || price < 0) { alert('단가를 올바르게 입력해주세요.'); return; }
+    setRevising(true);
+    try {
+      const res = await updateSalesOrderItem({ orderId: order.id, itemId, quantity: qty, unitPrice: price });
+      if (res.error) { alert('품목 수정 실패: ' + res.error); return; }
+      if (res.delta && res.delta !== 0) {
+        alert(`결제 차액 ₩${Math.abs(res.delta).toLocaleString()} 가 ${res.delta > 0 ? '추가결제' : '부분환불'}로 기록되었습니다.\n카드/단말기 정산은 별도로 처리하세요.`);
+      }
+      cancelEditItem();
+      await loadDetail(false);
+      onChanged();
+    } finally {
+      setRevising(false);
+    }
+  };
+
   const handleReprint = () => {
     if (!order) return;
     onReprint({
@@ -2216,6 +2359,15 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
               <div>
                 <p className="text-[11px] text-slate-500">매출처</p>
                 <p>{order.branch?.name || '-'}</p>
+              </div>
+              <div>
+                <p className="text-[11px] text-slate-500">출고처 <span className="text-slate-400">(재고 차감 기준)</span></p>
+                <p>
+                  {shipment?.branch?.name || order.branch?.name || '-'}
+                  {shipment?.branch?.id && shipment.branch.id !== order.branch?.id && (
+                    <span className="ml-1 text-[10px] px-1 rounded bg-indigo-50 text-indigo-700 border border-indigo-100">🚚 출고지점</span>
+                  )}
+                </p>
               </div>
               <div>
                 <p className="text-[11px] text-slate-500">담당자</p>
@@ -2596,22 +2748,75 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                               )}
                             </div>
                             {editable && itemRStatus !== 'RECEIVED' && (
-                              <button
-                                onClick={() => handleRemoveItem(it.id)}
-                                disabled={revising || deletableCount <= 1}
-                                className="text-[10px] px-1.5 py-0.5 rounded border border-rose-300 text-rose-700 hover:bg-rose-50 disabled:opacity-40 mt-0.5"
-                                title={deletableCount <= 1 ? '전표의 마지막 품목은 삭제할 수 없습니다 (판매 취소 사용)' : '이 품목을 삭제하고 재고·결제 차액을 정리합니다'}
-                              >
-                                🗑 삭제
-                              </button>
+                              <div className="flex gap-1 mt-0.5">
+                                {editingItemId === it.id ? (
+                                  <>
+                                    <button
+                                      onClick={() => handleSaveItemEdit(it.id)}
+                                      disabled={revising}
+                                      className="text-[10px] px-1.5 py-0.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                                    >
+                                      {revising ? '...' : '저장'}
+                                    </button>
+                                    <button
+                                      onClick={cancelEditItem}
+                                      disabled={revising}
+                                      className="text-[10px] px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                                    >
+                                      취소
+                                    </button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <button
+                                      onClick={() => startEditItem(it)}
+                                      disabled={revising}
+                                      className="text-[10px] px-1.5 py-0.5 rounded border border-blue-300 text-blue-700 hover:bg-blue-50 disabled:opacity-40"
+                                      title="수량·단가를 수정하고 재고·결제 차액을 자동 정리합니다"
+                                    >
+                                      ✏ 수정
+                                    </button>
+                                    <button
+                                      onClick={() => handleRemoveItem(it.id)}
+                                      disabled={revising || deletableCount <= 1}
+                                      className="text-[10px] px-1.5 py-0.5 rounded border border-rose-300 text-rose-700 hover:bg-rose-50 disabled:opacity-40"
+                                      title={deletableCount <= 1 ? '전표의 마지막 품목은 삭제할 수 없습니다 (판매 취소 사용)' : '이 품목을 삭제하고 재고·결제 차액을 정리합니다'}
+                                    >
+                                      🗑 삭제
+                                    </button>
+                                  </>
+                                )}
+                              </div>
                             )}
                             {it.receipt_date && (
                               <p className="text-[10px] text-slate-400 mt-0.5">{it.receipt_date}</p>
                             )}
                           </td>
-                          <td className="px-3 py-1.5 text-right">{it.quantity}</td>
-                          <td className="px-3 py-1.5 text-right">{Number(it.unit_price).toLocaleString()}</td>
-                          <td className="px-3 py-1.5 text-right font-medium">{Number(it.total_price).toLocaleString()}</td>
+                          <td className="px-3 py-1.5 text-right">
+                            {editingItemId === it.id ? (
+                              <input
+                                type="number" min="1" step="1"
+                                value={editItemQty}
+                                onChange={e => setEditItemQty(e.target.value)}
+                                className="input w-16 text-right py-0.5 text-xs"
+                              />
+                            ) : it.quantity}
+                          </td>
+                          <td className="px-3 py-1.5 text-right">
+                            {editingItemId === it.id ? (
+                              <input
+                                type="number" min="0"
+                                value={editItemPrice}
+                                onChange={e => setEditItemPrice(e.target.value)}
+                                className="input w-24 text-right py-0.5 text-xs"
+                              />
+                            ) : Number(it.unit_price).toLocaleString()}
+                          </td>
+                          <td className="px-3 py-1.5 text-right font-medium">
+                            {editingItemId === it.id
+                              ? (Math.max(0, Number(editItemPrice || 0) * Number(editItemQty || 0))).toLocaleString()
+                              : Number(it.total_price).toLocaleString()}
+                          </td>
                         </tr>
                       );
                     })}

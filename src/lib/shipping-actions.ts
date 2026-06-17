@@ -5,6 +5,8 @@ import { revalidatePath } from 'next/cache';
 import { fireNotificationTrigger } from '@/lib/notification-triggers';
 import { syncReceiptStatusFromShipment } from '@/lib/receipt-sync';
 import { confirmCafe24OrderAsSale } from '@/lib/cafe24/webhook';
+import { requireSession } from '@/lib/session';
+import { kstTodayString } from '@/lib/date';
 
 export interface ShipmentInput {
   source: 'CAFE24' | 'STORE';
@@ -203,4 +205,94 @@ export async function deleteShipment(id: string) {
 
   revalidatePath('/shipping');
   return { success: true };
+}
+
+/**
+ * 판매현황 수령상태 일괄 변경 (#38)
+ *
+ * 여러 주문의 수령상태를 한 번에 발송완료(PARCEL_SHIPPED) 또는 수령완료(RECEIVED)로 변경.
+ * 배송(shipments) 연결 건은 배송 상태(SHIPPED/DELIVERED)도 함께 갱신한 뒤
+ * syncReceiptStatusFromShipment(#19 공용 매핑)로 품목/주문 수령상태를 일관 반영 → 배송목록·판매현황 동기화.
+ * 배송 레코드가 없는 건(방문/퀵/직접입력)은 주문·품목 수령상태만 직접 갱신.
+ */
+export async function bulkUpdateReceiptStatus(
+  orderIds: string[],
+  target: 'PARCEL_SHIPPED' | 'RECEIVED'
+): Promise<{ success?: true; updated?: number; skipped?: number; error?: string }> {
+  try { await requireSession(); } catch (e: any) { return { error: e.message }; }
+  const ids = [...new Set((orderIds || []).filter(Boolean))];
+  if (ids.length === 0) return { error: '선택된 주문이 없습니다.' };
+  if (target !== 'PARCEL_SHIPPED' && target !== 'RECEIVED') return { error: '지원하지 않는 상태입니다.' };
+
+  const supabase = await createClient() as any;
+  const today = kstTodayString();
+  const shipStatus = target === 'RECEIVED' ? 'DELIVERED' : 'SHIPPED';
+  let updated = 0;
+  let skipped = 0;
+
+  for (const orderId of ids) {
+    try {
+      // 현재 수령상태 — 전진 전이만 허용(이미 완료/뒤로가기 방지).
+      const { data: ord } = await supabase
+        .from('sales_orders')
+        .select('receipt_status')
+        .eq('id', orderId)
+        .maybeSingle();
+      const cur = ord?.receipt_status || 'RECEIVED';
+      // 발송완료 대상: 택배예정만. 수령완료 대상: 이미 수령완료가 아닌 건.
+      const allowed = target === 'PARCEL_SHIPPED'
+        ? cur === 'PARCEL_PLANNED'
+        : cur !== 'RECEIVED';
+      if (!allowed) { skipped++; continue; }
+
+      const { data: ship } = await supabase
+        .from('shipments')
+        .select('id, status')
+        .eq('sales_order_id', orderId)
+        .maybeSingle();
+
+      if (ship?.id) {
+        // 배송 연결 건 — 배송 상태 갱신 후 #19 공용 매핑으로 수령상태 반영.
+        //   배송완료(DELIVERED)된 배송을 발송완료로 다운그레이드하지 않음.
+        const downgrade = target === 'PARCEL_SHIPPED' && ship.status === 'DELIVERED';
+        if (!downgrade) {
+          await supabase
+            .from('shipments')
+            .update({ status: shipStatus, updated_at: new Date().toISOString() })
+            .eq('id', ship.id);
+        }
+        await syncReceiptStatusFromShipment(supabase, orderId, shipStatus);
+      } else if (target === 'RECEIVED') {
+        // 배송 없는 건(방문/퀵/직접) — 미수령 품목·주문을 수령완료로
+        await supabase
+          .from('sales_order_items')
+          .update({ receipt_status: 'RECEIVED', receipt_date: today })
+          .eq('sales_order_id', orderId)
+          .neq('receipt_status', 'RECEIVED');
+        await supabase
+          .from('sales_orders')
+          .update({ receipt_status: 'RECEIVED', receipt_date: today })
+          .eq('id', orderId);
+      } else {
+        // 배송 없는데 발송완료 요청 — 택배예정 주문/품목만 승격
+        await supabase
+          .from('sales_order_items')
+          .update({ receipt_status: 'PARCEL_SHIPPED' })
+          .eq('sales_order_id', orderId)
+          .eq('receipt_status', 'PARCEL_PLANNED');
+        await supabase
+          .from('sales_orders')
+          .update({ receipt_status: 'PARCEL_SHIPPED' })
+          .eq('id', orderId)
+          .eq('receipt_status', 'PARCEL_PLANNED');
+      }
+      updated++;
+    } catch (e: any) {
+      console.error('[bulkUpdateReceiptStatus] order', orderId, 'failed:', e?.message);
+    }
+  }
+
+  revalidatePath('/pos');
+  revalidatePath('/shipping');
+  return { success: true, updated, skipped };
 }
