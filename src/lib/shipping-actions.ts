@@ -30,23 +30,47 @@ export interface ShipmentInput {
 export async function getShipments(status?: string) {
   const supabase = await createClient() as any;
 
+  // 매출처(=판매 발생 지점) 보강(#21): shipments.branch_id 는 출고처라 매출처와 다름.
+  //   매출처 = 연결된 sales_order.branch. 신규는 sales_order_id(FK), 과거 카페24는 cafe24_order_id.
   let query = supabase
     .from('shipments')
-    .select('*')
+    .select('*, sales_order:sales_orders(branch:branches(id, name))')
     .order('created_at', { ascending: false });
+  if (status) query = query.eq('status', status);
 
-  if (status) {
-    query = query.eq('status', status);
-  }
-
-  const { data, error } = await query;
-
+  let { data, error } = await query;
   if (error) {
-    console.error('getShipments error:', error);
-    return { data: [] };
+    // 임베드 실패(관계 모호 등) → 기본 select 폴백
+    let q2 = supabase.from('shipments').select('*').order('created_at', { ascending: false });
+    if (status) q2 = q2.eq('status', status);
+    const retry = await q2;
+    data = retry.data; error = retry.error;
+    if (error) { console.error('getShipments error:', error); return { data: [] }; }
   }
 
-  return { data: data || [] };
+  const rows: any[] = data || [];
+
+  // sales_order_id 로 매출처를 못 얻은 카페24 행은 cafe24_order_id 로 보강
+  const needCafe24 = rows.filter(r => !r?.sales_order?.branch?.name && r.cafe24_order_id);
+  const cafe24BranchMap = new Map<string, string>();
+  if (needCafe24.length > 0) {
+    const ids = [...new Set(needCafe24.map(r => String(r.cafe24_order_id)))];
+    const { data: sos } = await supabase
+      .from('sales_orders')
+      .select('cafe24_order_id, branch:branches(name)')
+      .in('cafe24_order_id', ids);
+    for (const s of (sos as any[]) || []) {
+      if (s.branch?.name) cafe24BranchMap.set(String(s.cafe24_order_id), s.branch.name);
+    }
+  }
+
+  const result = rows.map(r => ({
+    ...r,
+    // 매출처명: sales_order.branch → cafe24_order_id 매칭 → null(미연결)
+    sale_branch_name: r?.sales_order?.branch?.name ?? cafe24BranchMap.get(String(r.cafe24_order_id)) ?? null,
+  }));
+
+  return { data: result };
 }
 
 export async function createShipment(data: ShipmentInput) {

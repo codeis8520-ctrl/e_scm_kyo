@@ -21,6 +21,7 @@ function getCookie(name: string): string | null {
 interface Shipment {
   id: string;
   source: 'CAFE24' | 'STORE';
+  sale_branch_name?: string | null;   // 매출처(연결 sales_order의 지점) — #21
   cafe24_order_id: string | null;
   branch_id: string | null;
   sender_name: string;
@@ -978,7 +979,7 @@ export default function ShippingPage() {
       const sender = resolveSenderForRow(s);
       return {
       '등록일': s.created_at?.slice(0, 10) ?? '',
-      '출처': s.source === 'CAFE24' ? '카페24' : '직접입력',
+      '매출처': s.sale_branch_name ?? (s.source === 'CAFE24' ? '자사몰' : '직접입력'),
       '발송자': sender.name,
       '발송자 전화': sender.phone,
       '발송자 우편번호': sender.zipcode,
@@ -1512,7 +1513,7 @@ export default function ShippingPage() {
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">배송지 주소</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">배송메모</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">품목</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-20">출처</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-24">매출처</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-24">상태</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">송장번호</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-24">액션</th>
@@ -1549,7 +1550,10 @@ export default function ShippingPage() {
                           <TruncatedCell text={s.items_summary} className="text-slate-600" />
                         </td>
                         <td className="px-3 py-3">
-                          <span className={`${SOURCE_BADGE[s.source]} text-xs`}>{s.source === 'CAFE24' ? '카페24' : '직접'}</span>
+                          {/* 매출처(#21): 연결 sales_order의 지점. 미연결이면 출처 라벨 폴백 */}
+                          {s.sale_branch_name
+                            ? <span className="text-xs font-medium text-slate-700">{s.sale_branch_name}</span>
+                            : <span className="text-xs text-slate-400">{s.source === 'CAFE24' ? '자사몰' : '직접'}</span>}
                         </td>
                         <td className="px-3 py-3">
                           <span className={`${STATUS_BADGE[s.status]} text-xs`}>{STATUS_LABEL[s.status]}</span>
