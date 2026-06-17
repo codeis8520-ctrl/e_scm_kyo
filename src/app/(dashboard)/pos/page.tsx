@@ -902,7 +902,9 @@ function POSPageInner() {
       }];
     });
     setSearch('');
-    searchRef.current?.focus();
+    // #29: preventScroll — 검색창 포커스(바코드 스캔 대기)는 유지하되, 최상단으로
+    //   스크롤이 튀지 않게(연속 클릭 담기 시 보던 위치 유지).
+    searchRef.current?.focus({ preventScroll: true });
   };
 
   const removeFromCart = (productId: string) => setCart(prev => prev.filter(i => i.productId !== productId));
