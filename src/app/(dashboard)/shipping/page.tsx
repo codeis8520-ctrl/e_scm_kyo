@@ -768,7 +768,7 @@ export default function ShippingPage() {
     setExpandedOrders(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const handleConnectProduct = async (
-    item: { product_code: string; option_value: string },
+    item: { product_code: string; option_value: string; option?: string; name?: string },
     productId: string,
   ) => {
     setMappingBusy(true); setMappingError('');
@@ -777,6 +777,9 @@ export default function ShippingPage() {
         cafe24_product_code: item.product_code,
         option_value: item.option_value,
         product_id: productId,
+        // 기존 전표 백필 키 — 표시옵션(order_option)·원본 품목명(item_text) 매칭용
+        option_display: item.option ?? '',
+        cafe24_name: item.name ?? '',
       });
       if ('error' in res && res.error) { setMappingError(res.error); return; }
       setMappingKey(null); setMappingSearch('');

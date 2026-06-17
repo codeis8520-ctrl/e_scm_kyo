@@ -156,6 +156,11 @@ export async function createCafe24ProductMap(params: {
   cafe24_product_code: string;
   option_value: string;
   product_id: string;
+  // 기존 전표 백필용(선택) — sales_order_items.order_option·item_text 매칭 키.
+  //   option_display = 송장/전표 표시 옵션(extractItemOptions 결과, sales_order_items.order_option와 동일)
+  //   cafe24_name    = 카페24 원본 품목명(미매핑 item_text와 동일)
+  option_display?: string;
+  cafe24_name?: string;
 }) {
   let session;
   try {
@@ -184,7 +189,40 @@ export async function createCafe24ProductMap(params: {
         { onConflict: 'cafe24_product_code,option_value' }
       );
     if (error) return { error: error.message };
-    return { success: true };
+
+    // 기존 전표 백필(#매핑이 판매현황 수령현황에도 즉시 반영되게).
+    //   미매핑 sales_order_items(product_id NULL) 중 같은 (표시옵션 + 원본품목명)을
+    //   가진 행을 찾아 product_id + item_text(내부 제품명)로 채운다.
+    //   동일 옵션조합은 여러 주문에 한 번에 반영(배송 화면 안내문과 일치).
+    let backfilled = 0;
+    try {
+      if (params.cafe24_name !== undefined) {
+        const { data: prod } = await sb
+          .from('products')
+          .select('name')
+          .eq('id', productId)
+          .maybeSingle();
+        const internalName = prod?.name ?? null;
+
+        let q = sb
+          .from('sales_order_items')
+          .update({ product_id: productId, item_text: internalName })
+          .is('product_id', null)
+          .eq('item_text', params.cafe24_name);
+        // 옵션조합으로 좁힘(서로 다른 내부제품으로 가는 옵션 오매칭 방지).
+        const opt = (params.option_display ?? '').trim();
+        q = opt ? q.eq('order_option', opt) : q.is('order_option', null);
+
+        const { data: updated, error: bfErr } = await q.select('id');
+        if (!bfErr && Array.isArray(updated)) backfilled = updated.length;
+      }
+    } catch {
+      /* 백필 실패가 매핑 저장을 무효화하지 않음(미매핑 degrade) */
+    }
+
+    revalidatePath('/pos');
+    revalidatePath('/shipping');
+    return { success: true, backfilled };
   } catch (e: any) {
     return { error: e?.message ?? '매핑 저장 중 오류가 발생했습니다.' };
   }

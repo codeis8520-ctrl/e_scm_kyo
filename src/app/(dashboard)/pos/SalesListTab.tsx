@@ -29,6 +29,7 @@ interface OrderItem {
   unit_price?: number;
   total_price?: number;
   order_option?: string | null;
+  item_text?: string | null;
   product?: { id: string; name: string; code?: string } | null;
 }
 
@@ -281,7 +282,7 @@ export default function SalesListTab() {
         customer:customers(id, name, phone),
         buyer_name, buyer_phone,
         handler:users!sales_orders_ordered_by_fkey(id, name),
-        items:sales_order_items(id, quantity, unit_price, total_price, order_option, product:products(id, name, code))
+        items:sales_order_items(id, quantity, unit_price, total_price, order_option, item_text, product:products(id, name, code))
       ` : `
         id, order_number, ordered_at, status, total_amount, discount_amount,
         payment_method, points_earned, points_used, credit_settled, memo,
@@ -631,7 +632,7 @@ export default function SalesListTab() {
                 const receiptKey = (o.receipt_status as keyof typeof RECEIPT_STATUS_LABEL) || 'RECEIVED';
                 const approvalKey = (o.approval_status as keyof typeof APPROVAL_STATUS_LABEL) || 'COMPLETED';
                 const items = o.items || [];
-                const itemNames = items.map(it => it.product?.name).filter(Boolean) as string[];
+                const itemNames = items.map(it => it.product?.name || it.item_text).filter(Boolean) as string[];
                 const totalQty = items.reduce((s, it) => s + (it.quantity || 0), 0);
                 const firstShip = (o.shipments || [])[0];
                 // 받는분 = shipment 우선 → 없으면 sales_order recipient_* (카페24 받는분 스냅샷)
@@ -1914,12 +1915,12 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
         (async () => {
           // 052 적용: delivery_type, receipt_status, receipt_date 포함
           const full = await sb.from('sales_order_items')
-            .select('id, quantity, unit_price, discount_amount, total_price, order_option, delivery_type, receipt_status, receipt_date, product:products(id, name, code, unit)')
+            .select('id, quantity, unit_price, discount_amount, total_price, order_option, item_text, delivery_type, receipt_status, receipt_date, product:products(id, name, code, unit)')
             .eq('sales_order_id', orderId).order('id');
           if (!full.error) return full;
           // 051만 적용
           const v051 = await sb.from('sales_order_items')
-            .select('id, quantity, unit_price, discount_amount, total_price, order_option, product:products(id, name, code, unit)')
+            .select('id, quantity, unit_price, discount_amount, total_price, order_option, item_text, product:products(id, name, code, unit)')
             .eq('sales_order_id', orderId).order('id');
           if (!v051.error) return v051;
           // 051/052 모두 미적용
@@ -2500,7 +2501,8 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                       return (
                         <tr key={it.id} className="border-t border-slate-100">
                           <td className="px-3 py-1.5">
-                            <p className="font-medium">{it.product?.name || '-'}</p>
+                            {/* 미매핑 카페24 품목은 product 없음 → item_text(원본명) 폴백 표시 */}
+                            <p className="font-medium">{it.product?.name || it.item_text || '-'}</p>
                             <p className="text-[11px] text-slate-400 font-mono">{it.product?.code}</p>
                           </td>
                           <td className="px-3 py-1.5 text-xs text-indigo-700">
