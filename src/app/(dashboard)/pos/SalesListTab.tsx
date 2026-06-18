@@ -172,6 +172,7 @@ interface PersistedFilters {
   addressSearch: string;
   handlerFilter: string;
   shipFromFilter: string;
+  hideReceived: boolean;
 }
 
 function readSalesFilters(): Partial<PersistedFilters> {
@@ -226,6 +227,8 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
   const [shipFromFilter, setShipFromFilter] = useState(() => saved.shipFromFilter ?? '');   // 출고처
   const [receiptStatusFilter, setReceiptStatusFilter] = useState(() => saved.receiptStatusFilter ?? '');
   const [approvalStatusFilter, setApprovalStatusFilter] = useState(() => saved.approvalStatusFilter ?? '');
+  // 미결 건만 보기 — 수령완료·배송완료(RECEIVED) 숨김. 담당자가 처리할 건만 직관 파악.
+  const [hideReceived, setHideReceived] = useState(() => saved.hideReceived ?? false);
 
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [showRefundModal, setShowRefundModal] = useState(false);
@@ -263,12 +266,13 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
         subView, listSort, receiptStatusFilter, approvalStatusFilter,
         includeCancelled, showAdvanced, consultSearch, productSearch,
         orderOptionSearch, recipientSearch, addressSearch, handlerFilter, shipFromFilter,
+        hideReceived,
       };
       localStorage.setItem('salesList.filters', JSON.stringify(payload));
     } catch {}
   }, [period, startDate, endDate, search, branchFilter, paymentFilter, statusFilter,
       subView, listSort, receiptStatusFilter, approvalStatusFilter, includeCancelled,
-      showAdvanced, consultSearch, productSearch, orderOptionSearch, recipientSearch,
+      showAdvanced, consultSearch, productSearch, orderOptionSearch, recipientSearch, hideReceived,
       addressSearch, handlerFilter, shipFromFilter]);
 
   // 초기 — 지점·직원 목록
@@ -335,6 +339,8 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
       if (useExtended) {
         if (handlerFilter) q = q.eq('ordered_by', handlerFilter);
         if (receiptStatusFilter) q = q.eq('receipt_status', receiptStatusFilter);
+        // 미결만 보기: 수령완료(RECEIVED) 제외. NULL(수령상태 미설정)은 미결로 간주해 노출.
+        if (hideReceived) q = q.or('receipt_status.is.null,receipt_status.neq.RECEIVED');
         if (approvalStatusFilter) q = q.eq('approval_status', approvalStatusFilter);
       }
       return q;
@@ -418,7 +424,7 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
   }, [startDate, endDate, branchFilter, paymentFilter, statusFilter, includeCancelled,
       handlerFilter, receiptStatusFilter, approvalStatusFilter, shipFromFilter, consultSearch,
       // 검색어 변경 시 날짜 필터 토글되므로 재페치 필요 — debouncedSearch 만 deps 에 포함 (타이핑마다 DB 호출 방지)
-      debouncedSearch, productSearch, orderOptionSearch, recipientSearch, addressSearch]);
+      debouncedSearch, productSearch, orderOptionSearch, recipientSearch, addressSearch, hideReceived]);
 
   useEffect(() => { loadOrders(); }, [loadOrders]);
 
@@ -1237,6 +1243,21 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
                 </button>
               ))}
             </div>
+            {/* 미결 건만 보기 — 수령완료·배송완료 숨겨 처리할 건만 직관 파악 */}
+            <button
+              onClick={() => setHideReceived(v => !v)}
+              title="체크 시 수령완료·배송완료 건을 숨기고 처리 대기 건(방문예정·택배예정 등)만 표시합니다"
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition-colors ${
+                hideReceived
+                  ? 'bg-amber-500 text-white border-amber-500'
+                  : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              <span className={`inline-block w-3 h-3 rounded-sm border ${hideReceived ? 'bg-white border-white' : 'border-slate-300'}`}>
+                {hideReceived && <span className="block text-amber-500 text-[10px] leading-3 text-center">✓</span>}
+              </span>
+              미결 건만 보기
+            </button>
           </div>
           <button onClick={() => { setRefundOrderNumber(null); setShowRefundModal(true); }}
             className="text-sm text-red-600 hover:underline">환불 처리</button>
