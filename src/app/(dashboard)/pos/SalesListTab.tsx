@@ -1084,13 +1084,14 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
             </div>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
               <div className="flex items-center gap-2">
-                <button onClick={() => setCompareBranchIds(branches.map(b => b.id))}
+                {/* 지점별 매출은 활성 지점만 선택 가능(비활성은 매출처 필터 콤보에만 노출) */}
+                <button onClick={() => setCompareBranchIds(branches.filter(b => (b as any).is_active !== false).map(b => b.id))}
                   className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50">전체</button>
                 <button onClick={() => setCompareBranchIds([])}
                   className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50">해제</button>
               </div>
               <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-                {branches.map(b => (
+                {branches.filter(b => (b as any).is_active !== false).map(b => (
                   <label key={b.id} className="flex items-center gap-1.5 text-sm text-slate-700">
                     <input type="checkbox" className="w-4 h-4"
                       checked={compareBranchIds.includes(b.id)}
