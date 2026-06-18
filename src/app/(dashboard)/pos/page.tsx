@@ -120,7 +120,7 @@ type ApprovalStatus = 'COMPLETED' | 'CARD_PENDING' | 'UNSETTLED';
 const APPROVAL_STATUS_LABEL: Record<ApprovalStatus, string> = {
   COMPLETED: '결제 완료',
   CARD_PENDING: '미승인(카드)',
-  UNSETTLED: '미결',
+  UNSETTLED: '미수금',
 };
 
 // 자주 사용하는 주문 옵션 프리셋
@@ -2600,7 +2600,7 @@ function POSPageInner() {
             </select>
             {approvalStatus !== 'COMPLETED' && (
               <p className={`text-[11px] mt-1 ${approvalStatus === 'UNSETTLED' ? 'text-amber-600' : 'text-indigo-600'}`}>
-                {approvalStatus === 'UNSETTLED' ? '⚠ 미결 건: 수금 후 결제완료로 변경' : '⚠ 카드 키인 승인 대기 — 승인 후 결제완료로 변경'}
+                {approvalStatus === 'UNSETTLED' ? '⚠ 미수금 건: 수금 후 결제완료로 변경' : '⚠ 카드 키인 승인 대기 — 승인 후 결제완료로 변경'}
               </p>
             )}
           </div>

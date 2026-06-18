@@ -197,8 +197,8 @@ cash=현금, card=카드, credit=외상, cod=수령시수금
 sales_orders.approval_status: 결제 승인 라이프사이클 (status와 직교):
   - COMPLETED: 승인/수금 완료 (기본)
   - CARD_PENDING: 카드 키인 승인 대기
-  - UNSETTLED: 미결(계좌이체 대기 등)
-  ※ approval_status=UNSETTLED 건은 "미결 건 정리" 대상.
+  - UNSETTLED: 미수금(외상/계좌이체 대기 등) — UI 표기 '미수금'. 거래관리 미수금 내역과 동일 개념.
+  ※ approval_status=UNSETTLED 건은 "미수금 건 정리/수금" 대상.
 
 [수령]
 sales_orders.receipt_status: 제품 수령 흐름 (현장판매는 대부분 RECEIVED).

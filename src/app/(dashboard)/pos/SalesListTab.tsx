@@ -112,7 +112,7 @@ const RECEIPT_STATUS_BADGE: Record<string, string> = {
   PARCEL_PLANNED: 'bg-blue-100 text-blue-700',      // 택배예정 = 강조
 };
 const APPROVAL_STATUS_LABEL: Record<string, string> = {
-  COMPLETED: '결제완료', CARD_PENDING: '미승인(카드)', UNSETTLED: '미결',
+  COMPLETED: '결제완료', CARD_PENDING: '미승인(카드)', UNSETTLED: '미수금',
 };
 const APPROVAL_STATUS_BADGE: Record<string, string> = {
   COMPLETED: 'bg-slate-100 text-slate-500 border border-slate-200',     // 결제완료 = 회색(낮음)
@@ -2473,7 +2473,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                   </span>
                   {order.approval_status && order.approval_status !== 'COMPLETED' && (
                     <span className={`badge text-[10px] ${APPROVAL_STATUS_BADGE[order.approval_status] || 'bg-amber-100 text-amber-800'}`}>
-                      {order.approval_status === 'UNSETTLED' ? '미결' : '미승인(카드)'}
+                      {order.approval_status === 'UNSETTLED' ? '미수금' : '미승인(카드)'}
                     </span>
                   )}
                 </div>
