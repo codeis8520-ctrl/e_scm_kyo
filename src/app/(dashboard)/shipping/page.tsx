@@ -1082,7 +1082,6 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
         <PageTabs
           tabs={[
             { key: 'cafe24', label: '카페24 주문' },
-            { key: 'manual', label: '직접 입력' },
             { key: 'list', label: '배송 목록' },
           ]}
           activeKey={activeTab}
@@ -1351,6 +1350,14 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
       {activeTab === 'manual' && (
         <div className="card p-6 max-w-2xl space-y-6">
 
+          {/* 복귀 경로 — 탭바에서 빠진 예외 입력 화면이므로 목록 복귀 링크 보장 */}
+          <button
+            onClick={() => setActiveTab('list')}
+            className="text-sm text-slate-500 hover:text-slate-700"
+          >
+            ← 배송 목록으로
+          </button>
+
           {/* 발송자 */}
           <div className="bg-slate-50 rounded-lg p-4 space-y-3">
             <h3 className="text-sm font-semibold text-slate-700">발송자 정보</h3>
@@ -1545,6 +1552,15 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
               >
                 선택 엑셀 익스포트 ({selectedShipments.size}건)
               </button>
+              {/* 예외 진입점: 직접 배송 입력 — 보조 버튼(임베드 미노출) */}
+              {!embedded && (
+                <button
+                  onClick={() => setActiveTab('manual')}
+                  className="px-2 py-2 text-xs text-slate-400 hover:text-slate-600 underline"
+                >
+                  + 직접 배송 입력 (예외)
+                </button>
+              )}
             </div>
           </div>
 
