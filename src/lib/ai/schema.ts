@@ -242,6 +242,9 @@ sales_orders.receipt_status: 품목 receipt_status 집계. 품목 모두 RECEIVE
 - "거래처 수금 처리해줘" → settle_b2b_order(order_number, amount, method?) (가산 수금, 확인 필요)
 - "납품 전표 취소해줘" → cancel_b2b_order(order_number, reason?) (재고 역복원, 수금 0건만, 확인 필요)
 - "수령 전 전표 품목 추가/수정/삭제" → add/update/remove_sales_order_item (RECEIVED 후엔 거부, 차액 재고·결제·분개 자동재정산, 확인 필요. update/remove는 analyze_data로 sales_order_items.id 선조회 필요)
+- "여러 주문 일괄 수령완료" → bulk_update_receipt_status (order_numbers[] 입력, target=RECEIVED 고정, 배송건은 DELIVERED 후 자동반영, 본사 전용·확인 필요)
+- "카페24 품목코드+옵션을 내부 제품에 매핑/삭제" → create/delete_cafe24_product_map (송장 짧은 제품명·미매핑 과거전표 백필, 본사 전용)
+- "카페24 자사몰 주문자를 ERP 고객으로 등록·연결" → register_cafe24_customers (전화 일치 시 기존고객 연결·이름 미변경, 본사 전용·확인 필요)
 
 [에이전트 판매 등록 (create_sales_order)]
 - 단순 현장판매(POS) 전용: 단일 결제(현금/카드/카카오페이만), 할인 0, 현장 수령(PICKUP).

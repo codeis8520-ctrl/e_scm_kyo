@@ -807,6 +807,94 @@ sales_orders·inventories 등 핵심 거래 테이블은 삭제 불가.`,
       },
     },
   },
+  // ── 수령상태 일괄 변경 (본사 전용, DANGEROUS) ─────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'bulk_update_receipt_status',
+      description: `여러 주문의 수령상태를 한 번에 '수령완료(RECEIVED)'로 변경합니다. 배송 연결 건은 배송완료(DELIVERED) 후 수령상태가 자동 반영됩니다. 본사 전용·되돌릴 수 없는 다건 작업입니다.
+사용 예: "이 주문들 전부 수령완료 처리해줘", "SA-..., SA-... 일괄 수령완료".
+주의: 이미 RECEIVED인 건은 건너뜁니다. target은 항상 RECEIVED만 가능합니다.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          order_numbers: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '수령완료 처리할 주문번호 배열 (예: ["SA-GN-...", "SA-GN-..."])',
+          },
+        },
+        required: ['order_numbers'],
+      },
+    },
+  },
+  // ── 카페24 품목 매핑 (본사 전용) ──────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'create_cafe24_product_map',
+      description: `카페24 품목코드+옵션을 내부 제품에 매핑합니다. 송장/배송 목록에 짧은 내부 제품명이 표시되고, 미매핑 과거 전표도 자동 백필됩니다. 본사 전용.
+사용 예: "카페24 P0000ABC 옵션 '30환'을 산삼침향환에 매핑해줘".`,
+      parameters: {
+        type: 'object',
+        properties: {
+          cafe24_product_code: { type: 'string', description: '카페24 품목코드 (예: P0000ABC)' },
+          option_value: { type: 'string', description: '카페24 옵션값 (정규화되어 저장됨)' },
+          product_name: { type: 'string', description: '매핑할 내부 제품명 (부분 일치 검색)' },
+          option_display: { type: 'string', description: '백필용 표시 옵션(선택, sales_order_items.order_option과 동일)' },
+          cafe24_name: { type: 'string', description: '백필용 카페24 원본 품목명(선택, 미매핑 item_text와 동일)' },
+        },
+        required: ['cafe24_product_code', 'option_value', 'product_name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_cafe24_product_map',
+      description: `카페24 품목코드+옵션 매핑을 삭제합니다. 본사 전용.
+사용 예: "카페24 P0000ABC '30환' 매핑 삭제해줘".`,
+      parameters: {
+        type: 'object',
+        properties: {
+          cafe24_product_code: { type: 'string', description: '삭제할 매핑의 카페24 품목코드' },
+          option_value: { type: 'string', description: '삭제할 매핑의 옵션값 (정규화되어 매칭됨)' },
+        },
+        required: ['cafe24_product_code', 'option_value'],
+      },
+    },
+  },
+  // ── 카페24 주문자 ERP 고객 등록 (본사 전용, DANGEROUS) ────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'register_cafe24_customers',
+      description: `카페24 자사몰 주문자를 ERP 고객으로 등록하고 해당 주문(sales_order)에 연결합니다. 전화번호 일치 시 기존 고객에 연결(이름은 덮어쓰지 않음), 없으면 신규 생성. 본사 전용·고객 생성/연결 작업입니다.
+사용 예: "이 카페24 주문들 고객 등록해줘".
+주의: 이름·전화가 없으면 해당 건은 스킵됩니다.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          items: {
+            type: 'array',
+            description: '등록할 주문자 목록',
+            items: {
+              type: 'object',
+              properties: {
+                cafe24_order_id: { type: 'string', description: '카페24 주문 ID' },
+                name: { type: 'string', description: '주문자 이름' },
+                phone: { type: 'string', description: '주문자 전화번호' },
+                address: { type: 'string', description: '주소(선택)' },
+                email: { type: 'string', description: '이메일(선택)' },
+              },
+              required: ['cafe24_order_id', 'name', 'phone'],
+            },
+          },
+        },
+        required: ['items'],
+      },
+    },
+  },
   // ── 외상 수금 ─────────────────────────────────────────────────────────────
   {
     type: 'function',
@@ -1256,6 +1344,11 @@ export const WRITE_TOOLS = new Set([
   'add_sales_order_item',
   'update_sales_order_item',
   'remove_sales_order_item',
+  // Step B: 일괄 수령 + 카페24 매핑/고객
+  'bulk_update_receipt_status',
+  'create_cafe24_product_map',
+  'delete_cafe24_product_map',
+  'register_cafe24_customers',
   'settle_credit_order',
   'cancel_credit_order',
   'cancel_purchase_order',
@@ -1288,6 +1381,9 @@ export const DANGEROUS_TOOLS = new Set<string>([
   'add_sales_order_item',
   'update_sales_order_item',
   'remove_sales_order_item',
+  // Step B: 다건 수령상태 변경·고객 생성/연결 비가역
+  'bulk_update_receipt_status',
+  'register_cafe24_customers',
   // Batch 2b: 재고차감·재무 영향 (settle은 제외 — 수금은 가산이라 비파괴적)
   'create_shipment',
   'create_b2b_sales_order',
@@ -1442,6 +1538,10 @@ export async function executeTool(
       case 'add_sales_order_item':     return execAddSalesOrderItem(sb, args as any, ctx);
       case 'update_sales_order_item':  return execUpdateSalesOrderItem(sb, args as any, ctx);
       case 'remove_sales_order_item':  return execRemoveSalesOrderItem(sb, args as any, ctx);
+      case 'bulk_update_receipt_status': return execBulkUpdateReceiptStatus(sb, args as any, ctx);
+      case 'create_cafe24_product_map': return execCreateCafe24ProductMap(sb, args as any, ctx);
+      case 'delete_cafe24_product_map': return execDeleteCafe24ProductMap(sb, args as any, ctx);
+      case 'register_cafe24_customers': return execRegisterCafe24Customers(sb, args as any, ctx);
       case 'settle_credit_order':      return execSettleCreditOrder(sb, args as any, ctx);
       case 'cancel_credit_order':      return execCancelCreditOrder(sb, args as any, ctx);
       case 'cancel_purchase_order':    return execCancelPurchaseOrder(sb, args as any, ctx);
@@ -3038,6 +3138,116 @@ async function execRemoveSalesOrderItem(sb: any, args: {
     주문번호: order.order_number,
     삭제품목ID: args.item_id,
     결제차액: typeof res.delta === 'number' ? res.delta.toLocaleString() + '원' : undefined,
+  });
+}
+
+// ── Step B: 일괄 수령상태 + 카페24 매핑/고객 (서버액션 래핑) ──────────────────
+// 모두 본사 전용(requireHq). 서버액션이 requireSession+자체RBAC — 도구 가드는 이중방어.
+
+async function execBulkUpdateReceiptStatus(sb: any, args: {
+  order_numbers: string[];
+}, ctx: ToolContext): Promise<string> {
+  const denied = requireHq(ctx, '수령상태 일괄 변경');
+  if (denied) return denied;
+
+  const nums = [...new Set((args.order_numbers || []).map(s => (s || '').trim()).filter(Boolean))];
+  if (nums.length === 0) return JSON.stringify({ error: '주문번호를 하나 이상 지정하세요.' });
+
+  // 주문번호 → sales_order.id 해석
+  const { data: orders } = await sb
+    .from('sales_orders')
+    .select('id, order_number')
+    .in('order_number', nums);
+  const orderIds = (orders || []).map((o: any) => o.id).filter(Boolean);
+  const found = new Set((orders || []).map((o: any) => o.order_number));
+  const missing = nums.filter(n => !found.has(n));
+  if (orderIds.length === 0) {
+    return JSON.stringify({ error: '대상 주문을 찾을 수 없습니다.', 누락주문: missing });
+  }
+
+  const { bulkUpdateReceiptStatus } = await import('@/lib/shipping-actions');
+  const res = await bulkUpdateReceiptStatus(orderIds, 'RECEIVED');
+  if (res.error) return JSON.stringify({ error: res.error });
+
+  return JSON.stringify({
+    성공: true,
+    수령완료처리: res.updated ?? 0,
+    건너뜀: res.skipped ?? 0,
+    누락주문: missing.length ? missing : undefined,
+  });
+}
+
+async function execCreateCafe24ProductMap(sb: any, args: {
+  cafe24_product_code: string;
+  option_value: string;
+  product_name: string;
+  option_display?: string;
+  cafe24_name?: string;
+}, ctx: ToolContext): Promise<string> {
+  const denied = requireHq(ctx, '카페24 품목 매핑');
+  if (denied) return denied;
+
+  const product = await findProduct(sb, args.product_name);
+  if (!product) return JSON.stringify({ error: `제품 "${args.product_name}"을(를) 찾을 수 없습니다.` });
+
+  const { createCafe24ProductMap } = await import('@/lib/cafe24-actions');
+  const res = await createCafe24ProductMap({
+    cafe24_product_code: args.cafe24_product_code,
+    option_value: args.option_value,
+    product_id: product.id,
+    option_display: args.option_display,
+    cafe24_name: args.cafe24_name,
+  });
+  if ('error' in res && res.error) return JSON.stringify({ error: res.error });
+
+  return JSON.stringify({
+    성공: true,
+    카페24품목코드: args.cafe24_product_code,
+    옵션: args.option_value,
+    내부제품: product.name,
+    백필건수: (res as any).backfilled ?? 0,
+  });
+}
+
+async function execDeleteCafe24ProductMap(sb: any, args: {
+  cafe24_product_code: string;
+  option_value: string;
+}, ctx: ToolContext): Promise<string> {
+  const denied = requireHq(ctx, '카페24 품목 매핑 삭제');
+  if (denied) return denied;
+
+  const { deleteCafe24ProductMap } = await import('@/lib/cafe24-actions');
+  const res = await deleteCafe24ProductMap({
+    cafe24_product_code: args.cafe24_product_code,
+    option_value: args.option_value,
+  });
+  if ('error' in res && res.error) return JSON.stringify({ error: res.error });
+
+  return JSON.stringify({
+    성공: true,
+    삭제: `${args.cafe24_product_code} / ${args.option_value}`,
+  });
+}
+
+async function execRegisterCafe24Customers(_sb: any, args: {
+  items: { cafe24_order_id: string; name: string; phone: string; address?: string; email?: string }[];
+}, ctx: ToolContext): Promise<string> {
+  const denied = requireHq(ctx, '카페24 주문자 고객 등록');
+  if (denied) return denied;
+
+  const items = (args.items || []).filter(it => it && it.cafe24_order_id && it.name && it.phone);
+  if (items.length === 0) return JSON.stringify({ error: '등록할 주문(주문ID·이름·전화)을 지정하세요.' });
+
+  const { registerCafe24Customers } = await import('@/lib/cafe24-actions');
+  const res = await registerCafe24Customers(items);
+  if (!res.success) return JSON.stringify({ error: res.message });
+
+  return JSON.stringify({
+    성공: true,
+    안내: res.message,
+    고객생성: (res as any).created ?? 0,
+    주문연결: (res as any).linked ?? 0,
+    스킵: (res as any).skipped ?? 0,
   });
 }
 
