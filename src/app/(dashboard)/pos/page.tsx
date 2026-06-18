@@ -269,6 +269,12 @@ function POSPageInner() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showCustomerDropdown, customerResults.length]);
+
+  // 매출처 콤보도 동일하게 viewport 좌표 fixed 배치 — 장바구니 레이아웃에 가려지지 않게.
+  // (effect 본체는 filteredBranches 선언 이후로 배치 — TDZ 회피)
+  const branchInputRef = useRef<HTMLInputElement>(null);
+  const [branchDropdownPos, setBranchDropdownPos] = useState<{ top: number; left: number; width: number } | null>(null);
+
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethodId>('card');
   const [cashReceived, setCashReceived] = useState('');
   const [processing, setProcessing] = useState(false);
@@ -903,6 +909,26 @@ function POSPageInner() {
       (b.code || '').toLowerCase().includes(q)
     );
   }, [branches, branchSearch, isBranchLocked]);
+
+  // 매출처 드롭다운 viewport 좌표 계산 (filteredBranches 선언 이후 — TDZ 회피)
+  const recomputeBranchDropdownPos = useCallback(() => {
+    const el = branchInputRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setBranchDropdownPos({ top: r.bottom + 4, left: r.left, width: r.width });
+  }, []);
+  useEffect(() => {
+    if (!showBranchDropdown) return;
+    recomputeBranchDropdownPos();
+    const onScroll = () => recomputeBranchDropdownPos();
+    const onResize = () => recomputeBranchDropdownPos();
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onResize);
+    };
+  }, [showBranchDropdown, filteredBranches.length, recomputeBranchDropdownPos]);
 
   const getStock = useCallback((productId: string) =>
     inventoryMap.get(`${selectedBranch}_${productId}`) ?? null,
@@ -1629,6 +1655,7 @@ function POSPageInner() {
             </div>
           ) : (
             <input
+              ref={branchInputRef}
               type="text"
               value={branchSearch}
               onChange={e => { setBranchSearch(e.target.value); setShowBranchDropdown(true); }}
@@ -1638,8 +1665,11 @@ function POSPageInner() {
               className="input text-sm py-1.5"
             />
           )}
-          {showBranchDropdown && !selectedBranchData && (
-            <div className="absolute z-40 top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-64 overflow-auto">
+          {showBranchDropdown && !selectedBranchData && branchDropdownPos && (
+            <div
+              className="fixed z-50 bg-white border border-slate-200 rounded-lg shadow-xl max-h-64 overflow-auto"
+              style={{ top: branchDropdownPos.top, left: branchDropdownPos.left, width: branchDropdownPos.width }}
+            >
               {filteredBranches.length === 0 && (
                 <div className="p-3 text-center text-xs text-slate-400">결과 없음</div>
               )}
