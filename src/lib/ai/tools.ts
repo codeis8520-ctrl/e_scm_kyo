@@ -255,6 +255,7 @@ export const AGENT_TOOLS: MiniMaxTool[] = [
           to_branch_name: { type: 'string', description: '도착 지점명' },
           product_name: { type: 'string', description: '제품명' },
           quantity: { type: 'number', description: '이동 수량' },
+          transfer_date: { type: 'string', description: '이동일자 (YYYY-MM-DD, 선택). 지정 시 출고·입고 이력 날짜로 사용. 미지정 시 오늘.' },
         },
         required: ['from_branch_name', 'to_branch_name', 'product_name', 'quantity'],
       },
@@ -408,6 +409,7 @@ export const AGENT_TOOLS: MiniMaxTool[] = [
           address: { type: 'string', description: '새 주소' },
           phone: { type: 'string', description: '새 전화번호' },
           is_active: { type: 'boolean', description: '활성화 여부' },
+          sort_order: { type: 'number', description: '정렬값 (정수, 선택). 작을수록 앞. 판매/매출현황 지점 정렬에 사용.' },
         },
         required: ['branch_name'],
       },
@@ -426,6 +428,8 @@ export const AGENT_TOOLS: MiniMaxTool[] = [
           cost: { type: 'number', description: '원가 (원, 선택)' },
           unit: { type: 'string', description: '단위 (기본 "개")' },
           barcode: { type: 'string', description: '바코드 (선택)' },
+          is_phantom: { type: 'boolean', description: '팬텀(세트) 제품 여부 (선택). true면 본인 재고 미차감 → 재고추적 자동 false. 구성품 차감은 BOM 별도 등록 필요.' },
+          allow_decimal_stock: { type: 'boolean', description: '소수점 재고 허용 여부 (선택). true면 분수 수량(예: 0.5개) 보관·차감 허용.' },
         },
         required: ['name', 'price'],
       },
@@ -2057,7 +2061,7 @@ async function execAdjustInventory(sb: any, args: { branch_name: string; product
   });
 }
 
-async function execTransferInventory(sb: any, args: { from_branch_name: string; to_branch_name: string; product_name: string; quantity: number }, ctx: ToolContext): Promise<string> {
+async function execTransferInventory(sb: any, args: { from_branch_name: string; to_branch_name: string; product_name: string; quantity: number; transfer_date?: string }, ctx: ToolContext): Promise<string> {
   const from = await findBranch(sb, args.from_branch_name);
   if (!from) return JSON.stringify({ error: `출발 지점 "${args.from_branch_name}" 없음` });
   const to = await findBranch(sb, args.to_branch_name);
@@ -2084,10 +2088,13 @@ async function execTransferInventory(sb: any, args: { from_branch_name: string; 
     await sb.from('inventories').insert({ branch_id: to.id, product_id: product.id, quantity: args.quantity, safety_stock: 0 });
   }
 
-  const now = new Date().toISOString();
+  // #31 이동일자: transfer_date(YYYY-MM-DD) 지정 시 출고·입고 이력 날짜로 사용(단일 날짜→둘 다 동일). 미지정 시 now().
+  // transferInventory 서버액션의 ship_date/arrival_date(둘 다 정오 KST) 의미를 그대로 따른다.
+  const td = (args.transfer_date || '').trim();
+  const movedAt = /^\d{4}-\d{2}-\d{2}$/.test(td) ? `${td}T12:00:00+09:00` : new Date().toISOString();
   await sb.from('inventory_movements').insert([
-    { branch_id: from.id, product_id: product.id, movement_type: 'TRANSFER', quantity: -args.quantity, memo: `이동출고 → ${to.name} (AI)`, created_at: now },
-    { branch_id: to.id, product_id: product.id, movement_type: 'TRANSFER', quantity: args.quantity, memo: `이동입고 ← ${from.name} (AI)`, created_at: now },
+    { branch_id: from.id, product_id: product.id, movement_type: 'TRANSFER', quantity: -args.quantity, memo: `이동출고 → ${to.name} (AI)`, created_at: movedAt },
+    { branch_id: to.id, product_id: product.id, movement_type: 'TRANSFER', quantity: args.quantity, memo: `이동입고 ← ${from.name} (AI)`, created_at: movedAt },
   ]);
 
   return JSON.stringify({
@@ -2241,6 +2248,11 @@ async function execUpdateBranch(sb: any, args: any, ctx: ToolContext): Promise<s
   if (args.address !== undefined) updates.address = args.address;
   if (args.phone !== undefined) updates.phone = args.phone;
   if (args.is_active !== undefined) updates.is_active = args.is_active;
+  // #41 지점 정렬값 — 정수, 작을수록 앞. 미지정 시 미변경.
+  if (args.sort_order !== undefined) {
+    const so = parseInt(String(args.sort_order), 10);
+    updates.sort_order = Number.isFinite(so) ? so : 999;
+  }
 
   const { error } = await sb.from('branches').update(updates).eq('id', branch.id);
   if (error) return JSON.stringify({ error: error.message });
@@ -2251,10 +2263,17 @@ async function execCreateProduct(sb: any, args: any, ctx: ToolContext): Promise<
   const denied = requireHq(ctx, '제품 등록');
   if (denied) return denied;
   const code = `KYO-${Date.now().toString(36).toUpperCase()}`;
+  // #61 세트(팬텀): is_phantom=true면 본인 재고 미차감 → track_inventory 자동 false(createProduct 서버액션 규칙 동일). 구성품 차감은 BOM 별도 등록 필요.
+  // #28 소수점 재고: allow_decimal_stock=true면 분수 수량 허용.
+  const isPhantom = args.is_phantom === true;
+  const allowDecimalStock = args.allow_decimal_stock === true;
   const { data: product, error } = await sb.from('products').insert({
     name: args.name, code, price: args.price,
     cost: args.cost || null, unit: args.unit || '개',
     barcode: args.barcode || null, is_active: true,
+    is_phantom: isPhantom,
+    track_inventory: isPhantom ? false : true,
+    allow_decimal_stock: allowDecimalStock,
   }).select('id').single();
 
   if (error) return JSON.stringify({ error: error.message });
