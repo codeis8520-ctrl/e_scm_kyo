@@ -95,8 +95,8 @@ export default function DashboardLayout({
 
   // 사이드바 링크 렌더 — 핵심/관리 2섹션(구분선). 모바일·데스크톱 공용.
   const renderNavLinks = (onNavigate?: () => void) => {
-    const core = navItems.filter(i => (i as any).section !== 'admin');
-    const admin = navItems.filter(i => (i as any).section === 'admin');
+    const core = navItems.filter(i => i.section !== 'admin');
+    const admin = navItems.filter(i => i.section === 'admin');
     const linkClass = (href: string) =>
       `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${
         (href === '/' ? pathname === '/' : pathname === href || pathname.startsWith(href + '/'))
