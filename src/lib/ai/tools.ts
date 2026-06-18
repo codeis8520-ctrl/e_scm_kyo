@@ -746,6 +746,67 @@ sales_orders·inventories 등 핵심 거래 테이블은 삭제 불가.`,
       },
     },
   },
+  // ── 수령 전 전표 품목 추가/수정/삭제 ─────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'add_sales_order_item',
+      description: `수령 전(receipt_status≠RECEIVED) 판매 전표에 품목을 추가합니다. 결제차액(delta)·재고차감·VAT·분개를 서버가 자동 재정산합니다.
+사용 예: "SA-GN-... 전표에 산삼 1개 더 추가해줘", "그 주문에 침향 2개 추가".
+주의: 이미 수령(RECEIVED)된 전표는 거부됩니다. unit_price 생략 시 제품 기본가로 폴백.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          order_number: { type: 'string', description: '대상 주문번호 (예: SA-GN-20260408-ABCD)' },
+          product_name: { type: 'string', description: '추가할 제품명 (부분 일치 검색)' },
+          quantity: { type: 'number', description: '추가 수량' },
+          unit_price: { type: 'number', description: '단가(선택). 생략 시 제품 기본가 사용' },
+          discount: { type: 'number', description: '품목 할인액(선택)' },
+          delivery_type: { type: 'string', enum: ['PICKUP', 'PARCEL', 'QUICK'], description: '배송 유형(선택)' },
+        },
+        required: ['order_number', 'product_name', 'quantity'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_sales_order_item',
+      description: `수령 전 판매 전표 품목의 수량/단가/할인을 수정합니다. 결제차액·재고·분개를 서버가 자동 재정산합니다.
+먼저 analyze_data로 sales_order_items에서 해당 전표의 품목 id를 확인한 뒤 item_id를 전달하세요 (get_orders는 품목 id를 반환하지 않음).
+사용 예: "SA-GN-... 그 품목 수량 3개로 바꿔줘", "단가를 50000원으로 수정".
+주의: RECEIVED 전표는 거부. 미지정 필드는 기존 값 유지.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          order_number: { type: 'string', description: '대상 주문번호' },
+          item_id: { type: 'string', description: '수정할 품목 id (sales_order_items.id). analyze_data로 사전 확인' },
+          quantity: { type: 'number', description: '새 수량(선택)' },
+          unit_price: { type: 'number', description: '새 단가(선택)' },
+          discount: { type: 'number', description: '새 품목 할인액(선택)' },
+        },
+        required: ['order_number', 'item_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'remove_sales_order_item',
+      description: `수령 전 판매 전표에서 품목을 삭제합니다. 결제차액·재고복원·분개를 서버가 자동 재정산합니다.
+먼저 analyze_data로 sales_order_items에서 해당 전표의 품목 id를 확인한 뒤 item_id를 전달하세요 (get_orders는 품목 id를 반환하지 않음).
+사용 예: "SA-GN-... 그 품목 빼줘", "잘못 들어간 품목 삭제".
+주의: RECEIVED 전표는 거부.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          order_number: { type: 'string', description: '대상 주문번호' },
+          item_id: { type: 'string', description: '삭제할 품목 id (sales_order_items.id). analyze_data로 사전 확인' },
+        },
+        required: ['order_number', 'item_id'],
+      },
+    },
+  },
   // ── 외상 수금 ─────────────────────────────────────────────────────────────
   {
     type: 'function',
@@ -1192,6 +1253,9 @@ export const WRITE_TOOLS = new Set([
   'bulk_update_product_costs',
   'delete_record',
   'cancel_sales_order',
+  'add_sales_order_item',
+  'update_sales_order_item',
+  'remove_sales_order_item',
   'settle_credit_order',
   'cancel_credit_order',
   'cancel_purchase_order',
@@ -1220,6 +1284,10 @@ export const DANGEROUS_TOOLS = new Set<string>([
   'cancel_credit_order',
   'create_sales_order',
   'send_campaign',
+  // 수령 전 전표 품목 수정 — 재고/결제/분개 차액 비가역
+  'add_sales_order_item',
+  'update_sales_order_item',
+  'remove_sales_order_item',
   // Batch 2b: 재고차감·재무 영향 (settle은 제외 — 수금은 가산이라 비파괴적)
   'create_shipment',
   'create_b2b_sales_order',
@@ -1371,6 +1439,9 @@ export async function executeTool(
       case 'get_customer_consultations':return execGetCustomerConsultations(sb, args as any);
       case 'delete_record':            return execDeleteRecord(sb, args as any, ctx);
       case 'cancel_sales_order':       return execCancelSalesOrder(sb, args as any, ctx);
+      case 'add_sales_order_item':     return execAddSalesOrderItem(sb, args as any, ctx);
+      case 'update_sales_order_item':  return execUpdateSalesOrderItem(sb, args as any, ctx);
+      case 'remove_sales_order_item':  return execRemoveSalesOrderItem(sb, args as any, ctx);
       case 'settle_credit_order':      return execSettleCreditOrder(sb, args as any, ctx);
       case 'cancel_credit_order':      return execCancelCreditOrder(sb, args as any, ctx);
       case 'cancel_purchase_order':    return execCancelPurchaseOrder(sb, args as any, ctx);
@@ -2866,6 +2937,107 @@ async function execCancelSalesOrder(sb: any, args: {
     안내: order.payment_method === 'card' || order.payment_method === 'card_keyin' || order.payment_method === 'kakao'
       ? '⚠️ 카드 결제건입니다. 결제 단말기/PG에서 결제 취소를 별도로 진행해주세요.'
       : undefined,
+  });
+}
+
+// ── 수령 전 전표 품목 추가/수정/삭제 ──────────────────────────────────────────
+// 서버액션(sales-revise-actions)이 차액 재고/포인트/VAT/분개 재정산을 전담. 여기는 래핑만.
+
+async function resolveEditableOrder(sb: any, orderNumber: string, ctx: ToolContext) {
+  const { data: order } = await sb
+    .from('sales_orders')
+    .select('id, order_number, status, receipt_status, branch:branches(id, name)')
+    .eq('order_number', orderNumber)
+    .maybeSingle();
+  if (!order) return { error: JSON.stringify({ error: `주문 "${orderNumber}"을(를) 찾을 수 없습니다.` }) };
+  const denied = assertBranchAccess(ctx, order.branch?.id, order.branch?.name || '지점');
+  if (denied) return { error: denied };
+  return { order };
+}
+
+async function execAddSalesOrderItem(sb: any, args: {
+  order_number: string;
+  product_name: string;
+  quantity: number;
+  unit_price?: number;
+  discount?: number;
+  delivery_type?: 'PICKUP' | 'PARCEL' | 'QUICK';
+}, ctx: ToolContext): Promise<string> {
+  const resolved = await resolveEditableOrder(sb, args.order_number, ctx);
+  if (resolved.error) return resolved.error;
+  const order = resolved.order;
+
+  const product = await findProduct(sb, args.product_name);
+  if (!product) return JSON.stringify({ error: `제품 "${args.product_name}"을(를) 찾을 수 없습니다.` });
+
+  const { addSalesOrderItem } = await import('@/lib/sales-revise-actions');
+  const res = await addSalesOrderItem({
+    orderId: order.id,
+    productId: product.id,
+    quantity: args.quantity,
+    unitPrice: args.unit_price ?? product.price,
+    discount: args.discount,
+    orderOption: null,
+    deliveryType: args.delivery_type,
+  });
+  if (res.error) return JSON.stringify({ error: res.error });
+
+  return JSON.stringify({
+    성공: true,
+    주문번호: order.order_number,
+    추가품목: product.name,
+    수량: args.quantity,
+    단가: (args.unit_price ?? product.price)?.toLocaleString?.() + '원',
+    결제차액: typeof res.delta === 'number' ? res.delta.toLocaleString() + '원' : undefined,
+  });
+}
+
+async function execUpdateSalesOrderItem(sb: any, args: {
+  order_number: string;
+  item_id: string;
+  quantity?: number;
+  unit_price?: number;
+  discount?: number;
+}, ctx: ToolContext): Promise<string> {
+  const resolved = await resolveEditableOrder(sb, args.order_number, ctx);
+  if (resolved.error) return resolved.error;
+  const order = resolved.order;
+
+  const { updateSalesOrderItem } = await import('@/lib/sales-revise-actions');
+  const res = await updateSalesOrderItem({
+    orderId: order.id,
+    itemId: args.item_id,
+    quantity: args.quantity,
+    unitPrice: args.unit_price,
+    discount: args.discount,
+  });
+  if (res.error) return JSON.stringify({ error: res.error });
+
+  return JSON.stringify({
+    성공: true,
+    주문번호: order.order_number,
+    품목ID: args.item_id,
+    결제차액: typeof res.delta === 'number' ? res.delta.toLocaleString() + '원' : undefined,
+  });
+}
+
+async function execRemoveSalesOrderItem(sb: any, args: {
+  order_number: string;
+  item_id: string;
+}, ctx: ToolContext): Promise<string> {
+  const resolved = await resolveEditableOrder(sb, args.order_number, ctx);
+  if (resolved.error) return resolved.error;
+  const order = resolved.order;
+
+  const { removeSalesOrderItem } = await import('@/lib/sales-revise-actions');
+  const res = await removeSalesOrderItem({ orderId: order.id, itemId: args.item_id });
+  if (res.error) return JSON.stringify({ error: res.error });
+
+  return JSON.stringify({
+    성공: true,
+    주문번호: order.order_number,
+    삭제품목ID: args.item_id,
+    결제차액: typeof res.delta === 'number' ? res.delta.toLocaleString() + '원' : undefined,
   });
 }
 

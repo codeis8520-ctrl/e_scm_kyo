@@ -66,6 +66,8 @@ sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, buyer_n
   ※ "취소 vs 환불" 구분: 취소는 거래 자체를 무름(잘못 등록), 환불은 매출 발생 후 반품(return_orders 생성).
   ※ 전표 수정(수령 전 품목 추가/삭제/수량·단가수정): status=COMPLETED & receipt_status≠RECEIVED 전표에 한해 품목 추가/삭제/수정 가능(addSalesOrderItem/removeSalesOrderItem/updateSalesOrderItem). 즉시 total_amount/taxable/exempt/vat·적립포인트·재고가 재계산됨. 재고 movement reference_type='SALE_REVISE_ADD'(차감,OUT)/'SALE_REVISE_REMOVE'(복원,IN)/'SALE_REVISE_EDIT'(수량변경 차액 OUT or IN), phantom은 'PHANTOM_DECOMPOSE'. 결제 차액은 sales_order_payments 1행(memo='전표 수정 자동 추가결제/부분환불'). 매출 분개는 차액분만 추가(journal_entries.source_type='SALE_REVISE', orderNumber 'REVISE-...'). 적립포인트 차액은 point_history type='adjust'(description='전표 수정 적립 조정'). 주문할인(discount_amount) 재배분은 없음(기존값 유지). 수령완료 품목/마지막 품목 삭제는 거부. 품목수정(#36): 수량 변경=차액만큼 재고 OUT/IN, 단가만 변경=재고 불변·금액만, 판매번호(order_number) 불변·audit_logs에 수정이력.
   ※ receipt_status=수령현황(수령완료/방문예정/퀵예정/택배예정). 기본 RECEIVED. 배송 활성 시 PARCEL_PLANNED/QUICK_PLANNED 자동 지정. 배송 SHIPPED는 수령상태 불변(발송은 shipment.status로만 추적), DELIVERED→RECEIVED만 자동연동(#43, 마이그091).
+  ※ 수령상태 일괄변경(#38, bulkUpdateReceiptStatus): 여러 주문을 발송완료(PARCEL_SHIPPED 아님—shipment SHIPPED)/수령완료(RECEIVED)로 일괄. 배송 연결건은 shipment.status 동기화 + syncReceiptStatusFromShipment 재사용. 전진 전이만 허용(비RECEIVED만). 판매현황 수령현황 뷰의 다중선택 일괄처리.
+  ※ 주문 옵션 송장 반영(#40): sales_order_items.order_option(보자기/쇼핑백/선물 등)은 getShipments 가 order_options 파생 + composeDeliveryMessage 로 배송메모(CJ 배송메세지1)·배송목록에 합성 표시. 저장 데이터 무변경(조회 도출). cafe24는 items_summary에 이미 옵션 포함.
   ※ approval_status=결제 승인 라이프사이클(status와 직교). card_keyin→CARD_PENDING, credit→UNSETTLED 자동 추론 가능.
   ※ payment_info=레거시 자유기입 컬럼(2026-04 UI 제거). 신규 입력 없음. 과거 데이터 조회만 노출.
   ※ ordered_by=판매·상담 담당자.
@@ -239,6 +241,7 @@ sales_orders.receipt_status: 품목 receipt_status 집계. 품목 모두 RECEIVE
 - "거래처에 납품 등록해줘" → create_b2b_sales_order (재고차감+매출 분개, RAW/SUB 불가, 확인 필요)
 - "거래처 수금 처리해줘" → settle_b2b_order(order_number, amount, method?) (가산 수금, 확인 필요)
 - "납품 전표 취소해줘" → cancel_b2b_order(order_number, reason?) (재고 역복원, 수금 0건만, 확인 필요)
+- "수령 전 전표 품목 추가/수정/삭제" → add/update/remove_sales_order_item (RECEIVED 후엔 거부, 차액 재고·결제·분개 자동재정산, 확인 필요. update/remove는 analyze_data로 sales_order_items.id 선조회 필요)
 
 [에이전트 판매 등록 (create_sales_order)]
 - 단순 현장판매(POS) 전용: 단일 결제(현금/카드/카카오페이만), 할인 0, 현장 수령(PICKUP).
