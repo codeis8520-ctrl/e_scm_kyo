@@ -272,8 +272,6 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
 
   // 배송 추적
   const [trackingId, setTrackingId] = useState<string | null>(null); // 개별 추적 중인 shipment id
-  const [batchTracking, setBatchTracking] = useState(false);
-  const [batchProgress, setBatchProgress] = useState('');
 
   // ── 대한통운 엑셀 발송지(보내는분) 선택 ───────────────────────────────────
   interface BranchSender {
@@ -738,52 +736,6 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
 
   // 선택된 행에 대해서만 SweetTracker 송장 추적 API 호출 → 배송 상태 갱신.
   // 전체 SHIPPED 건을 자동으로 돌면 API 일일 쿼터 빠르게 소진 + 의도치 않은 비용 발생.
-  const trackBatch = async () => {
-    if (selectedShipments.size === 0) {
-      alert('송장 추적할 행을 좌측 체크박스로 먼저 선택해주세요.');
-      return;
-    }
-    const targets = filteredShipments
-      .filter(s => selectedShipments.has(s.id) && s.tracking_number && s.status === 'SHIPPED');
-    if (targets.length === 0) {
-      alert('선택된 행 중 송장번호가 있고 발송완료(SHIPPED) 상태인 건이 없습니다.\n추적 대상이 아닙니다.');
-      return;
-    }
-    if (!confirm(`선택된 ${selectedShipments.size}건 중 추적 가능 ${targets.length}건의 송장을 SweetTracker API 로 조회해 배송 상태를 갱신합니다. 계속할까요?`)) return;
-    setBatchTracking(true);
-    let updated = 0;
-    for (let i = 0; i < targets.length; i++) {
-      const s = targets[i];
-      setBatchProgress(`${i + 1}/${targets.length} 처리중...`);
-      try {
-        const res = await fetch(`/api/shipping/track?trackingNo=${s.tracking_number}`);
-        if (res.status === 429) {
-          setBatchTracking(false);
-          setBatchProgress('');
-          alert(`API 한도 초과 — ${updated}건 업데이트 후 중단됨.\n개별 송장번호 클릭으로 대한통운 공식 페이지에서 확인하세요.`);
-          await fetchShipments();
-          return;
-        }
-        const data = await res.json();
-        if (data.error?.includes('quota') || data.error?.includes('rate') || data.error?.includes('429')) {
-          setBatchTracking(false);
-          setBatchProgress('');
-          alert(`API 한도 초과 — ${updated}건 업데이트 후 중단됨.\n개별 송장번호 클릭으로 대한통운 공식 페이지에서 확인하세요.`);
-          await fetchShipments();
-          return;
-        }
-        if (!data.error && data.status !== s.status) {
-          await updateShipment(s.id, { status: data.status });
-          updated++;
-        }
-      } catch { /* skip */ }
-    }
-    await fetchShipments();
-    setBatchTracking(false);
-    setBatchProgress('');
-    alert(`배송 상태 업데이트 완료 — ${updated}건 변경`);
-  };
-
   // ── Cafe24 탭 핸들러 ──────────────────────────────────────────────────────
   const handleLoadCafe24Orders = async (hideAddedOverride?: boolean) => {
     if (!startDate || !endDate) return;
@@ -1055,39 +1007,6 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
   };
 
   // 선택 엑셀 익스포트 — 발송지는 행별 자동 해결(resolveSenderForRow). 모달 없음.
-  const exportSelectedToExcel = () => {
-    const toExport = filteredShipments.filter(s => selectedShipments.has(s.id));
-    if (toExport.length === 0) return;
-    if (!guardSenders(toExport)) return;
-    const rows = toExport.map(s => {
-      // sender.name/phone 은 본인발송 시 '더경옥' + 회사 발신 전화로 이미 보정됨(resolveSenderForRow, #30·#39).
-      const sender = resolveSenderForRow(s);
-      return {
-      '등록일': s.created_at?.slice(0, 10) ?? '',
-      '수령예정일': s.sale_receipt_date ?? '',
-      '매출처': s.sale_branch_name ?? (s.source === 'CAFE24' ? '자사몰' : '직접입력'),
-      '발송자': sender.name,
-      '발송자 전화': sender.phone,
-      '발송자 우편번호': sender.zipcode,
-      '발송자 주소': sender.address,
-      '발송자 상세주소': sender.addressDetail,
-      '수령자': s.recipient_name,
-      '수령자 전화': s.recipient_phone,
-      '수령자 우편번호': s.recipient_zipcode ?? '',
-      '수령자 주소': s.recipient_address,
-      '수령자 상세주소': s.recipient_address_detail ?? '',
-      '배송 메모': composeDeliveryMessage(s),
-      '품목': s.items_summary ?? '',
-      '상태': STATUS_LABEL[s.status] ?? s.status,
-      '송장번호': s.tracking_number ?? '',
-      };
-    });
-    const ws = XLSX.utils.json_to_sheet(rows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, '배송목록');
-    XLSX.writeFile(wb, `배송목록_${kstTodayString()}.xlsx`);
-  };
-
   const handleEditOpen = (s: Shipment) => { setEditShipment(s); setEditForm({ ...s }); setEditError(''); };
   const handleEditClose = () => { setEditShipment(null); setEditForm({}); setEditError(''); };
   const handleEditSave = async () => {
@@ -1573,15 +1492,6 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
               </select>
             </div>
             <div className="flex gap-2 flex-wrap">
-              {/* 선택건 송장 추적 — SweetTracker API 로 배송상태 갱신 */}
-              <button
-                onClick={trackBatch}
-                disabled={batchTracking || selectedShipments.size === 0}
-                title="선택한 행 중 송장번호가 있는 SHIPPED 건을 SweetTracker API 로 조회해 배송 상태를 갱신"
-                className="px-3 py-2 rounded text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40"
-              >
-                {batchTracking ? batchProgress : `🛰 선택건 송장 추적 (${selectedShipments.size})`}
-              </button>
               {/* 엑셀 임포트 */}
               <input ref={importFileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportFile} />
               <button
@@ -1598,14 +1508,6 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                 className="px-3 py-2 rounded text-sm font-medium bg-green-600 text-white hover:bg-green-700 disabled:opacity-40"
               >
                 대한통운 엑셀 다운로드 ({selectedShipments.size})
-              </button>
-              {/* 선택 엑셀 익스포트 */}
-              <button
-                onClick={exportSelectedToExcel}
-                disabled={selectedShipments.size === 0}
-                className="px-3 py-2 rounded text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40"
-              >
-                선택 엑셀 익스포트 ({selectedShipments.size}건)
               </button>
               {/* 예외 진입점: 직접 배송 입력 — 보조 버튼(임베드 미노출) */}
               {!embedded && (
