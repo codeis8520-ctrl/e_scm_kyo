@@ -613,7 +613,15 @@ function SendModal({ type, templates, templateMappings, onClose, onSuccess, onGo
           {sendMode === 'ids' && (
             <div className="space-y-2">
               <div className="flex justify-between items-center">
-                <label className="text-sm font-medium">발송 대상 ({selectedCustomerIds.length}명 선택)</label>
+                <label className="text-sm font-medium">
+                  발송 대상 ({selectedCustomerIds.length}명 선택)
+                  {(() => {
+                    const noPhoneCount = selectedCustomerIds.filter(id => !pickedCustomers[id]?.phone).length;
+                    return noPhoneCount > 0
+                      ? <span className="ml-1 text-xs text-red-500 font-normal">· 번호없음 {noPhoneCount}명 발송제외</span>
+                      : null;
+                  })()}
+                </label>
                 {selectedCustomerIds.length > 0 && (
                   <button onClick={clearSelection} className="text-xs text-slate-500 hover:underline">선택 해제</button>
                 )}
@@ -624,10 +632,12 @@ function SendModal({ type, templates, templateMappings, onClose, onSuccess, onGo
                 <div className="flex flex-wrap gap-1.5">
                   {selectedCustomerIds.map(id => {
                     const c = pickedCustomers[id];
+                    const noPhone = !c?.phone;
                     return (
-                      <span key={id} className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 text-xs px-2 py-1 rounded-full">
+                      <span key={id} className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full ${noPhone ? 'bg-red-50 text-red-600' : 'bg-blue-50 text-blue-700'}`}>
                         {c?.name || id.slice(0, 6)}
-                        <button onClick={() => setSelectedCustomerIds(prev => prev.filter(i => i !== id))} className="text-blue-400 hover:text-blue-600">✕</button>
+                        {noPhone && <span className="font-medium">(번호없음)</span>}
+                        <button onClick={() => setSelectedCustomerIds(prev => prev.filter(i => i !== id))} className={noPhone ? 'text-red-400 hover:text-red-600' : 'text-blue-400 hover:text-blue-600'}>✕</button>
                       </span>
                     );
                   })}
@@ -651,7 +661,9 @@ function SendModal({ type, templates, templateMappings, onClose, onSuccess, onGo
                         <input type="checkbox" checked={selectedCustomerIds.includes(c.id)} onChange={() => toggleCustomer(c)} />
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium truncate">{c.name}</p>
-                          <p className="text-xs text-slate-400">{c.phone}</p>
+                          {c.phone
+                            ? <p className="text-xs text-slate-400">{c.phone}</p>
+                            : <p className="text-xs text-red-500">전화번호 없음 · 발송 불가</p>}
                         </div>
                         <span className={`shrink-0 px-1.5 py-0.5 text-xs rounded ${GRADE_BADGE[c.grade || ''] || 'bg-slate-100 text-slate-500'}`}>
                           {GRADE_LABELS[c.grade || ''] || c.grade}
