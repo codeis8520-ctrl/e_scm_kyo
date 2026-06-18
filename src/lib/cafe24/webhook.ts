@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { Cafe24WebhookEvent, CAFE24_STATUS_TO_LOCAL, cafe24OrderTotal, cafe24OrderDiscount, normalizeOptionValue, extractItemOptions } from './types';
+import { Cafe24WebhookEvent, CAFE24_STATUS_TO_LOCAL, cafe24OrderTotal, cafe24OrderDiscount, cafe24SelfPoints, normalizeOptionValue, extractItemOptions } from './types';
 import { Cafe24Client, generateCafe24OrderCode } from './client';
 import { getValidAccessToken } from './token-store';
 import { createSaleJournal } from '@/lib/accounting-actions';
@@ -457,6 +457,14 @@ async function handleOrderCreated(
 
   const orderedById = adminUser?.[0]?.id;
 
+  // #42: 결제 내역 표시 — 자사몰 적립금/쿠폰 할인을 사람이 읽을 수 있게 기록(드로어 payment_info 패널).
+  //   신규 주문 insert 라 기존 payment_info 없음 → 줄바꿈으로 합쳐 신규 저장(null 안전: 비면 미설정).
+  const selfPoints = cafe24SelfPoints(cafe24Order);
+  const couponDiscount = cafe24OrderDiscount(cafe24Order);
+  const paymentInfoLines: string[] = [];
+  if (selfPoints > 0) paymentInfoLines.push(`자사몰 적립금 ${selfPoints.toLocaleString('ko-KR')}원 사용`);
+  if (couponDiscount > 0) paymentInfoLines.push(`쿠폰 할인 ${couponDiscount.toLocaleString('ko-KR')}원`);
+
   const insertPayload: Record<string, unknown> = {
     order_number: orderCode,
     channel: 'ONLINE',
@@ -470,11 +478,14 @@ async function handleOrderCreated(
     recipient_address: recipient.address,
     recipient_address_detail: recipient.addressDetail,
     ordered_by: orderedById,
-    // 매출 통일 기준(#18): total_amount = 상품총액(할인 전 gross) = 실결제(tender합) + 할인.
-    //   → 매출(net) = total_amount − discount_amount = cafe24OrderTotal(실결제)로 환원.
-    //   cafe24OrderTotal은 쿠폰 차감 후 실결제라 여기에 할인을 더해 gross로 저장한다.
+    // 매출 통일 기준(#18): total_amount = 상품총액(할인 전 gross) = 실결제(tender합) + 쿠폰할인.
+    //   → 매출(net) = total_amount − discount_amount.
+    //   cafe24OrderTotal은 쿠폰 차감 후 실결제(적립금·네이버포인트·예치금 tender 포함)라 여기에
+    //   쿠폰을 더해 gross로 저장한다. total_amount 는 변경 없음(적립금 재가산 금지 — 이미 포함).
+    // #42: 자사몰 적립금(points_spent)은 tender 가 아니라 할인으로 매출 제외 → discount_amount 에만 가산.
+    //   매출 = total − discount = 카드 실결제(naver_point·credits 는 tender 유지 → 매출 포함).
     total_amount: cafe24OrderTotal(cafe24Order) + cafe24OrderDiscount(cafe24Order),
-    discount_amount: cafe24OrderDiscount(cafe24Order),
+    discount_amount: cafe24OrderDiscount(cafe24Order) + cafe24SelfPoints(cafe24Order),
     status: 'PENDING',
     payment_method: mapPaymentMethod(cafe24Order.payment_method),
     cafe24_order_id: orderNo.toString(),
@@ -483,6 +494,8 @@ async function handleOrderCreated(
     memo: recipient.address
       ? `Delivery: ${[recipient.address, recipient.addressDetail].filter(Boolean).join(' ')}`
       : null,
+    // #42: 적립금·쿠폰 표시(없으면 컬럼 미설정 — 빈 문자열 저장 안 함).
+    ...(paymentInfoLines.length > 0 ? { payment_info: paymentInfoLines.join('\n') } : {}),
     ordered_at: new Date(cafe24Order.order_date).toISOString(),
   };
 
@@ -543,7 +556,7 @@ async function handleOrderPaid(
 
   const { data: order } = await getSupabase()
     .from('sales_orders')
-    .select('id, order_number, total_amount, payment_method, ordered_at')
+    .select('id, order_number, total_amount, discount_amount, payment_method, ordered_at')
     .eq('order_number', orderCode)
     .maybeSingle();
 
@@ -584,12 +597,15 @@ async function handleOrderPaid(
   }
 
   // 매출 분개 생성 (결제 시점 수익 인식)
+  // #42: 매출 = total − discount(쿠폰 + 자사몰 적립금). 적립금은 현금/카드 수취가 아니라
+  //   할인이므로 카드 차변 = 매출 대변 = net 으로 양변 정합(gross 게시 시 적립금만큼 과대).
+  const netSaleAmount = Number(order.total_amount) - Number(order.discount_amount || 0);
   try {
     await createSaleJournal({
       orderId: order.id,
       orderNumber: order.order_number,
       orderDate: now.slice(0, 10),
-      totalAmount: Number(order.total_amount),
+      totalAmount: netSaleAmount,
       paymentMethod: order.payment_method ?? 'card',
       cogs: 0,
     });
@@ -611,7 +627,7 @@ async function handleOrderPaid(
         customer: { id: cust.id, name: cust.name, phone: cust.phone },
         context: {
           orderNo: order.order_number,
-          amount: Number(order.total_amount),
+          amount: netSaleAmount,   // #42: 알림톡도 실결제(net)로 일관
           customerGrade: cust.grade || 'NORMAL',
         },
       }).catch(() => {});
@@ -771,7 +787,7 @@ async function handleOrderRefunded(
 
   const { data: order } = await getSupabase()
     .from('sales_orders')
-    .select('id, order_number, total_amount, payment_method, status, ordered_at')
+    .select('id, order_number, total_amount, discount_amount, payment_method, status, ordered_at')
     .eq('order_number', orderCode)
     .maybeSingle();
 
@@ -779,9 +795,12 @@ async function handleOrderRefunded(
     return { success: false, message: 'Order not found' };
   }
 
-  const isPartial = refundAmount !== null && refundAmount < Number(order.total_amount);
+  // 매출은 net(total − discount, 자사몰 적립금 제외분 포함)으로 게시되므로(#42),
+  // 전액 환불 역분개도 net 기준이어야 잔액이 남지 않는다. 부분환불은 cafe24 refund_price(실환불 현금) 그대로.
+  const netSaleAmount = Number(order.total_amount) - Number(order.discount_amount || 0);
+  const isPartial = refundAmount !== null && refundAmount < netSaleAmount;
   const newStatus = isPartial ? 'PARTIALLY_REFUNDED' : 'REFUNDED';
-  const actualRefundAmount = refundAmount ?? Number(order.total_amount);
+  const actualRefundAmount = refundAmount ?? netSaleAmount;
 
   const { error } = await getSupabase()
     .from('sales_orders')

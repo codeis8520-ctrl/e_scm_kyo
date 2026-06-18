@@ -152,6 +152,16 @@ export function cafe24OrderDiscount(order: unknown): number {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+// 자사몰 적립금 사용분(actual_order_amount.points_spent_amount)만(#42).
+// naver_point·credits_spent_amount 는 tender(매출 포함)이라 여기서 제외 — 자사몰 적립금만
+// 매출에서 빼기 위해(discount 취급) 별도 추출한다. cafe24OrderTotal 에는 이미 적립금이
+// tender 로 포함돼 있으므로, 매출 제외는 discount_amount 가산으로만 처리(total 재가산 금지).
+export function cafe24SelfPoints(order: unknown): number {
+  const o = order as any;
+  const n = Number(o?.actual_order_amount?.points_spent_amount);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 // ─── 카페24 옵션조합 정규화 (매핑 키 단일 출처) ───────────────────────────────
 // 카페24 item의 원본 option_value 문자열(예 "보자기포장=선택안함&쇼핑백=선택안함")을
 // cafe24_product_map의 매칭 키로 변환한다. route.ts(조회)와 cafe24-actions.ts(저장)가
