@@ -436,13 +436,18 @@ async function handleOrderCreated(
     return { success: true, message: 'Order already exists', orderId: existingOrder.id };
   }
 
-  const onlineBranchQuery = await getSupabase()
-    .from('branches')
-    .select('id')
-    .eq('channel', 'ONLINE')
-    .limit(1);
-
-  const branchId = onlineBranchQuery.data?.[0]?.id;
+  // cafe24 자사몰 주문은 항상 자사몰 지점(code='ONLINE')에 귀속.
+  //   ⚠️ ONLINE 채널 지점이 여럿(자사몰·신세계몰·롯데몰 등)이라 channel 필터+[0]은 임의 지점에
+  //   잘못 배정됨(예: 비활성 롯데몰). code='ONLINE'(고정 시드)로 자사몰을 특정한다.
+  let branchId: string | undefined;
+  const selfMall = await getSupabase().from('branches').select('id').eq('code', 'ONLINE').limit(1);
+  branchId = selfMall.data?.[0]?.id;
+  if (!branchId) {
+    // 폴백: code='ONLINE' 부재 시 활성 ONLINE 채널 중 가장 오래된(=자사몰 가능성) 1건.
+    const fb = await getSupabase().from('branches').select('id')
+      .eq('channel', 'ONLINE').eq('is_active', true).order('created_at', { ascending: true }).limit(1);
+    branchId = fb.data?.[0]?.id;
+  }
 
   if (!branchId) {
     await logSyncEvent('order_creation_error', orderNo.toString(), cafe24Order, 'failed', 'No ONLINE branch found');

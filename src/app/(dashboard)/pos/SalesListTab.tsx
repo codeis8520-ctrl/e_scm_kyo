@@ -274,7 +274,9 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
   // 초기 — 지점·직원 목록
   useEffect(() => {
     const sb = createClient() as any;
-    sb.from('branches').select('id, name, code, channel, sort_order').eq('is_active', true).order('sort_order').order('name')
+    // 매출처 콤보·지점별 매출은 코드관리 지점관리와 일치해야 함 → 전 지점 로드(비활성 포함).
+    //   판매전표가 비활성 지점(예: 롯데몰)을 매출처로 가질 수 있어 활성 필터 시 콤보에서 누락됨.
+    sb.from('branches').select('id, name, code, channel, sort_order, is_active').order('sort_order').order('name')
       .then(({ data }: any) => setBranches(data || []));
     sb.from('users').select('id, name, branch_id').eq('is_active', true).order('name')
       .then(({ data }: any) => setStaff((data || []) as StaffUser[]));
@@ -420,9 +422,9 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
 
   useEffect(() => { loadOrders(); }, [loadOrders]);
 
-  // 비교뷰 지점 선택 초기화 — branches 로드되면 전체 active 지점으로 채움.
+  // 비교뷰 지점 선택 초기화 — branches 로드되면 활성 지점만 기본 선택(비활성 매출처는 콤보엔 있되 비교 기본에선 제외해 컬럼 정돈).
   useEffect(() => {
-    setCompareBranchIds(branches.map(b => b.id));
+    setCompareBranchIds(branches.filter(b => (b as any).is_active !== false).map(b => b.id));
   }, [branches]);
 
   // 일수 차이 (day grain 가드용). 둘 다 'YYYY-MM-DD' KST 일자 문자열.
