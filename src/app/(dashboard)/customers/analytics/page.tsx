@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import Link from 'next/link';
 import {
@@ -96,9 +96,12 @@ export default function CustomerAnalyticsPage() {
   useEffect(() => { if (tab === 'cycle') loadCycle(); }, [tab, loadCycle]);
   useEffect(() => { if (tab === 'churn') loadChurn(); }, [tab, loadChurn]);
 
-  const filteredRfm = rfmFilter
-    ? rfmData.filter(r => r.segment === rfmFilter)
-    : rfmData.filter(r => r.orderCount > 0);
+  // 12k+ 행 필터는 rfmData/rfmFilter 변경 시에만 — 매 렌더 재필터 방지(성능).
+  const filteredRfm = useMemo(() => (
+    rfmFilter
+      ? rfmData.filter(r => r.segment === rfmFilter)
+      : rfmData.filter(r => r.orderCount > 0)
+  ), [rfmData, rfmFilter]);
 
   const maxCycleCount = cycleData
     ? Math.max(...(cycleData.distribution || []).map((d: any) => d.count), 1)
