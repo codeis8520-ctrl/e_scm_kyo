@@ -415,3 +415,112 @@ export async function getNotifications(filters?: { status?: string; type?: strin
   if (error) return { data: [], error: error.message };
   return { data: data || [] };
 }
+
+// ─── 발송 대상 해석 (모드별 서버측 대상 산출) ─────────────────────────────────────
+
+export type SendAudienceMode = 'ids' | 'grade' | 'all';
+
+export interface ResolveTargetsParams {
+  mode: SendAudienceMode;
+  customerIds?: string[];   // mode='ids'
+  grade?: string;           // mode='grade' ('NORMAL'|'VIP'|'VVIP')
+}
+
+interface CustomerRow {
+  id: string;
+  name: string | null;
+  phone: string | null;
+  grade: string | null;
+}
+
+const HQ_ROLES = new Set(['SUPER_ADMIN', 'HQ_OPERATOR', 'EXECUTIVE']);
+
+// 전화번호 정규화 (하이픈/공백 제거) — 중복 판정용
+function normalizePhone(phone: string): string {
+  return phone.replace(/[\s-]/g, '');
+}
+
+export async function resolveSendTargets(
+  params: ResolveTargetsParams,
+): Promise<{ targets: SendTarget[]; total: number; skipped: number } | { error: string }> {
+  let session;
+  try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
+
+  const { mode, customerIds, grade } = params;
+
+  // RBAC: 대량발송(등급/전체)은 본사 전용
+  const isHQ = !session.role || HQ_ROLES.has(session.role);
+  if ((mode === 'grade' || mode === 'all') && !isHQ) {
+    return { error: '대량 발송은 본사 권한이 필요합니다.' };
+  }
+
+  // 지점 사용자 스코프 (자기 지점 고객만) — HQ는 무제한
+  const branchScope = !isHQ ? session.branch_id : null;
+
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  let rows: CustomerRow[] = [];
+
+  try {
+    if (mode === 'ids') {
+      const ids = customerIds || [];
+      if (!ids.length) return { error: '선택된 고객이 없습니다.' };
+
+      // PostgREST URL 한도 회피: .in() 200개씩 청크
+      const CHUNK = 200;
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const slice = ids.slice(i, i + CHUNK);
+        let q = db
+          .from('customers')
+          .select('id, name, phone, grade')
+          .eq('is_active', true)
+          .not('phone', 'is', null)
+          .in('id', slice);
+        if (branchScope) q = q.eq('primary_branch_id', branchScope);
+        const { data, error } = await q;
+        if (error) return { error: error.message };
+        rows.push(...((data || []) as CustomerRow[]));
+      }
+    } else {
+      // mode='grade' | 'all' — 1000캡 우회 .range() 페이지네이션 루프
+      if (mode === 'grade' && !grade) return { error: '등급이 지정되지 않았습니다.' };
+
+      const PAGE = 1000;
+      let start = 0;
+      while (true) {
+        let q = db
+          .from('customers')
+          .select('id, name, phone, grade')
+          .eq('is_active', true)
+          .not('phone', 'is', null);
+        if (mode === 'grade') q = q.eq('grade', grade);
+        if (branchScope) q = q.eq('primary_branch_id', branchScope);
+        q = q.order('id').range(start, start + PAGE - 1);
+        const { data, error } = await q;
+        if (error) return { error: error.message };
+        const page = (data || []) as CustomerRow[];
+        rows.push(...page);
+        if (page.length < PAGE) break;
+        start += PAGE;
+      }
+    }
+  } catch (e: any) {
+    return { error: e?.message || String(e) };
+  }
+
+  // 전화없음 제외 + 중복제거 (정규화 번호 기준)
+  let skipped = 0;
+  const seen = new Set<string>();
+  const targets: SendTarget[] = [];
+  for (const r of rows) {
+    const phone = (r.phone || '').trim();
+    if (!phone) { skipped++; continue; }
+    const key = normalizePhone(phone);
+    if (!key || seen.has(key)) { skipped++; continue; }
+    seen.add(key);
+    targets.push({ customerId: r.id, phone, name: r.name || undefined });
+  }
+
+  return { targets, total: targets.length, skipped };
+}
