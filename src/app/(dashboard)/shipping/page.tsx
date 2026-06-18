@@ -23,6 +23,7 @@ interface Shipment {
   source: 'CAFE24' | 'STORE';
   sale_branch_name?: string | null;   // 매출처(연결 sales_order의 지점) — #21
   sale_receipt_date?: string | null;   // 수령일/택배예정일(연결 sales_order) — #26
+  order_options?: string | null;   // 주문 옵션(연결 sales_order_items.order_option 도출) — #40
   cafe24_order_id: string | null;
   branch_id: string | null;
   sender_name: string;
@@ -141,6 +142,27 @@ function TruncatedCell({
       {t}
     </div>
   );
+}
+
+// 배송메세지 합성(#40): base delivery_message + 도출된 주문 옵션.
+//   중복 회피 — opt 토큰이 이미 base 또는 items_summary 에 들어있으면 제외
+//   (cafe24 route 는 items_summary 에 옵션을 'name [opt] xqty' 로 이미 포함 → 이중표기 방지).
+function composeDeliveryMessage(s: {
+  delivery_message?: string | null;
+  items_summary?: string | null;
+  order_options?: string | null;
+}): string {
+  const base = (s.delivery_message ?? '').trim();
+  const opt = (s.order_options ?? '').trim();
+  if (!opt) return base;
+  const haystack = `${base} ${s.items_summary ?? ''}`;
+  const remaining = opt
+    .split(',')
+    .map(t => t.trim())
+    .filter(t => t.length > 0 && !haystack.includes(t));
+  if (remaining.length === 0) return base;
+  const optStr = remaining.join(', ');
+  return base ? `${base} [옵션] ${optStr}` : `[옵션] ${optStr}`;
 }
 
 export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parcel' } = {}) {
@@ -473,7 +495,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
       return [
         s.recipient_name, s.recipient_phone, '',
         [s.recipient_address, s.recipient_address_detail].filter(Boolean).join(' '),
-        s.delivery_message || '', s.items_summary || '',
+        composeDeliveryMessage(s), s.items_summary || '',
         '',                 // 내품명 — 비움(#30)
         '', '선불',
         sender.name, sender.phone, senderFullAddress,
@@ -1040,7 +1062,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
       '수령자 우편번호': s.recipient_zipcode ?? '',
       '수령자 주소': s.recipient_address,
       '수령자 상세주소': s.recipient_address_detail ?? '',
-      '배송 메모': s.delivery_message ?? '',
+      '배송 메모': composeDeliveryMessage(s),
       '품목': s.items_summary ?? '',
       '상태': STATUS_LABEL[s.status] ?? s.status,
       '송장번호': s.tracking_number ?? '',
@@ -1629,7 +1651,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                           />
                         </td>
                         <td className="px-3 py-3 max-w-[200px] align-top">
-                          <TruncatedCell text={s.delivery_message} className="text-amber-700" />
+                          <TruncatedCell text={composeDeliveryMessage(s)} className="text-amber-700" />
                         </td>
                         <td className="px-3 py-3 max-w-[180px] align-top">
                           <TruncatedCell text={s.items_summary} className="text-slate-600" />

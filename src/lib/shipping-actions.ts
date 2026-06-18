@@ -36,7 +36,7 @@ export async function getShipments(status?: string) {
   //   매출처 = 연결된 sales_order.branch. 신규는 sales_order_id(FK), 과거 카페24는 cafe24_order_id.
   let query = supabase
     .from('shipments')
-    .select('*, sales_order:sales_orders(receipt_date, receipt_status, branch:branches(id, name))')
+    .select('*, sales_order:sales_orders(receipt_date, receipt_status, branch:branches(id, name), items:sales_order_items(order_option))')
     .order('created_at', { ascending: false });
   if (status) query = query.eq('status', status);
 
@@ -68,12 +68,26 @@ export async function getShipments(status?: string) {
 
   const result = rows.map(r => {
     const cm = cafe24Map.get(String(r.cafe24_order_id));
+    // 주문 옵션 도출(#40, Approach B): 연결 sales_order 의 order_option 을 dedup 합성.
+    //   cafe24 historical(sales_order 없음)은 items_summary 에 옵션이 이미 포함돼 null 허용(best-effort).
+    let orderOptions: string | null = null;
+    const items = r?.sales_order?.items;
+    if (Array.isArray(items)) {
+      const opts = [...new Set(
+        items
+          .map((it: any) => (it?.order_option ?? '').toString().trim())
+          .filter((o: string) => o.length > 0)
+      )];
+      orderOptions = opts.length > 0 ? opts.join(', ') : null;
+    }
     return {
       ...r,
       // 매출처명: sales_order.branch → cafe24_order_id 매칭 → null(미연결)
       sale_branch_name: r?.sales_order?.branch?.name ?? cm?.name ?? null,
       // 수령일/택배예정일(#26): 연결 sales_order.receipt_date
       sale_receipt_date: r?.sales_order?.receipt_date ?? cm?.receipt_date ?? null,
+      // 주문 옵션(#40): 표시·export 시점에 합성. 저장 데이터 무손상.
+      order_options: orderOptions,
     };
   });
 

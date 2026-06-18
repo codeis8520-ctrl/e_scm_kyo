@@ -2694,7 +2694,12 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     // items_summary: 실제 배송 대상(PARCEL/QUICK) 품목만 요약 — PICKUP 품목은 제외
     const shipItems = cart.filter(c => (c.deliveryType || 'PICKUP') !== 'PICKUP');
     const summarySource = shipItems.length > 0 ? shipItems : cart; // 레거시: 모두 기본값이면 전체
-    const itemsSummary = summarySource.map(c => c.quantity > 1 ? `${c.name} x${c.quantity}` : c.name).join(', ');
+    // 옵션 포함(#40): cafe24 route 패턴과 일치 — 'name [opt] xqty'. composeDeliveryMessage 중복필터가 이중표기 방지.
+    const itemsSummary = summarySource.map(c => {
+      const opt = (c.orderOption || '').trim();
+      const namePart = opt ? `${c.name} [${opt}]` : c.name;
+      return c.quantity > 1 ? `${namePart} x${c.quantity}` : namePart;
+    }).join(', ');
     const payloadBase: any = {
       source: 'STORE',
       sales_order_id: saleOrderId,
