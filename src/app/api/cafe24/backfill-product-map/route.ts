@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { getValidAccessToken, forceRefreshAccessToken } from '@/lib/cafe24/token-store';
 import { normalizeOptionValue, extractItemOptions } from '@/lib/cafe24/types';
+import { deductOnlineOrderInventory } from '@/lib/cafe24/online-inventory';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 카페24 상품매핑 소급 백필 — 과거 ONLINE 전표 미매핑 품목에 product_id 채움.
@@ -112,9 +113,30 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  // 재고 차감 패스(?deduct=1): 매핑 후 자사몰 재고가 차감 안 된 주문 보정.
+  //   백필이 표시(product_id)만 채우고 차감을 안 했던 갭을 메움. deductOnlineOrderInventory 는
+  //   컷오프(2026-06-17) 이전·취소건 자동 제외 + 멱등(이미 차감된 품목 skip)이라 전체 호출해도 안전.
+  let deductedItems = 0, deductOrders = 0;
+  if (searchParams.get('deduct') === '1' && !dry) {
+    const { data: onlineOrders } = await sb
+      .from('sales_orders')
+      .select('id')
+      .eq('channel', 'ONLINE')
+      .eq('status', 'COMPLETED')
+      .not('cafe24_order_id', 'is', null)
+      .gte('ordered_at', '2026-06-17T00:00:00+09:00');
+    for (const o of (onlineOrders ?? []) as any[]) {
+      try {
+        const n = await deductOnlineOrderInventory(sb, o.id);
+        if (n > 0) { deductedItems += n; deductOrders++; }
+      } catch { /* 차감 실패가 백필을 무효화하지 않음 */ }
+    }
+  }
+
   return NextResponse.json({
     dry, ordersChecked, updated, noMatch, failed,
-    note: '표시 백필(product_id + item_text)만 — 재고/매출 미변경',
+    deductOrders, deductedItems,
+    note: 'product_id 매핑 백필 + (deduct=1 시) 자사몰 재고 차감 보정(컷오프 이후·멱등)',
     changes: changes.slice(0, 100),
   });
 }
