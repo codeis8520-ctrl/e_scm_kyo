@@ -2728,20 +2728,20 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                             ) : <span className="text-slate-300">-</span>}
                           </td>
                           <td className="px-3 py-1.5">
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded border ${dTypeColor}`}>
+                            <span className={`whitespace-nowrap text-[10px] px-1.5 py-0.5 rounded border ${dTypeColor}`}>
                               {dTypeLabel}
                             </span>
                           </td>
                           <td className="px-3 py-1.5">
                             <div className="flex items-center gap-1 flex-wrap">
-                              <span className={`text-[10px] px-1.5 py-0.5 rounded ${rColor}`}>
+                              <span className={`whitespace-nowrap text-[10px] px-1.5 py-0.5 rounded ${rColor}`}>
                                 {rLabel}
                               </span>
                               {itemPending && (
                                 <button
                                   onClick={() => markItemReceived(it.id)}
                                   disabled={markingItemId === it.id}
-                                  className="text-[10px] px-1.5 py-0.5 rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+                                  className="whitespace-nowrap text-[10px] px-1.5 py-0.5 rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
                                   title={`${rLabel} 품목 수령 완료`}
                                 >
                                   {markingItemId === it.id ? '...' : '✓ 완료'}
@@ -2751,7 +2751,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                                 <button
                                   onClick={() => revertItemReceived(it.id)}
                                   disabled={markingItemId === it.id}
-                                  className="text-[10px] px-1.5 py-0.5 rounded border border-amber-300 text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+                                  className="whitespace-nowrap text-[10px] px-1.5 py-0.5 rounded border border-amber-300 text-amber-700 hover:bg-amber-50 disabled:opacity-50"
                                   title="이 품목의 수령 완료를 취소하고 예정 상태로 되돌립니다"
                                 >
                                   {markingItemId === it.id ? '...' : '↩ 취소'}
@@ -2759,20 +2759,20 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                               )}
                             </div>
                             {editable && itemRStatus !== 'RECEIVED' && (
-                              <div className="flex gap-1 mt-0.5">
+                              <div className="flex flex-wrap gap-1 mt-1">
                                 {editingItemId === it.id ? (
                                   <>
                                     <button
                                       onClick={() => handleSaveItemEdit(it.id)}
                                       disabled={revising}
-                                      className="text-[10px] px-1.5 py-0.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                                      className="whitespace-nowrap text-[10px] px-1.5 py-0.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
                                     >
                                       {revising ? '...' : '저장'}
                                     </button>
                                     <button
                                       onClick={cancelEditItem}
                                       disabled={revising}
-                                      className="text-[10px] px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                                      className="whitespace-nowrap text-[10px] px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-40"
                                     >
                                       취소
                                     </button>
@@ -2782,7 +2782,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                                     <button
                                       onClick={() => startEditItem(it)}
                                       disabled={revising}
-                                      className="text-[10px] px-1.5 py-0.5 rounded border border-blue-300 text-blue-700 hover:bg-blue-50 disabled:opacity-40"
+                                      className="whitespace-nowrap text-[10px] px-1.5 py-0.5 rounded border border-blue-300 text-blue-700 hover:bg-blue-50 disabled:opacity-40"
                                       title="수량·단가를 수정하고 재고·결제 차액을 자동 정리합니다"
                                     >
                                       ✏ 수정
@@ -2790,7 +2790,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                                     <button
                                       onClick={() => handleRemoveItem(it.id)}
                                       disabled={revising || deletableCount <= 1}
-                                      className="text-[10px] px-1.5 py-0.5 rounded border border-rose-300 text-rose-700 hover:bg-rose-50 disabled:opacity-40"
+                                      className="whitespace-nowrap text-[10px] px-1.5 py-0.5 rounded border border-rose-300 text-rose-700 hover:bg-rose-50 disabled:opacity-40"
                                       title={deletableCount <= 1 ? '전표의 마지막 품목은 삭제할 수 없습니다 (판매 취소 사용)' : '이 품목을 삭제하고 재고·결제 차액을 정리합니다'}
                                     >
                                       🗑 삭제
