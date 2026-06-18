@@ -50,6 +50,7 @@ interface OrderRow {
   id: string;
   order_number: string;
   ordered_at: string;
+  channel?: string | null;   // 자사몰(ONLINE)·STORE 등 — 택배 아이콘 영구 신호(#43)
   status: string;
   total_amount: number;
   discount_amount: number;
@@ -95,7 +96,6 @@ const PAY_LABEL: Record<string, string> = {
 };
 const RECEIPT_STATUS_LABEL: Record<string, string> = {
   RECEIVED: '수령', PICKUP_PLANNED: '방문예정', QUICK_PLANNED: '퀵예정', PARCEL_PLANNED: '택배예정',
-  PARCEL_SHIPPED: '택배발송',
 };
 // 최종 상태(RECEIVED) 표시는 채널별 구분: 택배·퀵(배송 발생=shipment 존재)은 '배송완료', 방문/직접은 '수령완료'.
 //   내부 값 RECEIVED 는 그대로 — 표시 라벨만 조정.
@@ -110,7 +110,6 @@ const RECEIPT_STATUS_BADGE: Record<string, string> = {
   PICKUP_PLANNED: 'bg-amber-100 text-amber-800',    // 방문예정 = 강조(임박 응대)
   QUICK_PLANNED: 'bg-purple-100 text-purple-700',   // 퀵예정 = 강조
   PARCEL_PLANNED: 'bg-blue-100 text-blue-700',      // 택배예정 = 강조
-  PARCEL_SHIPPED: 'bg-cyan-50 text-cyan-700',       // 택배발송완료 = 중간(진행중)
 };
 const APPROVAL_STATUS_LABEL: Record<string, string> = {
   COMPLETED: '결제완료', CARD_PENDING: '미승인(카드)', UNSETTLED: '미결',
@@ -241,7 +240,7 @@ export default function SalesListTab() {
   const [listSort, setListSort] = useState<'order' | 'receipt'>(() => saved.listSort ?? 'receipt');
   // #38 수령상태 일괄변경 — 수령현황 뷰 다중선택
   const [selectedReceiptIds, setSelectedReceiptIds] = useState<Set<string>>(new Set());
-  const [bulkTarget, setBulkTarget] = useState<'PARCEL_SHIPPED' | 'RECEIVED'>('PARCEL_SHIPPED');
+  const [bulkTarget, setBulkTarget] = useState<'RECEIVED'>('RECEIVED');
   const [bulkSaving, setBulkSaving] = useState(false);
   // 비교뷰 전용 다수선택 상태 — 기존 단일 branchFilter 와 독립. 기본값은 전체 active 지점.
   const [compareBranchIds, setCompareBranchIds] = useState<string[]>([]);
@@ -300,7 +299,7 @@ export default function SalesListTab() {
     // 051 적용 전/후 모두 대응: full select → 실패 시 basic select 폴백
     const buildQuery = (useExtended: boolean) => {
       const baseSelect = useExtended ? `
-        id, order_number, ordered_at, status, total_amount, discount_amount,
+        id, order_number, ordered_at, channel, status, total_amount, discount_amount,
         payment_method, points_earned, points_used, credit_settled, memo,
         approval_no, card_info,
         receipt_status, receipt_date, approval_status, payment_info,
@@ -604,13 +603,13 @@ export default function SalesListTab() {
   }, [orders, search, productSearch, orderOptionSearch, recipientSearch, addressSearch]);
 
   // 수령 상태별 그룹 (listSort==='receipt' 렌더용). 수령 업무 흐름 기준 정렬.
-  //   1차: 수령 상태 — 방문예정 → 퀵예정 → 택배예정 → 택배발송완료 → 수령완료 → 기타
+  //   1차: 수령 상태 — 방문예정 → 퀵예정 → 택배예정 → 수령완료 → 기타
   //   각 상태 내: 수령일자 내림차순(없으면 맨 뒤), 동일하면 판매일자(ordered_at) 내림차순
   const receiptGroups = useMemo(() => {
-    const ORDER = ['PICKUP_PLANNED', 'QUICK_PLANNED', 'PARCEL_PLANNED', 'PARCEL_SHIPPED', 'RECEIVED'];
+    const ORDER = ['PICKUP_PLANNED', 'QUICK_PLANNED', 'PARCEL_PLANNED', 'RECEIVED'];
     const LABEL: Record<string, string> = {
       PICKUP_PLANNED: '방문예정', QUICK_PLANNED: '퀵예정', PARCEL_PLANNED: '택배예정',
-      PARCEL_SHIPPED: '택배발송완료', RECEIVED: '수령·배송완료', 기타: '기타',
+      RECEIVED: '수령·배송완료', 기타: '기타',
     };
     const buckets = new Map<string, OrderRow[]>();
     for (const o of filtered) {
@@ -694,6 +693,16 @@ export default function SalesListTab() {
                 const itemNames = items.map(it => it.product?.name || it.item_text).filter(Boolean) as string[];
                 const totalQty = items.reduce((s, it) => s + (it.quantity || 0), 0);
                 const firstShip = (o.shipments || [])[0];
+                // 배송방식 아이콘(#43, ESC-1) — receipt_status는 수령완료 시 RECEIVED로 바뀌므로
+                //   영구 신호로 도출: firstShip.delivery_type · receipt_status · 자사몰(ONLINE) 채널.
+                //   퀵 우선 판정 → 퀵이면 🛵, 택배면 📦, 둘 다 아니면 없음(방문/현장).
+                const isQuickDelivery =
+                  firstShip?.delivery_type === 'QUICK' || o.receipt_status === 'QUICK_PLANNED';
+                const isParcelDelivery =
+                  firstShip?.delivery_type === 'PARCEL'
+                  || o.receipt_status === 'PARCEL_PLANNED'
+                  || o.channel === 'ONLINE';   // 자사몰 주문은 본질적으로 택배
+                const recvIcon = isQuickDelivery ? '🛵' : isParcelDelivery ? '📦' : null;
                 // 받는분 = shipment 우선 → 없으면 sales_order recipient_* (카페24 받는분 스냅샷)
                 const recv = {
                   name: firstShip?.recipient_name ?? o.recipient_name ?? null,
@@ -794,29 +803,21 @@ export default function SalesListTab() {
                       )}
                     </td>
                     <td className="align-top">
-                      {hasRecv ? (
-                        (() => {
-                          const firstShipQuick = firstShip && (
-                            firstShip.delivery_type === 'QUICK'
-                            || (!firstShip.delivery_type && o.receipt_status === 'QUICK_PLANNED')
-                          );
-                          return (
-                            <div className="text-xs leading-tight">
-                              <p className="text-slate-700 flex items-center gap-1">
-                                {firstShip && (
-                                  <span className={firstShipQuick ? 'text-indigo-600' : 'text-blue-600'}>
-                                    {firstShipQuick ? '🛵' : '📦'}
-                                  </span>
-                                )}
-                                {recv.name || '-'}
-                              </p>
-                              <p className="text-[10px] text-slate-400">{recv.phone || ''}</p>
-                              <p className="text-[10px] text-slate-500 line-clamp-1" title={`${recv.address || ''} ${recv.addressDetail || ''}`}>
-                                {recv.address || ''}
-                              </p>
-                            </div>
-                          );
-                        })()
+                      {(hasRecv || recvIcon) ? (
+                        <div className="text-xs leading-tight">
+                          <p className="text-slate-700 flex items-center gap-1">
+                            {recvIcon && (
+                              <span className={recvIcon === '🛵' ? 'text-indigo-600' : 'text-blue-600'}>
+                                {recvIcon}
+                              </span>
+                            )}
+                            {recv.name || '-'}
+                          </p>
+                          <p className="text-[10px] text-slate-400">{recv.phone || ''}</p>
+                          <p className="text-[10px] text-slate-500 line-clamp-1" title={`${recv.address || ''} ${recv.addressDetail || ''}`}>
+                            {recv.address || ''}
+                          </p>
+                        </div>
                       ) : <span className="text-slate-300 text-xs">-</span>}
                     </td>
                     <td className="align-top">
@@ -1187,7 +1188,7 @@ export default function SalesListTab() {
                 <span className="text-[11px] font-medium text-slate-500">수령현황</span>
                 <select value={receiptStatusFilter} onChange={e => setReceiptStatusFilter(e.target.value)} className="input text-sm py-1">
                   <option value="">전체</option>
-                  {(['RECEIVED', 'PICKUP_PLANNED', 'QUICK_PLANNED', 'PARCEL_PLANNED', 'PARCEL_SHIPPED'] as const).map(s =>
+                  {(['RECEIVED', 'PICKUP_PLANNED', 'QUICK_PLANNED', 'PARCEL_PLANNED'] as const).map(s =>
                     <option key={s} value={s}>{RECEIPT_STATUS_LABEL[s]}</option>
                   )}
                 </select>
@@ -1244,10 +1245,9 @@ export default function SalesListTab() {
             <span className="text-slate-400">→</span>
             <select
               value={bulkTarget}
-              onChange={e => setBulkTarget(e.target.value as 'PARCEL_SHIPPED' | 'RECEIVED')}
+              onChange={e => setBulkTarget(e.target.value as 'RECEIVED')}
               className="input py-1 text-sm w-auto"
             >
-              <option value="PARCEL_SHIPPED">발송완료(택배발송)</option>
               <option value="RECEIVED">수령·배송완료</option>
             </select>
             <button
@@ -2461,7 +2461,6 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                      : order.receipt_status === 'RECEIVED' ? (shipment ? '배송완료' : '수령완료')
                      : order.receipt_status === 'PICKUP_PLANNED' ? '방문예정'
                      : order.receipt_status === 'QUICK_PLANNED' ? '퀵예정'
-                     : order.receipt_status === 'PARCEL_SHIPPED' ? '택배발송완료'
                      : '택배예정'}
                   </span>
                   {order.receipt_date && <span className="text-[11px] text-slate-500">{order.receipt_date}</span>}
@@ -2566,7 +2565,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                     <label className="text-[10px] text-slate-500">수령상태</label>
                     <select value={edReceiptStatus} onChange={e => setEdReceiptStatus(e.target.value)}
                       className="w-full text-sm border border-slate-300 rounded px-2 py-1">
-                      {([['RECEIVED', '수령완료'], ['PICKUP_PLANNED', '방문예정'], ['QUICK_PLANNED', '퀵예정'], ['PARCEL_PLANNED', '택배예정'], ['PARCEL_SHIPPED', '택배발송완료']] as [string, string][]).map(([v, l]) => (
+                      {([['RECEIVED', '수령완료'], ['PICKUP_PLANNED', '방문예정'], ['QUICK_PLANNED', '퀵예정'], ['PARCEL_PLANNED', '택배예정']] as [string, string][]).map(([v, l]) => (
                         <option key={v} value={v}>{l}</option>
                       ))}
                     </select>
@@ -2707,7 +2706,6 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                       const rLabel = itemRStatus === 'RECEIVED'
                           ? (itemDType === 'PARCEL' || itemDType === 'QUICK' ? '배송완료' : '수령완료')
                         : itemRStatus === 'PARCEL_PLANNED' ? '택배예정'
-                        : itemRStatus === 'PARCEL_SHIPPED' ? '택배발송완료'
                         : itemRStatus === 'QUICK_PLANNED' ? '퀵예정'
                         : '방문예정';
                       const rColor = RECEIPT_STATUS_BADGE[itemRStatus] || 'bg-amber-100 text-amber-800';

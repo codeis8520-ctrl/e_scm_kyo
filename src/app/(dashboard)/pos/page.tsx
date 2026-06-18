@@ -112,7 +112,7 @@ const GRADE_BADGE: Record<string, string> = {
 
 const CONSULT_TYPES = ['전화 상담', '방문 상담', '온라인 상담', '건강 상담', '불만 접수', '기타'];
 
-// 체크아웃에서 생성 가능한 수령상태만(발송완료=PARCEL_SHIPPED는 배송 후 자동전이라 제외)
+// 체크아웃에서 생성 가능한 수령상태만(발송은 shipment.status로만 추적, 수령상태 미사용)
 type ReceiptStatus = 'RECEIVED' | 'PICKUP_PLANNED' | 'QUICK_PLANNED' | 'PARCEL_PLANNED';
 const RECEIPT_STATUS_LABEL: Record<ReceiptStatus, string> = {
   RECEIVED: '수령완료',
