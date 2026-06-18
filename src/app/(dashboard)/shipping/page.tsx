@@ -94,7 +94,14 @@ interface ImportRow {
 }
 
 type TabType = 'cafe24' | 'manual' | 'list';
-type StatusFilter = 'ALL' | 'PENDING' | 'PRINTED' | 'SHIPPED' | 'DELIVERED';
+type StatusFilter = 'ALL' | 'PENDING' | 'SHIPPED_DONE';
+
+// 발송완료 버킷 = 출력완료·발송완료·배송완료. 내부 enum 4값은 보존, 필터·집계 표시층만 2버킷.
+const SHIPPED_DONE_STATES = ['PRINTED', 'SHIPPED', 'DELIVERED'] as const;
+// 필터 버튼 라벨(행 뱃지용 STATUS_LABEL 과 분리)
+const BUCKET_LABEL: Record<StatusFilter, string> = {
+  ALL: '전체', PENDING: '대기중', SHIPPED_DONE: '발송완료',
+};
 
 const STATUS_LABEL: Record<string, string> = {
   PENDING: '대기중', PRINTED: '출력완료', SHIPPED: '발송완료', DELIVERED: '배송완료',
@@ -958,7 +965,9 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
 
   // ── 목록 탭 핸들러 ────────────────────────────────────────────────────────
   const filteredShipments = shipments.filter(s => {
-    if (statusFilter !== 'ALL' && s.status !== statusFilter) return false;
+    if (statusFilter === 'PENDING' && s.status !== 'PENDING') return false;
+    if (statusFilter === 'SHIPPED_DONE' && !SHIPPED_DONE_STATES.includes(s.status as typeof SHIPPED_DONE_STATES[number])) return false;
+    // 'ALL' 은 무필터(추적 포함 전체)
     const day = (s.created_at || '').slice(0, 10);
     if (listStartDate && day && day < listStartDate) return false;
     if (listEndDate && day && day > listEndDate) return false;
@@ -1462,12 +1471,12 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
         <div className="space-y-4">
           <div className="flex items-center justify-between flex-wrap gap-3">
             <div className="flex flex-wrap items-center gap-2">
-              {(['ALL','PENDING','PRINTED','SHIPPED','DELIVERED'] as StatusFilter[]).map(f => (
+              {(['ALL','PENDING','SHIPPED_DONE'] as StatusFilter[]).map(f => (
                 <button key={f} onClick={() => setStatusFilter(f)}
                   className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
                     statusFilter === f ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                   }`}>
-                  {f === 'ALL' ? '전체' : STATUS_LABEL[f]}
+                  {BUCKET_LABEL[f]}
                 </button>
               ))}
               <input
