@@ -186,7 +186,7 @@ function readSalesFilters(): Partial<PersistedFilters> {
   }
 }
 
-export default function SalesListTab() {
+export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'compare' } = {}) {
   const router = useRouter();
   const userRole = getCookie('user_role');
   const userBranchId = getCookie('user_branch_id');
@@ -233,7 +233,8 @@ export default function SalesListTab() {
   const [reprintReceipt, setReprintReceipt] = useState<any>(null);
 
   // 서브뷰: 목록 ↔ 지점비교 (본사/관리자 전용). 지점비교는 기간 행 × 지점 열 매트릭스.
-  const [subView, setSubView] = useState<'list' | 'compare'>(() => saved.subView ?? 'list');
+  //   forcedView 가 주어지면(판매현황=list / 지점별매출 탭=compare) 그 뷰로 고정하고 토글 숨김.
+  const [subView, setSubView] = useState<'list' | 'compare'>(() => forcedView ?? saved.subView ?? 'list');
   // 일자별 요약 표시 토글 — 기본 숨김(고객별 내역 우선, 일자별 요약은 옵션)
   const [showDailySummary, setShowDailySummary] = useState(false);
   // 목록 정렬 토글: 'order'=주문일순(현행 flat) / 'receipt'=수령일자별 그룹
@@ -944,8 +945,8 @@ export default function SalesListTab() {
 
   return (
     <div className="space-y-4">
-      {/* 서브뷰 토글 — 본사/관리자 전용 (지점직원은 목록만) */}
-      {!isBranchUser && (
+      {/* 서브뷰 토글 — 본사/관리자 전용 (지점직원은 목록만). forcedView(탭 분리) 시 숨김. */}
+      {!isBranchUser && !forcedView && (
         <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1 w-fit">
           {([['list', '매출 현황'], ['compare', '지점별 매출']] as ['list' | 'compare', string][]).map(([k, label]) => (
             <button

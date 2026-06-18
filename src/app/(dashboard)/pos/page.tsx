@@ -23,11 +23,6 @@ const ShippingPage = dynamic(() => import('@/app/(dashboard)/shipping/page'), {
   ssr: false,
   loading: () => <div className="py-10 text-center text-slate-400">로딩 중...</div>,
 });
-const ReportsPage = dynamic(() => import('@/app/(dashboard)/reports/page'), {
-  ssr: false,
-  loading: () => <div className="py-10 text-center text-slate-400">로딩 중...</div>,
-});
-
 type MainTab = 'checkout' | 'list' | 'online' | 'parcel' | 'sales';
 
 const MAIN_TAB_KEYS: MainTab[] = ['checkout', 'list', 'online', 'parcel', 'sales'];
@@ -1559,7 +1554,8 @@ function POSPageInner() {
           { key: 'list', label: '판매현황' },
           { key: 'online', label: '온라인몰' },
           { key: 'parcel', label: '택배관리' },
-          { key: 'sales', label: '매출현황' },
+          // 지점별 매출은 본사/관리자 전용(지점직원 제외)
+          ...(isBranchLocked ? [] : [{ key: 'sales', label: '지점별 매출' }]),
         ]}
         activeKey={mainTab}
         onChange={(k) => setMainTab(k as MainTab)}
@@ -1706,11 +1702,12 @@ function POSPageInner() {
       </div>
       )}
 
-      {mainTab === 'list' && <SalesListTab />}
+      {/* 판매현황 = 매출 현황(목록)만, 지점별 매출 = 지점비교(compare). 각각 뷰 고정. */}
+      {mainTab === 'list' && <SalesListTab forcedView="list" />}
 
       {mainTab === 'online' && <ShippingPage embedded="online" />}
       {mainTab === 'parcel' && <ShippingPage embedded="parcel" />}
-      {mainTab === 'sales' && <ReportsPage embedded="sales" />}
+      {mainTab === 'sales' && !isBranchLocked && <SalesListTab forcedView="compare" />}
 
       {mainTab === 'checkout' && (
     <div className="flex flex-col lg:flex-row gap-4 lg:h-[calc(100vh-10rem)]">
