@@ -18,13 +18,30 @@ const SalesListTab = dynamic(() => import('./SalesListTab'), {
   loading: () => <div className="py-10 text-center text-slate-400">로딩 중...</div>,
 });
 
-type MainTab = 'checkout' | 'list';
+// 배송/매출 화면을 prop 임베드(이중 탭바 회피). 무거운 클라이언트 페이지라 동적 로드.
+const ShippingPage = dynamic(() => import('@/app/(dashboard)/shipping/page'), {
+  ssr: false,
+  loading: () => <div className="py-10 text-center text-slate-400">로딩 중...</div>,
+});
+const ReportsPage = dynamic(() => import('@/app/(dashboard)/reports/page'), {
+  ssr: false,
+  loading: () => <div className="py-10 text-center text-slate-400">로딩 중...</div>,
+});
 
-// 새로고침 시 직전 탭 복원 (저장값이 'list'면 list, 그 외/없음/SSR → checkout)
+type MainTab = 'checkout' | 'list' | 'online' | 'parcel' | 'sales';
+
+const MAIN_TAB_KEYS: MainTab[] = ['checkout', 'list', 'online', 'parcel', 'sales'];
+
+function isMainTab(v: string | null): v is MainTab {
+  return v != null && (MAIN_TAB_KEYS as string[]).includes(v);
+}
+
+// 새로고침 시 직전 탭 복원 (저장값이 유효 키면 그대로, 그 외/없음/SSR → checkout)
 function readMainTab(): MainTab {
   if (typeof window === 'undefined') return 'checkout';
   try {
-    return localStorage.getItem('pos.mainTab') === 'list' ? 'list' : 'checkout';
+    const saved = localStorage.getItem('pos.mainTab');
+    return isMainTab(saved) ? saved : 'checkout';
   } catch {
     return 'checkout';
   }
@@ -346,6 +363,13 @@ function POSPageInner() {
       localStorage.setItem('pos.mainTab', mainTab);
     } catch {}
   }, [mainTab]);
+
+  // ?tab= 딥링크 — mount 시 URL 이 유효 키면 localStorage 보다 우선해 적용
+  useEffect(() => {
+    const t = searchParams.get('tab');
+    if (isMainTab(t)) setMainTab(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const searchRef = useRef<HTMLInputElement>(null);
   const customerInputRef = useRef<HTMLInputElement>(null);
@@ -1531,8 +1555,11 @@ function POSPageInner() {
       {/* 판매관리 상단 탭 */}
       <PageTabs
         tabs={[
-          { key: 'checkout', label: '판매 등록' },
-          { key: 'list', label: '판매 현황' },
+          { key: 'checkout', label: '판매입력' },
+          { key: 'list', label: '판매현황' },
+          { key: 'online', label: '온라인몰' },
+          { key: 'parcel', label: '택배관리' },
+          { key: 'sales', label: '매출현황' },
         ]}
         activeKey={mainTab}
         onChange={(k) => setMainTab(k as MainTab)}
@@ -1680,6 +1707,10 @@ function POSPageInner() {
       )}
 
       {mainTab === 'list' && <SalesListTab />}
+
+      {mainTab === 'online' && <ShippingPage embedded="online" />}
+      {mainTab === 'parcel' && <ShippingPage embedded="parcel" />}
+      {mainTab === 'sales' && <ReportsPage embedded="sales" />}
 
       {mainTab === 'checkout' && (
     <div className="flex flex-col lg:flex-row gap-4 lg:h-[calc(100vh-10rem)]">

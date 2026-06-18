@@ -107,7 +107,8 @@ const PAYMENT_LABELS_KO: Record<string, string> = {
   card_keyin: '카드(키인)', credit: '외상',
 };
 
-export default function ReportsPage() {
+export default function ReportsPage({ embedded }: { embedded?: 'sales' } = {}) {
+  // embedded='sales' 면 매출 뷰 고정. 기본값도 'sales'라 별도 강제 불요(내부 탭바가 임베드 시 미렌더되어 전환 불가).
   const [reportTab, setReportTab] = useState<ReportTab>('sales');
   const [period, setPeriod] = useState<'daily' | 'weekly' | 'monthly'>('daily');
   // 서버·클라이언트 날짜 차이로 인한 hydration mismatch 방지 — 마운트 후 세팅.
@@ -681,13 +682,7 @@ ${buildTable(['순위', '제품명', '판매수량', '판매금액'], productRow
     { key: 'margin'  as ReportTab, label: '제품별 마진' },
   ];
 
-  return (
-    <div className="space-y-6">
-      <PageTabs
-        tabs={REPORT_TABS}
-        activeKey={reportTab}
-        onChange={(k) => setReportTab(k as ReportTab)}
-        actions={
+  const filterActions = (
         <div className="flex flex-wrap gap-2">
           <select
             value={period}
@@ -754,8 +749,21 @@ ${buildTable(['순위', '제품명', '판매수량', '판매금액'], productRow
             PDF
           </button>
         </div>
-        }
-      />
+  );
+
+  return (
+    <div className="space-y-6">
+      {/* embedded(/pos 매출 탭) 시 부모가 탭바를 그리므로 내부 탭바 생략 — 필터 툴바만 노출 */}
+      {embedded ? (
+        <div className="flex justify-end border-b border-slate-200 pb-2">{filterActions}</div>
+      ) : (
+        <PageTabs
+          tabs={REPORT_TABS}
+          activeKey={reportTab}
+          onChange={(k) => setReportTab(k as ReportTab)}
+          actions={filterActions}
+        />
+      )}
 
       {loading ? (
         <div className="text-center py-12 text-slate-400">로딩 중...</div>

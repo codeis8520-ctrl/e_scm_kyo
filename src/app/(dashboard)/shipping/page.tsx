@@ -135,8 +135,10 @@ function TruncatedCell({
   );
 }
 
-export default function ShippingPage() {
-  const [activeTab, setActiveTab] = useState<TabType>('cafe24');
+export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parcel' } = {}) {
+  const [activeTab, setActiveTab] = useState<TabType>(
+    embedded === 'parcel' ? 'list' : 'cafe24'
+  );
 
   // ── Cafe24 탭 ─────────────────────────────────────────────────────────────
   const today = new Date();
@@ -884,7 +886,7 @@ export default function ShippingPage() {
       }
       setSelectedOrders(new Set());
       await fetchShipments();
-      setActiveTab('list');
+      if (!embedded) setActiveTab('list'); // 임베드(온라인몰 탭)에선 뷰 고정 — 탭 전환 금지
     } catch (e: any) {
       setAddError(e.message ?? '배송 추가 중 오류가 발생했습니다.');
     } finally { setAddingOrders(false); }
@@ -912,7 +914,7 @@ export default function ShippingPage() {
         items_summary: manualForm.items_summary || undefined,
       });
       setManualForm({ sender_name:'',sender_phone:'',sender_address:'',recipient_name:'',recipient_phone:'',recipient_zipcode:'',recipient_address:'',recipient_address_detail:'',delivery_message:'',items_summary:'' });
-      await fetchShipments(); setActiveTab('list');
+      await fetchShipments(); if (!embedded) setActiveTab('list');
     } catch (e: any) {
       setManualError(e.message || '저장 중 오류');
     } finally { setManualSaving(false); }
@@ -1065,16 +1067,18 @@ export default function ShippingPage() {
   // ── 렌더링 ─────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
-      {/* Tabs */}
-      <PageTabs
-        tabs={[
-          { key: 'cafe24', label: '카페24 주문' },
-          { key: 'manual', label: '직접 입력' },
-          { key: 'list', label: '배송 목록' },
-        ]}
-        activeKey={activeTab}
-        onChange={k => setActiveTab(k as TabType)}
-      />
+      {/* Tabs — embedded 시 부모(/pos)가 탭바를 그리므로 생략(이중 탭바 회피) */}
+      {!embedded && (
+        <PageTabs
+          tabs={[
+            { key: 'cafe24', label: '카페24 주문' },
+            { key: 'manual', label: '직접 입력' },
+            { key: 'list', label: '배송 목록' },
+          ]}
+          activeKey={activeTab}
+          onChange={k => setActiveTab(k as TabType)}
+        />
+      )}
 
       {/* ── Tab: Cafe24 ──────────────────────────────────────────────────── */}
       {activeTab === 'cafe24' && (

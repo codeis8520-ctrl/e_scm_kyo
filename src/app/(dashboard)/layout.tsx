@@ -7,22 +7,24 @@ import { signOut } from '@/app/login/actions';
 import { createClient } from '@/lib/supabase/client';
 import AgentFloatingIcon from '@/components/AgentFloatingIcon';
 
+// 사이드바 2섹션 구조(확정 IA): 핵심 업무 7개(상단) + 관리/기타(구분선 아래).
 const ALL_NAV_ITEMS = [
-  { href: '/', label: '대시보드', icon: '📊' },
-  { href: '/pos', label: '판매관리', icon: '💰' },
-  { href: '/products', label: '제품', icon: '📦' },
-  { href: '/production', label: '생산', icon: '🏭' },
-  { href: '/inventory', label: '재고', icon: '🏪' },
-  { href: '/purchases', label: '매입', icon: '🚚' },
-  { href: '/shipping', label: '배송', icon: '📫' },
-  { href: '/accounting', label: '회계', icon: '📒' },
-  { href: '/trade', label: '거래 관리', icon: '🤝' },
-  { href: '/customers', label: '고객 관리', icon: '👥' },
-  { href: '/notifications', label: '알림', icon: '📱' },
-  { href: '/system-codes', label: '코드', icon: '⚙️' },
-  { href: '/reports', label: '보고서', icon: '📈' },
-  { href: '/agent-memory', label: 'AI 메모리', icon: '🧠' },
-  { href: '/agent-conversations', label: 'AI 대화 기록', icon: '💬' },
+  // ── 핵심 업무 ──
+  { href: '/pos', label: '판매', icon: '💰', section: 'core' },
+  { href: '/customers', label: '고객', icon: '👥', section: 'core' },
+  { href: '/inventory', label: '재고', icon: '🏪', section: 'core' },
+  { href: '/production', label: '생산', icon: '🏭', section: 'core' },
+  { href: '/purchases', label: '구매', icon: '🚚', section: 'core' },
+  { href: '/products', label: '제품', icon: '📦', section: 'core' },
+  { href: '/accounting', label: '회계', icon: '📒', section: 'core' },
+  // ── 관리/기타 ──
+  { href: '/', label: '대시보드', icon: '📊', section: 'admin' },
+  { href: '/trade', label: '거래 관리', icon: '🤝', section: 'admin' },
+  { href: '/notifications', label: '알림', icon: '📱', section: 'admin' },
+  { href: '/system-codes', label: '코드', icon: '⚙️', section: 'admin' },
+  { href: '/reports', label: '보고서', icon: '📈', section: 'admin' },
+  { href: '/agent-memory', label: 'AI 메모리', icon: '🧠', section: 'admin' },
+  { href: '/agent-conversations', label: 'AI 대화 기록', icon: '💬', section: 'admin' },
 ];
 
 const ROLE_LABELS: Record<string, string> = {
@@ -91,6 +93,35 @@ export default function DashboardLayout({
     document.title = match ? `${match.label} · 경옥채` : '경옥채 사내 통합시스템';
   }, [pathname]);
 
+  // 사이드바 링크 렌더 — 핵심/관리 2섹션(구분선). 모바일·데스크톱 공용.
+  const renderNavLinks = (onNavigate?: () => void) => {
+    const core = navItems.filter(i => (i as any).section !== 'admin');
+    const admin = navItems.filter(i => (i as any).section === 'admin');
+    const linkClass = (href: string) =>
+      `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${
+        (href === '/' ? pathname === '/' : pathname === href || pathname.startsWith(href + '/'))
+          ? 'bg-blue-600 text-white'
+          : 'text-slate-300 hover:bg-slate-700 hover:text-white'
+      }`;
+    const renderItem = (i: typeof ALL_NAV_ITEMS[number]) => (
+      <Link key={i.href} href={i.href} onClick={onNavigate} className={linkClass(i.href)}>
+        <span className="text-lg">{i.icon}</span>
+        <span className="text-sm font-medium">{i.label}</span>
+      </Link>
+    );
+    return (
+      <>
+        {core.map(renderItem)}
+        {admin.length > 0 && (
+          <div className="pt-3 mt-2 border-t border-slate-700/70 space-y-1">
+            <p className="px-3 pb-1 text-[10px] uppercase tracking-wider text-slate-500">관리 / 기타</p>
+            {admin.map(renderItem)}
+          </div>
+        )}
+      </>
+    );
+  };
+
   return (
     <div className="flex min-h-screen">
       {/* Mobile Header */}
@@ -156,21 +187,7 @@ export default function DashboardLayout({
             {loading ? (
               <p className="text-slate-400 text-sm p-3">로딩중...</p>
             ) : (
-              navItems.map((item) => (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  onClick={() => setSidebarOpen(false)}
-                  className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${
-                    (item.href === '/' ? pathname === '/' : pathname.startsWith(item.href))
-                      ? 'bg-blue-600 text-white'
-                      : 'text-slate-300 hover:bg-slate-700 hover:text-white'
-                  }`}
-                >
-                  <span className="text-lg">{item.icon}</span>
-                  <span className="text-sm font-medium">{item.label}</span>
-                </Link>
-              ))
+              renderNavLinks(() => setSidebarOpen(false))
             )}
           </nav>
 
@@ -203,20 +220,7 @@ export default function DashboardLayout({
           {loading ? (
             <p className="text-slate-400 text-sm p-3">로딩중...</p>
           ) : (
-            navItems.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${
-                  pathname === item.href
-                    ? 'bg-blue-600 text-white'
-                    : 'text-slate-300 hover:bg-slate-700 hover:text-white'
-                }`}
-              >
-                <span className="text-lg">{item.icon}</span>
-                <span className="text-sm font-medium">{item.label}</span>
-              </Link>
-            ))
+            renderNavLinks()
           )}
         </nav>
 
