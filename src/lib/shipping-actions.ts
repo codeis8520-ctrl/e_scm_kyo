@@ -105,6 +105,17 @@ export async function createShipment(data: ShipmentInput) {
   //   confirm 호출로 전표 생성 후 그 sales_order.id 를 shipment 에 직접 연결한다.
   //   confirm 실패 시 배송도 만들지 않는다(전표 없는 배송 방지).
   if (shipmentData.source === 'CAFE24' && shipmentData.cafe24_order_id) {
+    // 중복 수집 방지(#44): 같은 카페24 주문에 배송이 이미 있으면 재생성하지 않는다.
+    //   (DB 부분 UNIQUE uq_shipments_cafe24_order_id 와 이중 방어 — 여기선 깔끔한 메시지 제공.)
+    const { data: dup } = await supabase
+      .from('shipments')
+      .select('id')
+      .eq('cafe24_order_id', shipmentData.cafe24_order_id)
+      .limit(1);
+    if (dup && dup.length > 0) {
+      return { success: false, error: '이미 배송 추가된 카페24 주문입니다(중복 방지).' };
+    }
+
     const confirm = await confirmCafe24OrderAsSale(shipmentData.cafe24_order_id, member_id || '');
     if (!confirm.success || !confirm.orderId) {
       return { success: false, error: confirm.message || '판매전표 생성 실패' };
@@ -118,6 +129,10 @@ export async function createShipment(data: ShipmentInput) {
 
   if (error) {
     console.error('createShipment error:', error);
+    // 부분 UNIQUE(uq_shipments_cafe24_order_id) 경합 — 동시 추가 시 친절한 메시지(#44).
+    if ((error as any).code === '23505' || /duplicate key|unique/i.test(String(error.message))) {
+      return { success: false, error: '이미 배송 추가된 카페24 주문입니다(중복 방지).' };
+    }
     return { success: false, error: error.message };
   }
 
