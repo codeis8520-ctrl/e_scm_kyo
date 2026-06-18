@@ -1,9 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { createClient } from '@/lib/supabase/client';
 import { validators, formatPhone } from '@/lib/validators';
-import { sendSmsAction, sendKakaoAction, getNotifications, resendFailedNotification, runNotificationBatch } from '@/lib/notification-actions';
+import { sendSmsAction, sendKakaoAction, getNotifications, resendFailedNotification, runNotificationBatch, resolveSendTargets, type SendAudienceMode } from '@/lib/notification-actions';
 import { getTemplateMappings } from '@/lib/notification-template-mapping-actions';
 import { EVENT_TYPES, type TemplateMapping } from '@/lib/notification-event-types';
 import { fmtDateTimeKST, fmtDateKST, kstDayStart, kstDayEnd, kstTodayString } from '@/lib/date';
@@ -29,7 +28,6 @@ export default function NotificationsPage() {
   const [notifications, setNotifications] = useState<any[]>([]);
   const [templates, setTemplates]         = useState<any[]>([]);
   const [templateMappings, setTemplateMappings] = useState<Record<string, TemplateMapping>>({});
-  const [customers, setCustomers]         = useState<any[]>([]);
   const [loading, setLoading]             = useState(true);
   const [activeTab, setActiveTab]         = useState<'kakao' | 'sms' | 'templates'>('kakao'); // 기본값: 알림톡
   const [showSendModal, setShowSendModal] = useState(false);
@@ -52,24 +50,18 @@ export default function NotificationsPage() {
   const fetchData = async () => {
     if (activeTab === 'templates') return; // 템플릿 탭은 별도 컴포넌트에서 자체 페치
     setLoading(true);
-    const [notifRes, templateRes, mappingRes, customerRes] = await Promise.all([
+    const [notifRes, templateRes, mappingRes] = await Promise.all([
       getNotifications({
         status: statusFilter || undefined,
         type: typeByTab[activeTab as 'kakao' | 'sms'],
       }),
       fetch('/api/solapi/templates').then(r => r.json()).then(d => d.templates ?? []),
       getTemplateMappings(),
-      (async () => {
-        const supabase = createClient() as any;
-        const { data } = await supabase.from('customers').select('id, name, phone, grade').eq('is_active', true).order('name');
-        return data || [];
-      })(),
     ]);
 
     setNotifications(notifRes.data || []);
     setTemplates(templateRes);
     setTemplateMappings(mappingRes.data || {});
-    setCustomers(customerRes);
     setLoading(false);
 
     // 잔액 조회 (비동기, 로딩 블로킹 X)
@@ -346,7 +338,6 @@ export default function NotificationsPage() {
           type={activeTab as 'kakao' | 'sms'}
           templates={templates}
           templateMappings={templateMappings}
-          customers={customers}
           onClose={() => setShowSendModal(false)}
           onSuccess={() => { setShowSendModal(false); fetchData(); }}
           onGoToTemplatesTab={() => { setShowSendModal(false); setActiveTab('templates'); }}
@@ -362,10 +353,31 @@ interface SendModalProps {
   type: 'kakao' | 'sms';
   templates: any[];
   templateMappings: Record<string, TemplateMapping>;
-  customers: any[];
   onClose: () => void;
   onSuccess: () => void;
   onGoToTemplatesTab: () => void;
+}
+
+// 모달에서 누적 보존하는 선택 고객 (검색 결과 밖 선택도 유지)
+interface PickedCustomer { id: string; name: string; phone: string; grade?: string }
+
+const HQ_ROLES = new Set(['SUPER_ADMIN', 'HQ_OPERATOR', 'EXECUTIVE']);
+
+const SEND_MODE_LABELS: Record<'ids' | 'grade' | 'all' | 'single', string> = {
+  ids: '개별 선택',
+  grade: '등급별',
+  all: '전체',
+  single: '직접 전화',
+};
+
+function getCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const map = document.cookie.split(';').reduce((acc, c) => {
+    const [k, v] = c.trim().split('=');
+    acc[k] = decodeURIComponent(v || '');
+    return acc;
+  }, {} as Record<string, string>);
+  return map[name] || null;
 }
 
 // 시스템에서 자동 제공 불가 → 사용자 직접 입력 필요한 변수 감지
@@ -391,16 +403,14 @@ const AUTO_SAMPLE_PATTERNS: Array<{ pat: RegExp; pick: (sample: { name: string; 
 function renderPreview(
   message: string,
   manualVars: Record<string, string>,
-  selectedCustomerIds: string[],
-  customers: any[],
+  sampleCustomer: PickedCustomer | null,
   singlePhone: string,
 ): string {
   if (!message) return '';
-  const sampleCustomer = customers.find(c => c.id === selectedCustomerIds[0]);
   const sample = {
     name: sampleCustomer?.name || '홍길동',
     phone: sampleCustomer?.phone || singlePhone || '010-0000-0000',
-    grade: GRADE_LABELS[sampleCustomer?.grade] || '일반',
+    grade: GRADE_LABELS[sampleCustomer?.grade || ''] || '일반',
     branch: '경옥채',
   };
   let out = message;
@@ -432,12 +442,18 @@ function detectManualFields(keys: string[]): ManualField[] {
   });
 }
 
-function SendModal({ type, templates, templateMappings, customers, onClose, onSuccess, onGoToTemplatesTab }: SendModalProps) {
-  const [sendMode, setSendMode]                   = useState<'bulk' | 'single'>('bulk');
+function SendModal({ type, templates, templateMappings, onClose, onSuccess, onGoToTemplatesTab }: SendModalProps) {
+  // 발송 모드: ids(개별선택) | grade(등급별) | all(전체) | single(직접전화)
+  const [sendMode, setSendMode]                   = useState<'ids' | 'grade' | 'all' | 'single'>('ids');
   const [showEventOnly, setShowEventOnly]         = useState(false); // 이벤트 전용 템플릿까지 보기
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<string[]>([]);
+  // 검색 결과 밖 선택도 보존 (칩·미리보기 샘플용)
+  const [pickedCustomers, setPickedCustomers]     = useState<Record<string, PickedCustomer>>({});
   const [customerSearch, setCustomerSearch]       = useState('');
-  const [gradeFilter, setGradeFilter]             = useState('');
+  const [searchResults, setSearchResults]         = useState<PickedCustomer[]>([]);
+  const [searchTotal, setSearchTotal]             = useState(0);
+  const [searching, setSearching]                 = useState(false);
+  const [bulkGrade, setBulkGrade]                 = useState<'NORMAL' | 'VIP' | 'VVIP'>('VVIP'); // grade 모드 대상 등급
   const [phone, setPhone]                         = useState('');
   const [phoneError, setPhoneError]               = useState('');
   const [templateId, setTemplateId]               = useState('');
@@ -449,48 +465,84 @@ function SendModal({ type, templates, templateMappings, customers, onClose, onSu
   const [submitting, setSubmitting]               = useState(false);
   const [result, setResult]                       = useState<{ successCount: number; failCount: number } | null>(null);
 
-  const filteredCustomers = customers
-    .filter(c => {
-      const matchSearch = !customerSearch ||
-        c.name.toLowerCase().includes(customerSearch.toLowerCase()) ||
-        c.phone.replace(/-/g, '').includes(customerSearch.replace(/-/g, ''));
-      const matchGrade = !gradeFilter || c.grade === gradeFilter;
-      return matchSearch && matchGrade;
-    })
-    .slice(0, 100);
+  // 본사 권한 여부 — 비HQ는 등급/전체 모드 비노출
+  const isHQ = (() => { const r = getCookie('user_role'); return !r || HQ_ROLES.has(r); })();
 
-  const toggleCustomer = (id: string) =>
-    setSelectedCustomerIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
+  // 서버측 고객 검색 (전체 DB) — 디바운스
+  useEffect(() => {
+    if (sendMode !== 'ids') return;
+    let cancelled = false;
+    setSearching(true);
+    const t = setTimeout(async () => {
+      try {
+        const params = new URLSearchParams({ q: customerSearch, page: '1', limit: '30', sort: 'name' });
+        const r = await fetch(`/api/customers/search?${params}`);
+        const d = await r.json();
+        if (cancelled) return;
+        setSearchResults((d.customers || []).map((c: any) => ({ id: c.id, name: c.name, phone: c.phone, grade: c.grade })));
+        setSearchTotal(d.total || 0);
+      } catch {
+        if (!cancelled) { setSearchResults([]); setSearchTotal(0); }
+      } finally {
+        if (!cancelled) setSearching(false);
+      }
+    }, 300);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [customerSearch, sendMode]);
+
+  const toggleCustomer = (c: PickedCustomer) =>
+    setSelectedCustomerIds(prev => {
+      if (prev.includes(c.id)) return prev.filter(i => i !== c.id);
+      setPickedCustomers(p => ({ ...p, [c.id]: c }));
+      return [...prev, c.id];
+    });
+
+  const clearSelection = () => { setSelectedCustomerIds([]); setPickedCustomers({}); };
+
+  // 미리보기·확인용 샘플 (첫 선택 고객)
+  const sampleCustomer: PickedCustomer | null =
+    sendMode === 'ids' && selectedCustomerIds[0] ? (pickedCustomers[selectedCustomerIds[0]] || null) : null;
 
   const handleSend = async () => {
-    setSubmitting(true);
-    setResult(null);
+    if (type === 'sms' && !message.trim()) { alert('메시지를 입력해주세요.'); return; }
+    if (type === 'kakao' && !templateId) { alert('템플릿을 선택해주세요.'); return; }
 
     let targets: { customerId: string | null; phone: string; name?: string }[];
 
-    if (sendMode === 'bulk') {
-      if (selectedCustomerIds.length === 0) { alert('발송 대상을 선택해주세요.'); setSubmitting(false); return; }
-      targets = selectedCustomerIds.map(id => {
-        const c = customers.find(c => c.id === id);
-        return { customerId: id, phone: c?.phone || '', name: c?.name };
-      });
-    } else {
+    if (sendMode === 'single') {
       const err = validators.phone(phone);
-      if (err) { setPhoneError(err); setSubmitting(false); return; }
+      if (err) { setPhoneError(err); return; }
       targets = [{ customerId: null, phone }];
+    } else {
+      // 서버에서 대상 해석 (전화없음·중복 제거 + RBAC)
+      const mode: SendAudienceMode = sendMode; // 'ids' | 'grade' | 'all'
+      if (mode === 'ids' && selectedCustomerIds.length === 0) { alert('발송 대상을 선택해주세요.'); return; }
+
+      setSubmitting(true);
+      const resolved = await resolveSendTargets(
+        mode === 'ids'   ? { mode, customerIds: selectedCustomerIds }
+        : mode === 'grade' ? { mode, grade: bulkGrade }
+        : { mode },
+      );
+      setSubmitting(false);
+
+      if ('error' in resolved) { alert(resolved.error); return; }
+      if (resolved.total === 0) { alert('발송 가능한 대상이 없습니다 (전화번호 없음).'); return; }
+
+      const skipNote = resolved.skipped > 0 ? `\n(전화번호 없음·중복 ${resolved.skipped}건 제외)` : '';
+      const ok = confirm(`${resolved.total}명에게 발송합니다.\nSMS는 건당 과금됩니다.${skipNote}\n\n발송하시겠습니까?`);
+      if (!ok) return;
+
+      targets = resolved.targets.map(t => ({ customerId: t.customerId, phone: t.phone, name: t.name }));
     }
 
-    if (type === 'sms' && !message.trim()) { alert('메시지를 입력해주세요.'); setSubmitting(false); return; }
+    setSubmitting(true);
+    setResult(null);
 
     let res;
     if (type === 'sms') {
       res = await sendSmsAction({ targets, message });
     } else {
-      if (!templateId) {
-        alert('템플릿을 선택해주세요.');
-        setSubmitting(false);
-        return;
-      }
       // manualVars: { '#{상품명}': '경옥채 크림' } → context: { productName: '경옥채 크림' }
       const context: Record<string, string> = {};
       manualFields.forEach(f => {
@@ -534,80 +586,117 @@ function SendModal({ type, templates, templateMappings, customers, onClose, onSu
         <div className="flex justify-between items-center px-6 py-4 border-b sticky top-0 bg-white z-10">
           <h2 className="font-bold text-slate-800">
             {type === 'sms' ? 'SMS' : '알림톡'} 발송
-            <span className="text-sm font-normal text-slate-500 ml-2">({sendMode === 'bulk' ? '단체' : '단일'})</span>
+            <span className="text-sm font-normal text-slate-500 ml-2">({SEND_MODE_LABELS[sendMode]})</span>
           </h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl">✕</button>
         </div>
 
         <div className="p-6 space-y-5">
           {/* 발송 모드 */}
-          <div className="flex gap-2">
-            {(['bulk', 'single'] as const).map(m => (
-              <button
-                key={m}
-                onClick={() => setSendMode(m)}
-                className={`px-3 py-1.5 rounded text-sm font-medium ${
-                  sendMode === m ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                {m === 'bulk' ? '단체 발송' : '단일 발송'}
-              </button>
-            ))}
+          <div className="flex gap-2 flex-wrap">
+            {(['ids', 'grade', 'all', 'single'] as const)
+              .filter(m => isHQ || (m !== 'grade' && m !== 'all')) // 비HQ: 등급/전체 숨김
+              .map(m => (
+                <button
+                  key={m}
+                  onClick={() => setSendMode(m)}
+                  className={`px-3 py-1.5 rounded text-sm font-medium ${
+                    sendMode === m ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  {SEND_MODE_LABELS[m]}
+                </button>
+              ))}
           </div>
 
           {/* 수신자 선택 */}
-          {sendMode === 'bulk' ? (
+          {sendMode === 'ids' && (
             <div className="space-y-2">
               <div className="flex justify-between items-center">
-                <label className="text-sm font-medium">발송 대상 ({selectedCustomerIds.length}명 / 전체 {filteredCustomers.length}명)</label>
-                <div className="flex gap-3 text-xs">
-                  <button onClick={() => setSelectedCustomerIds(filteredCustomers.map(c => c.id))} className="text-blue-600 hover:underline">전체 선택</button>
-                  <button onClick={() => setSelectedCustomerIds([])} className="text-slate-500 hover:underline">선택 해제</button>
+                <label className="text-sm font-medium">발송 대상 ({selectedCustomerIds.length}명 선택)</label>
+                {selectedCustomerIds.length > 0 && (
+                  <button onClick={clearSelection} className="text-xs text-slate-500 hover:underline">선택 해제</button>
+                )}
+              </div>
+
+              {/* 선택된 고객 칩 (검색 결과 밖 선택도 보존) */}
+              {selectedCustomerIds.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {selectedCustomerIds.map(id => {
+                    const c = pickedCustomers[id];
+                    return (
+                      <span key={id} className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 text-xs px-2 py-1 rounded-full">
+                        {c?.name || id.slice(0, 6)}
+                        <button onClick={() => setSelectedCustomerIds(prev => prev.filter(i => i !== id))} className="text-blue-400 hover:text-blue-600">✕</button>
+                      </span>
+                    );
+                  })}
                 </div>
-              </div>
-              {/* 등급 빠른 필터 */}
-              <div className="flex gap-1.5 flex-wrap">
-                {[['', '전체'], ['VVIP', 'VVIP'], ['VIP', 'VIP'], ['NORMAL', '일반']].map(([v, label]) => (
-                  <button
-                    key={v}
-                    onClick={() => { setGradeFilter(v); setSelectedCustomerIds([]); }}
-                    className={`px-2.5 py-1 text-xs rounded-full font-medium transition-colors ${
-                      gradeFilter === v
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                    }`}
-                  >
-                    {label}
-                    {v && <span className="ml-1 opacity-60">{customers.filter(c => c.grade === v).length}</span>}
-                  </button>
-                ))}
-              </div>
+              )}
+
               <input
                 type="text"
-                placeholder="이름 / 전화번호 검색"
+                placeholder="이름 / 전화번호 검색 (전체 고객)"
                 value={customerSearch}
                 onChange={e => setCustomerSearch(e.target.value)}
                 className="input text-sm"
               />
               <div className="border rounded-lg max-h-40 sm:max-h-52 overflow-auto">
-                {filteredCustomers.map(c => (
-                  <label key={c.id} className="flex items-center gap-3 px-3 py-2 hover:bg-slate-50 border-b border-slate-100 last:border-0 cursor-pointer">
-                    <input type="checkbox" checked={selectedCustomerIds.includes(c.id)} onChange={() => toggleCustomer(c.id)} />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate">{c.name}</p>
-                      <p className="text-xs text-slate-400">{c.phone}</p>
-                    </div>
-                    <span className={`shrink-0 px-1.5 py-0.5 text-xs rounded ${GRADE_BADGE[c.grade] || 'bg-slate-100 text-slate-500'}`}>
-                      {GRADE_LABELS[c.grade] || c.grade}
-                    </span>
-                  </label>
-                ))}
-                {filteredCustomers.length === 0 && (
-                  <p className="text-center text-slate-400 py-4 text-sm">검색 결과 없음</p>
+                {searching ? (
+                  <p className="text-center text-slate-400 py-4 text-sm">검색 중...</p>
+                ) : (
+                  <>
+                    {searchResults.map(c => (
+                      <label key={c.id} className="flex items-center gap-3 px-3 py-2 hover:bg-slate-50 border-b border-slate-100 last:border-0 cursor-pointer">
+                        <input type="checkbox" checked={selectedCustomerIds.includes(c.id)} onChange={() => toggleCustomer(c)} />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">{c.name}</p>
+                          <p className="text-xs text-slate-400">{c.phone}</p>
+                        </div>
+                        <span className={`shrink-0 px-1.5 py-0.5 text-xs rounded ${GRADE_BADGE[c.grade || ''] || 'bg-slate-100 text-slate-500'}`}>
+                          {GRADE_LABELS[c.grade || ''] || c.grade}
+                        </span>
+                      </label>
+                    ))}
+                    {searchResults.length === 0 && (
+                      <p className="text-center text-slate-400 py-4 text-sm">검색 결과 없음</p>
+                    )}
+                  </>
                 )}
               </div>
+              {searchTotal > searchResults.length && (
+                <p className="text-xs text-slate-400">검색 결과 {searchTotal}명 중 {searchResults.length}명 표시 — 검색어를 좁혀 선택하세요.</p>
+              )}
             </div>
-          ) : (
+          )}
+
+          {sendMode === 'grade' && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium">발송 등급</label>
+              <div className="flex gap-1.5 flex-wrap">
+                {(['VVIP', 'VIP', 'NORMAL'] as const).map(g => (
+                  <button
+                    key={g}
+                    onClick={() => setBulkGrade(g)}
+                    className={`px-3 py-1.5 text-sm rounded-full font-medium transition-colors ${
+                      bulkGrade === g ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    {GRADE_LABELS[g]}
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-slate-400">선택한 등급의 전체 고객에게 발송합니다. 인원수는 발송 직전에 확인합니다.</p>
+            </div>
+          )}
+
+          {sendMode === 'all' && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-700">
+              ⚠️ 전화번호가 있는 <b>전체 고객</b>에게 발송합니다. 인원수는 발송 직전에 확인하며, SMS는 건당 과금됩니다.
+            </div>
+          )}
+
+          {sendMode === 'single' && (
             <div>
               <label className="block text-sm font-medium mb-1">연락처 *</label>
               <input
@@ -806,7 +895,7 @@ function SendModal({ type, templates, templateMappings, customers, onClose, onSu
                 <span className="text-slate-400">— 실제 카카오톡에서 보일 모양 (변수는 샘플 값으로 표시)</span>
               </div>
               <KakaoAlimtalkPreview
-                message={renderPreview(message, manualVars, selectedCustomerIds, customers, sendMode === 'single' ? phone : '')}
+                message={renderPreview(message, manualVars, sampleCustomer, sendMode === 'single' ? phone : '')}
               />
             </div>
           )}
@@ -825,7 +914,11 @@ function SendModal({ type, templates, templateMappings, customers, onClose, onSu
             disabled={submitting}
             className="flex-1 btn-primary disabled:opacity-50"
           >
-            {submitting ? '발송 중...' : `발송 (${sendMode === 'bulk' ? `${selectedCustomerIds.length}건` : '1건'})`}
+            {submitting ? '발송 중...'
+              : sendMode === 'ids' ? `발송 (${selectedCustomerIds.length}명 선택)`
+              : sendMode === 'grade' ? `발송 (${GRADE_LABELS[bulkGrade]} 등급)`
+              : sendMode === 'all' ? '발송 (전체)'
+              : '발송 (1건)'}
           </button>
           <button onClick={onClose} className="flex-1 btn-secondary">취소</button>
         </div>

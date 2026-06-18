@@ -25,6 +25,31 @@
 
 ### 🎯 사용자 요구 3종 모두 완료: 품목 추가/삭제(S1) + 방문→택배(S2) + 택배→방문(S2).
 
+## ✅ #15 네이버페이 포인트 매출 누락 수정 (Step1 c3d00ce + Step2 0bb772a + 백필 실행완료)
+- 진단(cafe24 원본 직접조회): 부분포인트 결제(카드50k+naver_point12k=62k)가 payment_amount(50k)만 집계. 필드: naver_point(최상위), actual_order_amount.points_spent_amount/credits_spent_amount(중첩).
+- Step1(c3d00ce): cafe24OrderTotal 헬퍼=payment_amount+naver_point+points_spent+credits_spent(모든 tender 합), 합0이면 firstPositiveAmount 폴백. webhook+orders/route 적용.
+- Step2(0bb772a): GET /api/cafe24/backfill-amount(offset 페이지네이션, total_amount만 보정, 회계 무조정 Known Gap).
+- **백필 실행완료(2026-06-16, scripts/cafe24_backfill_amount.py — DB토큰 직접조회, Vercel 우회)**: dry-run 후 --apply. 209건 보정(+4,280,556원), 이민수 50k→62k 검증, 0원 ONLINE 주문 0건.
+- ⚠️ 매출분개(journal) 미조정 — 기존 209건 분개는 옛 금액으로 게시됨(회계 정합성 별도 결정 필요).
+
+## ✅ #14 카페24 주문 연동 수정 (Step1 커밋 b8a4917 + Step2 커밋 667cb9d push 완료)
+- 진단: handleOrderCreated가 getOrder(embed items/receivers)로 다 가져오나 ①memo='Delivery: undefined'(평면 recipient_address 참조) ②sales_order_items 미생성(품목0) ③재고 미차감. 재고차감은 범위 밖(별도).
+- Step1(b8a4917): memo=recipient.address, sales_order_items 생성(Sprint B 매핑/텍스트, 멱등, degrade). extractItemOptions를 types.ts 공유 추출. 재고차감 없음.
+- Step2(667cb9d): syncCafe24OrderItems 추출. GET /api/cafe24/backfill(CRON_SECRET, ?limit50/200) — ONLINE 깨진 건 인플레이스 보정(memo·recipient·누락품목만, 무손상, 멱등).
+- ✅ **백필 실행 완료**(2026-06-16): 운영 /api/cafe24/backfill을 limit=25로 반복 호출(curl). 과거 깨진 187건 보정 — 받는분 220→0, memo undefined 220→0, 품목0 220→1(잔존 1건=카페24에 품목 없는 주문 C24-20260506-0000141). 
+  - 버그픽스 d365851: 백필 쿼리에 깨진 행 필터(.or recipient_name.is.null,memo.like) 추가 — 원래 ordered_at DESC로 최근 정상건만 스캔해 진전 안 되던 것. + Vercel 함수 타임아웃 회피 위해 작은 배치(25).
+  - ⚠️ Vercel 자동배포가 매우 지연됨(20분+) — 사용자 수동 디플로이 후 반영. CRON_SECRET=mySecretKey..., prod=e-scm-kyo.vercel.app. 로컬엔 DATABASE_URL만 있어 로컬 실행 불가.
+
+## ✅ #12 판매현황 새로고침 탭/필터 유지 (커밋 f2d10f0) + #13 ESC 닫기 (커밋 5f95157)
+- #12: /pos mainTab + SalesListTab 필터20종 localStorage 복원/저장(지점직원 branchFilter 본인지점 고정 보안). 비교뷰 기간 리셋 Known Gap.
+- #13 Step1: useEscClose 훅(src/hooks/) + 핵심 모달 9곳(판매상세·재고조정 등). 표시전용 즉시닫기/폼 입력중 confirm. Step2=배송/시스템코드 인라인 모달(미착수). Must Fix 2건(영수증 재출력 중첩·InventoryModal 무수정 confirm) 수정.
+
+## ✅ 판매 상세 전표 필드 직접 수정 + audit (커밋 4d1a5e9 push 완료)
+- SalesDetailDrawer 편집모드(✏️): 고객 재연결(검색→customer_id)+표시명(buyer_name/phone), 수령일자, 받는분 5필드. updateSalesOrderDetails(requireSession, 취소/환불 게이트, 부분업데이트, order_number 불변, 받는분 sales_orders+shipment 동기화, writeAuditLog 1건). 수령방법=기존 방문↔택배 재사용. Must Fix(shipment 동기화 실패 묻힘)→에러 표면화. Richard APPROVED. 마이그 없음.
+
+## ✅ 재고현황 추적해제 숨김 + 지점 열 순서 (커밋 8023c7b, 74f87e5)
+- track_inventory=false 재고현황 제외(피벗/평면/소계/부족 일관). 지점 열 고정순서(본사→청담→한남→강남→대구→명동→대전→경옥가제품→경옥가생산→나머지).
+
 ## ✅ 판매현황 수령/매출 분리 + 카페24 받는분 (커밋 4abdcf9 push + 마이그083 적용 완료)
 - 탭 목록→'수령 현황'/지점비교→'매출 현황'(내부키 유지). 수령현황 기본 정렬=수령일자별. 마이그083 sales_orders.recipient_*(5컬럼) + webhook receivers 저장 + recv 헬퍼(shipment 우선→sales_order) 렌더/CSV/검색/그룹 일관. shipment 없는 카페24도 받는분 표시. Richard APPROVED. Known Gap: 083 이전 동기화분 미반영.
 
