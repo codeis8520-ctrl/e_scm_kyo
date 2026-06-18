@@ -471,6 +471,8 @@ function SendModal({ type, templates, templateMappings, onClose, onSuccess, onGo
   // 서버측 고객 검색 (전체 DB) — 디바운스
   useEffect(() => {
     if (sendMode !== 'ids') return;
+    // 검색어 없으면 리스트업 안 함 (모달 첫 진입 시 전체 로드 방지)
+    if (!customerSearch.trim()) { setSearchResults([]); setSearchTotal(0); setSearching(false); return; }
     let cancelled = false;
     setSearching(true);
     const t = setTimeout(async () => {
@@ -671,7 +673,9 @@ function SendModal({ type, templates, templateMappings, onClose, onSuccess, onGo
                       </label>
                     ))}
                     {searchResults.length === 0 && (
-                      <p className="text-center text-slate-400 py-4 text-sm">검색 결과 없음</p>
+                      <p className="text-center text-slate-400 py-4 text-sm">
+                        {customerSearch.trim() ? '검색 결과 없음' : '이름 또는 전화번호로 검색하세요'}
+                      </p>
                     )}
                   </>
                 )}
