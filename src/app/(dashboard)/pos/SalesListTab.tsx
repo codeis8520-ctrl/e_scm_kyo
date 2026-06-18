@@ -274,7 +274,7 @@ export default function SalesListTab() {
   // 초기 — 지점·직원 목록
   useEffect(() => {
     const sb = createClient() as any;
-    sb.from('branches').select('id, name, code, channel').eq('is_active', true).order('name')
+    sb.from('branches').select('id, name, code, channel, sort_order').eq('is_active', true).order('sort_order').order('name')
       .then(({ data }: any) => setBranches(data || []));
     sb.from('users').select('id, name, branch_id').eq('is_active', true).order('name')
       .then(({ data }: any) => setStaff((data || []) as StaffUser[]));
@@ -2136,7 +2136,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
     setEdReceiptStatus(order.receipt_status || 'RECEIVED');
     if (edBranchOptions.length === 0 || edStaffOptions.length === 0) {
       const sb = createClient() as any;
-      sb.from('branches').select('id, name').eq('is_active', true).order('name')
+      sb.from('branches').select('id, name, sort_order').eq('is_active', true).order('sort_order').order('name')
         .then((r: any) => setEdBranchOptions((r.data as any[]) || []));
       sb.from('users').select('id, name').eq('is_active', true).order('name')
         .then((r: any) => setEdStaffOptions((r.data as any[]) || []));

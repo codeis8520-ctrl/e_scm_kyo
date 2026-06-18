@@ -54,6 +54,7 @@ interface Branch {
   phone: string | null;
   is_active: boolean;
   is_headquarters?: boolean;
+  sort_order?: number;
   // 마이그 063 — 택배 보내는분 정보 (분리 저장)
   sender_name?: string | null;
   sender_phone?: string | null;
@@ -224,7 +225,7 @@ export default function SystemCodesPage() {
       setUsageTypes((data || []) as InventoryUsageType[]);
     } else if (activeTab === 'branches') {
       const [branchesRes, channelsRes] = await Promise.all([
-        supabase.from('branches').select('*').order('created_at', { ascending: true }),
+        supabase.from('branches').select('*').order('sort_order').order('name'),
         supabase.from('channels').select('*').order('sort_order'),
       ]);
       setBranches(branchesRes.data || []);
@@ -241,7 +242,7 @@ export default function SystemCodesPage() {
     } else if (activeTab === 'staff') {
       const [{ data: usersData }, { data: branchesData }] = await Promise.all([
         supabase.from('users').select('*, branch:branches(name)').order('created_at', { ascending: false }),
-        supabase.from('branches').select('*').eq('is_active', true).order('name'),
+        supabase.from('branches').select('*').eq('is_active', true).order('sort_order').order('name'),
       ]);
       setUsers((usersData || []) as User[]);
       setBranches(branchesData || []);
@@ -255,7 +256,7 @@ export default function SystemCodesPage() {
       // 매트릭스 = 지점 × 등급. 모든 활성 지점과 등급을 함께 로드 (적립율 없는 셀도 표시되도록).
       const db = supabase as any;
       const [branchesRes, gradesRes, ratesRes] = await Promise.all([
-        db.from('branches').select('*').eq('is_active', true).order('name'),
+        db.from('branches').select('*').eq('is_active', true).order('sort_order').order('name'),
         db.from('customer_grades').select('*').eq('is_active', true).order('sort_order'),
         db.from('branch_point_rates').select('id, branch_id, grade_id, point_rate, is_active'),
       ]);
@@ -593,6 +594,7 @@ export default function SystemCodesPage() {
               <tr>
                 <th>지점코드</th>
                 <th>지점명</th>
+                <th>정렬</th>
                 <th>채널</th>
                 <th>연락처</th>
                 <th>주소</th>
@@ -609,6 +611,7 @@ export default function SystemCodesPage() {
                     {branch.name}
                     {branch.is_headquarters && <span className="ml-2 inline-block px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700">본사</span>}
                   </td>
+                  <td>{branch.sort_order ?? 999}</td>
                   <td>
                     <span className="badge bg-slate-100">
                       {channels.find(c => c.id === branch.channel)?.name || branch.channel}
@@ -1639,6 +1642,7 @@ function BranchModal({ branch, channels, onClose, onSuccess }: { branch: Branch 
   const [formData, setFormData] = useState({
     name: branch?.name || '',
     channel: branch?.channel || 'STORE',
+    sort_order: branch?.sort_order ?? 999,
     address: branch?.address || '',
     phone: branch?.phone || '',
     is_active: branch?.is_active ?? true,
@@ -1760,6 +1764,19 @@ function BranchModal({ branch, channels, onClose, onSuccess }: { branch: Branch 
                 <option key={ch.id} value={ch.id}>{ch.name}</option>
               ))}
             </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">정렬순서</label>
+            <input
+              type="number"
+              value={formData.sort_order}
+              onChange={(e) => setFormData({ ...formData, sort_order: parseInt(e.target.value) || 999 })}
+              onFocus={(e) => e.target.select()}
+              min="0"
+              className="mt-1 input"
+            />
+            <p className="mt-1 text-xs text-gray-400">작을수록 앞. 기본 999.</p>
           </div>
 
           <div>

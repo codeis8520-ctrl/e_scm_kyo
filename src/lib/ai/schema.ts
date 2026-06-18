@@ -2,7 +2,7 @@ export const DB_SCHEMA = `
 == 핵심 테이블 스키마 ==
 
 --- 지점·제품·재고 ---
-branches: id, name, code, channel(STORE/DEPT_STORE/ONLINE/EVENT), address, phone, is_active, is_headquarters, sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail
+branches: id, name, code, channel(STORE/DEPT_STORE/ONLINE/EVENT), address, phone, is_active, is_headquarters, sort_order(정렬값, 기본999·작을수록 앞), sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail
   ※ sender_*: 택배 보내는분 정보 (대한통운 엑셀 임포트용). 미입력 시 sender_name←"경옥채 "+name, sender_phone←phone, sender_address←address 로 폴백.
 products: id, name, code, barcode, unit, price(판매가), cost(원가), cost_source(MANUAL/BOM), product_type(FINISHED/RAW/SUB/SERVICE), track_inventory(bool), is_phantom(bool), pack_child_id(uuid|null), pack_child_qty(int|null), pos_widget(bool, POS 판매등록 위젯 그리드 노출 여부·검색 등록은 무관), allow_decimal_stock(bool, 마이그 087), is_active
   ※ allow_decimal_stock(마이그 087): true면 이 제품 재고를 소수(NUMERIC 4자리)로 차감·표시·조정 허용(예: 산삼/침향 base 환 단위 묶음 분해 차감). false면 정수만. phantom-BOM 분해 시 허용 material 은 BOM 분수 수량(예: 0.0333)을 반올림 없이 그대로 차감, 비허용은 Math.ceil.

@@ -21,6 +21,7 @@ interface Branch {
   name: string;
   code: string;
   channel: string;
+  sort_order?: number;
 }
 
 interface SalesData {
@@ -160,7 +161,7 @@ export default function ReportsPage({ embedded }: { embedded?: 'sales' } = {}) {
   useEffect(() => {
     const fetchBranches = async () => {
       const supabase = createClient();
-      const { data } = await supabase.from('branches').select('*').eq('is_active', true).order('created_at');
+      const { data } = await supabase.from('branches').select('*').eq('is_active', true).order('sort_order').order('name');
       setBranches(data || []);
       if (isBranchUser && userBranchId) {
         setFilterBranch(userBranchId);
@@ -365,7 +366,14 @@ export default function ReportsPage({ embedded }: { embedded?: 'sales' } = {}) {
         percentage: totalAmount > 0 ? Math.round((val.amount / totalAmount) * 100) : 0,
       });
     });
-    setBranchSales(branchData.sort((a, b) => b.amount - a.amount));
+    // #41 지점 정렬: sort_order ASC, then name(ko). 미매칭(branchId NULL/'알 수 없음')은 999로 뒤.
+    const sortOrderMap = new Map(branches.map(b => [b.id, b.sort_order ?? 999]));
+    const sortOf = (bid: string) => sortOrderMap.get(bid) ?? 999;
+    setBranchSales(
+      branchData.sort((a, b) =>
+        (sortOf(a.branchId) - sortOf(b.branchId)) || a.branchName.localeCompare(b.branchName, 'ko')
+      )
+    );
 
     const productMap = new Map<string, { name: string; quantity: number; amount: number }>();
     (orderItems || []).forEach((item: any) => {

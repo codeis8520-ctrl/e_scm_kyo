@@ -1551,6 +1551,7 @@ export async function createBranch(formData: FormData) {
     name: formData.get('name') as string,
     code: 'BR-' + Date.now().toString(36).toUpperCase(),
     channel: formData.get('channel') as string,
+    sort_order: parseInt(formData.get('sort_order') as string) || 999,
     address: formData.get('address') as string || null,
     phone: formData.get('phone') as string || null,
     // 마이그 063 — 택배 발송지(보내는분) 분리 컬럼
@@ -1621,6 +1622,7 @@ export async function updateBranch(id: string, formData: FormData) {
   const branchData: any = {
     name: formData.get('name') as string,
     channel: formData.get('channel') as string,
+    sort_order: parseInt(formData.get('sort_order') as string) || 999,
     address: formData.get('address') as string || null,
     phone: formData.get('phone') as string || null,
     is_active: formData.get('is_active') === 'true',
