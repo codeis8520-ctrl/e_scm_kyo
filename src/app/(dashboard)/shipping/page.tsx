@@ -894,6 +894,9 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
       }
       setSelectedOrders(new Set());
       await fetchShipments();
+      // 카페24 주문 목록도 재조회 — 전표 생성 여부(already_added)·고객매칭이 즉시 반영되게
+      // (임베드 온라인몰 탭은 탭 전환을 안 하므로 이 재조회가 없으면 새로고침 전까지 옛 값 유지)
+      await handleLoadCafe24Orders();
       if (!embedded) setActiveTab('list'); // 임베드(온라인몰 탭)에선 뷰 고정 — 탭 전환 금지
     } catch (e: any) {
       setAddError(e.message ?? '배송 추가 중 오류가 발생했습니다.');
