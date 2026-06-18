@@ -409,8 +409,15 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
     const branchAddressDetail = branch ? (branch.sender_address_detail ?? '') : '';
     const branchZipcode = branch ? (branch.sender_zipcode ?? '') : '';
 
-    const name = (s.sender_name && s.sender_name.trim()) || branchName;
-    const phone = (s.sender_phone && s.sender_phone.trim()) || branchPhone;
+    const rawName = (s.sender_name && s.sender_name.trim()) || branchName;
+    const rawPhone = (s.sender_phone && s.sender_phone.trim()) || branchPhone;
+
+    // 본인 발송(보내는분=받는분) → 회사명 '더경옥' + 회사(출고지점) 발신 전화로 대체.
+    //   #39: 전화도 함께 대체하지 않으면 받는분(=본인) 전화가 보내는분 전화로 새어 동일하게 출력됨.
+    //   선물 등 보내는분≠받는분 이면 실제 보내는분 이름·전화 유지.
+    const isCompanySelf = !!(rawName && s.recipient_name && rawName.trim() === s.recipient_name.trim());
+    const name = isCompanySelf ? '더경옥' : rawName;
+    const phone = isCompanySelf ? branchPhone : rawPhone;
 
     return {
       name: name || '',
@@ -460,18 +467,16 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
     // #30: 내품명(G열)은 비움 — 송장에 코드성 문자열 노출 금지. (이전 RTC 매칭 제거)
     //   보내는분성명(J열): 받는분=보내는분(본인 발송)이면 '더경옥'(회사명), 다르면 실제 보내는분(선물 등).
     const rows = targets.map(s => {
+      // sender.name/phone 은 본인발송 시 '더경옥' + 회사 발신 전화로 이미 보정됨(resolveSenderForRow, #39).
       const sender = resolveSenderForRow(s);
       const senderFullAddress = [sender.address, sender.addressDetail].filter(Boolean).join(' ');
-      const senderName = (sender.name && s.recipient_name && sender.name.trim() === s.recipient_name.trim())
-        ? '더경옥'
-        : sender.name;
       return [
         s.recipient_name, s.recipient_phone, '',
         [s.recipient_address, s.recipient_address_detail].filter(Boolean).join(' '),
         s.delivery_message || '', s.items_summary || '',
         '',                 // 내품명 — 비움(#30)
         '', '선불',
-        senderName, sender.phone, senderFullAddress,
+        sender.name, sender.phone, senderFullAddress,
         sender.zipcode || '',
       ];
     });
@@ -1019,15 +1024,13 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
     if (toExport.length === 0) return;
     if (!guardSenders(toExport)) return;
     const rows = toExport.map(s => {
+      // sender.name/phone 은 본인발송 시 '더경옥' + 회사 발신 전화로 이미 보정됨(resolveSenderForRow, #30·#39).
       const sender = resolveSenderForRow(s);
-      // 발송자(#30): 받는분=보내는분(본인 발송)이면 '더경옥', 다르면 실제 보내는분
-      const senderName = (sender.name && s.recipient_name && sender.name.trim() === s.recipient_name.trim())
-        ? '더경옥' : sender.name;
       return {
       '등록일': s.created_at?.slice(0, 10) ?? '',
       '수령예정일': s.sale_receipt_date ?? '',
       '매출처': s.sale_branch_name ?? (s.source === 'CAFE24' ? '자사몰' : '직접입력'),
-      '발송자': senderName,
+      '발송자': sender.name,
       '발송자 전화': sender.phone,
       '발송자 우편번호': sender.zipcode,
       '발송자 주소': sender.address,
