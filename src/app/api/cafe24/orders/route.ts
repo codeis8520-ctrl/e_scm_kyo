@@ -165,6 +165,10 @@ export async function GET(request: NextRequest) {
     searchParams.get('start_date') ??
     fmtDateKST(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
 
+  // 성능: '미추가만 보기'(hide_added=1)면 이미 등록된 주문은 상세 페치(N+1)를 건너뛰고
+  //   응답에서 제외 → 카페24 API 호출 대폭 절감(초기 로딩 가속). 기본 화면은 미추가만 본다.
+  const hideAdded = searchParams.get('hide_added') === '1';
+
   // 기존에 등록된 cafe24_order_id 목록 조회
   const supabase = await createClient();
   const { data: existingShipments } = await supabase
@@ -248,7 +252,12 @@ export async function GET(request: NextRequest) {
     }
 
     const listJson = await listRes.json();
-    const rawOrders: any[] = listJson.orders ?? [];
+    let rawOrders: any[] = listJson.orders ?? [];
+
+    // 성능: 미추가만 보기면 이미 등록된 주문은 상세 페치 전에 제외 → N+1 호출 절감.
+    if (hideAdded) {
+      rawOrders = rawOrders.filter((o: any) => !existingIds.has(String(o.order_id ?? '')));
+    }
 
     // 2. 주문별 상세(items) + receivers 병렬 조회 (1차: 페치만)
     const fetched = await Promise.all(

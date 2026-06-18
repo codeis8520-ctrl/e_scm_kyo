@@ -213,7 +213,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
   // ── 카페24 탭 검색 필터 ───────────────────────────────────────────────────
   const [cafe24Search, setCafe24Search]           = useState('');
   const [cafe24StatusFilter, setCafe24StatusFilter] = useState('');
-  const [cafe24HideAdded, setCafe24HideAdded]     = useState(false);
+  const [cafe24HideAdded, setCafe24HideAdded]     = useState(true);  // 기본 '미추가만 보기' — 처리 대상 집중 + 렌더 경량화
 
   // ── 카페24 품목 매핑 (본사 전용 연결/해제) ────────────────────────────────
   const userRole = getCookie('user_role');
@@ -785,11 +785,13 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
   };
 
   // ── Cafe24 탭 핸들러 ──────────────────────────────────────────────────────
-  const handleLoadCafe24Orders = async () => {
+  const handleLoadCafe24Orders = async (hideAddedOverride?: boolean) => {
     if (!startDate || !endDate) return;
+    // 미추가만 보기면 서버가 이미 추가된 주문의 상세 페치를 건너뛰어 빠르게 응답(#성능).
+    const hide = hideAddedOverride ?? cafe24HideAdded;
     setCafe24Loading(true); setCafe24Error(''); setSelectedOrders(new Set()); setCustSelected(new Set()); setRegisterMsg('');
     try {
-      const res = await fetch(`/api/cafe24/orders?start_date=${startDate}&end_date=${endDate}`);
+      const res = await fetch(`/api/cafe24/orders?start_date=${startDate}&end_date=${endDate}${hide ? '&hide_added=1' : ''}`);
       if (!res.ok) throw new Error('불러오기 실패');
       const data = await res.json();
       setCafe24Orders(data.orders ?? []);
@@ -1142,7 +1144,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                 <label className="text-xs text-slate-500 block mb-1">종료일</label>
                 <input type="date" className="input" value={endDate} onChange={e => setEndDate(e.target.value)} />
               </div>
-              <button className="btn-primary" onClick={handleLoadCafe24Orders} disabled={cafe24Loading || !startDate || !endDate}>
+              <button className="btn-primary" onClick={() => handleLoadCafe24Orders()} disabled={cafe24Loading || !startDate || !endDate}>
                 {cafe24Loading ? '불러오는 중...' : '불러오기'}
               </button>
               <div className="ml-auto flex gap-2">
@@ -1179,7 +1181,10 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                   <option value="C">취소</option>
                 </select>
                 <label className="flex items-center gap-1.5 text-sm text-slate-600 cursor-pointer">
-                  <input type="checkbox" checked={cafe24HideAdded} onChange={e => setCafe24HideAdded(e.target.checked)} className="w-4 h-4" />
+                  {/* 토글 시 재조회 — 서버가 추가된 주문 상세 페치를 건너뛰므로 새 값으로 즉시 반영 */}
+                  <input type="checkbox" checked={cafe24HideAdded}
+                    onChange={e => { setCafe24HideAdded(e.target.checked); handleLoadCafe24Orders(e.target.checked); }}
+                    className="w-4 h-4" />
                   미추가만 보기
                 </label>
               </div>
