@@ -60,6 +60,7 @@ interface Cafe24OrderForShipping {
   already_added: boolean;
   cafe24_status: string;
   customer_match?: { id: string; name: string } | null;
+  is_dup?: boolean;
 }
 
 const CAFE24_STATUS_LABEL: Record<string, string> = {
@@ -1216,7 +1217,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                             </label>
                           ) : <span className="text-slate-300 text-xs">-</span>}
                         </td>
-                        <td className="text-sm"><div>{order.recipient_name}</div><div className="text-slate-400 text-xs">{order.recipient_phone}</div></td>
+                        <td className="text-sm"><div className="flex items-center gap-1 flex-wrap">{order.recipient_name}{order.is_dup && <span className="inline-flex items-center text-xs px-1.5 py-0.5 rounded bg-rose-50 text-rose-600" title="같은 받는분·같은 품목 주문이 조회 집합 내 2건 이상 — 중복발송 주의">🔁 중복가능</span>}</div><div className="text-slate-400 text-xs">{order.recipient_phone}</div></td>
                         <td className="text-sm text-slate-600 max-w-[220px]">
                           <TruncatedCell text={order.recipient_address} className="text-slate-600" />
                         </td>

@@ -34,6 +34,8 @@ interface Cafe24OrderForShipping {
   cafe24_status: string;
   // 우리 고객DB 매칭 (이름 AND 전화). 매칭되면 그 고객, 아니면 null(미등록)
   customer_match: { id: string; name: string } | null;
+  // 조회 집합 내 중복발송 의심 (같은 받는분 이름+전화+품목 시그니처가 2건 이상)
+  is_dup: boolean;
 }
 
 // 카페24 매장 발송지(출고지) — 모든 주문에 동일하게 적용
@@ -101,7 +103,7 @@ async function fetchDefaultSender(base: string, headers: Record<string, string>)
   };
 }
 
-const DEMO_ORDERS: Omit<Cafe24OrderForShipping, 'already_added' | 'orderer_email' | 'orderer_address' | 'customer_match'>[] = [
+const DEMO_ORDERS: Omit<Cafe24OrderForShipping, 'already_added' | 'orderer_email' | 'orderer_address' | 'customer_match' | 'is_dup'>[] = [
   {
     cafe24_order_id: 'CAFE24-2024-0001',
     order_date: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
@@ -183,6 +185,7 @@ export async function GET(request: NextRequest) {
       orderer_email: '',
       orderer_address: o.recipient_address,
       customer_match: null as { id: string; name: string } | null,
+      is_dup: false,
     }));
     const default_sender: Cafe24DefaultSender = {
       source: null,
@@ -378,6 +381,7 @@ ${optValue}`;
           already_added: existingIds.has(orderId),
           cafe24_status: rawStatus,
           customer_match: null as { id: string; name: string } | null,
+          is_dup: false,
         };
       });
 
@@ -440,6 +444,31 @@ ${optValue}`;
         // 미확정 주문 — 휴리스틱
         o.customer_match = byKey.get(`${digitsOf(o.orderer_phone)}|${o.orderer_name}`) ?? null;
       }
+    }
+
+    // 주문 중복 여부 — 같은 받는분(이름+전화)이 같은 품목 시그니처를 조회 집합 내 2건 이상 주문.
+    //  키 = normName(recipient_name) | digitsOf(recipient_phone) | itemSig
+    //  itemSig = order_items 를 (normName(name) x quantity) 로 매핑 → 정렬 → join('|') (표시문자열 미사용)
+    //  받는분 이름/전화 결손 또는 품목 0건이면 후보 제외(오탐 방지).
+    const normName = (s: string) => (s || '').replace(/\s+/g, '');
+    const dupKeyOf = (o: Cafe24OrderForShipping): string | null => {
+      const name = normName(o.recipient_name);
+      const phone = digitsOf(o.recipient_phone);
+      if (!name || !phone || o.order_items.length === 0) return null;
+      const itemSig = o.order_items
+        .map(i => `${normName(i.name)}x${i.quantity}`)
+        .sort()
+        .join('|');
+      return `${name}|${phone}|${itemSig}`;
+    };
+    const dupCounts = new Map<string, number>();
+    for (const o of orders) {
+      const key = dupKeyOf(o);
+      if (key) dupCounts.set(key, (dupCounts.get(key) ?? 0) + 1);
+    }
+    for (const o of orders) {
+      const key = dupKeyOf(o);
+      o.is_dup = key ? (dupCounts.get(key) ?? 0) >= 2 : false;
     }
 
     // 매장 발송지(출고지)는 이제 우리 시스템(branches.sender_*)에서 관리하므로
