@@ -97,6 +97,13 @@ const RECEIPT_STATUS_LABEL: Record<string, string> = {
   RECEIVED: '수령', PICKUP_PLANNED: '방문예정', QUICK_PLANNED: '퀵예정', PARCEL_PLANNED: '택배예정',
   PARCEL_SHIPPED: '택배발송',
 };
+// 최종 상태(RECEIVED) 표시는 채널별 구분: 택배·퀵(배송 발생=shipment 존재)은 '배송완료', 방문/직접은 '수령완료'.
+//   내부 값 RECEIVED 는 그대로 — 표시 라벨만 조정.
+function receiptStatusLabelFor(status: string | null | undefined, hasShipment: boolean): string {
+  const st = status || 'RECEIVED';
+  if (st === 'RECEIVED') return hasShipment ? '배송완료' : '수령완료';
+  return RECEIPT_STATUS_LABEL[st] || '-';
+}
 // 색상 기준(#24): 완료=낮은 강조(회색), 확인·처리 필요(예정)=강조.
 const RECEIPT_STATUS_BADGE: Record<string, string> = {
   RECEIVED: 'bg-slate-100 text-slate-500',          // 수령완료 = 회색(낮음)
@@ -603,7 +610,7 @@ export default function SalesListTab() {
     const ORDER = ['PICKUP_PLANNED', 'QUICK_PLANNED', 'PARCEL_PLANNED', 'PARCEL_SHIPPED', 'RECEIVED'];
     const LABEL: Record<string, string> = {
       PICKUP_PLANNED: '방문예정', QUICK_PLANNED: '퀵예정', PARCEL_PLANNED: '택배예정',
-      PARCEL_SHIPPED: '택배발송완료', RECEIVED: '수령완료', 기타: '기타',
+      PARCEL_SHIPPED: '택배발송완료', RECEIVED: '수령·배송완료', 기타: '기타',
     };
     const buckets = new Map<string, OrderRow[]>();
     for (const o of filtered) {
@@ -659,7 +666,7 @@ export default function SalesListTab() {
   const handleBulkReceipt = async () => {
     const ids = [...selectedReceiptIds];
     if (ids.length === 0) return;
-    const label = bulkTarget === 'RECEIVED' ? '수령완료' : '발송완료';
+    const label = bulkTarget === 'RECEIVED' ? '수령·배송완료' : '발송완료';
     if (!confirm(`선택한 ${ids.length}건의 수령상태를 '${label}'(으)로 일괄 변경하시겠습니까?\n연결된 배송 상태도 함께 갱신됩니다.`)) return;
     setBulkSaving(true);
     try {
@@ -721,7 +728,7 @@ export default function SalesListTab() {
                     </td>
                     <td className="whitespace-nowrap align-top">
                       <span className={`badge text-[10px] ${RECEIPT_STATUS_BADGE[receiptKey] || 'bg-slate-100 text-slate-600'}`}>
-                        {RECEIPT_STATUS_LABEL[receiptKey] || '-'}
+                        {receiptStatusLabelFor(o.receipt_status, (o.shipments?.length ?? 0) > 0)}
                       </span>
                       {o.receipt_date && <p className="text-[10px] text-slate-500 mt-0.5">{o.receipt_date}</p>}
                     </td>
@@ -898,7 +905,7 @@ export default function SalesListTab() {
       const totalQty = (o.items || []).reduce((s, it) => s + (it.quantity || 0), 0);
       return [
         fmtDateKST(o.ordered_at),
-        RECEIPT_STATUS_LABEL[o.receipt_status || 'RECEIVED'] || '',
+        receiptStatusLabelFor(o.receipt_status, (o.shipments?.length ?? 0) > 0),
         o.receipt_date || '',
         o.branch?.name || '',
         shipFromBranch,
@@ -1241,7 +1248,7 @@ export default function SalesListTab() {
               className="input py-1 text-sm w-auto"
             >
               <option value="PARCEL_SHIPPED">발송완료(택배발송)</option>
-              <option value="RECEIVED">수령완료</option>
+              <option value="RECEIVED">수령·배송완료</option>
             </select>
             <button
               onClick={handleBulkReceipt}
@@ -2450,8 +2457,8 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                 <p className="text-[11px] text-slate-500">수령</p>
                 <p className="flex items-center gap-1.5">
                   <span className={`badge text-[10px] ${RECEIPT_STATUS_BADGE[order.receipt_status || 'RECEIVED'] || 'bg-slate-100 text-slate-500'}`}>
-                    {!order.receipt_status ? '수령완료'
-                     : order.receipt_status === 'RECEIVED' ? '수령완료'
+                    {!order.receipt_status ? (shipment ? '배송완료' : '수령완료')
+                     : order.receipt_status === 'RECEIVED' ? (shipment ? '배송완료' : '수령완료')
                      : order.receipt_status === 'PICKUP_PLANNED' ? '방문예정'
                      : order.receipt_status === 'QUICK_PLANNED' ? '퀵예정'
                      : order.receipt_status === 'PARCEL_SHIPPED' ? '택배발송완료'
@@ -2696,7 +2703,9 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                       const dTypeColor = itemDType === 'PARCEL' ? 'bg-blue-50 text-blue-700 border-blue-200'
                         : itemDType === 'QUICK' ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
                         : 'bg-slate-50 text-slate-600 border-slate-200';
-                      const rLabel = itemRStatus === 'RECEIVED' ? '수령완료'
+                      // RECEIVED 라벨은 품목 배송유형별 구분(택배·퀵=배송완료, 방문=수령완료)
+                      const rLabel = itemRStatus === 'RECEIVED'
+                          ? (itemDType === 'PARCEL' || itemDType === 'QUICK' ? '배송완료' : '수령완료')
                         : itemRStatus === 'PARCEL_PLANNED' ? '택배예정'
                         : itemRStatus === 'PARCEL_SHIPPED' ? '택배발송완료'
                         : itemRStatus === 'QUICK_PLANNED' ? '퀵예정'
@@ -3149,10 +3158,10 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                   onClick={markReceiptCompleted}
                   disabled={markingReceipt}
                   className="flex-1 min-w-[140px] py-2 text-sm rounded-md bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
-                  title={`${order.receipt_status === 'QUICK_PLANNED' ? '퀵' : order.receipt_status === 'PARCEL_PLANNED' ? '택배' : '방문'} 수령 완료 처리`}
+                  title={order.receipt_status === 'PICKUP_PLANNED' ? '방문 수령 완료 처리' : '배송 완료 처리'}
                 >
                   {markingReceipt ? '처리 중...'
-                    : `✓ ${order.receipt_status === 'QUICK_PLANNED' ? '퀵' : order.receipt_status === 'PARCEL_PLANNED' ? '택배' : '방문'} 수령 완료`}
+                    : (order.receipt_status === 'PICKUP_PLANNED' ? '✓ 방문 수령 완료' : '✓ 배송 완료')}
                 </button>
               )}
               {/* 수령 취소 — RECEIVED 상태에서 예정 단계로 되돌림 */}
