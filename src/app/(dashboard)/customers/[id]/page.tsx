@@ -376,17 +376,20 @@ export default function CustomerDetailPage() {
     });
   }, [consultations, consultTypeFilter, consultTextSearch]);
 
-  // 통합 타임라인 (상담 + 주문 시간순)
+  // 통합 타임라인 (상담 + 주문 + 과거구매(자사몰 등) 시간순) — 고객의 모든 이력 포함
   const timelineItems = useMemo(() => {
     type Item =
       | { kind: 'consult'; at: string; data: Consultation }
-      | { kind: 'order'; at: string; data: any };
+      | { kind: 'order'; at: string; data: any }
+      | { kind: 'legacy'; at: string; data: LegacyOrder };
     const items: Item[] = [];
     for (const c of consultations) items.push({ kind: 'consult', at: consultDisplayDate(c), data: c });
     for (const o of purchaseOrders) items.push({ kind: 'order', at: o.ordered_at, data: o });
+    // 과거구매(legacy_orders): 자사몰 포함 모든 과거 구매 이력. 구매이력 탭과 별개로 타임라인에도 통합.
+    for (const l of legacyOrders) items.push({ kind: 'legacy', at: l.ordered_at, data: l });
     items.sort((a, b) => (b.at || '').localeCompare(a.at || ''));
     return items;
-  }, [consultations, purchaseOrders]);
+  }, [consultations, purchaseOrders, legacyOrders]);
 
   // 태그 관련
   const handleAddTag = async (tagId: string) => {
@@ -889,9 +892,9 @@ export default function CustomerDetailPage() {
           {activeTab === 'timeline' && (
             <div className="space-y-4">
               <div className="flex items-center justify-between gap-3 flex-wrap">
-                <p className="text-xs text-slate-500">상담과 주문을 시간 순으로 모아 고객 히스토리를 통합 추적합니다.</p>
+                <p className="text-xs text-slate-500">상담·주문·과거구매(자사몰 포함)를 시간 순으로 모아 고객의 모든 이력을 통합 추적합니다.</p>
                 <div className="text-xs text-slate-500">
-                  상담 {consultations.length}건 · 주문 {purchaseOrders.length}건
+                  상담 {consultations.length}건 · 주문 {purchaseOrders.length}건{legacyOrders.length > 0 && <> · 과거 {legacyOrders.length}건</>}
                 </div>
               </div>
 
@@ -939,6 +942,38 @@ export default function CustomerDetailPage() {
                             <p className="text-sm text-slate-700 whitespace-pre-wrap line-clamp-3">
                               {extractText(c.content) || <span className="text-slate-400">(내용 없음)</span>}
                             </p>
+                          </div>
+                        </div>
+                      );
+                    }
+                    if (item.kind === 'legacy') {
+                      const l = item.data;
+                      const li = (l.legacy_order_items || []).slice(0, 3).map((i: LegacyOrderItem) => i.item_text).filter(Boolean);
+                      const liExtra = (l.legacy_order_items?.length || 0) - li.length;
+                      return (
+                        <div key={`l-${l.id}`} className="relative">
+                          <span className="absolute -left-[21px] top-4 w-3 h-3 rounded-full ring-4 ring-white bg-amber-400"></span>
+                          <div className="card border border-amber-100">
+                            <div className="flex justify-between items-start gap-2 mb-1.5">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="inline-block px-2 py-0.5 text-xs font-medium rounded border bg-amber-50 text-amber-700 border-amber-200">
+                                  과거구매{l.legacy_order_no ? ` · ${l.legacy_order_no}` : ''}
+                                </span>
+                                {l.channel_text && <span className="text-xs text-slate-500">{l.channel_text}</span>}
+                              </div>
+                              <div className="text-xs text-slate-400 whitespace-nowrap" title={fmtDateTime(l.ordered_at)}>
+                                {fmtDateTime(l.ordered_at)}
+                              </div>
+                            </div>
+                            <div className="flex justify-between items-center gap-4">
+                              <p className="text-sm text-slate-700 flex-1 truncate">
+                                {li.join(', ')}
+                                {liExtra > 0 && <span className="text-slate-400"> 외 {liExtra}종</span>}
+                              </p>
+                              <span className="font-semibold text-sm text-slate-800">
+                                {Number(l.total_amount || 0).toLocaleString()}원
+                              </span>
+                            </div>
                           </div>
                         </div>
                       );
