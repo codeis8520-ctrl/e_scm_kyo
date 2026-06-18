@@ -1536,14 +1536,14 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                 type="date"
                 value={listStartDate}
                 onChange={e => setListStartDate(e.target.value)}
-                className="input text-sm py-1.5"
+                className="input text-sm py-1.5 w-40"
               />
               <span className="text-slate-400 text-sm">~</span>
               <input
                 type="date"
                 value={listEndDate}
                 onChange={e => setListEndDate(e.target.value)}
-                className="input text-sm py-1.5"
+                className="input text-sm py-1.5 w-40"
               />
               <button
                 onClick={() => {
@@ -1564,7 +1564,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
               <select
                 value={shipSort}
                 onChange={e => setShipSort(e.target.value as typeof shipSort)}
-                className="input text-sm py-1.5"
+                className="input text-sm py-1.5 w-44"
                 title="정렬 기준"
               >
                 <option value="receipt_asc">수령예정일 임박순</option>
