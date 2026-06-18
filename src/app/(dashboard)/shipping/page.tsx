@@ -245,6 +245,8 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
   const [shipments, setShipments] = useState<Shipment[]>([]);
   const [listLoading, setListLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
+  // 택배관리 정렬 기준 — 사용자 선택(콤보)
+  const [shipSort, setShipSort] = useState<'receipt_asc' | 'latest' | 'oldest'>('receipt_asc');
   const [listSearch, setListSearch] = useState('');
   const [listStartDate, setListStartDate] = useState(fmt(oneWeekAgo));
   const [listEndDate, setListEndDate] = useState(fmt(today));
@@ -1014,14 +1016,24 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
     }
     return true;
   }).sort((a, b) => {
-    // 발송 준비 순서(#26): 수령일/택배예정일 오름차순(임박한 것 먼저), 없으면 맨 뒤. 동일하면 등록일 최신순.
+    const ca = a.created_at || '', cb = b.created_at || '';
+    if (shipSort === 'latest') {
+      // 최신 등록순(등록일 내림차순)
+      return cb < ca ? -1 : cb > ca ? 1 : 0;
+    }
+    if (shipSort === 'oldest') {
+      // 오래된 등록순(등록일 오름차순)
+      return ca < cb ? -1 : ca > cb ? 1 : 0;
+    }
+    // receipt_asc(기본, #26 발송 준비 순서): 수령일/택배예정일 오름차순(임박한 것 먼저),
+    //   없으면 맨 뒤. 동일하면 등록일 최신순.
     const ra = a.sale_receipt_date || '', rb = b.sale_receipt_date || '';
     if (ra !== rb) {
       if (!ra) return 1;
       if (!rb) return -1;
       return ra < rb ? -1 : 1;
     }
-    return (b.created_at || '') < (a.created_at || '') ? -1 : (b.created_at || '') > (a.created_at || '') ? 1 : 0;
+    return cb < ca ? -1 : cb > ca ? 1 : 0;
   });
 
   const toggleShipmentSelect = (id: string) => {
@@ -1544,6 +1556,16 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                 placeholder="수령자 / 전화번호 / 송장번호 / 주소"
                 className="input text-sm py-1.5 w-64"
               />
+              <select
+                value={shipSort}
+                onChange={e => setShipSort(e.target.value as typeof shipSort)}
+                className="input text-sm py-1.5"
+                title="정렬 기준"
+              >
+                <option value="receipt_asc">수령예정일 임박순</option>
+                <option value="latest">최신 등록순</option>
+                <option value="oldest">오래된 등록순</option>
+              </select>
             </div>
             <div className="flex gap-2 flex-wrap">
               {/* 선택건 송장 추적 — SweetTracker API 로 배송상태 갱신 */}
