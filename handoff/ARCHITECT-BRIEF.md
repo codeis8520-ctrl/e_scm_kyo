@@ -1,74 +1,94 @@
-# Architect Brief — SMS/알림톡 발송 고도화 Step A (서버측 대상 해석 + 건수 미리보기)
+# Architect Brief — #48 Phase 3 (재정의: 택배 상태표시 + 오프라인 매장만 필터)
+
+> 방향 수정(Project Owner 정본). 기존 "역방향 sync 정식화" 브리프는 **폐기/강등**.
+> 새 원칙: receipt_status를 양방향 sync로 억지로 맞추지 않는다. **택배 건은 판매현황 표시를
+> 연결 shipment.status 기준으로 보여주기만** 한다(단일원천 = shipment.status, 1:1 링크는 2a로 완료).
+> 오프라인(방문/매장, shipment 없음)은 해당없음 — 기존 수령상태 라벨 유지.
 
 ## Goal
-발송 대상을 클라이언트에 로드된 1000명에서 푸는 게 아니라, 서버에서 모드별(선택ID들 / 등급 / 전체)로 해석해 전화있는·중복제거된 SendTarget 배열과 건수를 돌려주는 서버액션을 신설한다. UI 변경 없음 — 이 스텝은 순수 데이터층.
+판매현황에서 (A) 택배 건은 연결 shipment.status를 그대로 표시하고, (B) "오프라인 매장만" 체크 시
+온라인몰(channel='ONLINE') 매출을 숨긴다. 표시/필터 변경뿐 — mutation·재무·재고·sync 영향 없음.
 
-## 배경 (조사 완료, 재조사 금지)
-- 버그 근원: `notifications/page.tsx` L64 `from('customers').select(...).order('name')` → .range() 없음(1000캡). 모달 `filteredCustomers`는 .slice(0,100)(L460). 활성 12,409명 중 앞 1000만 도달.
-- 발송 자체는 정상: `sendSmsAction`/`sendKakaoAction`(`src/lib/notification-actions.ts`)이 `targets: SendTarget[]`(`{customerId, phone, name?}`) 받아 Solapi `send-many` 호출. **이 두 액션과 Solapi 클라이언트는 이 스텝에서 건드리지 않는다.**
-- RBAC 패턴 존재: `runNotificationBatch`(같은 파일 L172-175) — `const HQ = new Set(['SUPER_ADMIN','HQ_OPERATOR','EXECUTIVE'])`. 비-HQ는 `{ error: '본사 권한이 필요합니다.' }`. **이 패턴 그대로 재사용.**
-- 등급 enum: customers.grade = 'NORMAL' | 'VIP' | 'VVIP' (text 컬럼).
-- 1000캡 우회 정석(이 코드베이스): `.range(start,end)` 페이지네이션 루프. (search/route.ts·analytics가 이미 사용).
+## 폐기/강등된 기존 빌드범위 (Bob: 빌드하지 말 것)
+- ❌ 역방향 헬퍼 `syncShipmentFromReceipt` 신설 — **불요. 만들지 않는다.**
+- ❌ `reaggregateOrderReceiptStatus` 갭 봉합(서버 역방향 호출 추가) — **불요.**
+- ❌ 드로어 인라인 → 헬퍼 통일(C) — **불요.**
+- ⚠️ **단, 이미 존재하는 forward 및 기존 인라인 동작은 무손상 유지(제거 금지)**:
+  - forward: receipt-sync.ts `syncReceiptStatusFromShipment` (DELIVERED→RECEIVED) — 그대로 둔다.
+  - SalesListTab 기존 인라인 shipments update(markItemReceived L1794·markReceiptCompleted
+    L1834/1839·revert L1900/1952·delivery_type L1970) — **건드리지 않는다.**
+  - bulkUpdateReceiptStatus / AI 일괄 역방향 — 그대로 둔다.
+  → 이번 스텝은 **표시 레이어만** 추가. 데이터 흐름·mutation 코드는 0줄 변경.
+
+## 사전 코드조사 결과 (확정 — Bob 재조사 불필요)
+파일: `src/app/(dashboard)/pos/SalesListTab.tsx`
+
+**A 관련:**
+- shipments는 메인 select 조인 아님. 별도 fetch(L365-388) `.select('... , status')` 로 이미
+  `shipments.status` 가져와 각 order에 `r.shipments[]`로 매핑. → **추가 쿼리비용 0.**
+- `STATUS_LABEL`(L85): COMPLETED/CANCELLED/... — 이건 sales_orders.status용. **shipment.status용 아님.**
+  → shipment.status enum 라벨은 별도 맵 필요. 값: PENDING=대기중, PRINTED=출력완료,
+    SHIPPED=발송완료, DELIVERED=배송완료. (택배관리 page.tsx의 라벨과 일치시킬 것 — Bob이 거기 STATUS_LABEL 확인.)
+- 현재 표시: `receiptStatusLabelFor(o.receipt_status, hasShipment)` (L750 행, L919 CSV).
+  - 택배 건(shipment 존재) RECEIVED → '배송완료', 미완 → RECEIPT_STATUS_LABEL(택배예정 등).
+- `ShipmentRow.status: string|null`(L47) 이미 타입에 있음.
+- **수령상태순 그룹/정렬(L618 receiptGroups)은 내부 `receipt_status` 값으로 버킷팅** —
+  표시 라벨만 바꾸면 그룹/정렬 무영향(충돌 없음). 버킷 키 로직 변경 금지.
+
+**B 관련:**
+- 패턴 정본 = `hideReceived`: state(L232) + PersistedFilters 인터페이스(L176) + 저장 payload(L266-272)
+  + 복원(saved.hideReceived) + 토글 UI(L1248-1261) + 필터 적용.
+- `channel`은 OrderRow.channel(L54)에 select됨(L310). client에서 읽기 가능.
+- 메인 쿼리에서 `.neq('channel','ONLINE')` 가능하나, ONLINE이 아닌 NULL/STORE 등 혼재 →
+  **클라이언트 필터 권장**: `o.channel !== 'ONLINE'`. (서버 .neq는 NULL 제외 위험 — 클라가 안전.)
 
 ## Build Order
-신규 파일 아님 — `src/lib/notification-actions.ts`에 export 액션 1개 추가.
 
-```ts
-export type SendAudienceMode = 'ids' | 'grade' | 'all';
-export interface ResolveTargetsParams {
-  mode: SendAudienceMode;
-  customerIds?: string[];   // mode='ids'
-  grade?: string;           // mode='grade' ('NORMAL'|'VIP'|'VVIP')
-}
-export async function resolveSendTargets(params: ResolveTargetsParams):
-  Promise<{ targets: SendTarget[]; total: number; skipped: number } | { error: string }>
-```
+### A. 택배 건 상태표시를 shipment.status로
+1. shipment.status 라벨 맵 신설(상단, STATUS_LABEL과 별개):
+   `const SHIPMENT_STATUS_LABEL = { PENDING:'대기중', PRINTED:'출력완료', SHIPPED:'발송완료', DELIVERED:'배송완료' }`
+   - **택배관리 page.tsx의 동일 enum 라벨을 먼저 grep해 문구 일치** 확인 후 채택(불일치 시 택배관리 기준).
+2. 표시 결정 — **병기(권장)**: 택배 건은 기존 수령상태 라벨 위/아래(또는 옆)에 shipment.status 라벨을 함께.
+   - **결정: shipment.status 라벨을 주(主) 표시로, 기존 receipt 라벨은 보조 또는 생략.**
+     화면에서 어느 쪽이 자연스러운지 Bob이 1차 판단하되, 기본 방향 = **택배 건은 shipment.status 라벨로 표시**
+     (대체), 방문/퀵(shipment 없음)은 기존 `receiptStatusLabelFor` 유지.
+   - 구현: 헬퍼 하나 추가 — `displayStatusLabel(o)`:
+     - `const ship = o.shipments?.[0]` (1:1)
+     - ship && ship.status 있으면 → `SHIPMENT_STATUS_LABEL[ship.status] ?? receiptStatusLabelFor(...)`
+     - else → `receiptStatusLabelFor(o.receipt_status, false)` (방문/퀵/직접)
+   - L750(행 표시)·L919(CSV) 둘 다 이 헬퍼로 교체. **두 곳 일관.**
+3. 배지 색상: 기존 RECEIPT_STATUS_BADGE 재사용 가능하면 재사용. shipment 상태별 색이 필요하면
+   간단한 맵 추가(과한 디자인 금지 — 완료=회색, 진행=강조 톤 정도).
+4. Flag: shipment.status가 NULL/미지정 택배 건 → 라벨 맵 미스 시 기존 receiptStatusLabelFor로 폴백(빈칸 금지).
+5. Flag: 정렬·필터(수령상태순 그룹)는 **내부 receipt_status 기준 유지** — 표시 라벨 변경이
+   그룹핑을 바꾸지 않음을 확인하고, 그룹 헤더 문구(L620 LABEL '수령·배송완료')는 현행 유지.
 
-규칙:
-- `requireSession()` 먼저(기존 액션과 동일 try/catch → `{ error }`).
-- **RBAC**: mode가 'grade' 또는 'all'(대량발송)이면 HQ Set 게이트 적용. 비-HQ면 `{ error: '대량 발송은 본사 권한이 필요합니다.' }`. mode='ids'(명시 선택)는 게이트 없음(기존 단건/소량 흐름 유지).
-- 공통 베이스 쿼리: `customers` 에서 `is_active=true` AND phone NOT NULL. select는 `id, name, phone, grade`.
-- mode='ids': `.in('id', customerIds)` (빈 배열이면 `{ error: '선택된 고객이 없습니다.' }`). 1000개 초과 id는 청크로 .in 호출(PostgREST URL 한도) — 200개씩 나눠 합치기.
-- mode='grade': `.eq('grade', grade)` + **.range() 페이지네이션 루프(1000씩 끝까지)** — 12k 전체 로드.
-- mode='all': 등급 필터 없이 동일 페이지네이션 루프.
-- **지점 사용자 스코프**: 세션 role이 BRANCH_STAFF/PHARMACY_STAFF면 `.eq('primary_branch_id', session.branch_id)` 강제(자기 지점 고객만). (search/route.ts L103 동일 패턴). HQ면 무제한. ※ 단 위 RBAC 게이트로 grade/all은 이미 HQ 전용이므로 실질 이 스코프는 ids 모드에서 의미. 그래도 일관 적용.
-- **전화없음 제외 + 중복제거**: phone이 null/빈문자/공백이면 skipped++로 카운트하고 제외. 동일 정규화 전화번호(하이픈 제거) 중복은 1건만(중복도 skipped 집계). name 없으면 name=undefined 허용(발송은 됨).
-- 반환: `targets`(정제된 SendTarget[]), `total`(targets.length), `skipped`(전화없음+중복 합).
+### B. "오프라인 매장만" 체크박스
+1. PersistedFilters에 `offlineOnly: boolean` 추가(L155-177).
+2. state: `const [offlineOnly, setOfflineOnly] = useState(() => saved.offlineOnly ?? false)`.
+3. 저장 payload(L266-272)에 `offlineOnly` 추가, 의존성 배열(L274-276)에도 추가.
+4. 필터 적용: 렌더용 filtered 산출 지점에서 `offlineOnly ? rows.filter(o => o.channel !== 'ONLINE') : rows`.
+   - 클라이언트 필터. 검색/날짜/기타 필터 뒤 단계에 합류.
+5. UI: hideReceived 토글(L1248-1261) **바로 옆에 동일 패턴** 버튼 추가. 라벨 "오프라인 매장만".
+   - title: "체크 시 온라인몰(자사몰) 주문을 숨기고 오프라인 매장 매출만 표시합니다".
+6. Flag — '온라인몰' 탭과 의미 구분: 이 필터는 **숨김 토글**(현재 통합 리스트에서 ONLINE 제외).
+   별도 '온라인몰' 탭/뷰가 있다면 그건 ONLINE만 보는 뷰 — 본 토글과 반대 방향. 혼동 주석 1줄 남길 것.
 
-## Out of Scope (BUILD-LOG Known Gaps로)
-- 모달 UI(서버검색·선택누적·모드 선택·건수표시) → Step B.
-- 대량발송 배치 청킹(Solapi send-many를 N건씩 분할)·결과 집계 → Step C.
-- `sendSmsAction`/`sendKakaoAction`/Solapi 클라이언트 수정 일체.
-- AI schema.ts 동기화: 이 스텝은 새 테이블/컬럼/enum 없음 → 불필요(신규 액션은 에이전트 도구 아님).
+### C. AI Sync — 점검만
+- 표시/필터 변경 = DB 스키마·enum·비즈룰·도구 변경 없음 → `schema.ts`/`tools.ts` **무변경**.
+- shipment.status enum 값은 이미 DB_SCHEMA에 존재(신규 아님). 추가 동기화 불요. (커밋 전 매트릭스 대입 결과: 해당없음.)
+
+## Out of Scope
+- 역방향 sync 정식화/갭봉합 일체(상단 폐기 목록) → 이번 스텝 비범위. 필요 시 별도 결정.
+- 분할배송(1전표 N배송) — 2a에서 1:1 확정. `shipments[0]` 단건 전제.
+- shipment.status 자체 변경 UX(판매현황에서 상태를 바꾸는 기능) → 표시 전용. 변경은 택배관리.
 
 ## Acceptance
-- `npm run build` 통과.
-- mode='ids'로 빈 배열 → error. 정상 id 배열 → 그 고객만, 전화없는 건 skipped.
-- mode='grade'/'all' 비-HQ 세션 → 본사 권한 error. HQ 세션 → 1000 넘는 전체 반환(.range 루프 동작 확인: 코드상 while로 data.length===pageSize면 계속).
-- 중복 전화 1건화, skipped 정확.
-- 기존 sendSmsAction/sendKakaoAction 시그니처 무변경(회귀 0).
-
-## Build 후
-`handoff/REVIEW-REQUEST.md`에 변경 파일·함수·라인범위·자기리뷰 기재.
-
----
-
-## Builder Plan — Step B (모달 UI 개편)
-
-대상: `src/app/(dashboard)/notifications/page.tsx` SendModal.
-
-### 변경
-1. **모드 토글 3종 + single 유지**: `sendMode`를 `'ids' | 'grade' | 'all' | 'single'`로 확장(기존 'bulk'→'ids' 의미). 라벨: 개별 선택 / 등급별 / 전체 / 직접 전화. grade·all은 HQ 전용(비HQ는 버튼 숨김). HQ 판정은 `user_role` 쿠키(getCookie 헬퍼, production/page.tsx 패턴 복사) + HQ_ROLES set.
-2. **서버검색**: ids 모드의 고객 목록을 `customers` prop(.slice100) 대신 `/api/customers/search?q=&page=&limit=&grade=` debounce fetch로 교체. 응답 `{customers,total,page}` 사용. 검색어 없으면 기본목록(이미 API가 처리). 결과는 id/name/phone/grade만 사용.
-3. **선택 누적**: `selectedCustomerIds`(유지) + `selectedCustomers` Map<id,{name,phone}>(검색결과 밖 선택 보존용 — 칩 표시·발송 fallback). toggle 시 Map에도 적재. 검색어 변경해도 selection·Map 유지. 선택 칩(이름 x) + 카운트 표시, '선택 해제' 버튼.
-4. **grade/all 모드 UI**: 개별 체크 없음. grade는 등급 라디오(VVIP/VIP/NORMAL). all은 안내문구만. 발송수는 확인 다이얼로그에서 resolveSendTargets로 받아 표시.
-5. **확인 다이얼로그**: handleSend 1단계 = resolveSendTargets(mode 매핑)로 `{total, skipped}` 받아 'N명에게 발송합니다(SMS 건당 과금)' confirm 표시. ids 모드는 selectedCustomerIds 전달. 확정 시 그 액션이 돌려준 `targets`로 기존 sendSmsAction/sendKakaoAction 호출(클라 재수집 X — 서버 정제 targets 신뢰).
-6. **single 무변경**: 기존 phone 입력 그대로. resolveSendTargets 안 거침.
-
-### 결정/불확실
-- ids 모드도 resolveSendTargets 경유(서버 정제 targets 사용) → 전화없음/중복 제거 일관. 단 selectedCustomers Map은 칩·미리보기 샘플용으로만 클라 보존.
-- 미리보기 renderPreview: 기존 `customers` prop 대신 `selectedCustomers` Map의 첫 선택자로 샘플 구성(prop customers는 더 이상 전체 신뢰 불가). single은 phone 그대로.
-- 등급 빠른필터(기존 customers.filter count) 제거 — 전체 DB count 불가, grade 모드가 대체.
-- parent의 `customers` prop·L62-66 클라 1000 로드: Step B에서 모달이 prop 의존 제거하므로 **불필요해짐**. 단 제거는 parent 변경 → 스코프 최소화 위해 prop은 남기되 모달 내부에서 미사용(렌더 깨짐 0). L62-66 로드 제거는 Known Gap로 기록(선택). → **로드 제거까지 포함**: fetchData의 customerRes 제거해 12k 불필요 로드 차단(성능 이득, 회귀 위험 낮음). prop은 빈 배열 전달로 축소.
-
-빌드 진행.
+- 택배 건(연결 shipment 존재): 행/CSV 상태가 shipment.status 라벨(대기중/출력완료/발송완료/배송완료)로 표시.
+- 방문/퀵/직접(shipment 없음): 기존 수령상태 라벨(방문예정/수령완료 등) 무변경.
+- shipment.status NULL인 택배 건: 빈칸 없이 기존 receipt 라벨로 폴백.
+- "오프라인 매장만" 체크 → channel='ONLINE' 행 숨김. 해제 → 전체. 새로고침 후 상태 유지(localStorage).
+- 수령상태순 정렬·그룹: 표시 라벨 변경에도 그룹핑/순서 동일(회귀 없음).
+- 기존 forward sync·인라인 shipments update 코드 0줄 변경(제거·수정 없음).
+- `npm run build` 0 error.
+- Richard 리뷰: 표시 폴백 누락·CSV/행 라벨 불일치·offlineOnly 영속 누락·그룹핑 회귀 점검.

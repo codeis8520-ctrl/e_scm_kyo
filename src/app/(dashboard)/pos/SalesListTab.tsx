@@ -112,6 +112,32 @@ const RECEIPT_STATUS_BADGE: Record<string, string> = {
   QUICK_PLANNED: 'bg-purple-100 text-purple-700',   // 퀵예정 = 강조
   PARCEL_PLANNED: 'bg-blue-100 text-blue-700',      // 택배예정 = 강조
 };
+// 택배 건(연결 shipment 존재) 표시 = shipment.status 단일원천(#48 P3). 택배관리 page.tsx 라벨과 일치.
+const SHIPMENT_STATUS_LABEL: Record<string, string> = {
+  PENDING: '대기중', PRINTED: '출력완료', SHIPPED: '발송완료', DELIVERED: '배송완료',
+};
+const SHIPMENT_STATUS_BADGE: Record<string, string> = {
+  PENDING: 'bg-amber-100 text-amber-800',     // 대기중 = 강조(미출력)
+  PRINTED: 'bg-blue-100 text-blue-700',       // 출력완료 = 진행
+  SHIPPED: 'bg-blue-100 text-blue-700',       // 발송완료 = 진행
+  DELIVERED: 'bg-slate-100 text-slate-500',   // 배송완료(종결) = 회색(낮음)
+};
+// 행/CSV 상태 표시: 택배 건은 shipment.status 라벨로 대체, 방문/퀵/직접(shipment 없음)은 기존 수령상태 라벨.
+//   shipment.status NULL/미지정 택배 건은 기존 receipt 라벨로 폴백(빈칸 금지).
+function displayStatusLabel(o: OrderRow): string {
+  const ship = o.shipments?.[0];
+  if (ship) {
+    return (ship.status && SHIPMENT_STATUS_LABEL[ship.status])
+      || receiptStatusLabelFor(o.receipt_status, true);
+  }
+  return receiptStatusLabelFor(o.receipt_status, false);
+}
+// 행 배지 색: 택배 건은 shipment.status 색, 그 외(또는 status 미지정)는 receipt 배지로 폴백.
+function displayStatusBadge(o: OrderRow, receiptKey: string): string {
+  const ship = o.shipments?.[0];
+  if (ship && ship.status && SHIPMENT_STATUS_BADGE[ship.status]) return SHIPMENT_STATUS_BADGE[ship.status];
+  return RECEIPT_STATUS_BADGE[receiptKey] || 'bg-slate-100 text-slate-600';
+}
 const APPROVAL_STATUS_LABEL: Record<string, string> = {
   COMPLETED: '결제완료', CARD_PENDING: '미승인(카드)', UNSETTLED: '미수금',
 };
@@ -174,6 +200,7 @@ interface PersistedFilters {
   handlerFilter: string;
   shipFromFilter: string;
   hideReceived: boolean;
+  offlineOnly: boolean;
 }
 
 function readSalesFilters(): Partial<PersistedFilters> {
@@ -230,6 +257,9 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
   const [approvalStatusFilter, setApprovalStatusFilter] = useState(() => saved.approvalStatusFilter ?? '');
   // 미결 건만 보기 — 수령완료·배송완료(RECEIVED) 숨김. 담당자가 처리할 건만 직관 파악.
   const [hideReceived, setHideReceived] = useState(() => saved.hideReceived ?? false);
+  // 오프라인 매장만 — 온라인몰(channel='ONLINE') 주문을 통합 리스트에서 숨김(#48 P3).
+  //   ※ 별도 '온라인몰' 뷰가 ONLINE만 보는 것과 반대 방향(여기선 ONLINE 제외 토글).
+  const [offlineOnly, setOfflineOnly] = useState(() => saved.offlineOnly ?? false);
 
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [showRefundModal, setShowRefundModal] = useState(false);
@@ -267,14 +297,14 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
         subView, listSort, receiptStatusFilter, approvalStatusFilter,
         includeCancelled, showAdvanced, consultSearch, productSearch,
         orderOptionSearch, recipientSearch, addressSearch, handlerFilter, shipFromFilter,
-        hideReceived,
+        hideReceived, offlineOnly,
       };
       localStorage.setItem('salesList.filters', JSON.stringify(payload));
     } catch {}
   }, [period, startDate, endDate, search, branchFilter, paymentFilter, statusFilter,
       subView, listSort, receiptStatusFilter, approvalStatusFilter, includeCancelled,
       showAdvanced, consultSearch, productSearch, orderOptionSearch, recipientSearch, hideReceived,
-      addressSearch, handlerFilter, shipFromFilter]);
+      addressSearch, handlerFilter, shipFromFilter, offlineOnly]);
 
   // 초기 — 지점·직원 목록
   useEffect(() => {
@@ -562,6 +592,8 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
     const addrQ = addressSearch.trim().toLowerCase();
 
     return orders.filter(o => {
+      // 오프라인 매장만 — 온라인몰(ONLINE) 제외(#48 P3). NULL/STORE 등은 유지(클라 필터가 안전).
+      if (offlineOnly && o.channel === 'ONLINE') return false;
       // 기본 검색
       if (mainQ) {
         const hit =
@@ -610,7 +642,7 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
       }
       return true;
     });
-  }, [orders, search, productSearch, orderOptionSearch, recipientSearch, addressSearch]);
+  }, [orders, search, productSearch, orderOptionSearch, recipientSearch, addressSearch, offlineOnly]);
 
   // 수령 상태별 그룹 (listSort==='receipt' 렌더용). 수령 업무 흐름 기준 정렬.
   //   1차: 수령 상태 — 방문예정 → 퀵예정 → 택배예정 → 수령완료 → 기타
@@ -746,8 +778,8 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
                       </div>
                     </td>
                     <td className="whitespace-nowrap align-top">
-                      <span className={`badge text-[10px] ${RECEIPT_STATUS_BADGE[receiptKey] || 'bg-slate-100 text-slate-600'}`}>
-                        {receiptStatusLabelFor(o.receipt_status, (o.shipments?.length ?? 0) > 0)}
+                      <span className={`badge text-[10px] ${displayStatusBadge(o, receiptKey)}`}>
+                        {displayStatusLabel(o)}
                       </span>
                       {o.receipt_date && <p className="text-[10px] text-slate-500 mt-0.5">{o.receipt_date}</p>}
                     </td>
@@ -916,7 +948,7 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
       const totalQty = (o.items || []).reduce((s, it) => s + (it.quantity || 0), 0);
       return [
         fmtDateKST(o.ordered_at),
-        receiptStatusLabelFor(o.receipt_status, (o.shipments?.length ?? 0) > 0),
+        displayStatusLabel(o),
         o.receipt_date || '',
         o.branch?.name || '',
         shipFromBranch,
@@ -1030,7 +1062,10 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
           {!isBranchUser && (
             <select value={branchFilter} onChange={e => setBranchFilter(e.target.value)} className="input text-sm py-1 w-36">
               <option value="">전체 매출처</option>
-              {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+              {/* 콤보 옵션은 활성 지점만(#48 C). 단, 이미 선택된 비활성 지점은 누락되지 않게 유지. */}
+              {branches
+                .filter(b => (b as any).is_active !== false || b.id === branchFilter)
+                .map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
           )}
           <select value={paymentFilter} onChange={e => setPaymentFilter(e.target.value)} className="input text-sm py-1 w-28">
@@ -1258,6 +1293,21 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
                 {hideReceived && <span className="block text-amber-500 text-[10px] leading-3 text-center">✓</span>}
               </span>
               미결 건만 보기
+            </button>
+            {/* 오프라인 매장만 — 온라인몰 주문 숨김(#48 P3). '온라인몰' 뷰와는 반대 방향(ONLINE 제외). */}
+            <button
+              onClick={() => setOfflineOnly(v => !v)}
+              title="체크 시 온라인몰(자사몰) 주문을 숨기고 오프라인 매장 매출만 표시합니다"
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition-colors ${
+                offlineOnly
+                  ? 'bg-amber-500 text-white border-amber-500'
+                  : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              <span className={`inline-block w-3 h-3 rounded-sm border ${offlineOnly ? 'bg-white border-white' : 'border-slate-300'}`}>
+                {offlineOnly && <span className="block text-amber-500 text-[10px] leading-3 text-center">✓</span>}
+              </span>
+              오프라인 매장만
             </button>
           </div>
           <button onClick={() => { setRefundOrderNumber(null); setShowRefundModal(true); }}

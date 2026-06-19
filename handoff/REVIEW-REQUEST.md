@@ -1,27 +1,34 @@
-# Review Request — #48 Phase 2b: 카페24 취소 시 연결배송 처리 + 부분환불 정책 명문화
+# Review Request — #48 Phase 3 (택배 상태표시 + 오프라인 매장만 + 매출처 콤보 활성필터)
 Date: 2026-06-19
 Ready for Review: YES
 
-## 빌드 요약
-카페24 취소 webhook(사후통보) 수신 시 2a backfill로 연결된 shipment 정리: 미발송(PENDING/PRINTED)만 삭제, 발송완료(SHIPPED/DELIVERED)는 보존+경고로그. **배송처리만 추가** — Phase 1 재고복원·역분개 무수정. 부분환불 자동복원 영구불가 명문화.
+> 표시/필터 레이어만. mutation·재무·재고·forward sync·기존 인라인 shipments update 0줄 변경.
+> 모든 변경 단일 파일: `src/app/(dashboard)/pos/SalesListTab.tsx`
 
 ## Files Changed
-- `src/lib/shipping-actions.ts:305-360` — 신규 export `voidUnshippedShipmentsForOrder(db, {salesOrderId, cafe24OrderId?})`. sales_order_id 우선·cafe24_order_id 폴백 조회(voidShipmentsForOrder 패턴 복제). SHIPPED/DELIVERED 보존(preservedIds), PENDING/PRINTED만 delete().in('id', unshippedIds). 0건 no-op·멱등. **차단개념 없음**(Phase 1과 핵심 차이).
-- `src/lib/cafe24/webhook.ts` (handleOrderCancelled) — select에 `cafe24_order_id` 추가. 재고복원①·역분개② **이후** 별도 try블록 ③에서 위 함수 1회 호출, preservedShipped>0 시 `order_cancelled_shipment_preserved` 경고로그. 순환참조(shipping-actions.ts L7 → webhook.ts confirmCafe24OrderAsSale) 회피 위해 **동적 import**.
-- `src/lib/cafe24/webhook.ts` (handleOrderRefunded L875 영역) — 부분환불 주석 강화(per-line 복원 영구불가·수동조정). 재고 skip 로직 **무변경**.
-- `src/lib/ai/schema.ts` (BUSINESS_RULES) — 취소 webhook 배송정리 + 부분환불 수동조정 정책 2줄 추가.
+- SalesListTab.tsx:115-141 — `SHIPMENT_STATUS_LABEL`/`SHIPMENT_STATUS_BADGE` 맵 신설(택배관리 page.tsx L109 라벨 일치) + 헬퍼 `displayStatusLabel(o)`(택배=shipment.status, NULL폴백 receiptStatusLabelFor) + `displayStatusBadge(o, receiptKey)`.
+- SalesListTab.tsx:~191 — PersistedFilters 인터페이스에 `offlineOnly: boolean` 추가.
+- SalesListTab.tsx:~252 — `offlineOnly` state(saved 복원) + '온라인몰 뷰와 반대방향' 주석.
+- SalesListTab.tsx:~289 — 저장 payload + deps 배열에 `offlineOnly` 추가(localStorage 영속).
+- SalesListTab.tsx:~589 — `filtered` memo 최상단 `offlineOnly && o.channel==='ONLINE' → 제외`(클라 필터) + memo deps에 offlineOnly.
+- SalesListTab.tsx:~778 — 행 상태 표시를 `displayStatusBadge`/`displayStatusLabel`로 교체.
+- SalesListTab.tsx:~948 — CSV 수령현황 열을 `displayStatusLabel`로 교체(행과 일관).
+- SalesListTab.tsx:~1065 — 매출처 콤보 옵션 `is_active!==false || id===branchFilter`로 활성필터(선택된 비활성 지점 유지).
+- SalesListTab.tsx:~1290 — '오프라인 매장만' 토글 버튼('미결 건만 보기' 옆, 동일 패턴).
 
-## 집중 검증 요청 (브리프 "되돌릴 수 없음")
-1. **shipments.delete() 안전성**: `unshippedIds` 필터가 정확히 PENDING/PRINTED만(=SHIPPED/DELIVERED 제외)인지 — shipping-actions.ts:351-354. 발송된 배송기록 비가역 소실 방지.
-2. **Phase 1 무간섭**: 배송정리 ③이 restoreOnlineOrderInventory①/createSaleJournal② 중복호출·간섭 없는지(별도 try·이후 위치).
-3. **순환참조 동적 import 타당성**: shipping-actions.ts가 webhook.ts(confirmCafe24OrderAsSale, L7)를 정적 import → webhook.ts→shipping-actions 정적 불가 판단. 빌드 0 error.
-4. **멱등**: already-cancelled 가드(L774) 선행 + 대상 0건 no-op → 이중삭제·이중로그 없음.
-5. **부분환불 재고 무변경**: 주석/schema만, 복원로직 추가 안 함 확인.
+(라인은 편집 누적으로 ±수 줄 이동 가능 — diff 기준 확인)
 
-## 부분환불 UI 식별동선
-**존재 확인** — SalesListTab.tsx에 PARTIALLY_REFUNDED 한글 라벨('부분환불', L86)·상태배지(L92)·필터 드롭다운(L1044) 이미 노출. 추가 UI 작업 없음(Known Gap 아님).
+## 중점 점검 (브리프 Acceptance 대응)
+- 택배 건: 행/CSV가 shipment.status 라벨로 표시되는가. shipment.status NULL인 택배 건 → 빈칸 없이 receipt 라벨 폴백되는가.
+- 방문/퀵/직접(shipment 없음): 기존 수령상태 라벨 무변경인가.
+- 행 라벨 vs CSV 라벨 일치(둘 다 displayStatusLabel).
+- offlineOnly: channel='ONLINE' 숨김, 해제 시 전체, 새로고침 후 영속(payload+deps+복원 3곳 모두).
+- 수령상태순 그룹/정렬(receiptGroups): 내부 receipt_status 버킷 그대로 — 표시 라벨 변경이 그룹핑 회귀 없음 확인.
+- 매출처 콤보: 활성 지점만 노출 + 이미 선택된 비활성 지점은 누락 안 됨.
 
-## Out of Scope (BUILD-LOG 기록)
-- 전체환불(REFUNDED) webhook 시 연결배송 정리 — 본 스텝은 취소(cancelled)만.
-- 부분환불 per-line 재고복원 자동화 — 데이터 부재로 영구 불가.
-- 발송완료 후 취소 보존 shipment의 별도 status/플래그/대시보드 — 로그경고로만.
+## Open Questions
+- 택배 상태 배지 색: PENDING=강조(amber), PRINTED/SHIPPED=진행(blue), DELIVERED=회색(종결)로 단순 매핑. 과한 디자인 회피 의도 — 톤 적절성만 확인 부탁.
+
+## Out of Scope (logged in BUILD-LOG)
+- 역방향 sync 정식화(syncShipmentFromReceipt) — 방향 재정의로 비범위 확정.
+- 부분환불 per-line 재고복원 — 데이터 부재(영구).
