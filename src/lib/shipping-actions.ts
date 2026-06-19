@@ -303,6 +303,56 @@ export async function voidShipmentsForOrder(
 }
 
 /**
+ * webhook 전용 연결배송 정리 — 카페24 사후통보(주문취소)용 (#48 Phase 2b).
+ *
+ * Phase 1 voidShipmentsForOrder(STORE 취소 차단형, all-or-nothing)와 **별개**:
+ *   - webhook은 사후통보 — 이미 취소된 주문이라 "취소 차단" 개념 없음. 부분처리한다.
+ *   - 미발송(PENDING/PRINTED) 연결건 → 삭제.
+ *   - 발송완료(SHIPPED/DELIVERED) 연결건 → **삭제 절대 금지**(물건 이미 나감). 보존 + 호출자가 경고로그.
+ *   - 발송분이 섞여 있어도 미발송분은 그대로 삭제(blocked 없음). 이게 Phase 1과의 핵심 차이.
+ *   - 0건 → no-op { deleted:0, preservedShipped:0, preservedIds:[] }. 멱등(재호출·이미삭제 안전).
+ *
+ * @param db createClient() 기반 클라이언트(호출자가 보유한 클라이언트 재사용)
+ */
+export async function voidUnshippedShipmentsForOrder(
+  db: any,
+  params: { salesOrderId: string; cafe24OrderId?: string | null }
+): Promise<{ deleted: number; preservedShipped: number; preservedIds: string[] }> {
+  // 연결 shipment 다건 조회 — sales_order_id 우선
+  let shipments: { id: string; status: string }[] = [];
+  const { data: bySo } = await db
+    .from('shipments')
+    .select('id, status')
+    .eq('sales_order_id', params.salesOrderId);
+  shipments = (bySo ?? []) as { id: string; status: string }[];
+
+  // sales_order_id로 0건이고 cafe24_order_id 있으면 폴백 조회
+  if (shipments.length === 0 && params.cafe24OrderId) {
+    const { data: byCafe24 } = await db
+      .from('shipments')
+      .select('id, status')
+      .eq('cafe24_order_id', params.cafe24OrderId);
+    shipments = (byCafe24 ?? []) as { id: string; status: string }[];
+  }
+
+  if (shipments.length === 0) return { deleted: 0, preservedShipped: 0, preservedIds: [] };
+
+  // 발송완료(SHIPPED/DELIVERED)는 보존, 그 외(PENDING/PRINTED)만 삭제대상
+  const preservedIds = shipments
+    .filter((s) => s.status === 'SHIPPED' || s.status === 'DELIVERED')
+    .map((s) => s.id);
+  const unshippedIds = shipments
+    .filter((s) => s.status !== 'SHIPPED' && s.status !== 'DELIVERED')
+    .map((s) => s.id);
+
+  if (unshippedIds.length > 0) {
+    await db.from('shipments').delete().in('id', unshippedIds);
+  }
+
+  return { deleted: unshippedIds.length, preservedShipped: preservedIds.length, preservedIds };
+}
+
+/**
  * 판매현황 수령상태 일괄 변경 (#38)
  *
  * 여러 주문의 수령상태를 한 번에 수령·배송완료(RECEIVED)로 변경.

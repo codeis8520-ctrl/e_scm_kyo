@@ -762,7 +762,7 @@ async function handleOrderCancelled(
 ): Promise<{ success: boolean; message: string; orderId?: string }> {
   const { data: order } = await getSupabase()
     .from('sales_orders')
-    .select('id, order_number, status, total_amount, discount_amount, payment_method')
+    .select('id, order_number, status, total_amount, discount_amount, payment_method, cafe24_order_id')
     .eq('order_number', orderCode)
     .single();
 
@@ -811,6 +811,26 @@ async function handleOrderCancelled(
     } catch {
       // 역분개 실패는 경고만
     }
+  }
+
+  // ③ 연결 배송 정리(#48 Phase 2b): 미발송분 삭제, 발송완료분 보존+경고.
+  //    재고복원·역분개(①②, Phase 1)와 무관한 별도 try블록 — 중복·간섭 없음.
+  //    shipping-actions.ts가 webhook.ts(confirmCafe24OrderAsSale)를 import하므로 순환참조 회피 위해 동적 import.
+  try {
+    const { voidUnshippedShipmentsForOrder } = await import('@/lib/shipping-actions');
+    const r = await voidUnshippedShipmentsForOrder(getSupabase(), {
+      salesOrderId: order.id,
+      cafe24OrderId: order.cafe24_order_id ?? null,
+    });
+    if (r.preservedShipped > 0) {
+      // 운영자 수동확인 필요: 이미 발송된 건이 취소됨(배송기록은 보존)
+      await logSyncEvent('order_cancelled_shipment_preserved', orderCode,
+        { preservedShipped: r.preservedShipped, preservedIds: r.preservedIds, deleted: r.deleted },
+        'success');
+    }
+  } catch (e: any) {
+    // 배송정리 실패는 경고만 (취소 상태/재고복원 자체는 유지). 비가역 삭제 경로라 로그는 남긴다.
+    console.warn('[webhook] order_cancelled shipment cleanup failed:', e?.message ?? e);
   }
 
   await logSyncEvent('order_cancelled', orderCode, null, 'success');
@@ -872,7 +892,9 @@ async function handleOrderRefunded(
   }
 
   // ONLINE_SALE 차감재고 복원 — 전체환불(REFUNDED)일 때만 전량 복원(#48).
-  // 부분환불(PARTIALLY_REFUNDED)은 수량단위 복원 불명확 → 범위 밖(재고복원 skip).
+  // 부분환불(PARTIALLY_REFUNDED): 카페24 webhook은 refund_price 총액만 제공·품목/수량 부재로
+  // per-line 자동복원 **영구 불가**. 부분환불 건 재고는 운영자가 판매현황(상태='부분환불' 필터)에서
+  // 식별 후 재고조정(InventoryModal)으로 수동 처리. 마이그/플래그 신설 안 함.(#48 Phase 2b)
   if (!isPartial) {
     try {
       await restoreOnlineOrderInventory(getSupabase(), order.id, 'ONLINE_REFUND');
