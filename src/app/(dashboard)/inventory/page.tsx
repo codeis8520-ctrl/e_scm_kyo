@@ -541,14 +541,21 @@ export default function InventoryPage() {
           >
             + 자가 사용
           </button>
-          {isHQUser && (
-            <button
-              onClick={() => { setEditInventory(null); setShowModal(true); }}
-              className="text-sm rounded-lg px-4 py-2 font-medium bg-red-600 text-white hover:bg-red-700"
-            >
-              ⚠ 강제 조정
-            </button>
-          )}
+          {/* #53: 비HQ에게도 버튼을 보이되 비활성+안내(권한 없음 명확화). 클릭 시 alert로 사유 표시. */}
+          <button
+            onClick={() => {
+              if (!isHQUser) { alert('강제 조정은 본사 권한(본부대표·HQ)만 가능합니다.\n일상 소모·오류 보정은 "자가 사용"을 이용하세요.'); return; }
+              setEditInventory(null); setShowModal(true);
+            }}
+            title={isHQUser ? '재고를 강제로 맞춥니다(실사·오류 보정 전용)' : '강제 조정은 본사 권한만 가능합니다'}
+            className={`text-sm rounded-lg px-4 py-2 font-medium ${
+              isHQUser
+                ? 'bg-red-600 text-white hover:bg-red-700'
+                : 'bg-slate-100 text-slate-400'
+            }`}
+          >
+            {isHQUser ? '⚠ 강제 조정' : '🔒 강제 조정 (본사 권한)'}
+          </button>
         </div>
       </div>
 
