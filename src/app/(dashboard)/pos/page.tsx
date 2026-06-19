@@ -176,6 +176,7 @@ interface Customer {
   grade: string;
   grade_point_rate?: number;
   currentPoints?: number;
+  _recipientMatch?: boolean;  // 서버 검색에서 발송지(수령자) 기준으로만 매칭된 결과 표시용
 }
 
 // 검색 키워드(콤마 토큰)를 노란 배경으로 하이라이팅 (고객목록과 동일 규칙).
@@ -243,6 +244,7 @@ function POSPageInner() {
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [customerSearch, setCustomerSearch] = useState('');
   const [customerResults, setCustomerResults] = useState<Customer[]>([]);
+  const customerSearchSeqRef = useRef(0);  // 고객검색 서버보강 최신요청 가드
   const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
   const [customerHighlightIdx, setCustomerHighlightIdx] = useState(0);
   const customerDropdownRef = useRef<HTMLDivElement>(null);
@@ -823,26 +825,50 @@ function POSPageInner() {
     });
   }, [paymentMethod]);
 
-  // 고객 검색 (로컬 필터) — 고객목록과 동일: 콤마(,) 구분 토큰 모두 만족(AND),
-  // 각 토큰은 이름/연락처/전화번호2/주소 중 하나라도 매칭.
+  // 고객 검색 (로컬 즉시 + 서버 수령자매칭 보강) — 고객목록과 동일: 콤마(,) 토큰 모두 만족(AND),
+  //   1) 로컬: 이름/연락처/전화번호2/주소 즉시 필터(빠른 반응).
+  //   2) 서버(/api/customers/search): 발송지(수령자) 기준 매칭까지 포함 → 로컬에 없던 고객 합침.
+  //      (담당자가 구매자는 모르고 수령자만 기억하는 경우 대응 — 고객 탭과 동일 동작)
   useEffect(() => {
     const tokens = customerSearch.split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
-    if (tokens.length >= 1) {
-      const matchTok = (c: Customer, tok: string) => {
-        const td = tok.replace(/-/g, '');
-        return c.name.toLowerCase().includes(tok)
-          || c.phone.replace(/-/g, '').includes(td)
-          || (!!c.phone2 && c.phone2.replace(/-/g, '').includes(td))
-          || (!!c.address && c.address.toLowerCase().includes(tok));
-      };
-      const results = customers.filter(c => tokens.every(tok => matchTok(c, tok)));
-      setCustomerResults(results.slice(0, 50));  // 최대 50건까지 노출 (스크롤 가능)
-      setShowCustomerDropdown(true);
-      setCustomerHighlightIdx(0);
-    } else {
+    if (tokens.length === 0) {
       setCustomerResults([]);
       setShowCustomerDropdown(false);
+      return;
     }
+    const matchTok = (c: Customer, tok: string) => {
+      const td = tok.replace(/-/g, '');
+      return c.name.toLowerCase().includes(tok)
+        || c.phone.replace(/-/g, '').includes(td)
+        || (!!c.phone2 && c.phone2.replace(/-/g, '').includes(td))
+        || (!!c.address && c.address.toLowerCase().includes(tok));
+    };
+    // 1) 로컬 즉시
+    const local = customers.filter(c => tokens.every(tok => matchTok(c, tok))).slice(0, 50);
+    setCustomerResults(local);
+    setShowCustomerDropdown(true);
+    setCustomerHighlightIdx(0);
+
+    // 2) 서버 보강 — 디바운스 + 최신 요청만 반영
+    const seq = ++customerSearchSeqRef.current;
+    const handle = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/customers/search?q=${encodeURIComponent(customerSearch.trim())}&limit=50&sort=name`);
+        if (!res.ok) return;
+        const d = await res.json();
+        if (seq !== customerSearchSeqRef.current) return; // 오래된 응답 무시
+        const localIds = new Set(local.map(c => c.id));
+        const serverOnly: Customer[] = (d.customers || [])
+          .filter((c: any) => !localIds.has(c.id))
+          .map((c: any) => ({
+            id: c.id, name: c.name, phone: c.phone || '',
+            phone2: c.phone2, address: c.address, grade: c.grade || 'NORMAL',
+            _recipientMatch: true,  // 로컬(이름/전화/주소) 미매칭인데 서버 매칭 = 발송지(수령자) 기준
+          }));
+        if (serverOnly.length) setCustomerResults(prev => [...prev, ...serverOnly].slice(0, 80));
+      } catch { /* 보강 실패는 로컬 결과 유지 */ }
+    }, 250);
+    return () => clearTimeout(handle);
   }, [customerSearch, customers]);
 
   // 드롭다운 하이라이트용 토큰
@@ -1841,6 +1867,9 @@ function POSPageInner() {
                           <span><Highlight text={c.name} terms={customerSearchTerms} /></span>
                           {(c as any).is_active === false && (
                             <span className="text-[10px] px-1 rounded bg-slate-200 text-slate-600">비활성</span>
+                          )}
+                          {c._recipientMatch && (
+                            <span className="text-[10px] px-1 rounded bg-amber-100 text-amber-700" title="검색어가 이 고객의 발송지(수령자)와 일치 — 구매자 본인 이름은 다를 수 있음">📦 수령자 매칭</span>
                           )}
                         </p>
                         <p className="text-xs text-slate-500">
