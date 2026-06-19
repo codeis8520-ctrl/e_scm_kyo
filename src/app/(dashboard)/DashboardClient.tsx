@@ -51,6 +51,14 @@ interface DashboardData {
   monthPurchaseTotal: number;
   monthReturnTotal: number;
   pendingPOCount: number;
+  unsettledTotal: number;
+  unsettledCount: number;
+  unshippedCount: number;
+  salesTrend: { date: string; total: number }[];
+  monthToDateTotal: number;
+  todayTotal: number;
+  yesterdayTotal: number;
+  branchRank: { branch_id: string; branch_name: string; total: number }[];
 }
 
 interface DetailOrder {
@@ -317,6 +325,149 @@ export default function DashboardClient() {
           </div>
         )}
       </div>
+
+      {/* [신규] 처리대상 액션 카드 4종 */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Link
+          href="/trade"
+          className={`stat-card block transition-all hover:ring-2 ${
+            data.unsettledCount > 0
+              ? 'bg-red-50 hover:ring-red-300'
+              : 'bg-slate-50 hover:ring-slate-200'
+          }`}
+        >
+          <p className="text-sm text-slate-500">미수금</p>
+          <p className={`text-2xl font-bold ${data.unsettledCount > 0 ? 'text-red-600' : 'text-slate-400'}`}>
+            {data.unsettledTotal.toLocaleString()}원
+          </p>
+          <p className="text-xs text-slate-400">{data.unsettledCount}건 · 거래관리 →</p>
+        </Link>
+
+        <Link
+          href="/shipping"
+          className={`stat-card block transition-all hover:ring-2 ${
+            data.unshippedCount > 0
+              ? 'bg-amber-50 hover:ring-amber-300'
+              : 'bg-slate-50 hover:ring-slate-200'
+          }`}
+        >
+          <p className="text-sm text-slate-500">미발송 택배</p>
+          <p className={`text-2xl font-bold ${data.unshippedCount > 0 ? 'text-amber-600' : 'text-slate-400'}`}>
+            {data.unshippedCount}건
+          </p>
+          <p className="text-xs text-slate-400">택배관리 →</p>
+        </Link>
+
+        <Link
+          href="/purchases"
+          className={`stat-card block transition-all hover:ring-2 ${
+            data.pendingPOCount > 0
+              ? 'bg-blue-50 hover:ring-blue-300'
+              : 'bg-slate-50 hover:ring-slate-200'
+          }`}
+        >
+          <p className="text-sm text-slate-500">발주 대기</p>
+          <p className={`text-2xl font-bold ${data.pendingPOCount > 0 ? 'text-blue-600' : 'text-slate-400'}`}>
+            {data.pendingPOCount}건
+          </p>
+          <p className="text-xs text-slate-400">구매 →</p>
+        </Link>
+
+        <Link
+          href="/inventory"
+          className={`stat-card block transition-all hover:ring-2 ${
+            data.lowInventory.length > 0
+              ? 'bg-orange-50 hover:ring-orange-300'
+              : 'bg-slate-50 hover:ring-slate-200'
+          }`}
+        >
+          <p className="text-sm text-slate-500">안전재고 미달</p>
+          <p className={`text-2xl font-bold ${data.lowInventory.length > 0 ? 'text-orange-600' : 'text-slate-400'}`}>
+            {data.lowInventory.length}건
+          </p>
+          <p className="text-xs text-slate-400">재고 →</p>
+        </Link>
+      </div>
+
+      {/* [신규] 오늘·어제·7일 매출 추이 (상단 기간필터와 무관 — 항상 today 기준) */}
+      <div className="card">
+        <h3 className="font-semibold text-slate-800 mb-4">오늘 매출 추이</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-end">
+          <div>
+            <p className="text-sm text-slate-500">오늘 매출</p>
+            <p className="text-3xl font-bold text-slate-800">
+              {data.todayTotal.toLocaleString()}원
+            </p>
+            {(() => {
+              if (data.yesterdayTotal === 0) {
+                return <p className="text-xs text-slate-400 mt-1">어제 대비 —</p>;
+              }
+              const pct = ((data.todayTotal - data.yesterdayTotal) / data.yesterdayTotal) * 100;
+              const up = pct >= 0;
+              return (
+                <p className={`text-xs mt-1 font-medium ${up ? 'text-red-600' : 'text-blue-600'}`}>
+                  {up ? '▲' : '▼'} {Math.abs(pct).toFixed(1)}% (어제 {data.yesterdayTotal.toLocaleString()}원)
+                </p>
+              );
+            })()}
+          </div>
+          <div>
+            <p className="text-sm text-slate-500">이번달 누적</p>
+            <p className="text-2xl font-bold text-indigo-600">
+              {data.monthToDateTotal.toLocaleString()}원
+            </p>
+          </div>
+          <div>
+            <p className="text-sm text-slate-500 mb-2">최근 7일</p>
+            {(() => {
+              const max = Math.max(...data.salesTrend.map((t) => t.total), 1);
+              return (
+                <div className="flex items-end gap-1 h-16">
+                  {data.salesTrend.map((t) => (
+                    <div
+                      key={t.date}
+                      className="flex-1 bg-indigo-200 rounded-t hover:bg-indigo-400 transition-colors"
+                      style={{ height: `${Math.max((t.total / max) * 100, 3)}%` }}
+                      title={`${t.date}: ${t.total.toLocaleString()}원`}
+                    />
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      </div>
+
+      {/* [신규] 지점별 매출 순위 (활성지점만, 지점 사용자에겐 숨김) */}
+      {!isBranchUser && data.branchRank.length > 0 && (
+        <div className="card">
+          <h3 className="font-semibold text-slate-800 mb-4">
+            지점별 매출 순위 <span className="text-xs font-normal text-slate-400">({data.periodStart} ~ {data.periodEnd})</span>
+          </h3>
+          <div className="space-y-3">
+            {(() => {
+              const max = Math.max(...data.branchRank.map((b) => b.total), 1);
+              return data.branchRank.map((b, i) => (
+                <div key={b.branch_id} className="flex items-center gap-3">
+                  <span className="w-5 text-xs text-slate-400 text-right">{i + 1}</span>
+                  <span className="w-24 text-sm text-slate-700 truncate" title={b.branch_name}>
+                    {b.branch_name}
+                  </span>
+                  <div className="flex-1 bg-slate-100 rounded-full h-5 overflow-hidden">
+                    <div
+                      className="bg-indigo-500 h-5 rounded-full"
+                      style={{ width: `${Math.max((b.total / max) * 100, 2)}%` }}
+                    />
+                  </div>
+                  <span className="w-28 text-sm font-medium text-slate-800 text-right">
+                    {b.total.toLocaleString()}원
+                  </span>
+                </div>
+              ));
+            })()}
+          </div>
+        </div>
+      )}
 
       {/* 요약 카드 */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">

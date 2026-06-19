@@ -1,25 +1,18 @@
-# Review Request — #51 재고현황 클릭 기본 '자가 사용' · '강제 조정' 분리
+# Review Request — 대시보드 본부대표용 실용 개선 3종
 Date: 2026-06-19
 Ready for Review: YES
 
 ## Files Changed
-- src/app/(dashboard)/inventory/StockUsageModal.tsx:22-29,38-65 — `defaultProductId?` prop 추가 + rows useState 초기화 시 클릭 제품 1행(qty 1) 자동 생성. branchLocked·다건·정수제약 무변경.
-- src/app/(dashboard)/inventory/page.tsx:90-91 — usagePreselect 상태 추가.
-- src/app/(dashboard)/inventory/page.tsx:286-301 — handleAdjust 주석(상단버튼 전용) + handleUsageClick 신설.
-- src/app/(dashboard)/inventory/page.tsx:529-543 — 상단 버튼: '+ 자가 사용'(btn-primary) + '⚠ 강제 조정'(bg-red-600, isHQUser).
-- src/app/(dashboard)/inventory/page.tsx:783-818 — 데스크톱 매트릭스 셀: usageBlocked RBAC + handleUsageClick + title 분기. (구 adjustBlocked/handleAdjust 제거)
-- src/app/(dashboard)/inventory/page.tsx:828-830 — 데스크톱 힌트 문구 갱신.
-- src/app/(dashboard)/inventory/page.tsx:879-940 — flat(지점별) 관리열: usageBlocked + '자가 사용'(파랑)·'⚠ 강제 조정'(빨강) 2버튼.
-- src/app/(dashboard)/inventory/page.tsx:971-984 — StockUsageModal 마운트에 defaultProductId/defaultBranchId 전달 + onClose/onSuccess usagePreselect 초기화.
-- src/app/(dashboard)/inventory/InventoryModal.tsx:170-180 — 제목 '⚠ 강제 조정' + red 경고 배너(로직 무변경).
-- src/lib/ai/schema.ts:172-173 — 자가사용(지점직원 자기지점)·강제조정(본사 전용) 접근규칙 보강.
+- src/app/api/dashboard/route.ts — netAmount() #18 헬퍼 추가; 기존 periodSales/channelSales/online 쿼리 select에 discount_amount 추가; 추이/MTD용 KST 날짜 범위 계산(trendStart 6일 전, monthStart, 항상 today 고정); Promise.all에 신규 쿼리 5종(미수금/미발송/추이7일/이번달누적/지점순위) 병렬 추가; 기존 periodTotal/channelSales/onlineAmount 합산을 netAmount(#18)로 정정; 신규 결과 후처리(7일 KST 버킷팅, today/yesterday, MTD, 활성지점 join+desc); 신규 8필드 반환(기존 필드 전부 보존).
+- src/app/(dashboard)/DashboardClient.tsx — DashboardData 인터페이스 8필드 추가; 액션카드 4종 + 매출추이 + 지점순위 3섹션 신규(기존 요약카드 grid 위). 이하 기존 섹션/모달 무변경.
 
-## RBAC 적용
-- usageBlocked = materialBlocked || (isBranchUser && 셀지점≠본인지점) || 현재고≤0. 데스크톱 셀·flat 행 동일.
-- 강제 조정(handleAdjust/InventoryModal)은 isHQUser 전용 유지, 셀에서 분리.
+## 확정 결정 반영 (브리프 플래그 오버라이드)
+- 브리프는 #18 적용을 신규 쿼리로 한정(기존 periodTotal/onlineAmount/channelSales 동결, Known Gap)했으나 **PO 확정 결정으로 기존 매출 합산도 #18로 정정**. 대시보드 숫자가 할인분만큼 소폭 하향 — 의도된 정정(판매현황/매출관리와 일치).
 
 ## Open Questions
-- 본사용 StockUsageModal에 branches 전체 목록 전달(잠금되므로 무방). 클릭 지점만 필터링하는 편이 나은지 — 현재는 전체.
+- 7일 추이 막대: total=0인 날도 최소 height 3%로 시각화(완전 빈 막대 회피). 의도 확인 바람.
+- 미수금 카드는 sales_orders approval_status='UNSETTLED'만 — b2b_sales_orders 미수금 미포함(BUILD-LOG Gap). 본부대표 미수금에 B2B 포함 필요 여부 판단 요청.
 
 ## Out of Scope (logged in BUILD-LOG)
-- 소수재고 제품 자가사용 소수 수량 입력(현행 정수≥1만). 별도 요청 필요.
+- 액션카드 deep-link 쿼리파라미터(/trade?tab=credit 등) — 페이지 미지원, 단순 이동만.
+- branch_sales_summary RPC(legacy 통합) 미연계 — 순위는 신규 sales_orders만.

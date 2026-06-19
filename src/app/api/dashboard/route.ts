@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createClient } from '@/lib/supabase/server';
-import { kstDayStart, kstDayEnd, kstTodayString } from '@/lib/date';
+import { kstDayStart, kstDayEnd, kstTodayString, kstMonthStart, fmtDateKST } from '@/lib/date';
+
+// 매출 규약 #18: 매출 = total_amount − COALESCE(discount_amount, 0) (schema.ts L65)
+function netAmount(row: { total_amount?: number | null; discount_amount?: number | null }): number {
+  return (row.total_amount || 0) - (row.discount_amount || 0);
+}
 
 interface ChannelSales {
   channel: string;
@@ -85,7 +90,7 @@ export async function GET(request: NextRequest) {
 
   let periodSalesQuery = supabase
     .from('sales_orders')
-    .select('total_amount, channel, cafe24_order_id, created_at')
+    .select('total_amount, discount_amount, channel, cafe24_order_id, created_at')
     .in('status', SALES_STATUSES)
     .gte('ordered_at', periodStartISO)
     .lte('ordered_at', periodEndISO);
@@ -114,6 +119,17 @@ export async function GET(request: NextRequest) {
     recentOrdersQuery = recentOrdersQuery.eq('branch_id', branchId);
   }
 
+  // 매출 추이 섹션은 상단 기간필터와 독립 — 항상 KST '오늘' 기준.
+  const todayKst = kstTodayString();
+  const trendStartDate = (() => {
+    const d = new Date(todayKst + 'T00:00:00+09:00');
+    d.setDate(d.getDate() - 6);
+    return fmtDateKST(d); // 오늘 포함 7일 전 시작일 (YYYY-MM-DD, KST)
+  })();
+  const trendStartISO = kstDayStart(trendStartDate);
+  const trendEndISO = kstDayEnd(todayKst);
+  const monthStartISO = kstMonthStart(todayKst);
+
   const B2B_STATUSES = ['DELIVERED', 'PARTIALLY_SETTLED', 'SETTLED'];
 
   let b2bPeriodQuery = supabase
@@ -138,12 +154,17 @@ export async function GET(request: NextRequest) {
     monthReturnResult,
     pendingPOResult,
     b2bPeriodResult,
+    unsettledResult,
+    unshippedResult,
+    trendResult,
+    monthToDateResult,
+    branchRankResult,
   ] = await Promise.all([
     periodSalesQuery,
     (() => {
       let q = supabase
         .from('sales_orders')
-        .select('channel, total_amount')
+        .select('channel, total_amount, discount_amount')
         .in('status', SALES_STATUSES)
         .gte('ordered_at', periodStartISO)
         .lte('ordered_at', periodEndISO);
@@ -172,7 +193,7 @@ export async function GET(request: NextRequest) {
     (() => {
       let q = supabase
         .from('sales_orders')
-        .select('total_amount')
+        .select('total_amount, discount_amount')
         .eq('channel', 'ONLINE')
         .in('status', SALES_STATUSES)
         .gte('ordered_at', periodStartISO)
@@ -209,9 +230,63 @@ export async function GET(request: NextRequest) {
       return q;
     })(),
     b2bPeriodQuery,
+    // A1. 미수금 (approval_status=UNSETTLED). 취소/환불 주문은 제외 — 취소는 status만 바꾸고
+    //     approval_status는 UNSETTLED로 남으므로 status 필터 없으면 미수금 과대계상(판매현황 규약과 일치).
+    (() => {
+      let q = supabase
+        .from('sales_orders')
+        .select('total_amount, discount_amount')
+        .eq('approval_status', 'UNSETTLED')
+        .not('status', 'in', '(CANCELLED,REFUNDED)');
+      if (branchId && branchId !== 'ALL') q = q.eq('branch_id', branchId);
+      return q;
+    })(),
+    // A2. 미발송 택배 (shipments.branch_id = 출고지점)
+    (() => {
+      let q = supabase
+        .from('shipments')
+        .select('id', { count: 'exact', head: true })
+        .in('status', ['PENDING', 'PRINTED']);
+      // 지점 사용자: 자기 출고지점만 (NULL 카페24 건 제외). 본사: 전체.
+      if (branchId && branchId !== 'ALL') q = q.eq('branch_id', branchId);
+      return q;
+    })(),
+    // A4. 7일 매출 추이 (단일 쿼리, JS에서 KST 일자 버킷팅)
+    (() => {
+      let q = supabase
+        .from('sales_orders')
+        .select('total_amount, discount_amount, ordered_at')
+        .in('status', SALES_STATUSES)
+        .gte('ordered_at', trendStartISO)
+        .lte('ordered_at', trendEndISO);
+      if (branchId && branchId !== 'ALL') q = q.eq('branch_id', branchId);
+      return q;
+    })(),
+    // A4. 이번달 누적 (today 고정 — 기간필터와 독립)
+    (() => {
+      let q = supabase
+        .from('sales_orders')
+        .select('total_amount, discount_amount')
+        .in('status', SALES_STATUSES)
+        .gte('ordered_at', monthStartISO)
+        .lte('ordered_at', trendEndISO);
+      if (branchId && branchId !== 'ALL') q = q.eq('branch_id', branchId);
+      return q;
+    })(),
+    // A5. 지점별 기간 매출 순위 (전 지점 비교 — branchId 미적용. 단 지점 사용자는 자기지점만)
+    (() => {
+      let q = supabase
+        .from('sales_orders')
+        .select('branch_id, total_amount, discount_amount')
+        .in('status', SALES_STATUSES)
+        .gte('ordered_at', periodStartISO)
+        .lte('ordered_at', periodEndISO);
+      if (isBranchUser && userBranchId) q = q.eq('branch_id', userBranchId);
+      return q;
+    })(),
   ]);
 
-  const periodSales = (periodSalesResult.data || []) as { total_amount: number }[];
+  const periodSales = (periodSalesResult.data || []) as { total_amount: number; discount_amount: number | null }[];
   const channelSalesRaw = channelSalesResult.data || [];
   const recentOrders = recentOrdersResult.data || [];
   const lowInventory = (lowInventoryResult.data || []) as any[];
@@ -230,7 +305,7 @@ export async function GET(request: NextRequest) {
       const chData = channelSalesRaw.filter((s: any) => s.channel === ch);
       return {
         channel: ch,
-        total: chData.reduce((sum: number, s: any) => sum + (s.total_amount || 0), 0),
+        total: chData.reduce((sum: number, s: any) => sum + netAmount(s), 0),
         count: chData.length,
       };
     })
@@ -283,9 +358,55 @@ export async function GET(request: NextRequest) {
   }));
 
   const includeB2B = !channel || channel === 'ALL' || channel === 'B2B';
-  const periodTotal = periodSales.reduce((sum, o) => sum + (o.total_amount || 0), 0) + (includeB2B ? b2bPeriodTotal : 0);
+  const periodTotal = periodSales.reduce((sum, o) => sum + netAmount(o), 0) + (includeB2B ? b2bPeriodTotal : 0);
   const periodCount = periodSales.length + (includeB2B ? b2bPeriodCount : 0);
-  const onlineAmount = onlineOrders.reduce((sum: number, o: any) => sum + (o.total_amount || 0), 0);
+  const onlineAmount = onlineOrders.reduce((sum: number, o: any) => sum + netAmount(o), 0);
+
+  // A1. 미수금 (#18)
+  const unsettledRows = (unsettledResult.data || []) as { total_amount: number; discount_amount: number | null }[];
+  const unsettledTotal = unsettledRows.reduce((s, o) => s + netAmount(o), 0);
+  const unsettledCount = unsettledRows.length;
+
+  // A2. 미발송 택배
+  const unshippedCount = unshippedResult.count ?? 0;
+
+  // A4. 7일 매출 추이 — KST 일자 버킷팅
+  const trendRows = (trendResult.data || []) as { total_amount: number; discount_amount: number | null; ordered_at: string }[];
+  const trendBuckets = new Map<string, number>();
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(trendStartDate + 'T00:00:00+09:00');
+    d.setDate(d.getDate() + i);
+    trendBuckets.set(fmtDateKST(d), 0);
+  }
+  for (const row of trendRows) {
+    const key = fmtDateKST(row.ordered_at);
+    if (trendBuckets.has(key)) {
+      trendBuckets.set(key, trendBuckets.get(key)! + netAmount(row));
+    }
+  }
+  const salesTrend = Array.from(trendBuckets.entries()).map(([date, total]) => ({ date, total }));
+  const todayTotal = trendBuckets.get(todayKst) ?? 0;
+  const yesterdayDate = (() => {
+    const d = new Date(todayKst + 'T00:00:00+09:00');
+    d.setDate(d.getDate() - 1);
+    return fmtDateKST(d);
+  })();
+  const yesterdayTotal = trendBuckets.get(yesterdayDate) ?? 0;
+
+  const monthToDateRows = (monthToDateResult.data || []) as { total_amount: number; discount_amount: number | null }[];
+  const monthToDateTotal = monthToDateRows.reduce((s, o) => s + netAmount(o), 0);
+
+  // A5. 지점별 매출 순위 (활성지점만, #18, desc)
+  const branchRankRows = (branchRankResult.data || []) as { branch_id: string | null; total_amount: number; discount_amount: number | null }[];
+  const branchRankMap = new Map<string, number>();
+  for (const row of branchRankRows) {
+    if (!row.branch_id) continue;
+    branchRankMap.set(row.branch_id, (branchRankMap.get(row.branch_id) || 0) + netAmount(row));
+  }
+  const branchRank = branches
+    .filter((b) => branchRankMap.has(b.id))
+    .map((b) => ({ branch_id: b.id, branch_name: b.name, total: branchRankMap.get(b.id)! }))
+    .sort((a, b) => b.total - a.total);
 
   return NextResponse.json({
     periodTotal,
@@ -301,5 +422,13 @@ export async function GET(request: NextRequest) {
     monthPurchaseTotal,
     monthReturnTotal,
     pendingPOCount,
+    unsettledTotal,
+    unsettledCount,
+    unshippedCount,
+    salesTrend,
+    monthToDateTotal,
+    todayTotal,
+    yesterdayTotal,
+    branchRank,
   });
 }

@@ -1,3 +1,30 @@
+# BUILD-LOG — 대시보드 본부대표용 실용 개선 3종 (액션카드·매출추이·지점순위)
+
+## 🔨 빌드완료 (리뷰대기) — 2026-06-19
+본부대표 대시보드에 (1) 처리대상 액션 카드 4종, (2) 오늘/어제/7일 매출 추이, (3) 활성 지점별 매출 순위 막대 추가. 기존 화면 무손상(추가만). **PO 확정 결정 반영: 브리프의 #18 적용범위 한정(기존 필드 동결) 플래그를 오버라이드 — periodTotal·onlineAmount·channelSales 기존 매출 합산도 #18(total_amount − COALESCE(discount_amount,0))로 정정해 대시보드를 판매현황/매출관리와 일치시킴.**
+
+### Bob 빌드 결과
+- **route.ts**: `netAmount()` 헬퍼 추가(#18). 기존 periodSales/channelSales/onlineAmount 합산을 raw total_amount → netAmount(#18)로 정정 + 각 쿼리 select에 discount_amount 추가. 신규 쿼리 5종 전부 기존 Promise.all에 병렬 추가:
+  - A1 미수금: sales_orders approval_status='UNSETTLED'(status 무관) → unsettledTotal(#18)/unsettledCount.
+  - A2 미발송: shipments status IN(PENDING,PRINTED) count head. 지점사용자 .eq(branch_id)(=출고지점, NULL 카페24 제외), 본사 전체 → unshippedCount.
+  - A4 추이: 7일 1쿼리(trendStart~today, KST 경계) → JS fmtDateKST 7버킷 #18 합산. monthToDate 독립쿼리(이번달1일~today). 상단 기간필터와 독립(항상 today) → salesTrend/monthToDateTotal/todayTotal/yesterdayTotal.
+  - A5 지점순위: sales_orders 기간(상단 기간필터 반영) branch_id별 #18 합 → 활성 branches(is_active=true, 기존 branchesResult)와 join, desc. branchId 미적용(전지점 비교)이나 isBranchUser면 자기지점만 → branchRank.
+- **DashboardClient.tsx**: DashboardData에 8필드 추가. 액션카드 grid(grid-cols-2 md:grid-cols-4, next/link, 0건 회색·>0 색강조 red/amber/blue/orange) → 매출추이 card(오늘 큰숫자+어제대비%▲red/▼blue/—, 이번달누적, 7일 div 막대 차트라이브러리 없음) → 지점순위 card(가로 막대, isBranchUser면 섹션 숨김). 모두 기존 요약카드 grid 위에 삽입, 이하 기존 섹션 무변경.
+
+### 결정 (확정 반영)
+- #18 통일 범위 확장: 기존 매출 카드도 정정(할인분만큼 소폭 하향 = 의도된 정정). 브리프 Known Gap이던 항목을 이번 스텝에 흡수.
+- RBAC: 지점사용자 미수금·미발송·추이 자기지점만, 지점순위 섹션 숨김. 활성지점만 순위 노출.
+- 링크 단순 페이지이동(/trade,/shipping,/purchases,/inventory) — URL param deep-link 미지원(아래 Gap).
+- DB/마이그/AI schema 무변경(대시보드 화면 전용, 매트릭스 해당없음).
+- npm run build 0 error.
+
+### Known Gap
+- 액션카드 deep-link 쿼리파라미터(/trade?tab=credit 등) — 대상 페이지 URL param 미지원, 단순 이동만.
+- branch_sales_summary RPC(legacy 통합) 미연계 — 지점순위는 신규 sales_orders만 집계(legacy 제외).
+- 미수금 카드는 신규 sales_orders 채널만(b2b_sales_orders 미수금 미포함) — 필요 시 별도.
+
+---
+
 # BUILD-LOG — #51 재고현황 클릭 기본 '자가 사용' · '강제 조정' 분리
 
 ## 🔨 빌드완료 (리뷰대기) — 2026-06-19

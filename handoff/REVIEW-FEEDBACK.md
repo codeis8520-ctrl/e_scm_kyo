@@ -1,16 +1,16 @@
-# Review Feedback — Step #51
+# Review Feedback — 대시보드 본부대표용 실용 개선 3종
 Date: 2026-06-19
 Ready for Builder: NO
 
 ## Must Fix
-- src/lib/actions.ts:1130 (recordStockUsage) — **서버측 지점 권한 검증 부재.** #51은 지점직원(BRANCH_STAFF/PHARMACY_STAFF)을 재고 mutation 진입점(recordStockUsage)에 새로 연결한다(브리프: "지점직원 권한 확대"). 그런데 이 액션은 `requireSession()`도, 호출자 지점과 `input.branch_id` 일치 검증도 전혀 없다. 현재 "지점직원은 자기 지점만"은 UI(branches 필터 + 셀 disable)에만 존재 → 지점직원이 액션을 직접 호출해 임의 `branch_id`로 타 지점 재고를 차감(음수 가능)할 수 있다. UI 게이트는 보안 통제가 아니다.
-  - **How to fix**: recordStockUsage 진입부에 `requireSession()` 추가 후, 이미 존재하는 패턴 `assertFromBranchOwnership(session, input.branch_id)`(actions.ts:1226)를 재사용해 거부. 같은 helper가 transfer에서 정확히 이 규칙(HQ급은 자유, 지점고정은 본인 지점만, branch_id 없으면 거부)을 강제하므로 새 로직 작성 금지·재사용. 비HQ가 타 지점 branch_id를 넘기면 `{ error }` 반환.
+- src/app/api/dashboard/route.ts:234-241 (미수금 카드 쿼리) — 미수금 합산이 `approval_status='UNSETTLED'`만 필터하고 `status`를 전혀 거르지 않는다. 취소(`sales-cancel-actions.ts:195-198`)는 `status='CANCELLED'`만 세팅하고 `approval_status`를 리셋하지 않으므로, UNSETTLED 상태의 credit/cod 주문이 취소되면 `approval_status='UNSETTLED'`가 그대로 남아 대시보드 미수금 총액·건수에 계속 포함된다. 기존 판매현황(`SalesListTab.tsx:372`)은 기본으로 `status not in (CANCELLED, REFUNDED)`를 적용하므로 두 화면의 미수금이 어긋난다(돈 숫자 과대계상). 수정: 미수금 쿼리에 `.not('status', 'in', '(CANCELLED,REFUNDED)')`를 추가해 판매현황과 동일 규약으로 맞출 것.
 
 ## Should Fix
-- (없음)
+(없음)
 
 ## Escalate to Architect
-- (없음) — ADJUST 경로는 adjustInventory(actions.ts:1029)에서 SUPER_ADMIN/HQ_OPERATOR 서버 검증이 이미 있어 의도대로 본사 전용이며 권한 확대 아님. 제품 결정 불요.
+- (a) 7일 추이 0원인 날 최소 height 3% — 빈 막대 회피 목적의 시각화 선택. 코드 버그 아님. 본부대표 화면에서 "0원인데 막대가 보임" 오해 소지만 판단 요청(차단 아님).
+- (b) 미수금 카드 B2B 미포함 — `b2b_sales_orders`의 미정산분이 본부대표 미수금에 빠져 있다. Bob이 Open Question으로 명시. 포함 여부는 비즈니스 결정이라 코드 레벨에서 못 정함. 단, 이건 "정의 확장" 이슈이지 위 Must Fix(잘못된 포함)와 별개임.
 
-## Cleared (Must Fix 외 전부 통과)
-UI 전환(셀 클릭→StockUsageModal preselect, ADJUST는 상단 버튼 분리, 데스크톱·flat 양쪽), UI RBAC 매트릭스(usageBlocked = materialBlocked || 타지점 || 현재고≤0), preselect(defaultProductId 1행 qty1·defaultBranchId 잠금·HQ 클릭 지점 고정), 0/없음 칸 비활성, 버튼·경고배너·힌트, 무손상(ADJUST/USAGE/Transfer/PackUnpack/MovementHistory/소수재고/movement 기록), 빌드·타입·schema.ts:172-173 동기화 — 모두 정상. 유일한 결함은 USAGE 액션의 서버측 지점 인가 누락.
+## Cleared
+#18 net 매출 통일(periodTotal·onlineAmount·channelSales·trend·MTD·branchRank 전부 netAmount 적용, B2B는 discount 컬럼 없어 raw 유지로 일관), 처리대상 카드 4종 링크/강조 로직, 7일 추이 KST 버킷팅·0나눗셈 방어·기간필터 독립, 지점순위 활성지점 join·desc·지점사용자 숨김, RBAC(지점 사용자 branchId 잠금·스푸핑 불가), 15쿼리 Promise.all 병렬, 기존 모달/최근주문/재고부족 무손상, 빌드·타입 green — 모두 통과. 미수금 status 필터 1건만 Must Fix.
