@@ -710,8 +710,8 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
   const handleBulkReceipt = async () => {
     const ids = [...selectedReceiptIds];
     if (ids.length === 0) return;
-    const label = bulkTarget === 'RECEIVED' ? '수령' : '발송완료';
-    if (!confirm(`선택한 ${ids.length}건의 수령상태를 '${label}'(으)로 일괄 변경하시겠습니까?\n연결된 배송 상태도 함께 갱신됩니다.`)) return;
+    const label = bulkTarget === 'RECEIVED' ? '배송완료(택배)·수령(방문)' : '발송완료';
+    if (!confirm(`선택한 ${ids.length}건을 최종 상태(${label})로 일괄 변경하시겠습니까?\n택배건은 연결 배송이 '배송완료'로 갱신되어 택배관리에도 반영됩니다.\n기존 수령일자는 유지됩니다(#47).`)) return;
     setBulkSaving(true);
     try {
       const res = await bulkUpdateReceiptStatus(ids, bulkTarget);
@@ -1327,7 +1327,7 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
               onChange={e => setBulkTarget(e.target.value as 'RECEIVED')}
               className="input py-1 text-sm w-auto"
             >
-              <option value="RECEIVED">수령</option>
+              <option value="RECEIVED">배송완료(택배) · 수령(방문)</option>
             </select>
             <button
               onClick={handleBulkReceipt}
