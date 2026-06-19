@@ -1,3 +1,24 @@
+# BUILD-LOG — 시간 기반 자동 배송완료 (track-sync 교체)
+
+## 🔨 시간기반 자동 배송완료 (빌드완료, 리뷰대기) — 2026-06-19
+### 정책
+SHIPPED+송장 건이 updated_at 기준 N일 경과하면 DELIVERED 자동(추정 마킹). 외부 SweetTracker 추적 API 전면 제거, 같은 경로(/api/shipping/track-sync)에서 로직만 교체 → GitHub Actions 워크플로·middleware 0변경.
+
+### Bob 빌드 결과
+- **(1) route 전면교체** `src/app/api/shipping/track-sync/route.ts` — `fetchDelivered`/`sleep`/`SWEETTRACKER_API_KEY` 분기/QUOTA/딜레이 전부 삭제. docstring 시간기반으로 재작성(SweetTracker 의미 흔적 0, grep 검증 완료). N = ?days > env SHIPPING_AUTODELIVER_DAYS > 3 (parseInt 실패/1미만 → 3). limit 기본 40·최대 200(외부 쿼터 없으니 상향). cutoffIso = now - N*86400000. 쿼리: status='SHIPPED' AND tracking_number NOT NULL AND updated_at<=cutoff, updated_at asc, limit. 루프: shipments.status→DELIVERED update + soId(없으면 cafe24_order_id 해소) 있을 때만 syncReceiptStatusFromShipment(...,'DELIVERED') try/catch. 응답 {delivered, candidates, days, message(추정 명시)}. CRON_SECRET Bearer 가드 유지.
+- **(2) AI Sync** `src/lib/ai/schema.ts` L133·L137·L139 SweetTracker→택배(송장) 정리 + L139 시간기반 자동완료 설명(updated_at N일 경과·추정·외부API없음·멱등·편집시 시계리셋). DB_SCHEMA 컬럼 무변경(shipped_at 신설 안 함).
+- `npm run build` 0 error.
+
+### 멱등/안전
+status='SHIPPED' 필터가 DELIVERED/취소/반품 건 자동 제외 → 재처리 없음. soId NULL(cafe24 미해소)건은 shipment.status만 DELIVERED 갱신, receipt 연동 skip. 재무·재고 무관(배송/수령 상태만).
+
+#### Known Gap (자동완료)
+- updated_at가 배송 편집에 리셋되는 점은 의도된 보수적 동작(라우트 주석 명시). shipped_at 컬럼 신설은 Out-of-Scope.
+- 과거 누적 SHIPPED 백필 일괄처리 없음 — 크론 다음 실행에서 자연 흡수.
+- 자동완료 시 고객 알림톡 미발송(추정 마킹이라 별도 결정 대기).
+
+---
+
 # BUILD-LOG — #47 수령일자 보존 / #48 단일원장 정합
 
 ## 🔨 #47 수령일자 보존 (빌드완료, 리뷰대기) — 2026-06-19
