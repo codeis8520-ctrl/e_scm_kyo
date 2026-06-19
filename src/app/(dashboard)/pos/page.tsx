@@ -994,7 +994,7 @@ function POSPageInner() {
           .limit(20),
         supabase
           .from('sales_orders')
-          .select('id, order_number, total_amount, discount_amount, ordered_at, status, branch:branches(name), items:sales_order_items(quantity, product:products(name))')
+          .select('id, order_number, total_amount, discount_amount, ordered_at, status, channel, branch:branches(name), handler:users!sales_orders_ordered_by_fkey(name), items:sales_order_items(quantity, product:products(name))')
           .eq('customer_id', customerId)
           .order('ordered_at', { ascending: false })
           .limit(20),
@@ -1940,6 +1940,17 @@ function POSPageInner() {
                               <span className="font-mono">{o.order_number}</span>
                             </div>
                             <p className="text-slate-700 truncate" title={names.join(', ')}>{head || '-'}{extra}</p>
+                            {/* 판매 참고: 지점 · 채널 · 판매저장자 */}
+                            <div className="flex items-center flex-wrap gap-1 mt-0.5 text-[10px] text-slate-400">
+                              <span className="px-1 py-px rounded bg-slate-100 text-slate-500">{o.branch?.name || '-'}</span>
+                              <span className="px-1 py-px rounded bg-slate-100 text-slate-500">{
+                                o.channel === 'ONLINE' ? '온라인'
+                                : o.channel === 'DEPT_STORE' ? '백화점'
+                                : o.channel === 'EVENT' ? '행사'
+                                : '매장'
+                              }</span>
+                              {o.handler?.name && <span>· {o.handler.name}</span>}
+                            </div>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
                             {(() => {
