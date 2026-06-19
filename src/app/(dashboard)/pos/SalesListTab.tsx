@@ -116,11 +116,11 @@ const RECEIPT_STATUS_BADGE: Record<string, string> = {
 const SHIPMENT_STATUS_LABEL: Record<string, string> = {
   PENDING: '대기중', PRINTED: '출력완료', SHIPPED: '발송완료', DELIVERED: '배송완료',
 };
+// 택배관리(shipping/page.tsx STATUS_BADGE)와 글자배경·글자색 100% 동일하게 — globals .badge-* 클래스 사용.
+//   PENDING='' (base badge·무배경), PRINTED=info(파랑), SHIPPED=warning(황색), DELIVERED=success(녹색).
+//   렌더의 base `badge` 와 합쳐져 택배관리의 `badge badge-info` 등과 동일 결과.
 const SHIPMENT_STATUS_BADGE: Record<string, string> = {
-  PENDING: 'bg-amber-100 text-amber-800',     // 대기중 = 강조(미출력)
-  PRINTED: 'bg-blue-100 text-blue-700',       // 출력완료 = 진행
-  SHIPPED: 'bg-blue-100 text-blue-700',       // 발송완료 = 진행
-  DELIVERED: 'bg-slate-100 text-slate-500',   // 배송완료(종결) = 회색(낮음)
+  PENDING: '', PRINTED: 'badge-info', SHIPPED: 'badge-warning', DELIVERED: 'badge-success',
 };
 // 행/CSV 상태 표시: 택배 건은 shipment.status 라벨로 대체, 방문/퀵/직접(shipment 없음)은 기존 수령상태 라벨.
 //   shipment.status NULL/미지정 택배 건은 기존 receipt 라벨로 폴백(빈칸 금지).
@@ -135,7 +135,8 @@ function displayStatusLabel(o: OrderRow): string {
 // 행 배지 색: 택배 건은 shipment.status 색, 그 외(또는 status 미지정)는 receipt 배지로 폴백.
 function displayStatusBadge(o: OrderRow, receiptKey: string): string {
   const ship = o.shipments?.[0];
-  if (ship && ship.status && SHIPMENT_STATUS_BADGE[ship.status]) return SHIPMENT_STATUS_BADGE[ship.status];
+  // 택배 건은 shipment.status 배지(택배관리와 동일). PENDING은 ''(무배경)이라 truthiness 대신 키 존재로 분기.
+  if (ship && ship.status && ship.status in SHIPMENT_STATUS_BADGE) return SHIPMENT_STATUS_BADGE[ship.status];
   return RECEIPT_STATUS_BADGE[receiptKey] || 'bg-slate-100 text-slate-600';
 }
 const APPROVAL_STATUS_LABEL: Record<string, string> = {
