@@ -1,18 +1,46 @@
-# Review Request — 대시보드 본부대표용 실용 개선 3종
+# Review Request — processPosCheckout 라운드트립 최적화 (A/B/C/D1)
 Date: 2026-06-19
 Ready for Review: YES
 
-## Files Changed
-- src/app/api/dashboard/route.ts — netAmount() #18 헬퍼 추가; 기존 periodSales/channelSales/online 쿼리 select에 discount_amount 추가; 추이/MTD용 KST 날짜 범위 계산(trendStart 6일 전, monthStart, 항상 today 고정); Promise.all에 신규 쿼리 5종(미수금/미발송/추이7일/이번달누적/지점순위) 병렬 추가; 기존 periodTotal/channelSales/onlineAmount 합산을 netAmount(#18)로 정정; 신규 결과 후처리(7일 KST 버킷팅, today/yesterday, MTD, 활성지점 join+desc); 신규 8필드 반환(기존 필드 전부 보존).
-- src/app/(dashboard)/DashboardClient.tsx — DashboardData 인터페이스 8필드 추가; 액션카드 4종 + 매출추이 + 지점순위 3섹션 신규(기존 요약카드 grid 위). 이하 기존 섹션/모달 무변경.
+돈·재고·포인트 핵심 경로. **동작/숫자 100% 보존, 라운드트립만 감소**가 합격 기준.
+변경 함수는 `processPosCheckout` 단 하나. DB/마이그/AI schema 무변경.
 
-## 확정 결정 반영 (브리프 플래그 오버라이드)
-- 브리프는 #18 적용을 신규 쿼리로 한정(기존 periodTotal/onlineAmount/channelSales 동결, Known Gap)했으나 **PO 확정 결정으로 기존 매출 합산도 #18로 정정**. 대시보드 숫자가 할인분만큼 소폭 하향 — 의도된 정정(판매현황/매출관리와 일치).
+## Files Changed (모두 src/lib/actions.ts, 함수 processPosCheckout)
+- src/lib/actions.ts:2468-2502 — **C**: ⓪ products select에 is_taxable 추가, 폴백 체인 4단 확장, isTaxableByProduct 맵 동시 채움.
+- src/lib/actions.ts:2569-2576 — **C**: 과세 블록의 별도 products 조회 삭제 → isTaxableByProduct 재사용, 게이트 `if (!taxErr)` → `if (isTaxableByProduct.size > 0)`.
+- src/lib/actions.ts:2810-2887 — **B**: decrementStock 헬퍼 제거 + 재고 차감을 단일 SELECT → 병렬 UPDATE/INSERT → movements 배열 1회 INSERT 로 배치화. 합산 로직(normalMap/phantomMap)·산술·stockUpdates·movements 행 전부 보존.
+- src/lib/actions.ts:2896-2912 — **D1**: point_history use+earn 2 insert → 배열 1회 insert(`[useRow, earnRow]`). balance JS 계산이라 순서/값 동일.
+- src/lib/actions.ts:2916-2940 — **A**: ⑥ 알림 블록(customers+branches SELECT + fireNotificationTrigger)을 `void (async()=>{...})().catch(()=>{})` 로 감싸 await 제거(비차단). 바로 return.
+
+## 라운드트립 표 (customer + 1품목 + 택배 기준)
+| 단계 | Before | After |
+|---|---|---|
+| ⓪ products(type/track/phantom) | 1 | 1 |
+| 과세 products(is_taxable) | 1 | **0** (C: ⓪에 흡수) |
+| point rate (resolvePointRate) | 2 | 2 (D3 보류) |
+| phantom BOM | 0~1 | 동일 |
+| decimal material | 0~1 | 동일 |
+| sales_orders insert | 1 | 1 |
+| payments insert | 1 | 1 |
+| shipments insert | 0~1 | 동일 |
+| items insert | 1 | 1 |
+| 차감 branches(메모) | 0~1 | 동일 |
+| **재고 SELECT** | N키 | **1** (B) |
+| **재고 UPDATE/INSERT** | N키(병렬) | N키(병렬, 변동無) |
+| **movements INSERT** | N키 | **1** (B) |
+| point_history select | 0~1 | 동일 |
+| **point_history insert** | 1~2 | **1** (D1) |
+| ⑥ customers+branches | 2 (응답차단) | 2 (**비차단**, A) |
+| **응답 경로 합계** | **~13–15** | **~7–8** |
+
+## 정확성 보존 (리뷰 포인트)
+- **B**: before = `toNum(existing?.quantity)`, after = `before − qty` — decrementStock와 동일 산술. 신규행 시 INSERT(safety_stock:0). 단일 결제라 race 무관. movements 키별 1행(normal=POS_SALE/movementMemo, phantom=PHANTOM_DECOMPOSE/해당 memo). upsert/RPC 미사용.
+- **C**: is_taxable 부재 시 `!== false` → true(전부 과세) 기존 폴백 동일. ⓪ 조회 실패 시 맵 비어 과세 블록 스킵 → taxable/exempt/vat = 0 (구 `!taxErr` 스킵과 동일).
+- **D1**: 배열 [useRow, earnRow] 순서·type·points·balance·description 동일.
+- **A**: 알림은 원래 fire-and-forget(.catch). await만 제거 — 신뢰성 등급 동일, 응답만 비차단.
 
 ## Open Questions
-- 7일 추이 막대: total=0인 날도 최소 height 3%로 시각화(완전 빈 막대 회피). 의도 확인 바람.
-- 미수금 카드는 sales_orders approval_status='UNSETTLED'만 — b2b_sales_orders 미수금 미포함(BUILD-LOG Gap). 본부대표 미수금에 B2B 포함 필요 여부 판단 요청.
+- 없음. B의 `stockIds.length > 0` 가드는 기존 빈-맵 시 Promise.all([]) 무동작과 동치.
 
 ## Out of Scope (logged in BUILD-LOG)
-- 액션카드 deep-link 쿼리파라미터(/trade?tab=credit 등) — 페이지 미지원, 단순 이동만.
-- branch_sales_summary RPC(legacy 통합) 미연계 — 순위는 신규 sales_orders만.
+- D2(branches L2805/L2930 중복)·D3(resolvePointRate 순차 2쿼리) — 브리프 hold. 미적용.

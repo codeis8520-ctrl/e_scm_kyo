@@ -1,3 +1,25 @@
+# BUILD-LOG — processPosCheckout 라운드트립 최적화 (A/B/C/D1)
+
+## 🔨 빌드완료 (리뷰대기) — 2026-06-19
+결제 핵심경로 `processPosCheckout`(src/lib/actions.ts)의 순차 DB 라운드트립 감소. **숫자·재고·포인트·movements·shipment·분개·에러폴백 100% 보존, 라운드트립만 감소.** 적용: A(알림 비차단)·B(재고 SELECT/movements 배치)·C(products 통합)·D1(point_history 배치). 보류: D2(branches 중복)·D3(resolvePointRate) — 브리프 hold.
+
+### Bob 빌드 결과 (변경 함수: processPosCheckout 만)
+- **C — products 단일 조회**: ⓪ select에 `is_taxable` 추가. 폴백 체인 4단 확장(full → is_phantom 제거 → track_inventory 제거 → is_taxable 제거; is_taxable는 006 최고령이라 마지막까지 유지). ⓪ 루프에서 `isTaxableByProduct` 맵 동시 채움(`p.is_taxable !== false`, 컬럼 부재 시 true=과세 폴백). 과세 블록(구 L2570~)의 별도 products 조회 **삭제** → 맵 재사용. 게이트 `if (!taxErr)` → `if (isTaxableByProduct.size > 0)` (⓪ 조회 실패 시 맵 비어 스킵 = 기존 동작 동일, 전부 0).
+- **B — 재고 배치**: `decrementStock` 헬퍼 제거(타 호출처 없음, grep 확인). 합산 로직(normalMap/phantomMap dedup·phantom 분해·decimalByMaterial·Math.ceil/round·track skip) **전부 무변경**. 그 뒤 차감 키 집합 `Set([...normalMap.keys(), ...phantomMap.keys()])` → **단일 inventories SELECT** `.eq(branch).in(product_id, ids)` → Map. 키별 `before=toNum(existing?.quantity)`, `after=before−qty`, `stockUpdates[id]=after` (산술 동일). UPDATE(기존행)/INSERT(신규, safety_stock:0) **병렬 유지**(upsert/RPC 금지). movements는 **배열 1회 INSERT** — 행 개수·reference_type(POS_SALE/PHANTOM_DECOMPOSE)·memo·quantity·branch_id·reference_id 모두 키별 1:1 동일. 새 에러게이트 추가 없음(기존도 무처리).
+- **A — 알림 비차단**: ⑥ 블록(customers SELECT + branches SELECT + fireNotificationTrigger)을 `void (async () => {...})().catch(()=>{})` 로 감싸 **await 제거**. customers/phone 등이 payload에 없어 조회는 필요 → fire-and-forget 내부로 이동. 알림은 원래 best-effort(.catch fire-and-forget)라 신뢰성 등급 동일. 바로 다음 줄 `return { orderNumber, pointsEarned, stockUpdates }`.
+- **D1 — point_history 배치**: use+earn 두 insert → **배열 1회 insert** `[useRow, earnRow]`. balance는 JS 계산(afterUse, afterUse+pointsEarned)이라 DB 의존 없음. type·points·balance·description·순서 동일. else 분기(earn만) 1행 그대로. maybeSingle 잔액 조회 유지.
+
+### 정확성 보존 확인
+- stockUpdates·movements 행수·point_history 행수·taxableAmount/exemptAmount/vatAmount 산술 전부 동치. 반환값 `{orderNumber, pointsEarned, stockUpdates}` 무변경.
+- 폴백 체인: products 4단·sales_orders·shipments·sales_order_items 전부 유지.
+- DB/마이그/AI schema 무변경(읽기통합+쓰기배치, 컬럼·enum·로직 불변 → 매트릭스 해당없음).
+- npm run build 0 error.
+
+### Known Gap
+- D2(branches L2805/L2930 중복 조회)·D3(resolvePointRate 순차 2쿼리) — 브리프 hold(의존성·회귀위험 > 이득). 미적용.
+
+---
+
 # BUILD-LOG — 대시보드 본부대표용 실용 개선 3종 (액션카드·매출추이·지점순위)
 
 ## 🔨 빌드완료 (리뷰대기) — 2026-06-19

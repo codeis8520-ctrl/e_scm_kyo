@@ -2468,15 +2468,22 @@ export async function processPosCheckout(payload: CheckoutPayload) {
   const productIds = Array.from(new Set(cart.map(c => c.productId)));
   const trackByProduct = new Map<string, boolean>();
   const phantomByProduct = new Map<string, boolean>();
+  // 과세 여부도 동일 조회에서 흡수 (C: L2571 별도조회 제거). is_taxable는 006(최고령) 컬럼이라
+  // 폴백 체인에서 가장 마지막까지 유지. 부재 시 맵 미설정 → 아래 과세 블록에서 기본 true(과세).
+  const isTaxableByProduct = new Map<string, boolean>();
   if (productIds.length > 0) {
     let ptRes: any = await db.from('products')
-      .select('id, product_type, track_inventory, is_phantom').in('id', productIds);
+      .select('id, product_type, track_inventory, is_phantom, is_taxable').in('id', productIds);
     if (ptRes.error && /is_phantom/i.test(String(ptRes.error.message))) {
-      // 061 미적용 — is_phantom 없이 재시도
-      ptRes = await db.from('products').select('id, product_type, track_inventory').in('id', productIds);
+      // 061 미적용 — is_phantom 없이 재시도 (is_taxable 유지)
+      ptRes = await db.from('products').select('id, product_type, track_inventory, is_taxable').in('id', productIds);
     }
     if (ptRes.error && /track_inventory/i.test(String(ptRes.error.message))) {
-      // 059 미적용 — track_inventory 없이 재시도
+      // 059 미적용 — track_inventory 없이 재시도 (is_taxable 유지)
+      ptRes = await db.from('products').select('id, product_type, is_taxable').in('id', productIds);
+    }
+    if (ptRes.error && /is_taxable/i.test(String(ptRes.error.message))) {
+      // 006 미적용(이론상 도달 안 함) — is_taxable 없이 재시도 → 전부 과세 폴백
       ptRes = await db.from('products').select('id, product_type').in('id', productIds);
     }
     if (!ptRes.error && Array.isArray(ptRes.data)) {
@@ -2489,6 +2496,8 @@ export async function processPosCheckout(payload: CheckoutPayload) {
         const t = p.track_inventory ?? (p.product_type === 'SERVICE' ? false : true);
         trackByProduct.set(p.id, t);
         phantomByProduct.set(p.id, p.is_phantom === true);
+        // is_taxable 컬럼 부재 시 undefined → !== false → true(과세) = 기존 폴백 동일
+        isTaxableByProduct.set(p.id, p.is_taxable !== false);
       }
     }
   }
@@ -2567,15 +2576,10 @@ export async function processPosCheckout(payload: CheckoutPayload) {
   let exemptAmount = 0;
   let vatAmount = 0;
   if (cart.length > 0) {
-    const productIds = Array.from(new Set(cart.map(c => c.productId)));
-    const { data: taxRows, error: taxErr } = await db
-      .from('products').select('id, is_taxable').in('id', productIds);
-    if (!taxErr) {
-      const isTaxable = new Map<string, boolean>();
-      for (const r of (taxRows as any[]) || []) {
-        // is_taxable 컬럼이 없으면(006 미적용) undefined → 기본 true(과세)
-        isTaxable.set(r.id, r.is_taxable !== false);
-      }
+    // C: ⓪에서 채운 isTaxableByProduct 재사용 (별도 products 조회 제거).
+    //   맵이 비어있으면(⓪ products 조회 자체가 실패) 과세 블록 스킵 → 전부 0 (기존 !taxErr 스킵과 동일).
+    if (isTaxableByProduct.size > 0) {
+      const isTaxable = isTaxableByProduct;
       let taxableNet = 0;
       let exemptNet = 0;
       for (const item of cart) {
@@ -2807,43 +2811,7 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     const nameOf = (id: string) => (bns as any[] | null)?.find(b => b.id === id)?.name || id;
     movementMemo = `판매: ${nameOf(branchId)}, 출고: ${nameOf(stockBranchId)}`;
   }
-  // 재고 차감 1건을 처리하는 헬퍼 — phantom 분해 차감과 일반 차감 모두 사용
-  const decrementStock = async (
-    productId: string,
-    qty: number,
-    refType: 'POS_SALE' | 'PHANTOM_DECOMPOSE',
-    memo: string | null,
-  ) => {
-    const { data: inv } = await supabase
-      .from('inventories').select('id, quantity')
-      .eq('branch_id', stockBranchId).eq('product_id', productId).maybeSingle();
-    const inv_ = inv as any;
-    const before = toNum(inv_?.quantity);
-    const after = before - qty;
-    if (inv_) {
-      await db.from('inventories').update({ quantity: after }).eq('id', inv_.id);
-    } else {
-      // 레코드가 없으면 음수로 신규 생성 — 추후 입고 시 누적 복원
-      await db.from('inventories').insert({
-        branch_id: stockBranchId,
-        product_id: productId,
-        quantity: after,
-        safety_stock: 0,
-      });
-    }
-    await db.from('inventory_movements').insert({
-      branch_id: stockBranchId,
-      product_id: productId,
-      movement_type: 'OUT',
-      quantity: qty,
-      reference_id: saleOrderId,
-      reference_type: refType,
-      memo,
-    });
-    return after;
-  };
-
-  // ④ 재고 차감 — 품목별 병렬 처리 (N×3 순차 round-trip → 병렬)
+  // ④ 재고 차감 — 합산 후 배치 (B: 재고 SELECT N키 → 1, movements INSERT N키 → 1)
   //   동일 product_id가 카트에 중복 존재하는 경우 UNIQUE 충돌을 피하기 위해
   //   product_id 단위로 묶어서 수량 합산 후 차감.
   {
@@ -2877,20 +2845,59 @@ export async function processPosCheckout(payload: CheckoutPayload) {
       normalMap.set(item.productId, (normalMap.get(item.productId) || 0) + item.quantity);
     }
 
-    const tasks: Promise<void>[] = [];
-    for (const [productId, qty] of normalMap) {
-      tasks.push(
-        decrementStock(productId, qty, 'POS_SALE', movementMemo)
-          .then(after => { stockUpdates[productId] = after; })
-      );
+    // 차감 대상 product_id 집합 (normal + phantom material, 중복 제거)
+    const stockIds = Array.from(new Set([...normalMap.keys(), ...phantomMap.keys()]));
+    if (stockIds.length > 0) {
+      // (1) 단일 SELECT — 출고 지점 + 대상 키 전체
+      const { data: invRows } = await supabase
+        .from('inventories').select('id, quantity, product_id')
+        .eq('branch_id', stockBranchId).in('product_id', stockIds);
+      const invByProduct = new Map<string, { id: string; quantity: any }>();
+      for (const r of (invRows as any[]) || []) {
+        invByProduct.set(r.product_id, { id: r.id, quantity: r.quantity });
+      }
+
+      // (2) 각 키별 after 산술(decrementStock와 동일) + stockUpdates 기록
+      //     + UPDATE/INSERT 병렬 작업 + movements 배열 구성
+      const writeTasks: Promise<any>[] = [];
+      const movementRows: any[] = [];
+      const queue: Array<{ productId: string; qty: number; refType: 'POS_SALE' | 'PHANTOM_DECOMPOSE'; memo: string | null }> = [];
+      for (const [productId, qty] of normalMap) {
+        queue.push({ productId, qty, refType: 'POS_SALE', memo: movementMemo });
+      }
+      for (const [materialId, { qty, memo }] of phantomMap) {
+        queue.push({ productId: materialId, qty, refType: 'PHANTOM_DECOMPOSE', memo });
+      }
+      for (const { productId, qty, refType, memo } of queue) {
+        const existing = invByProduct.get(productId);
+        const before = toNum(existing?.quantity);
+        const after = before - qty;
+        stockUpdates[productId] = after;
+        if (existing) {
+          writeTasks.push(db.from('inventories').update({ quantity: after }).eq('id', existing.id));
+        } else {
+          // 레코드가 없으면 음수로 신규 생성 — 추후 입고 시 누적 복원
+          writeTasks.push(db.from('inventories').insert({
+            branch_id: stockBranchId,
+            product_id: productId,
+            quantity: after,
+            safety_stock: 0,
+          }));
+        }
+        movementRows.push({
+          branch_id: stockBranchId,
+          product_id: productId,
+          movement_type: 'OUT',
+          quantity: qty,
+          reference_id: saleOrderId,
+          reference_type: refType,
+          memo,
+        });
+      }
+      // (3) UPDATE/INSERT 병렬, movements 배열 1회 INSERT — 함께 대기
+      writeTasks.push(db.from('inventory_movements').insert(movementRows));
+      await Promise.all(writeTasks);
     }
-    for (const [materialId, { qty, memo }] of phantomMap) {
-      tasks.push(
-        decrementStock(materialId, qty, 'PHANTOM_DECOMPOSE', memo)
-          .then(after => { stockUpdates[materialId] = after; })
-      );
-    }
-    await Promise.all(tasks);
   }
 
   // ⑤ 포인트 처리
@@ -2900,17 +2907,20 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     const currentPoints = lastHist?.balance || 0;
 
     if (usePoints && pointsToUse > 0) {
+      // D1: use+earn 2건을 배열 1회 insert (balance는 JS 계산, DB 의존 없음 — 순서·값 동일)
       const afterUse = currentPoints - pointsToUse;
-      await db.from('point_history').insert({
-        customer_id: customerId, sales_order_id: saleOrderId,
-        type: 'use', points: -pointsToUse, balance: afterUse,
-        description: `포인트 사용 (${orderNumber})`,
-      });
-      await db.from('point_history').insert({
-        customer_id: customerId, sales_order_id: saleOrderId,
-        type: 'earn', points: pointsEarned, balance: afterUse + pointsEarned,
-        description: `구매 적립 (${orderNumber})`,
-      });
+      await db.from('point_history').insert([
+        {
+          customer_id: customerId, sales_order_id: saleOrderId,
+          type: 'use', points: -pointsToUse, balance: afterUse,
+          description: `포인트 사용 (${orderNumber})`,
+        },
+        {
+          customer_id: customerId, sales_order_id: saleOrderId,
+          type: 'earn', points: pointsEarned, balance: afterUse + pointsEarned,
+          description: `구매 적립 (${orderNumber})`,
+        },
+      ]);
     } else {
       await db.from('point_history').insert({
         customer_id: customerId, sales_order_id: saleOrderId,
@@ -2921,27 +2931,31 @@ export async function processPosCheckout(payload: CheckoutPayload) {
   }
 
   // ⑥ 주문 완료 알림톡 자동 발송 (등록 고객 + 매핑 존재 시)
+  //   A: customers/branches 조회 + 발송을 응답 반환과 분리(fire-and-forget). 알림은 원래
+  //   fireNotificationTrigger 가 .catch fire-and-forget 라 best-effort 설계 — 신뢰성 등급 동일.
   if (customerId) {
-    const { data: cust } = await (db as any)
-      .from('customers')
-      .select('name, phone, grade')
-      .eq('id', customerId)
-      .maybeSingle();
-    const { data: br } = await (db as any)
-      .from('branches').select('name').eq('id', branchId).maybeSingle();
+    void (async () => {
+      const { data: cust } = await (db as any)
+        .from('customers')
+        .select('name, phone, grade')
+        .eq('id', customerId)
+        .maybeSingle();
+      const { data: br } = await (db as any)
+        .from('branches').select('name').eq('id', branchId).maybeSingle();
 
-    if (cust?.name && cust?.phone) {
-      fireNotificationTrigger({
-        eventType: 'ORDER_COMPLETE',
-        customer: { id: customerId, name: cust.name, phone: cust.phone },
-        context: {
-          orderNo: orderNumber,
-          amount: totalAmount - discountAmount,
-          branchName: br?.name || '',
-          customerGrade: cust.grade || 'NORMAL',
-        },
-      }).catch(() => {});
-    }
+      if (cust?.name && cust?.phone) {
+        await fireNotificationTrigger({
+          eventType: 'ORDER_COMPLETE',
+          customer: { id: customerId, name: cust.name, phone: cust.phone },
+          context: {
+            orderNo: orderNumber,
+            amount: totalAmount - discountAmount,
+            branchName: br?.name || '',
+            customerGrade: cust.grade || 'NORMAL',
+          },
+        });
+      }
+    })().catch(() => {});
   }
 
   return { orderNumber, pointsEarned, stockUpdates };
