@@ -960,6 +960,10 @@ function POSPageInner() {
     inventoryMap.get(`${selectedBranch}_${productId}`) ?? null,
   [inventoryMap, selectedBranch]);
 
+  // #52 빠른 추가 — 보자기 포장(SPKG) 단일 버튼 + 쇼핑백 종류 콤보. 선물 주문 반복검색 절감.
+  const quickBoja = useMemo(() => (products as any[]).find(p => p.code === 'SPKG') || null, [products]);
+  const quickBags = useMemo(() => (products as any[]).filter(p => (p.name || '').includes('쇼핑백')), [products]);
+
   // ── 장바구니 ──────────────────────────────────────────────────────────────
   // 정책: 재고 부족/품절이어도 판매 허용 (음수 재고 정책 — schema.ts 참조).
   //       UI 카드에 이미 "품절" 배지가 보이므로 별도 차단 없음.
@@ -2161,6 +2165,37 @@ function POSPageInner() {
                 <option value="stock">재고순</option>
               </select>
             </div>
+            {/* #52 빠른 추가 — 보자기 포장 버튼 + 쇼핑백 콤보(선물 주문 반복검색 절감) */}
+            {(quickBoja || quickBags.length > 0) && (
+              <div className="flex items-center flex-wrap gap-2 mt-2">
+                <span className="text-xs text-slate-400 shrink-0">🎁 빠른추가</span>
+                {quickBoja && (
+                  <button
+                    type="button"
+                    onClick={() => addToCart(quickBoja)}
+                    title={`${quickBoja.name} 담기`}
+                    className="text-xs px-2.5 py-1 rounded border border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100 font-medium"
+                  >
+                    + 보자기 포장
+                  </button>
+                )}
+                {quickBags.length > 0 && (
+                  <select
+                    value=""
+                    onChange={e => { const p = quickBags.find(b => b.id === e.target.value); if (p) addToCart(p); }}
+                    className="input text-xs py-1 w-auto"
+                    title="쇼핑백 종류 선택 시 바로 담기"
+                  >
+                    <option value="">+ 쇼핑백 선택…</option>
+                    {quickBags.map(b => (
+                      <option key={b.id} value={b.id}>
+                        {b.name}{b.price ? ` · ${Number(b.price).toLocaleString()}원` : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            )}
             {search && (
               <div className="flex items-center justify-between mt-1 pl-1">
                 <p className="text-xs text-slate-400">
