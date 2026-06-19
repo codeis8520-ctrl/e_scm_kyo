@@ -1,3 +1,29 @@
+# BUILD-LOG — #51 재고현황 클릭 기본 '자가 사용' · '강제 조정' 분리
+
+## 🔨 빌드완료 (리뷰대기) — 2026-06-19
+재고현황 숫자 셀 클릭을 강제 조정(ADJUST) → 자가 사용(USAGE, 제품·지점 preselect)으로 전환. ADJUST는 빨강 '⚠ 강제 조정' 버튼으로만 진입. 확정 결정 반영: 자가사용=btn-primary 승격, 강제조정=빨강/경고, 재고 0/없음 칸 비활성.
+
+### Bob 빌드 결과
+- **StockUsageModal.tsx**: `defaultProductId?` prop 추가. rows useState 초기화 시 defaultProductId 있으면 inventories에서 찾아 1행(qty 1) 자동 생성. branchLocked·다건 검색/삭제·정수≥1 제출제약 전부 기존 유지.
+- **page.tsx 셀 클릭 전환**: `handleUsageClick(item)` 신설 → usagePreselect{productId,branchId} 세팅 후 USAGE 모달 오픈. handleAdjust는 셀에서 분리, 상단 버튼 전용. 데스크톱 매트릭스·모바일/지점별(flat) 관리열 모두 적용.
+- **RBAC `usageBlocked`**(데스크톱 셀 + flat 행 동일식): materialBlocked || (isBranchUser && 셀지점≠본인지점) || 현재고≤0. 본사는 materialBlocked·재고0 외 전 지점 허용. title 툴팁 사유별 분기.
+- **상단 버튼**: '+ 소모 차감'(secondary) → '+ 자가 사용'(btn-primary). '+ 재고 조정'(primary) → '⚠ 강제 조정'(bg-red-600, isHQUser 유지). flat 관리열에도 '자가 사용'(파랑) + '⚠ 강제 조정'(빨강) 2버튼.
+- **InventoryModal.tsx**: 제목 '⚠ 강제 조정', 상단 red 경고 배너("실사·오류 보정 전용, 일상 소모는 자가 사용"). ADJUST 로직 무변경.
+- **힌트(L829)**: "숫자 클릭 → 자가 사용(소모) · 강제 조정은 상단 버튼(본사 전용) ..."로 갱신.
+- **모달 마운트**: defaultProductId=usagePreselect?.productId, defaultBranchId=preselect.branchId ?? (지점직원 자기지점). onClose/onSuccess에서 usagePreselect 초기화.
+- **AI schema.ts** L172~173: 자가사용=지점직원 자기지점 가능(원자재·부자재 제외)·본사 전지점, 강제조정=본사 전용 별도버튼으로 보강.
+
+### 결정 (확정 반영)
+- 재고 0/없음 칸 클릭 = 비활성(차감 무의미). isMissing 칸도 동일.
+- 자가사용 버튼 btn-primary 승격, 강제조정 빨강/경고.
+- 본사 셀 클릭 시 해당 지점으로 지점 select 고정(branchLocked). 본사 branches는 전체 전달(잠금되므로 무방, preselect 지점명 렌더 보장).
+- npm run build 0 error.
+
+### Known Gap
+- 소수재고 제품 자가사용 수량은 현행 정수≥1만 입력 가능(StockUsageModal handleSubmit Number.isInteger). 소수 입력은 별도 요청 필요 — 이번 스코프 밖.
+
+---
+
 # BUILD-LOG — #46 배송메시지 ↔ 포장/옵션 분리
 
 ## 🔨 빌드완료 (리뷰대기) — 2026-06-19

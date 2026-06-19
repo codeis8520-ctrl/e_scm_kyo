@@ -168,10 +168,14 @@ export default function InventoryModal({ inventory, onClose, onSuccess }: Props)
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <div className="bg-white rounded-lg p-6 w-full max-w-md">
         <div className="flex justify-between items-center mb-4">
-          <h2 className="text-lg font-bold">재고 조정</h2>
+          <h2 className="text-lg font-bold">⚠ 강제 조정</h2>
           <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
             ✕
           </button>
+        </div>
+
+        <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-xs leading-relaxed">
+          강제 조정은 <strong>실사·시스템 오류 보정 전용</strong>입니다. 일상 소모는 &lsquo;자가 사용(소모 차감)&rsquo;을 사용하세요.
         </div>
 
         {inventory && (

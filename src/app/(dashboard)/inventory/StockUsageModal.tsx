@@ -24,6 +24,7 @@ interface Props {
   inventories: Inventory[];
   usageTypes: UsageType[];
   defaultBranchId?: string;
+  defaultProductId?: string;   // 셀 클릭 시 1행 자동 채움
   onClose: () => void;
   onSuccess: () => void;
 }
@@ -40,6 +41,7 @@ export default function StockUsageModal({
   inventories,
   usageTypes,
   defaultBranchId,
+  defaultProductId,
   onClose,
   onSuccess,
 }: Props) {
@@ -48,7 +50,14 @@ export default function StockUsageModal({
   const [usageTypeId, setUsageTypeId] = useState('');
   const [memo, setMemo] = useState('');
   const [search, setSearch] = useState('');
-  const [rows, setRows] = useState<UsageRow[]>([]);
+  // 셀 클릭 진입 시 클릭한 제품을 1행(수량 1) 자동 추가. 이후 다건 검색·삭제는 그대로.
+  const [rows, setRows] = useState<UsageRow[]>(() => {
+    if (!defaultProductId) return [];
+    const inv = inventories.find(i => i.product_id === defaultProductId && i.product);
+    return inv?.product
+      ? [{ product_id: inv.product_id, name: inv.product.name, code: inv.product.code, quantity: 1 }]
+      : [];
+  });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -136,7 +145,7 @@ export default function StockUsageModal({
       items: rows.map((r) => ({ product_id: r.product_id, quantity: r.quantity })),
     });
 
-    if (result?.error) {
+    if (result && 'error' in result && result.error) {
       setError(result.error);
       setLoading(false);
     } else {

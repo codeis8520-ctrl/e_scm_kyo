@@ -1,22 +1,25 @@
-# Review Request — #46 배송메시지 ↔ 포장/옵션 분리
+# Review Request — #51 재고현황 클릭 기본 '자가 사용' · '강제 조정' 분리
 Date: 2026-06-19
 Ready for Review: YES
 
 ## Files Changed
-- src/app/(dashboard)/shipping/page.tsx:147-152 — composeDeliveryMessage 합성 제거, 순수 delivery_message만 반환(시그니처 단순화)
-- src/app/(dashboard)/shipping/page.tsx:1585-1587 — 배송목록 thead에 '포장/옵션' th 추가(배송메모·품목 사이)
-- src/app/(dashboard)/shipping/page.tsx:1625-1632 — 배송목록 tbody에 order_options td 추가(없으면 '-')
-- src/app/(dashboard)/shipping/page.tsx:482-489 — CJ export header에 '포장/옵션' 맨 끝 추가
-- src/app/(dashboard)/shipping/page.tsx:496-506 — CJ export rows에 s.order_options 원소 맨 끝 추가
-- src/app/(dashboard)/shipping/page.tsx:508-513 — CJ export !cols 폭 배열 1개 추가(헤더/행/폭 14개 일치)
-- src/lib/ai/schema.ts:74 — #40 주석에 #46 분리 한 줄 갱신
+- src/app/(dashboard)/inventory/StockUsageModal.tsx:22-29,38-65 — `defaultProductId?` prop 추가 + rows useState 초기화 시 클릭 제품 1행(qty 1) 자동 생성. branchLocked·다건·정수제약 무변경.
+- src/app/(dashboard)/inventory/page.tsx:90-91 — usagePreselect 상태 추가.
+- src/app/(dashboard)/inventory/page.tsx:286-301 — handleAdjust 주석(상단버튼 전용) + handleUsageClick 신설.
+- src/app/(dashboard)/inventory/page.tsx:529-543 — 상단 버튼: '+ 자가 사용'(btn-primary) + '⚠ 강제 조정'(bg-red-600, isHQUser).
+- src/app/(dashboard)/inventory/page.tsx:783-818 — 데스크톱 매트릭스 셀: usageBlocked RBAC + handleUsageClick + title 분기. (구 adjustBlocked/handleAdjust 제거)
+- src/app/(dashboard)/inventory/page.tsx:828-830 — 데스크톱 힌트 문구 갱신.
+- src/app/(dashboard)/inventory/page.tsx:879-940 — flat(지점별) 관리열: usageBlocked + '자가 사용'(파랑)·'⚠ 강제 조정'(빨강) 2버튼.
+- src/app/(dashboard)/inventory/page.tsx:971-984 — StockUsageModal 마운트에 defaultProductId/defaultBranchId 전달 + onClose/onSuccess usagePreselect 초기화.
+- src/app/(dashboard)/inventory/InventoryModal.tsx:170-180 — 제목 '⚠ 강제 조정' + red 경고 배너(로직 무변경).
+- src/lib/ai/schema.ts:172-173 — 자가사용(지점직원 자기지점)·강제조정(본사 전용) 접근규칙 보강.
+
+## RBAC 적용
+- usageBlocked = materialBlocked || (isBranchUser && 셀지점≠본인지점) || 현재고≤0. 데스크톱 셀·flat 행 동일.
+- 강제 조정(handleAdjust/InventoryModal)은 isHQUser 전용 유지, 셀에서 분리.
 
 ## Open Questions
-- CJ '포장/옵션' 컬럼 = 맨 끝(Flag B, PO 확정). packer가 배송메세지1 옆에서 보길 원하면 Deploy Gate에서 위치 조정 가능. 코드상 위치만 바꾸면 됨.
+- 본사용 StockUsageModal에 branches 전체 목록 전달(잠금되므로 무방). 클릭 지점만 필터링하는 편이 나은지 — 현재는 전체.
 
 ## Out of Scope (logged in BUILD-LOG)
-- 카페24 탭 원본 shipping_message 파싱 분리(cafe24 원본 데이터, split 마커 미보장)
-- items_summary에 옵션 박힌 과거 historical 행(order_options NULL, 분리 불가)
-
-## Build
-- npm run build: 0 error.
+- 소수재고 제품 자가사용 소수 수량 입력(현행 정수≥1만). 별도 요청 필요.

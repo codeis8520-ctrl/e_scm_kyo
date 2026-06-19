@@ -169,8 +169,8 @@ export const BUSINESS_RULES = `
 - "발주 / 구매 주문 / 공급업체 통해서" → create_purchase_order 흐름
 - 모호하면 먼저 물어보기
 - 원자재(RAW)·부자재(SUB) 재고는 **본사(branches.is_headquarters=true)에서만** 입출고·조정 가능 (OEM 위탁 생산 모델). 비본사 지점에 대한 adjust_inventory 호출은 서버가 거부. 본사 지정이 없으면 제한 미적용(폴백).
-- 재고 소모 차감은 재고화면 '소모 차감' 버튼(recordStockUsage)으로 다건 일괄 OUT 처리 — 지점+사용유형+품목리스트, 음수 허용, RAW/SUB 본사 제한.
-- 재고 조정(adjust)은 본사 역할(SUPER_ADMIN/HQ_OPERATOR)만. UI에서 수동 입고/출고 버튼 제거 — 입고=매입(purchase), 출고=판매/창고이동으로만 발생.
+- 재고 소모(자가 사용 등) 차감은 재고화면 숫자 클릭 또는 '자가 사용' 버튼(recordStockUsage)으로 다건 일괄 OUT 처리 — 지점+사용유형+품목리스트, 음수 허용. 지점직원은 **자기 지점**만 가능(원자재·부자재 제외), 본사는 전 지점.
+- 재고 강제 조정(ADJUST)은 본사 역할(SUPER_ADMIN/HQ_OPERATOR)만 — 실사·오류 보정 전용 별도 버튼. UI에서 수동 입고/출고 버튼 제거 — 입고=매입(purchase), 출고=판매/창고이동으로만 발생.
 
 [발주 워크플로우]
 DRAFT → CONFIRMED → RECEIVED

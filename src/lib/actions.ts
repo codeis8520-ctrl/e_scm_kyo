@@ -1133,6 +1133,12 @@ export async function recordStockUsage(input: {
   memo?: string;
   items: { product_id: string; quantity: number }[];
 }) {
+  // #51 서버측 지점 권한검증 — UI(자기 지점만)와 동일하게 강제(직접 호출 우회 차단).
+  //   HQ급은 전 지점, 지점고정 직원은 본인 지점 재고만 소모 가능. assertFromBranchOwnership 재사용.
+  const session = await requireSession();
+  const ownErr = assertFromBranchOwnership(session, input.branch_id);
+  if (ownErr) return ownErr;
+
   const supabase = await createClient();
   const db = supabase as any;
 

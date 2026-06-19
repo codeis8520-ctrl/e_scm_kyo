@@ -88,6 +88,7 @@ export default function InventoryPage() {
   const [showModal, setShowModal] = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [showUsageModal, setShowUsageModal] = useState(false);
+  const [usagePreselect, setUsagePreselect] = useState<{ productId: string; branchId: string } | null>(null);
   const [usageTypes, setUsageTypes] = useState<{ id: string; code: string; name: string }[]>([]);
   const [editInventory, setEditInventory] = useState<Inventory | null>(null);
   const [transferInventory, setTransferInventory] = useState<Inventory | null>(null);
@@ -283,9 +284,16 @@ export default function InventoryPage() {
     setLoading(false);
   };
 
+  // 강제 조정(ADJUST) — 상단 '⚠ 강제 조정' 버튼 전용. 셀 클릭에서는 호출하지 않음.
   const handleAdjust = (item: Inventory) => {
     setEditInventory(item);
     setShowModal(true);
+  };
+
+  // 셀(숫자) 클릭 → 자가 사용(USAGE) 모달을 해당 제품·지점 preselect로 열기.
+  const handleUsageClick = (item: Inventory) => {
+    setUsagePreselect({ productId: item.product_id, branchId: item.branch_id });
+    setShowUsageModal(true);
   };
 
   const handleClose = () => {
@@ -527,20 +535,20 @@ export default function InventoryPage() {
         </div>
         <div className="flex flex-wrap gap-2">
           <Link href="/inventory/count" className="btn-secondary py-2 px-4 text-sm">재고 실사</Link>
+          <button
+            onClick={() => { setUsagePreselect(null); setShowUsageModal(true); }}
+            className="btn-primary text-sm"
+          >
+            + 자가 사용
+          </button>
           {isHQUser && (
             <button
               onClick={() => { setEditInventory(null); setShowModal(true); }}
-              className="btn-primary text-sm"
+              className="text-sm rounded-lg px-4 py-2 font-medium bg-red-600 text-white hover:bg-red-700"
             >
-              + 재고 조정
+              ⚠ 강제 조정
             </button>
           )}
-          <button
-            onClick={() => setShowUsageModal(true)}
-            className="btn-secondary text-sm"
-          >
-            + 소모 차감
-          </button>
         </div>
       </div>
 
@@ -784,34 +792,38 @@ export default function InventoryPage() {
                       const isMissing = !inv;
                       // 원자재·부자재는 본사에서만 입출고·조정 가능. 본사 지정이 없으면 제한 생략.
                       const materialBlocked = isMaterialType(row.productType) && !!hqBranchId && b.id !== hqBranchId;
-                      // 재고 조정은 본사 역할만. 비본사는 조정 진입 차단(조회는 유지).
-                      const adjustBlocked = materialBlocked || !isHQUser;
+                      // 셀 클릭 = 자가 사용(USAGE). 지점직원은 자기 지점만, 원자재·부자재는 본사만,
+                      // 현재고 0/없음 칸은 차감 의미 없으므로 비활성.
+                      const usageBlocked =
+                        materialBlocked
+                        || (isBranchUser && b.id !== userBranchId)
+                        || toNum(effective.quantity) <= 0;
                       return (
                         <td key={b.id} className="text-center p-0">
                           <button
-                            onClick={() => { if (!adjustBlocked) handleAdjust(effective); }}
-                            disabled={adjustBlocked}
+                            onClick={() => { if (!usageBlocked) handleUsageClick(effective); }}
+                            disabled={usageBlocked}
                             title={
-                              !isHQUser
-                                ? '재고 조정은 본사 권한만 가능'
-                                : materialBlocked
-                                  ? '원자재·부자재는 본사에서만 조정 가능'
-                                  : isMissing ? '재고 없음 · 클릭하여 조정' : `재고 조정 · 안전재고 ${fmtStock(effective.safety_stock, row.allowDecimal)}`
+                              materialBlocked
+                                ? '원자재·부자재는 본사에서만 처리 가능'
+                                : (isBranchUser && b.id !== userBranchId)
+                                  ? '다른 지점 재고는 처리 불가'
+                                  : toNum(effective.quantity) <= 0
+                                    ? '현재고 없음 · 자가 사용 불가'
+                                    : `자가 사용(소모 차감) · 안전재고 ${fmtStock(effective.safety_stock, row.allowDecimal)}`
                             }
                             className={`w-full h-full px-3 py-2 font-semibold transition-colors rounded ${
-                              adjustBlocked
-                                ? 'text-slate-300 cursor-not-allowed'
+                              usageBlocked
+                                ? `cursor-not-allowed ${isMissing ? 'text-slate-300' : isLow ? 'text-red-400' : 'text-slate-400'}`
                                 : `hover:ring-2 hover:ring-blue-300 hover:ring-inset ${
-                                    isMissing
-                                      ? 'text-slate-300 hover:bg-blue-50 hover:text-slate-600'
-                                      : isLow
-                                        ? 'text-red-600 bg-red-50 hover:bg-red-100'
-                                        : 'text-slate-800 hover:bg-blue-50'
+                                    isLow
+                                      ? 'text-red-600 bg-red-50 hover:bg-red-100'
+                                      : 'text-slate-800 hover:bg-blue-50'
                                   }`
                             }`}
                           >
                             {fmtStock(effective.quantity, row.allowDecimal)}
-                            {isLow && !isMissing && !adjustBlocked && <span className="ml-1 text-xs font-normal">↓{fmtStock(effective.safety_stock, row.allowDecimal)}</span>}
+                            {isLow && !isMissing && !usageBlocked && <span className="ml-1 text-xs font-normal">↓{fmtStock(effective.safety_stock, row.allowDecimal)}</span>}
                           </button>
                         </td>
                       );
@@ -826,7 +838,7 @@ export default function InventoryPage() {
             </tbody>
           </table>
           <p className="text-xs text-slate-400 mt-3">
-            숫자 클릭 → 재고 조정(본사 권한) · 제품명 클릭 → 변동 이력 · 빨간 숫자 = 안전재고 미달 (↓기준값) · 원자재·부자재는 본사만 조정 가능
+            숫자 클릭 → 자가 사용(소모) · 강제 조정은 상단 버튼(본사 전용) · 제품명 클릭 → 변동 이력 · 빨간 숫자 = 안전재고 미달 (↓기준값) · 원자재·부자재는 본사만
           </p>
         </div>
       ) : (
@@ -878,6 +890,11 @@ export default function InventoryPage() {
                 const isLow = toNum(item.quantity) < toNum(item.safety_stock);
                 const pt = item.product?.product_type ?? null;
                 const materialBlocked = isMaterialType(pt) && !!hqBranchId && item.branch_id !== hqBranchId;
+                // 자가 사용: 지점직원은 자기 지점만, 원자재·부자재는 본사만, 현재고 0 비활성.
+                const usageBlocked =
+                  materialBlocked
+                  || (isBranchUser && item.branch_id !== userBranchId)
+                  || toNum(item.quantity) <= 0;
                 return (
                 <tr key={item.id}>
                   <td>{item.branch?.name}</td>
@@ -911,14 +928,30 @@ export default function InventoryPage() {
                     )}
                   </td>
                   <td>
+                    <button
+                      onClick={() => { if (!usageBlocked) handleUsageClick(item); }}
+                      disabled={usageBlocked}
+                      title={
+                        materialBlocked
+                          ? '원자재·부자재는 본사에서만 처리 가능'
+                          : (isBranchUser && item.branch_id !== userBranchId)
+                            ? '다른 지점 재고는 처리 불가'
+                            : toNum(item.quantity) <= 0
+                              ? '현재고 없음 · 자가 사용 불가'
+                              : '자가 사용(소모 차감)'
+                      }
+                      className={`mr-2 ${usageBlocked ? 'text-slate-300 cursor-not-allowed' : 'text-blue-600 hover:underline'}`}
+                    >
+                      자가 사용
+                    </button>
                     {isHQUser && (
                       <button
                         onClick={() => { if (!materialBlocked) handleAdjust(item); }}
                         disabled={materialBlocked}
-                        title={materialBlocked ? '원자재·부자재는 본사에서만 조정 가능' : undefined}
-                        className={`mr-2 ${materialBlocked ? 'text-slate-300 cursor-not-allowed' : 'text-blue-600 hover:underline'}`}
+                        title={materialBlocked ? '원자재·부자재는 본사에서만 조정 가능' : '강제 조정(실사·오류 보정 전용)'}
+                        className={`mr-2 ${materialBlocked ? 'text-slate-300 cursor-not-allowed' : 'text-red-600 hover:underline'}`}
                       >
-                        조정
+                        ⚠ 강제 조정
                       </button>
                     )}
                     <button
@@ -973,9 +1006,13 @@ export default function InventoryPage() {
           branches={isBranchUser && userBranchId ? branches.filter(b => b.id === userBranchId) : branches}
           inventories={inventories}
           usageTypes={usageTypes}
-          defaultBranchId={isBranchUser && userBranchId ? userBranchId : ''}
-          onClose={() => setShowUsageModal(false)}
-          onSuccess={() => { setShowUsageModal(false); fetchInventory(); }}
+          defaultProductId={usagePreselect?.productId}
+          defaultBranchId={
+            usagePreselect?.branchId
+            ?? (isBranchUser && userBranchId ? userBranchId : '')
+          }
+          onClose={() => { setShowUsageModal(false); setUsagePreselect(null); }}
+          onSuccess={() => { setShowUsageModal(false); setUsagePreselect(null); fetchInventory(); }}
         />
       )}
 
