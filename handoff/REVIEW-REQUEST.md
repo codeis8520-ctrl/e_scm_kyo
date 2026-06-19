@@ -1,34 +1,23 @@
-# Review Request — #48 Phase 3 (택배 상태표시 + 오프라인 매장만 + 매출처 콤보 활성필터)
+# Review Request — #47 수령일자 보존
 Date: 2026-06-19
 Ready for Review: YES
 
-> 표시/필터 레이어만. mutation·재무·재고·forward sync·기존 인라인 shipments update 0줄 변경.
-> 모든 변경 단일 파일: `src/app/(dashboard)/pos/SalesListTab.tsx`
+## 정책 요약
+RECEIVED 전이 시 receipt_date를 기존값 보존, NULL일 때만 오늘로 fill. PostgREST 컬럼참조 COALESCE 불가 → 모든 경로 2-step(①상태만 update ②`.is('receipt_date', null)` 행만 today fill).
 
 ## Files Changed
-- SalesListTab.tsx:115-141 — `SHIPMENT_STATUS_LABEL`/`SHIPMENT_STATUS_BADGE` 맵 신설(택배관리 page.tsx L109 라벨 일치) + 헬퍼 `displayStatusLabel(o)`(택배=shipment.status, NULL폴백 receiptStatusLabelFor) + `displayStatusBadge(o, receiptKey)`.
-- SalesListTab.tsx:~191 — PersistedFilters 인터페이스에 `offlineOnly: boolean` 추가.
-- SalesListTab.tsx:~252 — `offlineOnly` state(saved 복원) + '온라인몰 뷰와 반대방향' 주석.
-- SalesListTab.tsx:~289 — 저장 payload + deps 배열에 `offlineOnly` 추가(localStorage 영속).
-- SalesListTab.tsx:~589 — `filtered` memo 최상단 `offlineOnly && o.channel==='ONLINE' → 제외`(클라 필터) + memo deps에 offlineOnly.
-- SalesListTab.tsx:~778 — 행 상태 표시를 `displayStatusBadge`/`displayStatusLabel`로 교체.
-- SalesListTab.tsx:~948 — CSV 수령현황 열을 `displayStatusLabel`로 교체(행과 일관).
-- SalesListTab.tsx:~1065 — 매출처 콤보 옵션 `is_active!==false || id===branchFilter`로 활성필터(선택된 비활성 지점 유지).
-- SalesListTab.tsx:~1290 — '오프라인 매장만' 토글 버튼('미결 건만 보기' 옆, 동일 패턴).
+- src/lib/shipping-actions.ts (bulkUpdateReceiptStatus, else 비배송 분기 ~L402-422) — items·order 각각 상태 update + receipt_date NULL-only fill로 2-step 분리. 배송 경로는 (b) 헬퍼 위임이라 무수정.
+- src/lib/receipt-sync.ts:20-50 (syncReceiptStatusFromShipment) — DELIVERED 시 품목(PARCEL_PLANNED→RECEIVED)·주문(allReceived) 2-step. 예정일 있던 건 보존, NULL이던 실배송 건만 today fill → #19/#43 동작 무회귀.
+- src/app/(dashboard)/pos/SalesListTab.tsx (markItemReceived 품목+allDone 주문 update, markReceiptCompleted 주문 update) — 각 2-step. 로컬 setState `it.receipt_date || today`/`prev.receipt_date || today`로 기존값 우선. confirm 문구 수정.
+- src/lib/ai/schema.ts:213 — #43 설명에 receipt_date 보존(#47) 반영.
 
-(라인은 편집 누적으로 ±수 줄 이동 가능 — diff 기준 확인)
-
-## 중점 점검 (브리프 Acceptance 대응)
-- 택배 건: 행/CSV가 shipment.status 라벨로 표시되는가. shipment.status NULL인 택배 건 → 빈칸 없이 receipt 라벨 폴백되는가.
-- 방문/퀵/직접(shipment 없음): 기존 수령상태 라벨 무변경인가.
-- 행 라벨 vs CSV 라벨 일치(둘 다 displayStatusLabel).
-- offlineOnly: channel='ONLINE' 숨김, 해제 시 전체, 새로고침 후 영속(payload+deps+복원 3곳 모두).
-- 수령상태순 그룹/정렬(receiptGroups): 내부 receipt_status 버킷 그대로 — 표시 라벨 변경이 그룹핑 회귀 없음 확인.
-- 매출처 콤보: 활성 지점만 노출 + 이미 선택된 비활성 지점은 누락 안 됨.
+## reaggregate 적용/보류
+**보류(Known Gap)**. `reaggregateOrderReceiptStatus`는 convertOrderToParcel/convertOrderToPickup 두 전환 액션에서만 호출되며, 이들은 브리프 Out-of-Scope의 "의도적 날짜 리셋" 예외 경로. 보존 적용 시 전환 의도와 충돌 → 브리프 지침대로 현행 유지. 품목 receipt_date는 (b)/(c)에서 이미 보존됨.
 
 ## Open Questions
-- 택배 상태 배지 색: PENDING=강조(amber), PRINTED/SHIPPED=진행(blue), DELIVERED=회색(종결)로 단순 매핑. 과한 디자인 회피 의도 — 톤 적절성만 확인 부탁.
+- (b) 공용 헬퍼는 webhook/AI/단건·일괄 배송완료 전부 영향. 2-step 사이에 동시성 가드 없음(기존 코드도 단일 await 시퀀스, 멱등). 현재 호출 패턴상 문제 없다고 판단했으나 확인 요망.
+- (c) markItemReceived: 상태 update 성공(!error) 시에만 date-fill 2번째 쿼리 실행하도록 배치. 052 미적용(컬럼부재) 환경에서는 첫 update가 error → date-fill 스킵 + 기존 alert 폴백 유지 확인 요망.
 
 ## Out of Scope (logged in BUILD-LOG)
-- 역방향 sync 정식화(syncShipmentFromReceipt) — 방향 재정의로 비범위 확정.
-- 부분환불 per-line 재고복원 — 데이터 부재(영구).
+- reaggregate 주문레벨 today 강제(전환 액션 한정) — 보존 미적용, 충돌회피 의도. Known Gap 기재.
+- 방문↔택배 전환 날짜 리셋(convertOrderToParcel/Pickup), cafe24 webhook 택배예정일 세팅, POS 신규생성 receiptDate — 브리프 예외, 무수정.

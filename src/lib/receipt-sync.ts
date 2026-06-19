@@ -19,11 +19,20 @@ export async function syncReceiptStatusFromShipment(
 ): Promise<void> {
   if (newShipStatus === 'DELIVERED') {
     const today = kstTodayString();
+    // #47: 상태만 RECEIVED로 전이한 뒤, receipt_date가 비어있는 행만 오늘로 채운다.
+    //   → 택배예정일(수령예정일)이 입력돼 있던 건은 그 날짜를 보존(개선),
+    //     예정일 없던 실배송 건은 NULL이므로 오늘로 채워짐(#19/#43 기존 동작 유지).
     await supabase
       .from('sales_order_items')
-      .update({ receipt_status: 'RECEIVED', receipt_date: today })
+      .update({ receipt_status: 'RECEIVED' })
       .eq('sales_order_id', salesOrderId)
       .eq('receipt_status', 'PARCEL_PLANNED');
+    await supabase
+      .from('sales_order_items')
+      .update({ receipt_date: today })
+      .eq('sales_order_id', salesOrderId)
+      .eq('receipt_status', 'RECEIVED')
+      .is('receipt_date', null);
     // 전 품목 수령 시에만 주문도 RECEIVED. 방문 품목 잔존 시 주문 수령상태 불변.
     const { data: items } = await supabase
       .from('sales_order_items')
@@ -35,8 +44,13 @@ export async function syncReceiptStatusFromShipment(
     if (allReceived) {
       await supabase
         .from('sales_orders')
-        .update({ receipt_status: 'RECEIVED', receipt_date: today })
+        .update({ receipt_status: 'RECEIVED' })
         .eq('id', salesOrderId);
+      await supabase
+        .from('sales_orders')
+        .update({ receipt_date: today })
+        .eq('id', salesOrderId)
+        .is('receipt_date', null);
     }
   }
 }

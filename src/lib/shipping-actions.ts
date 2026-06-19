@@ -401,15 +401,27 @@ export async function bulkUpdateReceiptStatus(
         await syncReceiptStatusFromShipment(supabase, orderId, 'DELIVERED');
       } else {
         // 배송 없는 건(방문/퀵/직접) — 미수령 품목·주문을 수령완료로
+        // #47: 상태만 전이 후, receipt_date가 비어있는 행만 오늘로 채움(기존 수령일 보존).
         await supabase
           .from('sales_order_items')
-          .update({ receipt_status: 'RECEIVED', receipt_date: today })
+          .update({ receipt_status: 'RECEIVED' })
           .eq('sales_order_id', orderId)
           .neq('receipt_status', 'RECEIVED');
         await supabase
+          .from('sales_order_items')
+          .update({ receipt_date: today })
+          .eq('sales_order_id', orderId)
+          .eq('receipt_status', 'RECEIVED')
+          .is('receipt_date', null);
+        await supabase
           .from('sales_orders')
-          .update({ receipt_status: 'RECEIVED', receipt_date: today })
+          .update({ receipt_status: 'RECEIVED' })
           .eq('id', orderId);
+        await supabase
+          .from('sales_orders')
+          .update({ receipt_date: today })
+          .eq('id', orderId)
+          .is('receipt_date', null);
       }
       updated++;
     } catch (e: any) {

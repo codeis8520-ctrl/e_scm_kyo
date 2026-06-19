@@ -1,3 +1,24 @@
+# BUILD-LOG — #47 수령일자 보존 / #48 단일원장 정합
+
+## 🔨 #47 수령일자 보존 (빌드완료, 리뷰대기) — 2026-06-19
+### 정책
+RECEIVED 전이 = 상태값만 변경. receipt_date는 기존값 보존, NULL일 때만 오늘로 fill(COALESCE 시맨틱). PostgREST 컬럼참조 COALESCE 불가 → 2-step(①상태만 update ②receipt_date IS NULL 행만 today fill).
+
+### Bob 빌드 결과
+- **(a) 일괄 수령완료 비배송 경로** `src/lib/shipping-actions.ts` `bulkUpdateReceiptStatus` (else 분기, ~L402-422). items/order 각각 2-step으로 분리. 배송 경로(ship?.id)는 (b) 헬퍼 위임이라 무수정.
+- **(b) 공용 sync** `src/lib/receipt-sync.ts` `syncReceiptStatusFromShipment` (L20-50). DELIVERED 시 품목·주문 2-step. 예정일 있던 건 보존, 없던 건(NULL) today fill로 #19/#43 동작 유지. allReceived 재집계 로직 무변경.
+- **(c) 단건 드로어** `src/app/(dashboard)/pos/SalesListTab.tsx` `markItemReceived`(품목 update + allDone 주문 update)·`markReceiptCompleted`(주문 update) 각 2-step. 로컬 setState는 `it.receipt_date || today` / `prev.receipt_date || today`로 기존값 우선 표시. confirm 문구 "수령일자 → 비어있으면 오늘(기존값 보존)".
+- **AI Sync** `src/lib/ai/schema.ts` L213 #43 설명에 "receipt_date 기존 수령(예정)일 보존, 비어있을 때만 오늘로 fill(#47)" 반영. DB/도구 시그니처 무변경(tools.ts 무수정).
+- `npm run build` 0 error.
+
+### reaggregate 판단 — **보류**(Known Gap)
+`reaggregateOrderReceiptStatus`/`deriveOrderReceiptStatus`(sales-revise-actions.ts L464-491)는 **오직 `convertOrderToParcel`(L635)·`convertOrderToPickup`(L703) 두 전환 액션에서만 호출**된다. 이 두 액션은 브리프 Out-of-Scope의 "의도적 날짜 리셋" 예외 경로다. reaggregate에 보존(.is null)을 적용하면 전환 액션의 의도된 날짜 재설정 시맨틱과 충돌 → 브리프 지침("충돌 우려 시 현행 유지")대로 **현행 유지**. 품목 receipt_date는 (b)/(c)에서 이미 보존되며, 전환 액션은 사용자가 명시적으로 배송방식을 바꾸는 경우라 주문레벨 today 부여가 정상.
+
+#### Known Gap (#47)
+- `reaggregateOrderReceiptStatus` 주문레벨 receipt_date는 여전히 `deriveOrderReceiptStatus`에서 전부 RECEIVED 시 today 강제(전환 액션 한정). 보존 정책 미적용 — 충돌회피 의도. 추후 전환 액션에서 보존이 필요해지면 별도 검토.
+
+---
+
 # BUILD-LOG — #48 단일원장 정합
 
 ## ✅ Phase 1 — 취소·환불 ↔ 택배/재고/분개 연동 봉합 (배포완료)

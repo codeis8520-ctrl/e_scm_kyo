@@ -1818,10 +1818,18 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
     try {
       const sb = createClient() as any;
       const today = kstTodayString();
+      // #47: 상태만 전이 후, receipt_date가 비어있을 때만 오늘로 채움(기존 수령일 보존).
       const { error } = await sb
         .from('sales_order_items')
-        .update({ receipt_status: 'RECEIVED', receipt_date: today })
+        .update({ receipt_status: 'RECEIVED' })
         .eq('id', itemId);
+      if (!error) {
+        await sb
+          .from('sales_order_items')
+          .update({ receipt_date: today })
+          .eq('id', itemId)
+          .is('receipt_date', null);
+      }
       if (error) {
         const msg = String(error.message || '').toLowerCase();
         if (msg.includes('column') || msg.includes('receipt_status')) {
@@ -1832,20 +1840,25 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
         return;
       }
       const nextItems = items.map(it => it.id === itemId
-        ? { ...it, receipt_status: 'RECEIVED', receipt_date: today }
+        ? { ...it, receipt_status: 'RECEIVED', receipt_date: it.receipt_date || today }
         : it);
       setItems(nextItems);
       // 전 품목 RECEIVED이면 주문 레벨 + shipments도 완료
       const allDone = nextItems.every(it => !it.receipt_status || it.receipt_status === 'RECEIVED');
       if (allDone) {
+        // #47: 주문도 상태만 전이 후 비어있을 때만 오늘로 채움(기존 수령일 보존).
         await sb.from('sales_orders')
-          .update({ receipt_status: 'RECEIVED', receipt_date: today })
+          .update({ receipt_status: 'RECEIVED' })
           .eq('id', orderId);
+        await sb.from('sales_orders')
+          .update({ receipt_date: today })
+          .eq('id', orderId)
+          .is('receipt_date', null);
         if (shipment?.id) {
           await sb.from('shipments').update({ status: 'DELIVERED' }).eq('id', shipment.id);
           setShipment((prev: any) => prev ? { ...prev, status: 'DELIVERED' } : prev);
         }
-        setOrder((prev: any) => prev ? { ...prev, receipt_status: 'RECEIVED', receipt_date: today } : prev);
+        setOrder((prev: any) => prev ? { ...prev, receipt_status: 'RECEIVED', receipt_date: prev.receipt_date || today } : prev);
       }
       onChanged();
     } finally {
@@ -1861,20 +1874,26 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
       : wasParcel ? '택배 수령'
       : order?.receipt_status === 'PICKUP_PLANNED' ? '방문 수령'
       : '수령';
-    if (!confirm(`${statusLabel}을 완료 처리할까요?\n수령현황 → 수령완료, 수령일자 → 오늘`)) return;
+    if (!confirm(`${statusLabel}을 완료 처리할까요?\n수령현황 → 수령완료, 수령일자 → 비어있으면 오늘(기존값 보존)`)) return;
     setMarkingReceipt(true);
     try {
       const sb = createClient() as any;
       const today = kstTodayString();
+      // #47: 상태만 전이 후, receipt_date가 비어있을 때만 오늘로 채움(기존 수령일 보존).
       const { error: orderErr } = await sb
         .from('sales_orders')
-        .update({ receipt_status: 'RECEIVED', receipt_date: today })
+        .update({ receipt_status: 'RECEIVED' })
         .eq('id', orderId);
       if (orderErr) {
         alert('수령 완료 처리 실패: ' + orderErr.message);
         setMarkingReceipt(false);
         return;
       }
+      await sb
+        .from('sales_orders')
+        .update({ receipt_date: today })
+        .eq('id', orderId)
+        .is('receipt_date', null);
       // 배송 레코드가 있다면 함께 DELIVERED로 갱신 +
       // receipt_status가 바뀌기 전에 퀵/택배 단서를 shipments.delivery_type에 고정
       if (shipment?.id) {
@@ -1892,7 +1911,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
         }
       }
       // 로컬 상태 반영
-      setOrder((prev: any) => prev ? { ...prev, receipt_status: 'RECEIVED', receipt_date: today } : prev);
+      setOrder((prev: any) => prev ? { ...prev, receipt_status: 'RECEIVED', receipt_date: prev.receipt_date || today } : prev);
       if (shipment?.id) {
         setShipment((prev: any) => prev ? {
           ...prev,
