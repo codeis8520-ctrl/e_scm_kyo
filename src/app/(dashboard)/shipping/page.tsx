@@ -465,40 +465,39 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
     if (targets.length === 0) { alert('선택된 행이 없습니다.'); return; }
     if (!guardSenders(targets)) return;
 
+    // 실제 CJ대한통운 임포트 양식과 정확히 일치(12컬럼). 배송메세지2·보내는분우편번호 컬럼은
+    //   실제 양식에 없어 추가 시 임포트 오류 위험 → 제외. (사용자 제공 '택배기본 (경옥채-CJ대한통운).xlsx' 기준)
     const header = [
       '받는분성명', '받는분전화번호', '받는분기타연락처',
-      '받는분주소(전체, 분할)', '배송메세지1', '배송메세지2',
+      '받는분주소(전체, 분할)', '배송메세지1',
       '품목명', '내품명', '내품수량', '운임구분',
       '보내는분성명', '보내는분전화번호', '보내는분주소(전체, 분할)',
-      '보내는분우편번호',
     ];
-    // #46: 배송메세지1=고객 배송요청(순수), 배송메세지2=포장/옵션. 둘 다 송장 라벨에 인쇄되며 분리됨.
-
-    // #30: 내품명(G열)은 비움 — 송장에 코드성 문자열 노출 금지. (이전 RTC 매칭 제거)
-    //   보내는분성명(J열): 받는분=보내는분(본인 발송)이면 '더경옥'(회사명), 다르면 실제 보내는분(선물 등).
+    // #46: 배송메세지1 = 고객 직접입력 배송요청만(순수). 포장/옵션은 품목명에 ' / '로 병기
+    //   (CJ 관행 — 실제 양식엔 옵션 전용 컬럼이 없어 품목명에 구분값으로 함께 기재. 송장에도 품목명으로 인쇄됨).
+    // #30: 내품명(G열)은 비움 — 송장에 코드성 문자열 노출 금지.
+    //   보내는분성명(J열): 본인 발송이면 '더경옥', 다르면 실제 보내는분(선물 등).
     const rows = targets.map(s => {
-      // sender.name/phone 은 본인발송 시 '더경옥' + 회사 발신 전화로 이미 보정됨(resolveSenderForRow, #39).
       const sender = resolveSenderForRow(s);
       const senderFullAddress = [sender.address, sender.addressDetail].filter(Boolean).join(' ');
+      const opt = (s.order_options ?? '').trim();
+      const itemName = (s.items_summary || '') + (opt ? ` / ${opt}` : '');
       return [
         s.recipient_name, s.recipient_phone, '',
         [s.recipient_address, s.recipient_address_detail].filter(Boolean).join(' '),
         composeDeliveryMessage(s),   // 배송메세지1 = 순수 배송요청
-        s.order_options || '',       // 배송메세지2 = 포장/옵션(#46, 송장 라벨에 분리 인쇄)
-        s.items_summary || '',
+        itemName,                    // 품목명 + (옵션 병기)
         '',                 // 내품명 — 비움(#30)
         '', '선불',
         sender.name, sender.phone, senderFullAddress,
-        sender.zipcode || '',
       ];
     });
 
     const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
     ws['!cols'] = [
       { wch: 12 }, { wch: 16 }, { wch: 14 }, { wch: 50 }, { wch: 30 },
-      { wch: 20 },   // #46: 배송메세지2 = 포장/옵션
-      { wch: 24 }, { wch: 16 }, { wch: 8 }, { wch: 8 },
-      { wch: 12 }, { wch: 16 }, { wch: 40 }, { wch: 10 },
+      { wch: 30 }, { wch: 16 }, { wch: 8 }, { wch: 8 },
+      { wch: 12 }, { wch: 16 }, { wch: 40 },
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'sheet1');
