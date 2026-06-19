@@ -344,7 +344,7 @@ export default function DashboardClient() {
         </Link>
 
         <Link
-          href="/shipping"
+          href="/pos?tab=parcel"
           className={`stat-card block transition-all hover:ring-2 ${
             data.unshippedCount > 0
               ? 'bg-amber-50 hover:ring-amber-300'
