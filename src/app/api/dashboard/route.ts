@@ -164,7 +164,8 @@ export async function GET(request: NextRequest) {
         .slice(0, 30) };
     })(),
     (() => {
-      let q = supabase.from('branches').select('id, name');
+      // 활성 지점만 — 비활성 지점은 대시보드 지점별 재고/목록에서 제외.
+      let q = supabase.from('branches').select('id, name').eq('is_active', true);
       if (branchId && branchId !== 'ALL') q = q.eq('id', branchId);
       return q;
     })(),
