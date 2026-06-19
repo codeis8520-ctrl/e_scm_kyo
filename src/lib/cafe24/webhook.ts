@@ -7,6 +7,7 @@ import { createSaleJournal } from '@/lib/accounting-actions';
 import { fireNotificationTrigger } from '@/lib/notification-triggers';
 import { kstTodayString } from '@/lib/date';
 import { syncReceiptStatusFromShipment } from '@/lib/receipt-sync';
+import { restoreOnlineOrderInventory } from './online-inventory';
 
 let supabase: SupabaseClient | null = null;
 
@@ -761,13 +762,21 @@ async function handleOrderCancelled(
 ): Promise<{ success: boolean; message: string; orderId?: string }> {
   const { data: order } = await getSupabase()
     .from('sales_orders')
-    .select('id')
+    .select('id, order_number, status, total_amount, discount_amount, payment_method')
     .eq('order_number', orderCode)
     .single();
 
   if (!order) {
     return { success: false, message: 'Order not found' };
   }
+
+  // 멱등(이미 CANCELLED): 재진입 webhook 이중 재고복원/이중 역분개 방지
+  if (order.status === 'CANCELLED') {
+    await logSyncEvent('order_cancelled', orderCode, { skipped: 'already cancelled' }, 'success');
+    return { success: true, message: 'Order already cancelled', orderId: order.id };
+  }
+
+  const wasCompleted = order.status === 'COMPLETED';
 
   const { error } = await getSupabase()
     .from('sales_orders')
@@ -777,6 +786,31 @@ async function handleOrderCancelled(
   if (error) {
     await logSyncEvent('order_cancelled_error', orderCode, null, 'failed', error.message);
     return { success: false, message: error.message };
+  }
+
+  // ① ONLINE_SALE 차감재고 복원(컷오프·미차감건은 자동 무대상)
+  try {
+    await restoreOnlineOrderInventory(getSupabase(), order.id, 'ONLINE_SALE_CANCEL');
+  } catch {
+    // 재고복원 실패는 경고만 (취소 상태 변경 자체는 유지)
+  }
+
+  // ② 매출 역분개 — 원래 COMPLETED였던 건만(net 음수, #42 규약)
+  if (wasCompleted) {
+    try {
+      const netSaleAmount = Number(order.total_amount) - Number(order.discount_amount || 0);
+      await createSaleJournal({
+        orderId: order.id,
+        orderNumber: `CANCEL-${order.order_number}`,
+        orderDate: kstTodayString(),
+        totalAmount: -netSaleAmount,
+        paymentMethod: order.payment_method ?? 'card',
+        cogs: 0,
+        sourceType: 'SALE_CANCEL',
+      });
+    } catch {
+      // 역분개 실패는 경고만
+    }
   }
 
   await logSyncEvent('order_cancelled', orderCode, null, 'success');
@@ -834,6 +868,16 @@ async function handleOrderRefunded(
       });
     } catch {
       // 역분개 실패는 경고만
+    }
+  }
+
+  // ONLINE_SALE 차감재고 복원 — 전체환불(REFUNDED)일 때만 전량 복원(#48).
+  // 부분환불(PARTIALLY_REFUNDED)은 수량단위 복원 불명확 → 범위 밖(재고복원 skip).
+  if (!isPartial) {
+    try {
+      await restoreOnlineOrderInventory(getSupabase(), order.id, 'ONLINE_REFUND');
+    } catch {
+      // 재고복원 실패는 경고만 (환불 상태 변경 자체는 유지)
     }
   }
 

@@ -44,6 +44,18 @@ export async function cancelCreditOrder(params: {
   if (order.status === 'CANCELLED') return { error: '이미 취소된 주문입니다.' };
 
   try {
+    // 1.5. 연결 택배 정리 가드 (#48) — 어떤 mutation보다 먼저.
+    // 발송완료(SHIPPED/DELIVERED) 연결건이 있으면 취소 차단 + 환불 유도(데이터 무변경).
+    const { voidShipmentsForOrder } = await import('@/lib/shipping-actions');
+    const shipResult = await voidShipmentsForOrder(db, {
+      salesOrderId: order.id,
+      cafe24OrderId: order.cafe24_order_id,
+      reason: params.reason,
+    });
+    if (shipResult.blocked) {
+      return { error: '이미 발송된 주문은 취소할 수 없습니다. 환불 처리로 진행해주세요.' };
+    }
+
     // 2. 재고 복원
     for (const item of (order.order_items || []) as any[]) {
       const { data: inv } = await db
@@ -152,6 +164,7 @@ export async function cancelCreditOrder(params: {
   revalidatePath('/inventory');
   revalidatePath('/reports');
   revalidatePath('/accounting');
+  revalidatePath('/shipping');
 
   return {
     success: true,

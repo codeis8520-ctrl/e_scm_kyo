@@ -739,7 +739,7 @@ sales_orders·inventories 등 핵심 거래 테이블은 삭제 불가.`,
       description: `POS 판매 주문 취소 (CANCELLED). 환불(return_orders 생성)과 다른 점은 거래 자체를 무르는 것 — 매출 자체를 역분개합니다.
 사용 예: "방금 등록한 SA-GN-... 잘못 등록했어 취소해줘", "거래 자체를 취소".
 원리: status→CANCELLED + 재고 복원(SALE_CANCEL movement) + 적립 포인트 차감 + 사용 포인트 환원 + 매출 분개 역분개.
-주의: 원본 주문 status가 COMPLETED여야 함. 환불 진행 중인 건은 환불로 이어가야 함. 외상 미수금 건은 자동으로 외상 취소 흐름으로 위임.`,
+주의: 원본 주문 status가 COMPLETED여야 함. 환불 진행 중인 건은 환불로 이어가야 함. 외상 미수금 건은 자동으로 외상 취소 흐름으로 위임. 연결 배송(택배)이 발송완료(SHIPPED/DELIVERED)면 취소 차단(환불 유도), 미발송 배송은 함께 삭제.`,
       parameters: {
         type: 'object',
         properties: {

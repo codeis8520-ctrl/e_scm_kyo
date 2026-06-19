@@ -237,6 +237,55 @@ export async function deleteShipment(id: string) {
 }
 
 /**
+ * 전표 취소 ↔ 택배 연동 (#48 Phase 1, STORE 경로)
+ *
+ * 전표 취소 시 연결된 shipment(택배)를 일괄 정리한다. 호출자(cancelSalesOrder/cancelCreditOrder)가
+ * 재고·포인트·분개 등 어떤 mutation보다 **먼저** 호출해 가드해야 한다.
+ *
+ * 동작:
+ *   - 연결 shipment를 다건 조회: sales_order_id 우선, 0건이면 cafe24_order_id 폴백.
+ *   - 가드: SHIPPED/DELIVERED가 하나라도 있으면 즉시 { blocked: true } 반환(아무것도 변경 안 함).
+ *           → 호출자는 취소를 차단하고 환불로 유도해야 한다.
+ *   - PENDING/PRINTED만 연결됐으면 물리삭제(shipments.status enum에 CANCELLED 없음).
+ *   - 0건이면 { blocked:false, deleted:0 } — 멱등(재호출 안전).
+ *
+ * @param db createClient() 기반 클라이언트(호출자가 보유한 세션 클라이언트 재사용)
+ */
+export async function voidShipmentsForOrder(
+  db: any,
+  params: { salesOrderId: string; cafe24OrderId?: string | null; reason?: string }
+): Promise<{ blocked: boolean; deleted: number }> {
+  // 연결 shipment 다건 조회 — sales_order_id 우선
+  let shipments: { id: string; status: string }[] = [];
+  const { data: bySo } = await db
+    .from('shipments')
+    .select('id, status')
+    .eq('sales_order_id', params.salesOrderId);
+  shipments = (bySo ?? []) as { id: string; status: string }[];
+
+  // sales_order_id로 0건이고 cafe24_order_id 있으면 폴백 조회
+  if (shipments.length === 0 && params.cafe24OrderId) {
+    const { data: byCafe24 } = await db
+      .from('shipments')
+      .select('id, status')
+      .eq('cafe24_order_id', params.cafe24OrderId);
+    shipments = (byCafe24 ?? []) as { id: string; status: string }[];
+  }
+
+  if (shipments.length === 0) return { blocked: false, deleted: 0 };
+
+  // 가드: 발송완료(SHIPPED/DELIVERED) 연결건이 하나라도 있으면 차단 — 아무것도 변경하지 않음
+  const hasShipped = shipments.some((s) => s.status === 'SHIPPED' || s.status === 'DELIVERED');
+  if (hasShipped) return { blocked: true, deleted: 0 };
+
+  // PENDING/PRINTED만 남음 → 물리삭제
+  const ids = shipments.map((s) => s.id);
+  await db.from('shipments').delete().in('id', ids);
+
+  return { blocked: false, deleted: ids.length };
+}
+
+/**
  * 판매현황 수령상태 일괄 변경 (#38)
  *
  * 여러 주문의 수령상태를 한 번에 수령·배송완료(RECEIVED)로 변경.

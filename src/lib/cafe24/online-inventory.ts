@@ -87,3 +87,89 @@ export async function deductOnlineOrderInventory(
   }
   return deducted;
 }
+
+/**
+ * 온라인(자사몰) 주문 재고 복원 — #48 Phase 1 (deductOnlineOrderInventory의 역연산)
+ *
+ * 카페24 취소/환불 webhook에서 ONLINE_SALE로 차감했던 재고를 IN으로 되돌린다.
+ *  - 복원 지점 = 주문의 sales_orders.branch_id('자사몰').
+ *  - **차감된 품목만 복원**: 해당 품목(item.id)에 ONLINE_SALE movement가 있을 때만 IN.
+ *    → 컷오프(2026-06-17) 이전·미매핑·track_inventory=false건은 애초 ONLINE_SALE이 없으므로 자동 무대상.
+ *    (ordered_at 별도 비교 불요 — 차감 멱등키 재사용으로 대칭 보장)
+ *  - 복원 멱등: 같은 item.id에 refType movement가 이미 있으면 skip(이중 복원 방지).
+ *
+ * @param refType 'ONLINE_SALE_CANCEL'(취소) | 'ONLINE_REFUND'(전체환불) — 멱등키 분리
+ */
+export async function restoreOnlineOrderInventory(
+  sb: any,
+  salesOrderId: string,
+  refType: 'ONLINE_SALE_CANCEL' | 'ONLINE_REFUND',
+): Promise<number> {
+  const { data: order } = await sb
+    .from('sales_orders')
+    .select('id, branch_id, order_number')
+    .eq('id', salesOrderId)
+    .maybeSingle();
+  if (!order?.branch_id) return 0;
+
+  const { data: items } = await sb
+    .from('sales_order_items')
+    .select('id, product_id, quantity, product:products(track_inventory)')
+    .eq('sales_order_id', salesOrderId);
+
+  let restored = 0;
+  for (const it of (items ?? []) as any[]) {
+    if (!it.product_id) continue;
+    if (it.product?.track_inventory === false) continue;
+    const qty = Number(it.quantity) || 0;
+    if (qty <= 0) continue;
+
+    // 차감 가드 — 이 품목이 ONLINE_SALE로 차감된 적 없으면 복원 대상 아님(컷오프·미매핑 자동 필터)
+    const { data: deducted } = await sb
+      .from('inventory_movements')
+      .select('id')
+      .eq('reference_type', 'ONLINE_SALE')
+      .eq('reference_id', it.id)
+      .limit(1);
+    if (!deducted?.length) continue;
+
+    // 복원 멱등 가드 — 이미 복원됐으면 skip
+    const { data: alreadyRestored } = await sb
+      .from('inventory_movements')
+      .select('id')
+      .eq('reference_type', refType)
+      .eq('reference_id', it.id)
+      .limit(1);
+    if (alreadyRestored?.length) continue;
+
+    // inventories 복원(없으면 신규 qty)
+    const { data: inv } = await sb
+      .from('inventories')
+      .select('id, quantity')
+      .eq('branch_id', order.branch_id)
+      .eq('product_id', it.product_id)
+      .maybeSingle();
+    if (inv) {
+      await sb.from('inventories').update({ quantity: (Number(inv.quantity) || 0) + qty }).eq('id', inv.id);
+    } else {
+      await sb.from('inventories').insert({
+        branch_id: order.branch_id,
+        product_id: it.product_id,
+        quantity: qty,
+        safety_stock: 0,
+      });
+    }
+
+    await sb.from('inventory_movements').insert({
+      branch_id: order.branch_id,
+      product_id: it.product_id,
+      movement_type: 'IN',
+      quantity: qty,
+      reference_id: it.id,            // 품목 단위 멱등키
+      reference_type: refType,
+      memo: `자사몰 취소 재고 복원: ${order.order_number ?? ''}`.trim(),
+    });
+    restored++;
+  }
+  return restored;
+}
