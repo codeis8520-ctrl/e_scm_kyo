@@ -79,7 +79,8 @@ export default function TransferBatchPanel({
   const allowDecimalOf = (productId: string): boolean =>
     srcInventories.find((i) => i.product_id === productId)?.product?.allow_decimal_stock === true;
 
-  // 둘러보기 목록 — 출발 지점(fromBranchId) 재고>0 품목 전체. search 는 필터로만 동작.
+  // 둘러보기 목록 — 출발 지점(fromBranchId) 전체 품목(재고 0/음수 포함). search 는 필터로만 동작.
+  //   음수 재고 정책: 출발지 재고가 없어도 이동 허용(이동 후 출발지는 음수로 차감). 재고>0 제한 제거.
   // 이미 담긴 품목도 목록에 남긴다(체크 상태로 표시). 이름 한글 오름차순 정렬, 상위 200개 캡.
   const BROWSE_CAP = 200;
   const browseAll = useMemo(() => {
@@ -90,7 +91,6 @@ export default function TransferBatchPanel({
       const p = inv.product;
       if (!p) continue;
       if (inv.branch_id !== fromBranchId) continue;
-      if (toNum(inv.quantity) <= 0) continue;
       if (seen.has(inv.product_id)) continue;
       seen.add(inv.product_id);
       out.push({ product_id: inv.product_id, name: p.name, code: p.code });
@@ -163,10 +163,10 @@ export default function TransferBatchPanel({
     return stock !== null && r.quantity > stock;
   });
   const hasInvalidQty = rows.some((r) => r.quantity < 1);
+  // 음수 재고 정책: 현재고 초과(hasOver)는 제출을 막지 않고 경고로만 표시(출발지 음수 차감 허용).
   const submitDisabled =
     loading ||
     sameBranch ||
-    hasOver ||
     hasInvalidQty ||
     rows.length === 0 ||
     !fromBranchId ||
@@ -441,6 +441,11 @@ export default function TransferBatchPanel({
           </div>
         )}
 
+        {hasOver && (
+          <p className="text-xs text-amber-600 pt-1">
+            ⚠ 일부 품목이 현재고를 초과합니다 — 이동 후 출발지 재고가 음수로 차감됩니다(허용).
+          </p>
+        )}
         <div className="pt-2">
           <button
             type="submit"
