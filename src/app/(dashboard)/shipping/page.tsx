@@ -1204,10 +1204,18 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                             <span className="text-slate-400 mt-0.5 shrink-0">{isExpanded ? '▾' : '▸'}</span>
                             <span className={isExpanded ? 'whitespace-pre-wrap break-words' : 'truncate'}>{order.items_summary || <span className="text-slate-300">-</span>}</span>
                           </button>
+                          {(() => {
+                            const unmapped = items.filter(i => i.product_code && !i.mapped_name).length;
+                            return unmapped > 0 ? (
+                              <span className="inline-flex items-center text-xs px-1.5 py-0.5 mt-1 rounded bg-amber-50 text-amber-700" title="펼쳐서 해당 품목을 내부 제품에 매핑하세요">
+                                ⚠ 미매핑 {unmapped}건
+                              </span>
+                            ) : null;
+                          })()}
                         </td>
                         <td className="text-sm text-slate-700 whitespace-nowrap">{order.total_price.toLocaleString()}원</td>
                         <td><span className={`${CAFE24_STATUS_BADGE[order.cafe24_status] ?? 'badge'} text-xs`}>{CAFE24_STATUS_LABEL[order.cafe24_status] ?? order.cafe24_status}</span></td>
-                        <td>{order.already_added && <span className="badge badge-info text-xs">추가됨</span>}</td>
+                        <td>{order.already_added && <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 whitespace-nowrap" title="이 주문은 이미 배송 추가되어 판매전표가 생성되었습니다">✓ 전표생성완료</span>}</td>
                       </tr>
                       {isExpanded && (
                         <tr className="bg-slate-50/70">

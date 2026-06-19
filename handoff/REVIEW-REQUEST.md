@@ -1,24 +1,26 @@
-# Review Request — 시간 기반 자동 배송완료 (track-sync 교체)
+# Review Request — 온라인몰 탭 표시 강화 배지 2종 (#50)
 Date: 2026-06-19
 Ready for Review: YES
 
 ## Files Changed
-- src/app/api/shipping/track-sync/route.ts:1-75 — SweetTracker 추적 전면 제거, 시간기반 자동 배송완료로 같은 경로에서 로직 교체. SHIPPED+송장+updated_at<=now-N일 → DELIVERED update + (soId 있을 때) syncReceiptStatusFromShipment 연동. N = ?days > env SHIPPING_AUTODELIVER_DAYS > 3, limit 기본40·최대200, CRON_SECRET Bearer 가드 유지. 응답 {delivered, candidates, days, message(추정 명시)}.
-- src/lib/ai/schema.ts:133,137,139 — AI Sync. SweetTracker→택배(송장) 정리 + 시간기반 자동완료 설명(updated_at N일·추정·외부API없음·멱등·편집시 시계리셋) 반영. DB_SCHEMA 컬럼 무변경.
+- src/app/(dashboard)/shipping/page.tsx (cafe24 탭 테이블 행 렌더만, 2곳):
+  - 품목 셀 collapsed 영역 (toggle 버튼 아래) — `unmapped = items.filter(i => i.product_code && !i.mapped_name).length`; unmapped>0일 때만 amber 배지 `⚠ 미매핑 N건`. 매핑완료/0건/품목코드없음은 무표시.
+  - 마지막 컬럼 (`order.already_added`) — 기존 `추가됨`(badge-info)을 emerald `✓ 전표생성완료` 배지로 교체.
 
-## 검증 완료
-- npm run build 0 error.
-- track-sync 라우트 SWEETTRACKER/fetchDelivered/level===6 grep 0건.
-- 쿼리 = status='SHIPPED' AND tracking_number NOT NULL AND updated_at<=now-N일, asc, limit.
-- soId NULL(cafe24 미해소)건 = shipment.status만 DELIVERED, receipt 연동 skip.
-- 멱등 = SHIPPED 필터로 DELIVERED/취소/반품 자동 제외.
+## 사용한 매핑상태 필드
+- `order.order_items[].product_code` (있어야 매핑 대상 — 기존 L1223 `noCode` 분기와 동일 기준)
+- `order.order_items[].mapped_name` (매핑되면 채워짐 — 기존 L1230 펼침 표시와 동일)
+- `order.already_added` (route L390 existingShipments 산출 — 기존 값 재사용)
+- 추가 쿼리/route.ts/DB/마이그/AI schema·tools 변경 0.
+
+## Self-Review
+- Richard가 먼저 볼 것: 미매핑 카운트 기준이 펼침영역(L1248)의 noCode 규칙과 일치하는가 → 일치(product_code 있는 품목만 카운트). emerald 전표완료 배지가 opacity-40 흐림과 충돌하는가 → 흐림은 브리프대로 유지, 배지는 흐림 안에서도 색 대비로 식별 가능.
+- 모든 요구사항 구현: 배지1(미매핑만 amber, 매핑완료 무표시) ✓ / 배지2(✓ 전표생성완료 emerald, opacity-40 유지) ✓.
+- 빈 데이터: items 0건 → unmapped=0 → 무표시(정상). already_added=false → 배지 무표시(정상).
+- `npm run build`: ✓ Compiled successfully, 0 error.
 
 ## Open Questions
-- N 기본값 3일 적정 여부(브리프 확정값). 운영 중 env로 조정 가능.
-- limit 상한 200으로 상향(외부 쿼터 제거에 따른) — 단일 배치 처리량 의도대로인지.
+- 없음. (감사 E1 흐림완화·E3 매핑완료 양성표시는 브리프/감사 권장에 따라 의도적으로 미반영 — PO 결정사항.)
 
 ## Out of Scope (logged in BUILD-LOG)
-- shipped_at 컬럼 신설(updated_at 편집 리셋 — 의도된 동작).
-- 과거 누적 SHIPPED 백필(크론 자연 흡수).
-- 자동완료 시 고객 알림톡 발송(별도 결정).
-- track/route.ts 개별 추적 라우트의 SweetTracker 잔재(이번 범위 아님 — track-sync만 교체).
+- 없음. 보존영역 전부 무변경.

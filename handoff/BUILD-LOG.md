@@ -1,3 +1,33 @@
+# BUILD-LOG — 온라인몰 탭 표시 강화 배지 2종 (#50)
+
+## 🔨 빌드완료 (리뷰대기) — 2026-06-19
+감사문서(ONLINE-TAB-AUDIT.md) 결론대로 9요청 중 6개 기충족·1개 저가치 라벨링은 손대지 않고, "표시 강화" 신규 2개만 추가. route.ts·DB·마이그·AI schema.ts·tools.ts 전부 무변경(데이터 이미 존재).
+
+### Bob 빌드 결과
+- **(배지1) 품목 매핑상태 행 배지** `src/app/(dashboard)/shipping/page.tsx` 품목 셀 collapsed 영역(toggle 버튼 아래). 서버가 내려주는 `order.order_items[].product_code`/`mapped_name` 재사용. `unmapped = items.filter(i => i.product_code && !i.mapped_name).length` — product_code 없는 품목(매핑불가)은 기존 L1248~1249 규칙과 동일하게 제외. **unmapped>0일 때만** amber 배지 `⚠ 미매핑 N건`(매핑완료/0건/품목없음은 무표시 — 화면 소음 최소화, 감사 E3 권장안).
+- **(배지2) 전표생성완료 배지** 같은 파일 마지막 컬럼. `order.already_added` 시 기존 `추가됨`(badge-info, 끝쪽 약함)을 emerald `✓ 전표생성완료`(bg-emerald-50)로 교체. 기존 행 흐림 `opacity-40`(L1172)은 **브리프 지시대로 유지**(감사 E1은 PO 결정사항이라 흐림 변경 안 함).
+
+### 결정
+- 미매핑 배지: 추가 쿼리/route 변경 0 — `product_code`(L1223 noCode 분기)·`mapped_name`(L1230)은 이미 페이로드에 존재 확인. 빌드 0 error.
+- emerald 양성표시(매핑완료 배지)는 감사 E3 권장(미매핑만 경고)에 따라 의도적으로 미추가.
+
+### Known Gap
+- 없음. 보존영역(#25 staged·#48 1전표·필터·고객등록·중복플래그·매핑 데이터층) 전부 무회귀.
+
+---
+
+# BUILD-LOG — 수령상태 일괄변경 임의 대상 확장 (되돌리기 + 배송완료)
+
+## 📋 결정 (브리프 갱신 — 빌드 전) — 2026-06-19
+PO 추가지시 2건 반영해 ARCHITECT-BRIEF.md 갱신:
+- (1) 드롭다운 최종옵션 '배송완료/수령(최종)'(internal=RECEIVED). 택배건=shipment DELIVERED 동기화→택배관리 '배송완료' 노출(역방향 정합), 오프라인=‘수령’. 기존 RECEIVED 분기가 이미 충족(추가코드 불요, 확인만).
+- (2) 예정 3종 되돌림 시 receipt_date **보존(클리어 금지)** — PO #47 원칙.
+
+#### Known Gap (불일치 — 추적)
+- **단일 되돌리기 vs bulk 되돌리기 receipt_date 불일치**: 단일 `revertReceiptStatus`(SalesListTab.tsx L1948)·`revertItemReceived`(L2006)는 `receipt_date=null` 클리어. 이번 bulk는 보존. 의도된 불일치(이번 스텝은 bulk만). 추후 단일 UI도 보존으로 통일 필요시 별도 검토.
+
+---
+
 # BUILD-LOG — 시간 기반 자동 배송완료 (track-sync 교체)
 
 ## 🔨 시간기반 자동 배송완료 (빌드완료, 리뷰대기) — 2026-06-19
