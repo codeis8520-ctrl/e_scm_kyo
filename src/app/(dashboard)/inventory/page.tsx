@@ -490,6 +490,12 @@ export default function InventoryPage() {
     return <span><span className="font-mono text-slate-400 mr-1">[{info.pathCode}]</span>{info.pathName}</span>;
   };
 
+  // 지점 사용자(BRANCH_STAFF/PHARMACY_STAFF)는 본인 지점만 조회 — 피벗 매트릭스 컬럼도 자기 지점만 노출.
+  //   (데이터 페치는 flatBranchFilter=userBranchId 로 이미 자기 지점만 수신. 여기서 타 지점 컬럼 이름까지 숨김.)
+  const visibleBranches = (isBranchUser && userBranchId)
+    ? branches.filter(b => b.id === userBranchId)
+    : branches;
+
   // 재고 부족 수 (지점 사용자는 자기 지점만)
   const lowCount = inventories.filter(i =>
     i.product?.track_inventory !== false &&
@@ -676,7 +682,7 @@ export default function InventoryPage() {
               <tr>
                 <th className="w-24">코드</th>
                 <th>제품명</th>
-                {branches.map(b => (
+                {visibleBranches.map(b => (
                   <th key={b.id} className="text-center whitespace-nowrap">{b.name}</th>
                 ))}
               </tr>
@@ -684,7 +690,7 @@ export default function InventoryPage() {
             <tbody>
               {filteredPivot.length === 0 ? (
                 <tr>
-                  <td colSpan={3 + branches.length} className="text-center text-slate-400 py-8">
+                  <td colSpan={3 + visibleBranches.length} className="text-center text-slate-400 py-8">
                     검색 결과가 없습니다
                   </td>
                 </tr>
@@ -694,7 +700,7 @@ export default function InventoryPage() {
                 // 그룹별: 헤더 → 행들 → 소계
                 const headerRow = (
                   <tr key={`hdr-${group.categoryId || 'none'}-${gIdx}`} className="bg-slate-50">
-                    <td colSpan={2 + branches.length} className="px-3 py-1.5 text-xs font-semibold text-slate-600">
+                    <td colSpan={2 + visibleBranches.length} className="px-3 py-1.5 text-xs font-semibold text-slate-600">
                       {renderCategoryLabel(group.categoryId)}
                       <span className="text-slate-400 ml-2">({group.rows.length}품목)</span>
                     </td>
@@ -705,7 +711,7 @@ export default function InventoryPage() {
                 const groupHasDecimal = group.rows.some(r => r.allowDecimal);
                 const branchTotals: Record<string, number> = {};
                 for (const r of group.rows) {
-                  for (const b of branches) {
+                  for (const b of visibleBranches) {
                     const inv = r.byBranch[b.id];
                     branchTotals[b.id] = (branchTotals[b.id] || 0) + toNum(inv?.quantity);
                   }
@@ -715,7 +721,7 @@ export default function InventoryPage() {
                     <td className="px-3 py-1.5 text-xs text-slate-500 font-medium" colSpan={2}>
                       └ 소계
                     </td>
-                    {branches.map(b => (
+                    {visibleBranches.map(b => (
                       <td key={b.id} className="text-center text-xs font-semibold text-slate-700">
                         {fmtStock(branchTotals[b.id], groupHasDecimal)}
                       </td>
@@ -783,7 +789,7 @@ export default function InventoryPage() {
                         </button>
                       )}
                     </td>
-                    {branches.map(b => {
+                    {visibleBranches.map(b => {
                       const inv = row.byBranch[b.id];
                       // 레코드가 없는 지점은 가상 재고 객체로 처리 (재고 0, 클릭 가능)
                       const effective: Inventory = inv ?? {
