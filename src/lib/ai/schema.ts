@@ -2,7 +2,8 @@ export const DB_SCHEMA = `
 == 핵심 테이블 스키마 ==
 
 --- 지점·제품·재고 ---
-branches: id, name, code, channel(STORE/DEPT_STORE/ONLINE/EVENT), address, phone, is_active, is_headquarters, sort_order(정렬값, 기본999·작을수록 앞), sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail
+branches: id, name, code, channel(channels FK·기본 STORE/DEPT_STORE/ONLINE/EVENT, 코드관리에서 커스텀 채널 추가 가능), address, phone, is_active, is_headquarters, sort_order(정렬값, 기본999·작을수록 앞), sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail
+  ※ channel 은 channels 테이블 FK(확장 가능). sales_orders.channel 도 마이그093에서 동일 channels FK 로 통일(이전 고정 CHECK 4값 제거) — 커스텀 채널 지점 판매 시 채널CHECK 위반 버그 해소.
   ※ sender_*: 택배 보내는분 정보 (대한통운 엑셀 임포트용). 미입력 시 sender_name←"경옥채 "+name, sender_phone←phone, sender_address←address 로 폴백.
 products: id, name, code, barcode, unit, price(판매가), cost(원가), cost_source(MANUAL/BOM), product_type(FINISHED/RAW/SUB/SERVICE), track_inventory(bool), is_phantom(bool), pack_child_id(uuid|null), pack_child_qty(int|null), pos_widget(bool, POS 판매등록 위젯 그리드 노출 여부·검색 등록은 무관), allow_decimal_stock(bool, 마이그 087), is_active
   ※ allow_decimal_stock(마이그 087): true면 이 제품 재고를 소수(NUMERIC 4자리)로 차감·표시·조정 허용(예: 산삼/침향 base 환 단위 묶음 분해 차감). false면 정수만. phantom-BOM 분해 시 허용 material 은 BOM 분수 수량(예: 0.0333)을 반올림 없이 그대로 차감, 비허용은 Math.ceil.
