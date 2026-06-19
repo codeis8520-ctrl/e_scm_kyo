@@ -123,14 +123,31 @@ export async function createShipment(data: ShipmentInput) {
     salesOrderId = confirm.orderId;
   }
 
+  // 2중배송 가드(#48 Phase 2a): 전표당 배송 1건(1전표=1발송지). salesOrderId 확정 후·insert 전
+  //   단일 위치 — STORE/CAFE24 공통 커버. 이미 그 전표에 배송이 있으면 2번째를 만들지 않는다.
+  //   (마이그094 uq_shipments_sales_order_id 와 이중 방어 — 여기선 깔끔한 메시지 제공.)
+  if (salesOrderId) {
+    const { data: existing } = await supabase
+      .from('shipments')
+      .select('id')
+      .eq('sales_order_id', salesOrderId)
+      .limit(1);
+    if (existing && existing.length > 0) {
+      return { success: false, error: '이미 배송이 추가된 전표입니다(전표당 1배송).' };
+    }
+  }
+
   const { error } = await supabase
     .from('shipments')
     .insert([{ ...shipmentData, sales_order_id: salesOrderId }]);
 
   if (error) {
     console.error('createShipment error:', error);
-    // 부분 UNIQUE(uq_shipments_cafe24_order_id) 경합 — 동시 추가 시 친절한 메시지(#44).
+    // 부분 UNIQUE(uq_shipments_cafe24_order_id / uq_shipments_sales_order_id) 경합 — 친절 메시지.
     if ((error as any).code === '23505' || /duplicate key|unique/i.test(String(error.message))) {
+      if (/sales_order/i.test(String((error as any).message))) {
+        return { success: false, error: '이미 배송이 추가된 전표입니다(전표당 1배송).' };
+      }
       return { success: false, error: '이미 배송 추가된 카페24 주문입니다(중복 방지).' };
     }
     return { success: false, error: error.message };

@@ -82,6 +82,7 @@ sales_order_items: id, sales_order_id, product_id(nullable — 080), quantity, u
   ※ delivery_type=품목별 배송 방식 — 같은 전표에서 품목별로 다를 수 있음(예: 3품목 중 1품목만 택배, 2품목 현장수령). 단 shipments는 주문당 1건 유지(수령지 1곳만 전제; 2곳 이상은 새 전표 분리).
   ※ receipt_status=품목별 수령 상태. sales_orders.receipt_status는 품목 상태 집계 결과. 품목 전부 RECEIVED이면 주문 RECEIVED + shipments.status=DELIVERED 자동.
   ※ shipments.items_summary는 PICKUP 제외, PARCEL/QUICK 품목만 요약.
+  ※ shipments.sales_order_id 부분 UNIQUE(마이그094) = 전표당 배송 1건(1전표=1발송지). shipments↔sales_orders 1:1. 과거 카페24 NULL링크는 cafe24_order_id 정확매칭 backfill로 연결.
 sales_order_payments: id, sales_order_id, payment_method, amount, approval_no, card_info, memo, paid_at, created_by
   ※ 한 주문의 다중 결제(분할). 합계<총액이면 잔액=외상. payment_method='mixed'면 세부는 이 테이블에.
   ※ amount 음수=환불(전표 수정 부분환불, 마이그078). Σ amount=순수금액. payment_method enum: cash|card|card_keyin|kakao|credit|cod|mixed.
