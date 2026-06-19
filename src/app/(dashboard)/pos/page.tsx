@@ -123,8 +123,9 @@ const APPROVAL_STATUS_LABEL: Record<ApprovalStatus, string> = {
   UNSETTLED: '미수금',
 };
 
-// 자주 사용하는 주문 옵션 프리셋
-const ORDER_OPTION_PRESETS = ['보자기 포장', '쇼핑백 증정', '서비스 지급', '수령 완료', '택배 예정', '퀵 예정', '방문 예정'];
+// 자주 사용하는 주문 옵션 프리셋 — 포장/증정 등 상품 옵션만. 수령현황(수령완료/택배예정 등)은
+//   별도 '수령 현황' 드롭다운 소관이라 주문 옵션에서 제외(중복 방지).
+const ORDER_OPTION_PRESETS = ['보자기 포장', '쇼핑백 증정', '서비스 지급'];
 
 type ItemDeliveryType = 'PICKUP' | 'PARCEL' | 'QUICK';
 const ITEM_DELIVERY_LABEL: Record<ItemDeliveryType, string> = {
@@ -2358,7 +2359,7 @@ function POSPageInner() {
                           setEditingOptionId(null); setEditingOptionVal('');
                         }
                       }}
-                      placeholder="예: 보자기 포장 / 택배 예정"
+                      placeholder="예: 보자기 포장 / 쇼핑백 증정"
                       className="flex-1 border border-indigo-400 rounded text-xs px-2 py-1"
                     />
                     <datalist id={`opt-presets-${item.productId}`}>
