@@ -3116,9 +3116,10 @@ function POSPageInner() {
                 <button
                   onClick={handlePayment}
                   disabled={!!disabledReason || processing}
-                  className="w-full btn-primary py-3 text-base font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full btn-primary py-3 text-base font-semibold disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
                 >
-                  {processing ? '처리 중...' : `결제 (${finalAmount.toLocaleString()}원) · ${handlerName}`}
+                  {processing && <span className="inline-block w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
+                  {processing ? '결제 저장 중...' : `결제 (${finalAmount.toLocaleString()}원) · ${handlerName}`}
                 </button>
                 {disabledReason && (
                   <p className="text-xs text-amber-600 text-center mt-0.5">⚠ {disabledReason}</p>
@@ -3128,6 +3129,21 @@ function POSPageInner() {
           })()}
         </div>
       </div>
+
+      {/* 결제 저장 중 진행 오버레이 — 결제 버튼 클릭 후 처리 동안 표시(중복 클릭 방지 + 진행 안내). */}
+      {processing && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/30 backdrop-blur-[1px]">
+          <div className="bg-white rounded-2xl shadow-xl px-8 py-6 flex flex-col items-center gap-4 w-[min(88vw,320px)]">
+            <span className="inline-block w-9 h-9 border-[3px] border-blue-200 border-t-blue-600 rounded-full animate-spin" />
+            <p className="text-base font-semibold text-slate-800">결제 저장 중…</p>
+            <p className="text-xs text-slate-400">전표·재고·포인트를 처리하고 있습니다. 잠시만요.</p>
+            {/* 인디터미닛 진행바 */}
+            <div className="w-full h-1.5 rounded-full bg-slate-100 overflow-hidden">
+              <div className="h-full w-1/3 rounded-full bg-blue-500 animate-[posbar_1.1s_ease-in-out_infinite]" />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 결제 완료 비차단 토스트 (POS 미연동 — 영수증 자동팝업 대신). 다음 판매를 막지 않음. */}
       {successToast && (

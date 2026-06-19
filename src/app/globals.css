@@ -205,3 +205,9 @@ body {
     color: #1e40af;
   }
 }
+
+/* POS 결제 진행바 — 인디터미닛 슬라이드 (#결제 저장중 오버레이) */
+@keyframes posbar {
+  0%   { margin-left: -35%; }
+  100% { margin-left: 100%; }
+}
