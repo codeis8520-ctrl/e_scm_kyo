@@ -98,11 +98,10 @@ const PAY_LABEL: Record<string, string> = {
 const RECEIPT_STATUS_LABEL: Record<string, string> = {
   RECEIVED: '수령', PICKUP_PLANNED: '방문예정', QUICK_PLANNED: '퀵예정', PARCEL_PLANNED: '택배예정',
 };
-// 최종 상태(RECEIVED) 표시는 채널별 구분: 택배·퀵(배송 발생=shipment 존재)은 '배송완료', 방문/직접은 '수령완료'.
-//   내부 값 RECEIVED 는 그대로 — 표시 라벨만 조정.
-function receiptStatusLabelFor(status: string | null | undefined, hasShipment: boolean): string {
+// 최종 상태(RECEIVED)는 채널 불문 '수령'으로 통일 — 택배 배송완료·오프라인 수령을 하나로(원장 관점).
+//   내부 값 RECEIVED 는 그대로, 표시 라벨만 '수령'. hasShipment 인자는 호환 위해 유지(미사용).
+function receiptStatusLabelFor(status: string | null | undefined, _hasShipment?: boolean): string {
   const st = status || 'RECEIVED';
-  if (st === 'RECEIVED') return hasShipment ? '배송완료' : '수령완료';
   return RECEIPT_STATUS_LABEL[st] || '-';
 }
 // 색상 기준(#24): 완료=낮은 강조(회색), 확인·처리 필요(예정)=강조.
@@ -126,17 +125,22 @@ const SHIPMENT_STATUS_BADGE: Record<string, string> = {
 //   shipment.status NULL/미지정 택배 건은 기존 receipt 라벨로 폴백(빈칸 금지).
 function displayStatusLabel(o: OrderRow): string {
   const ship = o.shipments?.[0];
-  if (ship) {
-    return (ship.status && SHIPMENT_STATUS_LABEL[ship.status])
-      || receiptStatusLabelFor(o.receipt_status, true);
+  if (ship && ship.status) {
+    // 최종 배송완료(DELIVERED)는 오프라인 수령과 '수령'으로 통일. 진행상태(대기중/출력완료/발송완료)는 택배관리 값 유지.
+    if (ship.status === 'DELIVERED') return RECEIPT_STATUS_LABEL.RECEIVED;
+    return SHIPMENT_STATUS_LABEL[ship.status] || receiptStatusLabelFor(o.receipt_status);
   }
-  return receiptStatusLabelFor(o.receipt_status, false);
+  return receiptStatusLabelFor(o.receipt_status);
 }
 // 행 배지 색: 택배 건은 shipment.status 색, 그 외(또는 status 미지정)는 receipt 배지로 폴백.
 function displayStatusBadge(o: OrderRow, receiptKey: string): string {
   const ship = o.shipments?.[0];
   // 택배 건은 shipment.status 배지(택배관리와 동일). PENDING은 ''(무배경)이라 truthiness 대신 키 존재로 분기.
-  if (ship && ship.status && ship.status in SHIPMENT_STATUS_BADGE) return SHIPMENT_STATUS_BADGE[ship.status];
+  if (ship && ship.status && ship.status in SHIPMENT_STATUS_BADGE) {
+    // 최종(DELIVERED)은 오프라인 수령과 동일 색(slate)으로 통일.
+    if (ship.status === 'DELIVERED') return RECEIPT_STATUS_BADGE.RECEIVED;
+    return SHIPMENT_STATUS_BADGE[ship.status];
+  }
   return RECEIPT_STATUS_BADGE[receiptKey] || 'bg-slate-100 text-slate-600';
 }
 const APPROVAL_STATUS_LABEL: Record<string, string> = {
@@ -652,7 +656,7 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
     const ORDER = ['PICKUP_PLANNED', 'QUICK_PLANNED', 'PARCEL_PLANNED', 'RECEIVED'];
     const LABEL: Record<string, string> = {
       PICKUP_PLANNED: '방문예정', QUICK_PLANNED: '퀵예정', PARCEL_PLANNED: '택배예정',
-      RECEIVED: '수령·배송완료', 기타: '기타',
+      RECEIVED: '수령', 기타: '기타',
     };
     const buckets = new Map<string, OrderRow[]>();
     for (const o of filtered) {
@@ -708,7 +712,7 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
   const handleBulkReceipt = async () => {
     const ids = [...selectedReceiptIds];
     if (ids.length === 0) return;
-    const label = bulkTarget === 'RECEIVED' ? '수령·배송완료' : '발송완료';
+    const label = bulkTarget === 'RECEIVED' ? '수령' : '발송완료';
     if (!confirm(`선택한 ${ids.length}건의 수령상태를 '${label}'(으)로 일괄 변경하시겠습니까?\n연결된 배송 상태도 함께 갱신됩니다.`)) return;
     setBulkSaving(true);
     try {
@@ -1283,7 +1287,7 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
             {/* 미결 건만 보기 — 수령완료·배송완료 숨겨 처리할 건만 직관 파악 */}
             <button
               onClick={() => setHideReceived(v => !v)}
-              title="체크 시 수령완료·배송완료 건을 숨기고 처리 대기 건(방문예정·택배예정 등)만 표시합니다"
+              title="체크 시 수령(완료) 건을 숨기고 처리 대기 건(방문예정·택배예정 등)만 표시합니다"
               className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition-colors ${
                 hideReceived
                   ? 'bg-amber-500 text-white border-amber-500'
@@ -1325,7 +1329,7 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
               onChange={e => setBulkTarget(e.target.value as 'RECEIVED')}
               className="input py-1 text-sm w-auto"
             >
-              <option value="RECEIVED">수령·배송완료</option>
+              <option value="RECEIVED">수령</option>
             </select>
             <button
               onClick={handleBulkReceipt}
