@@ -801,36 +801,41 @@ export default function InventoryPage() {
                       const materialBlocked = isMaterialType(row.productType) && !!hqBranchId && b.id !== hqBranchId;
                       // 셀 클릭 = 자가 사용(USAGE). 지점직원은 자기 지점만, 원자재·부자재는 본사만,
                       // 현재고 0/없음 칸은 차감 의미 없으므로 비활성.
-                      const usageBlocked =
-                        materialBlocked
-                        || (isBranchUser && b.id !== userBranchId)
-                        || toNum(effective.quantity) <= 0;
+                      const isEmpty = toNum(effective.quantity) <= 0;
+                      const otherBranch = isBranchUser && b.id !== userBranchId;
+                      // 재고>0: 자가 사용(소모 차감). 빈 칸(0 이하): 본사 권한자는 클릭 시 강제 조정(입고/맞춤).
+                      const usageAllowed = !materialBlocked && !otherBranch && !isEmpty;
+                      const forceAdjustAllowed = isHQUser && !materialBlocked && isEmpty;
+                      const clickable = usageAllowed || forceAdjustAllowed;
                       return (
                         <td key={b.id} className="text-center p-0">
                           <button
-                            onClick={() => { if (!usageBlocked) handleUsageClick(effective); }}
-                            disabled={usageBlocked}
+                            onClick={() => {
+                              if (usageAllowed) handleUsageClick(effective);
+                              else if (forceAdjustAllowed) handleAdjust(effective);
+                            }}
+                            disabled={!clickable}
                             title={
-                              materialBlocked
-                                ? '원자재·부자재는 본사에서만 처리 가능'
-                                : (isBranchUser && b.id !== userBranchId)
-                                  ? '다른 지점 재고는 처리 불가'
-                                  : toNum(effective.quantity) <= 0
-                                    ? '현재고 없음 · 자가 사용 불가'
-                                    : `자가 사용(소모 차감) · 안전재고 ${fmtStock(effective.safety_stock, row.allowDecimal)}`
+                              materialBlocked ? '원자재·부자재는 본사에서만 처리 가능'
+                              : otherBranch ? '다른 지점 재고는 처리 불가'
+                              : forceAdjustAllowed ? '재고 없음 · 클릭하여 강제 조정(입고/맞춤)'
+                              : usageAllowed ? `자가 사용(소모 차감) · 안전재고 ${fmtStock(effective.safety_stock, row.allowDecimal)}`
+                              : '재고 없음 · 강제 조정은 본사 권한'
                             }
                             className={`w-full h-full px-3 py-2 font-semibold transition-colors rounded ${
-                              usageBlocked
+                              !clickable
                                 ? `cursor-not-allowed ${isMissing ? 'text-slate-300' : isLow ? 'text-red-400' : 'text-slate-400'}`
-                                : `hover:ring-2 hover:ring-blue-300 hover:ring-inset ${
-                                    isLow
-                                      ? 'text-red-600 bg-red-50 hover:bg-red-100'
-                                      : 'text-slate-800 hover:bg-blue-50'
-                                  }`
+                                : forceAdjustAllowed
+                                  ? 'hover:ring-2 hover:ring-red-300 hover:ring-inset text-slate-400 hover:bg-red-50 hover:text-red-600'
+                                  : `hover:ring-2 hover:ring-blue-300 hover:ring-inset ${
+                                      isLow
+                                        ? 'text-red-600 bg-red-50 hover:bg-red-100'
+                                        : 'text-slate-800 hover:bg-blue-50'
+                                    }`
                             }`}
                           >
                             {fmtStock(effective.quantity, row.allowDecimal)}
-                            {isLow && !isMissing && !usageBlocked && <span className="ml-1 text-xs font-normal">↓{fmtStock(effective.safety_stock, row.allowDecimal)}</span>}
+                            {isLow && !isMissing && usageAllowed && <span className="ml-1 text-xs font-normal">↓{fmtStock(effective.safety_stock, row.allowDecimal)}</span>}
                           </button>
                         </td>
                       );
@@ -845,7 +850,7 @@ export default function InventoryPage() {
             </tbody>
           </table>
           <p className="text-xs text-slate-400 mt-3">
-            숫자 클릭 → 자가 사용(소모) · 강제 조정은 상단 버튼(본사 전용) · 제품명 클릭 → 변동 이력 · 빨간 숫자 = 안전재고 미달 (↓기준값) · 원자재·부자재는 본사만
+            숫자 클릭 → 자가 사용(소모) · 재고 없는 칸은 본사 권한자가 클릭 시 강제 조정(입고) · 제품명 클릭 → 변동 이력 · 빨간 숫자 = 안전재고 미달 (↓기준값) · 원자재·부자재는 본사만
           </p>
         </div>
       ) : (
