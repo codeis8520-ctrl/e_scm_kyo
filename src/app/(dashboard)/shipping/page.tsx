@@ -144,25 +144,11 @@ function TruncatedCell({
   );
 }
 
-// 배송메세지 합성(#40): base delivery_message + 도출된 주문 옵션.
-//   중복 회피 — opt 토큰이 이미 base 또는 items_summary 에 들어있으면 제외
-//   (cafe24 route 는 items_summary 에 옵션을 'name [opt] xqty' 로 이미 포함 → 이중표기 방지).
-function composeDeliveryMessage(s: {
-  delivery_message?: string | null;
-  items_summary?: string | null;
-  order_options?: string | null;
-}): string {
-  const base = (s.delivery_message ?? '').trim();
-  const opt = (s.order_options ?? '').trim();
-  if (!opt) return base;
-  const haystack = `${base} ${s.items_summary ?? ''}`;
-  const remaining = opt
-    .split(',')
-    .map(t => t.trim())
-    .filter(t => t.length > 0 && !haystack.includes(t));
-  if (remaining.length === 0) return base;
-  const optStr = remaining.join(', ');
-  return base ? `${base} [옵션] ${optStr}` : `[옵션] ${optStr}`;
+// #46: 배송메시지 = 순수 delivery_message(고객 직접입력 배송요청)만.
+//   포장/옵션(order_options)은 더 이상 메시지에 합성하지 않고 별도 컬럼으로 노출한다.
+//   (#40 포장 가시성 보존: 배송목록 '포장/옵션' 셀 + CJ export '배송메세지2' 컬럼=송장 라벨에 분리 인쇄.)
+function composeDeliveryMessage(s: { delivery_message?: string | null }): string {
+  return (s.delivery_message ?? '').trim();
 }
 
 export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parcel' } = {}) {
@@ -481,11 +467,12 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
 
     const header = [
       '받는분성명', '받는분전화번호', '받는분기타연락처',
-      '받는분주소(전체, 분할)', '배송메세지1',
+      '받는분주소(전체, 분할)', '배송메세지1', '배송메세지2',
       '품목명', '내품명', '내품수량', '운임구분',
       '보내는분성명', '보내는분전화번호', '보내는분주소(전체, 분할)',
       '보내는분우편번호',
     ];
+    // #46: 배송메세지1=고객 배송요청(순수), 배송메세지2=포장/옵션. 둘 다 송장 라벨에 인쇄되며 분리됨.
 
     // #30: 내품명(G열)은 비움 — 송장에 코드성 문자열 노출 금지. (이전 RTC 매칭 제거)
     //   보내는분성명(J열): 받는분=보내는분(본인 발송)이면 '더경옥'(회사명), 다르면 실제 보내는분(선물 등).
@@ -496,7 +483,9 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
       return [
         s.recipient_name, s.recipient_phone, '',
         [s.recipient_address, s.recipient_address_detail].filter(Boolean).join(' '),
-        composeDeliveryMessage(s), s.items_summary || '',
+        composeDeliveryMessage(s),   // 배송메세지1 = 순수 배송요청
+        s.order_options || '',       // 배송메세지2 = 포장/옵션(#46, 송장 라벨에 분리 인쇄)
+        s.items_summary || '',
         '',                 // 내품명 — 비움(#30)
         '', '선불',
         sender.name, sender.phone, senderFullAddress,
@@ -507,6 +496,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
     const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
     ws['!cols'] = [
       { wch: 12 }, { wch: 16 }, { wch: 14 }, { wch: 50 }, { wch: 30 },
+      { wch: 20 },   // #46: 배송메세지2 = 포장/옵션
       { wch: 24 }, { wch: 16 }, { wch: 8 }, { wch: 8 },
       { wch: 12 }, { wch: 16 }, { wch: 40 }, { wch: 10 },
     ];
@@ -1583,6 +1573,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">발송자</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">배송지 주소</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">배송메모</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-violet-600 uppercase tracking-wide">포장/옵션</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">품목</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-24">매출처</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-24">상태</th>
@@ -1621,6 +1612,11 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                         </td>
                         <td className="px-3 py-3 max-w-[200px] align-top">
                           <TruncatedCell text={composeDeliveryMessage(s)} className="text-amber-700" />
+                        </td>
+                        <td className="px-3 py-3 max-w-[160px] align-top">
+                          {s.order_options
+                            ? <TruncatedCell text={s.order_options} className="text-violet-700" />
+                            : <span className="text-slate-300 text-sm">-</span>}
                         </td>
                         <td className="px-3 py-3 max-w-[180px] align-top">
                           <TruncatedCell text={s.items_summary} className="text-slate-600" />

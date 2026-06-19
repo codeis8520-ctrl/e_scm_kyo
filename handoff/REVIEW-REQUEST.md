@@ -1,26 +1,22 @@
-# Review Request — 온라인몰 탭 표시 강화 배지 2종 (#50)
+# Review Request — #46 배송메시지 ↔ 포장/옵션 분리
 Date: 2026-06-19
 Ready for Review: YES
 
 ## Files Changed
-- src/app/(dashboard)/shipping/page.tsx (cafe24 탭 테이블 행 렌더만, 2곳):
-  - 품목 셀 collapsed 영역 (toggle 버튼 아래) — `unmapped = items.filter(i => i.product_code && !i.mapped_name).length`; unmapped>0일 때만 amber 배지 `⚠ 미매핑 N건`. 매핑완료/0건/품목코드없음은 무표시.
-  - 마지막 컬럼 (`order.already_added`) — 기존 `추가됨`(badge-info)을 emerald `✓ 전표생성완료` 배지로 교체.
-
-## 사용한 매핑상태 필드
-- `order.order_items[].product_code` (있어야 매핑 대상 — 기존 L1223 `noCode` 분기와 동일 기준)
-- `order.order_items[].mapped_name` (매핑되면 채워짐 — 기존 L1230 펼침 표시와 동일)
-- `order.already_added` (route L390 existingShipments 산출 — 기존 값 재사용)
-- 추가 쿼리/route.ts/DB/마이그/AI schema·tools 변경 0.
-
-## Self-Review
-- Richard가 먼저 볼 것: 미매핑 카운트 기준이 펼침영역(L1248)의 noCode 규칙과 일치하는가 → 일치(product_code 있는 품목만 카운트). emerald 전표완료 배지가 opacity-40 흐림과 충돌하는가 → 흐림은 브리프대로 유지, 배지는 흐림 안에서도 색 대비로 식별 가능.
-- 모든 요구사항 구현: 배지1(미매핑만 amber, 매핑완료 무표시) ✓ / 배지2(✓ 전표생성완료 emerald, opacity-40 유지) ✓.
-- 빈 데이터: items 0건 → unmapped=0 → 무표시(정상). already_added=false → 배지 무표시(정상).
-- `npm run build`: ✓ Compiled successfully, 0 error.
+- src/app/(dashboard)/shipping/page.tsx:147-152 — composeDeliveryMessage 합성 제거, 순수 delivery_message만 반환(시그니처 단순화)
+- src/app/(dashboard)/shipping/page.tsx:1585-1587 — 배송목록 thead에 '포장/옵션' th 추가(배송메모·품목 사이)
+- src/app/(dashboard)/shipping/page.tsx:1625-1632 — 배송목록 tbody에 order_options td 추가(없으면 '-')
+- src/app/(dashboard)/shipping/page.tsx:482-489 — CJ export header에 '포장/옵션' 맨 끝 추가
+- src/app/(dashboard)/shipping/page.tsx:496-506 — CJ export rows에 s.order_options 원소 맨 끝 추가
+- src/app/(dashboard)/shipping/page.tsx:508-513 — CJ export !cols 폭 배열 1개 추가(헤더/행/폭 14개 일치)
+- src/lib/ai/schema.ts:74 — #40 주석에 #46 분리 한 줄 갱신
 
 ## Open Questions
-- 없음. (감사 E1 흐림완화·E3 매핑완료 양성표시는 브리프/감사 권장에 따라 의도적으로 미반영 — PO 결정사항.)
+- CJ '포장/옵션' 컬럼 = 맨 끝(Flag B, PO 확정). packer가 배송메세지1 옆에서 보길 원하면 Deploy Gate에서 위치 조정 가능. 코드상 위치만 바꾸면 됨.
 
 ## Out of Scope (logged in BUILD-LOG)
-- 없음. 보존영역 전부 무변경.
+- 카페24 탭 원본 shipping_message 파싱 분리(cafe24 원본 데이터, split 마커 미보장)
+- items_summary에 옵션 박힌 과거 historical 행(order_options NULL, 분리 불가)
+
+## Build
+- npm run build: 0 error.

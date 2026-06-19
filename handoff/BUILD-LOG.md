@@ -1,3 +1,25 @@
+# BUILD-LOG — #46 배송메시지 ↔ 포장/옵션 분리
+
+## 🔨 빌드완료 (리뷰대기) — 2026-06-19
+배송메모에 "[옵션] ..."가 섞여 길어지던 문제 해소. 배송메시지=순수 고객 배송요청(delivery_message)만, 포장/옵션은 별도 컬럼으로 노출(#40 가시성 보존). 저장 데이터·order_options 도출(shipping-actions.ts) 무변경.
+
+### Bob 빌드 결과 (`src/app/(dashboard)/shipping/page.tsx`)
+- **composeDeliveryMessage** (L147~): `[옵션]` 합성 제거 → `return (s.delivery_message ?? '').trim()`. 시그니처도 `{ delivery_message }` 로 단순화(items_summary/order_options 인자 제거). 호출처 2곳(배송목록 행·CJ export)은 전체 `s` 객체 전달이라 구조적으로 무해.
+- **배송목록 '포장/옵션' 컬럼 신설**: thead '배송메모'와 '품목' 사이 violet 헤더 추가. tbody 동일 위치에 `s.order_options` TruncatedCell(violet-700) 셀, 없으면 `-`. 이 테이블 empty-state는 div(colSpan 아님)·소계행 없음 → colSpan 보정 불요(L1222 colSpan은 카페24 탭 별도 테이블, 무관).
+- **CJ export(downloadCjExcel)**: 배송메세지1 = 순수 delivery_message(합성 제거 효과). **'포장/옵션' 컬럼을 표준 컬럼 맨 끝(보내는분우편번호 뒤)에 추가**(Flag B 확정). header/rows/cols 3배열 모두 14개로 일치. 표준 CJ 컬럼 순서·개수·#30 내품명(G열) 빈칸 무손상.
+- **AI schema.ts** L74 #40 주석에 #46 분리 반영.
+
+### 결정
+- CJ 옵션 컬럼 위치 = 맨 끝(Flag B). 표준 양식 순서 보존 우선(CJ 임포트 위치 매칭 안전).
+- 배송목록 옵션 컬럼 위치 = 배송메모·품목 사이(화면 전용, 안전).
+- npm run build 0 error.
+
+### Known Gap
+- **카페24 탭(#3) 원본 message 파싱 분리 안 함**: cafe24 `shipping_message` 자체에 옵션이 섞여오는 케이스. 우리 합성이 아니라 cafe24 원본 데이터. 신뢰 가능한 split 마커 미보장 → 이번 범위 밖. 카페24 탭 배송메모는 원본 그대로 표시 유지.
+- items_summary에 옵션이 텍스트로 박힌 과거 카페24 historical 행(sales_order 없음, order_options NULL) — 분리 불가, 현행 유지.
+
+---
+
 # BUILD-LOG — 온라인몰 탭 표시 강화 배지 2종 (#50)
 
 ## 🔨 빌드완료 (리뷰대기) — 2026-06-19
