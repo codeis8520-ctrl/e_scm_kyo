@@ -231,6 +231,8 @@ function POSPageInner() {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [search, setSearch] = useState('');
   const [products, setProducts] = useState<any[]>([]);
+  // #52 빠른추가용 포장 제품(보자기·쇼핑백). 쇼핑백은 SUB 타입이라 판매목록 products 에서 제외되므로 별도 보관.
+  const [packProducts, setPackProducts] = useState<any[]>([]);
   const [categoryInfo, setCategoryInfo] = useState<Map<string, CategoryInfo>>(new Map());
   const [widgetSort, setWidgetSort] = useState<'category' | 'name' | 'price' | 'stock'>('category');
   const [searchIncludeAll, setSearchIncludeAll] = useState(false);  // 검색 시 옵션·세트 포함 여부(#27)
@@ -503,6 +505,8 @@ function POSPageInner() {
       const productsData = ((productsRes.data || []) as any[]).filter(
         (p: any) => p.product_type !== 'RAW' && p.product_type !== 'SUB'
       );
+      // 빠른추가용 포장 제품 — 판매목록 필터(RAW/SUB 제외) 전 원본에서 보자기·쇼핑백만 추출(SUB 쇼핑백 포함).
+      setPackProducts(((productsRes.data || []) as any[]).filter((p: any) => /보자기|쇼핑백/.test(p.name || '')));
       const gradeRows = ((gradesRes.data || []) as any[]);
       const gradesMap = new Map(gradeRows.map((g: any) => [g.code, parseFloat(g.point_rate) || 1.0]));
       // 매트릭스 067: gradeId → gradeCode 매핑 후 (branchId|gradeCode) 키로 보관
@@ -961,9 +965,9 @@ function POSPageInner() {
     inventoryMap.get(`${selectedBranch}_${productId}`) ?? null,
   [inventoryMap, selectedBranch]);
 
-  // #52 빠른 추가 — 보자기 포장(SPKG) 단일 버튼 + 쇼핑백 종류 콤보. 선물 주문 반복검색 절감.
-  const quickBoja = useMemo(() => (products as any[]).find(p => p.code === 'SPKG') || null, [products]);
-  const quickBags = useMemo(() => (products as any[]).filter(p => (p.name || '').includes('쇼핑백')), [products]);
+  // #52 빠른 추가 — 보자기 포장(SPKG) 버튼 + 쇼핑백 종류 버튼 나열. packProducts(원본)에서 도출(SUB 쇼핑백 포함).
+  const quickBoja = useMemo(() => (packProducts as any[]).find(p => p.code === 'SPKG') || null, [packProducts]);
+  const quickBags = useMemo(() => (packProducts as any[]).filter(p => (p.name || '').includes('쇼핑백')), [packProducts]);
 
   // ── 장바구니 ──────────────────────────────────────────────────────────────
   // 정책: 재고 부족/품절이어도 판매 허용 (음수 재고 정책 — schema.ts 참조).
@@ -2191,20 +2195,6 @@ function POSPageInner() {
                     + {b.name}
                   </button>
                 ))}
-                {/* 어떤 제품이든 선택해 바로 담기(쇼핑백 외 포장·기타) */}
-                <select
-                  value=""
-                  onChange={e => { const p = (products as any[]).find(x => x.id === e.target.value); if (p) addToCart(p); }}
-                  className="input text-xs py-1 w-auto"
-                  title="어떤 제품이든 선택해 바로 담기"
-                >
-                  <option value="">+ 다른 제품 선택…</option>
-                  {(products as any[]).map(p => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}{p.price ? ` · ${Number(p.price).toLocaleString()}원` : ''}
-                    </option>
-                  ))}
-                </select>
               </div>
             )}
             {search && (
