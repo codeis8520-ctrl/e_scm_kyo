@@ -214,6 +214,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
   const [cafe24Search, setCafe24Search]           = useState('');
   const [cafe24StatusFilter, setCafe24StatusFilter] = useState('');
   const [cafe24HideAdded, setCafe24HideAdded]     = useState(true);  // 기본 '미추가만 보기' — 처리 대상 집중 + 렌더 경량화
+  const [cafe24Loaded, setCafe24Loaded]           = useState(false); // 1회 이상 불러오기 완료 여부(0건이어도 필터/안내 노출용)
 
   // ── 카페24 품목 매핑 (본사 전용 연결/해제) ────────────────────────────────
   const userRole = getCookie('user_role');
@@ -732,6 +733,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
       setIsDemo(!!data.is_demo);
       setDemoReason(data.demo_reason ?? '');
       if (data.error) setCafe24Error(data.demo_reason || '카페24 연동 오류');
+      setCafe24Loaded(true);
     } catch (e: any) {
       setCafe24Error(e.message || '오류');
     } finally { setCafe24Loading(false); }
@@ -1066,7 +1068,8 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
             {syncMessage && (
               <div className="mt-3 px-3 py-2 bg-slate-50 border border-slate-200 rounded text-sm">{syncMessage}</div>
             )}
-            {cafe24Orders.length > 0 && (
+            {/* 필터 행 — 0건이어도 노출(미추가만 보기 토글을 끄려면 항상 접근 가능해야 함) */}
+            {(cafe24Orders.length > 0 || cafe24Loaded) && (
               <div className="flex flex-wrap items-center gap-3 mt-3 pt-3 border-t border-slate-100">
                 <input
                   type="text"
@@ -1089,8 +1092,27 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                   <input type="checkbox" checked={cafe24HideAdded}
                     onChange={e => { setCafe24HideAdded(e.target.checked); handleLoadCafe24Orders(e.target.checked); }}
                     className="w-4 h-4" />
-                  미추가만 보기
+                  미추가만 보기 <span className="text-[11px] text-slate-400">(이미 추가된 주문 숨김)</span>
                 </label>
+              </div>
+            )}
+            {/* 0건 안내 — 미추가만 보기가 켜져 있으면 다 추가됐을 수 있음을 안내 + 즉시 해제 */}
+            {cafe24Loaded && !cafe24Loading && cafe24Orders.length === 0 && !cafe24Error && (
+              <div className="mt-3 px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-600">
+                불러온 주문이 없습니다.
+                {cafe24HideAdded ? (
+                  <> 이 기간 주문이 <b>모두 이미 추가</b>되었을 수 있습니다.{' '}
+                    <button
+                      type="button"
+                      className="text-blue-600 font-medium hover:underline"
+                      onClick={() => { setCafe24HideAdded(false); handleLoadCafe24Orders(false); }}
+                    >
+                      미추가만 보기 해제하고 전체 보기
+                    </button>
+                  </>
+                ) : (
+                  <> 선택한 기간({startDate} ~ {endDate})에 카페24 주문이 없습니다. 기간을 조정해 보세요.</>
+                )}
               </div>
             )}
             {cafe24Error && <p className="text-red-500 text-sm mt-2">{cafe24Error}</p>}
