@@ -96,13 +96,13 @@ interface ImportRow {
 }
 
 type TabType = 'cafe24' | 'manual' | 'list';
-type StatusFilter = 'ALL' | 'PENDING' | 'SHIPPED_DONE';
+type StatusFilter = 'ALL' | 'PENDING' | 'SHIPPED' | 'DELIVERED';
 
-// 발송완료 버킷 = 출력완료·발송완료·배송완료. 내부 enum 4값은 보존, 필터·집계 표시층만 2버킷.
-const SHIPPED_DONE_STATES = ['PRINTED', 'SHIPPED', 'DELIVERED'] as const;
+// 버킷 → 실제 status 매핑. 대기중=대기+출력완료(미발송), 발송완료=SHIPPED(미배송 처리대상), 배송완료=DELIVERED(종결).
+const PENDING_STATES = ['PENDING', 'PRINTED'] as const;
 // 필터 버튼 라벨(행 뱃지용 STATUS_LABEL 과 분리)
 const BUCKET_LABEL: Record<StatusFilter, string> = {
-  ALL: '전체', PENDING: '대기중', SHIPPED_DONE: '발송완료',
+  ALL: '전체', PENDING: '대기중', SHIPPED: '발송완료', DELIVERED: '배송완료',
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -245,6 +245,8 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
   const [shipments, setShipments] = useState<Shipment[]>([]);
   const [listLoading, setListLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
+  // 배송완료(종결) 숨기기 — 기본 ON. 전체/대기중/발송완료 뷰에서 배송완료 제외(배송완료 버킷 직접선택 시엔 무시).
+  const [hideDelivered, setHideDelivered] = useState(true);
   // 택배관리 정렬 기준 — 사용자 선택(콤보)
   const [shipSort, setShipSort] = useState<'receipt_asc' | 'latest' | 'oldest'>('receipt_asc');
   const [listSearch, setListSearch] = useState('');
@@ -932,9 +934,12 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
 
   // ── 목록 탭 핸들러 ────────────────────────────────────────────────────────
   const filteredShipments = shipments.filter(s => {
-    if (statusFilter === 'PENDING' && s.status !== 'PENDING') return false;
-    if (statusFilter === 'SHIPPED_DONE' && !SHIPPED_DONE_STATES.includes(s.status as typeof SHIPPED_DONE_STATES[number])) return false;
-    // 'ALL' 은 무필터(추적 포함 전체)
+    if (statusFilter === 'PENDING' && !PENDING_STATES.includes(s.status as typeof PENDING_STATES[number])) return false;
+    if (statusFilter === 'SHIPPED' && s.status !== 'SHIPPED') return false;
+    if (statusFilter === 'DELIVERED' && s.status !== 'DELIVERED') return false;
+    // 배송완료 숨기기: 배송완료 버킷을 직접 보는 경우가 아니면 종결(DELIVERED) 건 제외
+    if (hideDelivered && statusFilter !== 'DELIVERED' && s.status === 'DELIVERED') return false;
+    // 'ALL' 은 위 가드 외 무필터(전체)
     const day = (s.created_at || '').slice(0, 10);
     if (listStartDate && day && day < listStartDate) return false;
     if (listEndDate && day && day > listEndDate) return false;
@@ -1423,7 +1428,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
         <div className="space-y-4">
           <div className="flex items-center justify-between flex-wrap gap-3">
             <div className="flex flex-wrap items-center gap-2">
-              {(['ALL','PENDING','SHIPPED_DONE'] as StatusFilter[]).map(f => (
+              {(['ALL','PENDING','SHIPPED','DELIVERED'] as StatusFilter[]).map(f => (
                 <button key={f} onClick={() => setStatusFilter(f)}
                   className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
                     statusFilter === f ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -1431,6 +1436,22 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                   {BUCKET_LABEL[f]}
                 </button>
               ))}
+              {/* 배송완료(종결) 숨기기 — 배송완료 버킷을 직접 볼 때는 의미 없으므로 비활성 */}
+              <button
+                onClick={() => setHideDelivered(v => !v)}
+                disabled={statusFilter === 'DELIVERED'}
+                title="체크 시 배송완료(업무 종결) 건을 목록에서 숨깁니다. '배송완료' 버킷에서는 적용되지 않습니다."
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-sm font-medium border transition-colors disabled:opacity-40 ${
+                  hideDelivered && statusFilter !== 'DELIVERED'
+                    ? 'bg-amber-500 text-white border-amber-500'
+                    : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                <span className={`inline-block w-3 h-3 rounded-sm border ${hideDelivered && statusFilter !== 'DELIVERED' ? 'bg-white border-white' : 'border-slate-300'}`}>
+                  {hideDelivered && statusFilter !== 'DELIVERED' && <span className="block text-amber-500 text-[10px] leading-3 text-center">✓</span>}
+                </span>
+                배송완료 숨기기
+              </button>
               <input
                 type="date"
                 value={listStartDate}
