@@ -108,7 +108,7 @@ function receiptStatusLabelFor(status: string | null | undefined, hasShipment: b
 // 색상 기준(#24): 완료=낮은 강조(회색), 확인·처리 필요(예정)=강조.
 const RECEIPT_STATUS_BADGE: Record<string, string> = {
   RECEIVED: 'bg-slate-100 text-slate-500',          // 수령완료 = 회색(낮음)
-  PICKUP_PLANNED: 'bg-amber-100 text-amber-800',    // 방문예정 = 강조(임박 응대)
+  PICKUP_PLANNED: 'bg-pink-100 text-pink-700',      // 방문예정 = 강조(임박 응대). 발송완료(amber)와 구분 위해 pink
   QUICK_PLANNED: 'bg-purple-100 text-purple-700',   // 퀵예정 = 강조
   PARCEL_PLANNED: 'bg-blue-100 text-blue-700',      // 택배예정 = 강조
 };
