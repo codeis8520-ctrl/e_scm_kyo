@@ -126,8 +126,7 @@ const SHIPMENT_STATUS_BADGE: Record<string, string> = {
 function displayStatusLabel(o: OrderRow): string {
   const ship = o.shipments?.[0];
   if (ship && ship.status) {
-    // 최종 배송완료(DELIVERED)는 오프라인 수령과 '수령'으로 통일. 진행상태(대기중/출력완료/발송완료)는 택배관리 값 유지.
-    if (ship.status === 'DELIVERED') return RECEIPT_STATUS_LABEL.RECEIVED;
+    // 택배 건은 택배관리 상태값 그대로(최종=배송완료). 오프라인(shipment 없음)만 '수령'.
     return SHIPMENT_STATUS_LABEL[ship.status] || receiptStatusLabelFor(o.receipt_status);
   }
   return receiptStatusLabelFor(o.receipt_status);
@@ -137,8 +136,7 @@ function displayStatusBadge(o: OrderRow, receiptKey: string): string {
   const ship = o.shipments?.[0];
   // 택배 건은 shipment.status 배지(택배관리와 동일). PENDING은 ''(무배경)이라 truthiness 대신 키 존재로 분기.
   if (ship && ship.status && ship.status in SHIPMENT_STATUS_BADGE) {
-    // 최종(DELIVERED)은 오프라인 수령과 동일 색(slate)으로 통일.
-    if (ship.status === 'DELIVERED') return RECEIPT_STATUS_BADGE.RECEIVED;
+    // 택배 건은 택배관리 배지색 그대로(배송완료=green). 오프라인만 수령(slate).
     return SHIPMENT_STATUS_BADGE[ship.status];
   }
   return RECEIPT_STATUS_BADGE[receiptKey] || 'bg-slate-100 text-slate-600';
