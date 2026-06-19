@@ -305,3 +305,53 @@ export async function bulkUpdateReceiptStatus(
   revalidatePath('/shipping');
   return { success: true, updated, skipped };
 }
+
+/**
+ * 배송건 일괄 배송완료 처리
+ *
+ * 배송목록(shipment.id 단위)에서 선택한 건을 한 번에 DELIVERED로 갱신.
+ * sales_order 연결 건은 syncReceiptStatusFromShipment(#19 공용 매핑)로 판매현황 수령상태(RECEIVED) 자동연동.
+ * cafe24 출처(sales_order_id=NULL)는 상태만 DELIVERED로 갱신(수령연동 스킵, 에러 아님).
+ * 멱등: 이미 DELIVERED인 건은 skip. DELIVERED 전용(다른 status 거부). 알림톡 미발송.
+ */
+export async function bulkUpdateShipmentStatus(
+  shipmentIds: string[],
+  status: 'DELIVERED'
+): Promise<{ success?: true; updated?: number; skipped?: number; error?: string }> {
+  try { await requireSession(); } catch (e: any) { return { error: e.message }; }
+  const ids = [...new Set((shipmentIds || []).filter(Boolean))];
+  if (ids.length === 0) return { error: '선택된 배송건이 없습니다.' };
+  if (status !== 'DELIVERED') return { error: '지원하지 않는 상태입니다.' };
+
+  const supabase = await createClient() as any;
+  let updated = 0;
+  let skipped = 0;
+
+  for (const shipmentId of ids) {
+    try {
+      const { data: ship } = await supabase
+        .from('shipments')
+        .select('status, sales_order_id')
+        .eq('id', shipmentId)
+        .maybeSingle();
+      if (!ship) { skipped++; continue; }
+      if (ship.status === 'DELIVERED') { skipped++; continue; }
+
+      await supabase
+        .from('shipments')
+        .update({ status: 'DELIVERED', updated_at: new Date().toISOString() })
+        .eq('id', shipmentId);
+
+      if (ship.sales_order_id) {
+        await syncReceiptStatusFromShipment(supabase, ship.sales_order_id, 'DELIVERED');
+      }
+      updated++;
+    } catch (e: any) {
+      console.error('[bulkUpdateShipmentStatus] shipment', shipmentId, 'failed:', e?.message);
+    }
+  }
+
+  revalidatePath('/pos');
+  revalidatePath('/shipping');
+  return { success: true, updated, skipped };
+}

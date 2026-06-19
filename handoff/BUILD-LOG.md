@@ -1,3 +1,30 @@
+# BUILD-LOG — 택배관리 일괄 배송완료 + 죽은 추적 UI 정리
+
+## 과제
+택배관리 배송목록에서 선택건 일괄 배송완료(DELIVERED) + 판매현황 RECEIVED 자동연동. SweetTracker 미사용으로 무효된 행별 '추적' 버튼/trackOne 제거.
+
+## 구현 완료 (리뷰 대기)
+- 상태: BUILD DONE · `npm run build` ✓ Compiled successfully in 7.0s (0 error)
+- 파일:
+  - `src/lib/shipping-actions.ts` — 신규 `bulkUpdateShipmentStatus(shipmentIds, 'DELIVERED')`. bulkUpdateReceiptStatus(L247) 패턴 차용. requireSession 가드, ids dedup+빈배열 가드, status!=='DELIVERED' 거부. 행 루프: shipments status/sales_order_id 조회 → 이미 DELIVERED면 skip → update DELIVERED+updated_at → sales_order_id 있으면 syncReceiptStatusFromShipment(...,'DELIVERED'). try/catch 행단위 격리. 끝에 revalidatePath('/pos')+('/shipping'). 반환 {success,updated,skipped}. 알림톡 미발송.
+  - `src/app/(dashboard)/shipping/page.tsx`
+    - import에 bulkUpdateShipmentStatus 추가(updateShipment는 L696/L1023 잔존 사용 → 유지).
+    - handleBulkDeliver: confirm → bulkUpdateShipmentStatus([...selectedShipments],'DELIVERED') → 결과 alert → fetchShipments + setSelectedShipments(new Set()). 에러 시 alert 후 중단.
+    - 액션 바(CJ 다운로드 옆)에 "선택건 배송완료 (N)" 버튼(indigo, disabled when size===0).
+    - 제거: trackingId state, trackOne 함수 전체+추적 주석 블록, 행별 '추적' 버튼 블록.
+
+## 결정
+- 멱등: shipment 미존재/이미 DELIVERED → skipped++ continue. cafe24(sales_order_id NULL)는 상태만 DELIVERED, 수령연동 스킵(에러 아님).
+- 알림톡 미발송(SHIPMENT 트리거는 SHIPPED 신규+송장 전용). updateShipment 알림 분기 복제 안 함.
+- `/api/shipping/track`·track-sync 크론 보존(빌드 출력에 라우트 잔존 확인). 키 없으면 self-skip, 미래 무코드 복구 가능 → 데드 아님.
+
+## Known Gaps (열린 채로)
+- 범용 임의상태 일괄변경(PRINTED/SHIPPED/PENDING) 미지원 — DELIVERED 전용(브리프 범위 외).
+- 지점 RBAC 서버측 강제(타지점 staff 차단) 미신설 — 기존 화면접근 권한에 위임(범위 외).
+- DELIVERED 일괄 시 알림톡 발송 — 의도적 미발송.
+
+---
+
 # BUILD-LOG — 미수금(UNSETTLED) 수금 처리 (#39)
 
 ## 과제

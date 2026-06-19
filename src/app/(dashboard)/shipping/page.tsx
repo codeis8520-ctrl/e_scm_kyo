@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, Fragment } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { getShipments, createShipment, updateShipment, deleteShipment } from '@/lib/shipping-actions';
+import { getShipments, createShipment, updateShipment, deleteShipment, bulkUpdateShipmentStatus } from '@/lib/shipping-actions';
 import { refreshCafe24Token, registerCafe24Customers, createCafe24ProductMap, deleteCafe24ProductMap } from '@/lib/cafe24-actions';
 import { getProducts } from '@/lib/actions';
 import * as XLSX from 'xlsx';
@@ -270,8 +270,6 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
   // 배송 목록 선택
   const [selectedShipments, setSelectedShipments] = useState<Set<string>>(new Set());
 
-  // 배송 추적
-  const [trackingId, setTrackingId] = useState<string | null>(null); // 개별 추적 중인 shipment id
 
   // ── 대한통운 엑셀 발송지(보내는분) 선택 ───────────────────────────────────
   interface BranchSender {
@@ -706,36 +704,18 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
     }
   };
 
-  // ── 배송 상태 추적 ────────────────────────────────────────────────────────
-  const trackOne = async (s: Shipment) => {
-    if (!s.tracking_number) return;
-    setTrackingId(s.id);
-    try {
-      const res = await fetch(`/api/shipping/track?trackingNo=${s.tracking_number}`);
-      if (res.status === 429 || !res.ok) {
-        window.open(`https://trace.cjlogistics.com/web/detail.jsp?slipno=${s.tracking_number}`, '_blank');
-        return;
-      }
-      const data = await res.json();
-      if (data.error === 'API_KEY_NOT_SET' || data.error?.includes('quota') || data.error?.includes('rate') || data.error?.includes('429')) {
-        window.open(`https://trace.cjlogistics.com/web/detail.jsp?slipno=${s.tracking_number}`, '_blank');
-        return;
-      }
-      if (data.error) { alert(`추적 실패: ${data.error}`); return; }
-      if (data.status !== s.status) {
-        await updateShipment(s.id, { status: data.status });
-        await fetchShipments();
-        alert(`상태 업데이트: ${STATUS_LABEL[s.status]} → ${STATUS_LABEL[data.status]}\n${data.stateText}${data.lastLocation ? ` (${data.lastLocation})` : ''}`);
-      } else {
-        alert(`현재 상태: ${STATUS_LABEL[data.status]}\n${data.stateText}${data.lastLocation ? ` (${data.lastLocation})` : ''}`);
-      }
-    } finally {
-      setTrackingId(null);
-    }
+  // ── 선택건 일괄 배송완료 ──────────────────────────────────────────────────
+  const handleBulkDeliver = async () => {
+    const ids = [...selectedShipments];
+    if (ids.length === 0) return;
+    if (!confirm(`선택한 ${ids.length}건을 '배송완료'로 처리합니다. 판매현황 수령상태도 함께 갱신됩니다. 계속할까요?`)) return;
+    const res = await bulkUpdateShipmentStatus(ids, 'DELIVERED');
+    if (res.error) { alert(`처리 실패: ${res.error}`); return; }
+    alert(`${res.updated ?? 0}건 배송완료 처리(이미 완료 ${res.skipped ?? 0}건 제외)`);
+    await fetchShipments();
+    setSelectedShipments(new Set());
   };
 
-  // 선택된 행에 대해서만 SweetTracker 송장 추적 API 호출 → 배송 상태 갱신.
-  // 전체 SHIPPED 건을 자동으로 돌면 API 일일 쿼터 빠르게 소진 + 의도치 않은 비용 발생.
   // ── Cafe24 탭 핸들러 ──────────────────────────────────────────────────────
   const handleLoadCafe24Orders = async (hideAddedOverride?: boolean) => {
     if (!startDate || !endDate) return;
@@ -1509,6 +1489,15 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
               >
                 대한통운 엑셀 다운로드 ({selectedShipments.size})
               </button>
+              {/* 선택건 일괄 배송완료 — 판매현황 수령상태 동기화 */}
+              <button
+                onClick={handleBulkDeliver}
+                disabled={selectedShipments.size === 0}
+                title="선택한 배송건을 배송완료(DELIVERED)로 처리 — 판매현황 수령상태도 함께 갱신"
+                className="px-3 py-2 rounded text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40"
+              >
+                선택건 배송완료 ({selectedShipments.size})
+              </button>
               {/* 예외 진입점: 직접 배송 입력 — 보조 버튼(임베드 미노출) */}
               {!embedded && (
                 <button
@@ -1606,15 +1595,6 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                         <td className="px-3 py-3">
                           <div className="flex items-center gap-2">
                             <button className="text-xs text-blue-600 hover:text-blue-800 font-medium" onClick={() => handleEditOpen(s)}>수정</button>
-                            {s.tracking_number && (
-                              <button
-                                className="text-xs text-indigo-600 hover:text-indigo-800 font-medium disabled:opacity-40"
-                                onClick={() => trackOne(s)}
-                                disabled={trackingId === s.id}
-                              >
-                                {trackingId === s.id ? '...' : '추적'}
-                              </button>
-                            )}
                             {s.status === 'PENDING' && (
                               <button className="text-xs text-red-500 hover:text-red-700 font-medium" onClick={() => handleDelete(s.id)}>삭제</button>
                             )}
