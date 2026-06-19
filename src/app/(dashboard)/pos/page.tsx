@@ -286,6 +286,9 @@ function POSPageInner() {
   const [usePoints, setUsePoints] = useState(false);
   const [pointsToUse, setPointsToUse] = useState(0);
   const [receiptData, setReceiptData] = useState<any>(null);
+  // 결제 완료 비차단 토스트(POS 미연동 — 영수증 인쇄모달 자동팝업 대신). '영수증 보기'로만 모달 opt-in.
+  const [successToast, setSuccessToast] = useState<any>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [editingQtyId, setEditingQtyId] = useState<string | null>(null);
   const [editingQtyVal, setEditingQtyVal] = useState('');
   const [editingDiscountId, setEditingDiscountId] = useState<string | null>(null);
@@ -1344,7 +1347,8 @@ function POSPageInner() {
         }
       }
 
-      setReceiptData({
+      // 영수증 데이터(opt-in '영수증 보기' 모달용). 자동 팝업 대신 비차단 토스트로 안내.
+      const rd = {
         orderNumber: orderNumber!, branchName: branchData?.name || '',
         customerName: selectedCustomer?.name,
         items: cart.map(item => ({ name: item.name, quantity: item.quantity, unitPrice: item.price, totalPrice: item.price * item.quantity - (item.discount || 0), discount: item.discount || 0 })),
@@ -1357,7 +1361,10 @@ function POSPageInner() {
           ? [deptCardCompany, deptInstallment !== '0' ? `${deptInstallment}개월` : '일시불'].filter(Boolean).join(' · ')
           : undefined,
         orderedAt: new Date().toISOString(),
-      });
+      };
+      setSuccessToast(rd);
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = setTimeout(() => setSuccessToast(null), 8000);
 
       // 결제 완료 — 진행 중이던 임시저장 슬롯이 있으면 자동 정리
       if (currentDraftId) {
@@ -3121,6 +3128,36 @@ function POSPageInner() {
           })()}
         </div>
       </div>
+
+      {/* 결제 완료 비차단 토스트 (POS 미연동 — 영수증 자동팝업 대신). 다음 판매를 막지 않음. */}
+      {successToast && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] w-[min(94vw,560px)]">
+          <div className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-white shadow-lg px-4 py-3">
+            <span className="text-2xl">✅</span>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-emerald-700">
+                결제 완료 · <span className="font-mono">{successToast.orderNumber}</span>
+              </p>
+              <p className="text-sm text-slate-600">
+                결제 {Number(successToast.finalAmount).toLocaleString()}원
+                {successToast.change ? ` · 거스름돈 ${Number(successToast.change).toLocaleString()}원` : ''}
+                {successToast.pointsEarned ? ` · 적립 ${Number(successToast.pointsEarned).toLocaleString()}P` : ''}
+                {successToast.customerName ? ` · ${successToast.customerName}` : ''}
+              </p>
+            </div>
+            <button
+              onClick={() => { setReceiptData(successToast); }}
+              className="shrink-0 text-xs px-2.5 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50"
+            >
+              🧾 영수증 보기
+            </button>
+            <button
+              onClick={() => { if (toastTimerRef.current) clearTimeout(toastTimerRef.current); setSuccessToast(null); }}
+              className="shrink-0 text-slate-400 hover:text-slate-600 text-lg leading-none"
+            >✕</button>
+          </div>
+        </div>
+      )}
 
       {receiptData && (
         <ReceiptModal
