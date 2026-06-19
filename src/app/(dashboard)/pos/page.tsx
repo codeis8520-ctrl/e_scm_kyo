@@ -2191,6 +2191,20 @@ function POSPageInner() {
                     + {b.name}
                   </button>
                 ))}
+                {/* 어떤 제품이든 선택해 바로 담기(쇼핑백 외 포장·기타) */}
+                <select
+                  value=""
+                  onChange={e => { const p = (products as any[]).find(x => x.id === e.target.value); if (p) addToCart(p); }}
+                  className="input text-xs py-1 w-auto"
+                  title="어떤 제품이든 선택해 바로 담기"
+                >
+                  <option value="">+ 다른 제품 선택…</option>
+                  {(products as any[]).map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}{p.price ? ` · ${Number(p.price).toLocaleString()}원` : ''}
+                    </option>
+                  ))}
+                </select>
               </div>
             )}
             {search && (
