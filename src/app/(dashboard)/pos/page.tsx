@@ -2180,21 +2180,17 @@ function POSPageInner() {
                     + 보자기 포장
                   </button>
                 )}
-                {quickBags.length > 0 && (
-                  <select
-                    value=""
-                    onChange={e => { const p = quickBags.find(b => b.id === e.target.value); if (p) addToCart(p); }}
-                    className="input text-xs py-1 w-auto"
-                    title="쇼핑백 종류 선택 시 바로 담기"
+                {quickBags.map(b => (
+                  <button
+                    key={b.id}
+                    type="button"
+                    onClick={() => addToCart(b)}
+                    title={`${b.name}${b.price ? ` · ${Number(b.price).toLocaleString()}원` : ''} 담기`}
+                    className="text-xs px-2.5 py-1 rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 font-medium"
                   >
-                    <option value="">+ 쇼핑백 선택…</option>
-                    {quickBags.map(b => (
-                      <option key={b.id} value={b.id}>
-                        {b.name}{b.price ? ` · ${Number(b.price).toLocaleString()}원` : ''}
-                      </option>
-                    ))}
-                  </select>
-                )}
+                    + {b.name}
+                  </button>
+                ))}
               </div>
             )}
             {search && (
