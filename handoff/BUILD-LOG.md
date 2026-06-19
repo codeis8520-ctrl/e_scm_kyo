@@ -1,3 +1,30 @@
+# BUILD-LOG — 미수금(UNSETTLED) 수금 처리 (#39)
+
+## 과제
+판매현황 SalesDetailDrawer에서 approval_status='UNSETTLED' 전표를 "수금 완료"로 직접 처리. 거래관리 settleCreditOrder가 판매현황 미수금 배지를 끄지 못하던 갭도 동시 수정.
+
+## 구현 완료 (리뷰 대기)
+- 상태: BUILD DONE · `npm run build` ✓ Compiled successfully in 5.9s (0 error)
+- 파일:
+  - `src/lib/accounting-actions.ts`
+    - settleCreditOrder: select에 approval_status 추가(L730) + update에 조건부 spread `approval_status:'COMPLETED'`(UNSETTLED일 때만). CARD_PENDING/이미 COMPLETED 불변.
+    - 신규 `settleSalesOrderReceivable({orderId, settledMethod})`: UNSETTLED 가드 → credit 미회수면 settleCreditOrder 위임(1115 회수 분개) → 공통 approval_status='COMPLETED' → revalidatePath('/pos').
+  - `src/app/(dashboard)/pos/SalesListTab.tsx`
+    - import settleSalesOrderReceivable. state(showSettleForm/settleMethod/settling). handleSettleReceivable. 액션 클러스터에 "💰 수금 완료" 버튼(UNSETTLED 조건) + 인라인 수금수단 select(현금/카드/카카오)+확정/취소.
+  - `src/lib/ai/schema.ts`: BUSINESS_RULES approval_status 섹션에 수금 흐름 한 줄 보강(신규 도구 X).
+
+## 결정
+- 분개: credit(1115 회수)만 생성. 비외상 UNSETTLED는 판매시점 1110/1120 차변 이미 기록 → 분개 생략(이중계상 방지).
+- 위임 경로에서도 settleSalesOrderReceivable 끝에 approval_status='COMPLETED' 1회 보장(settleCreditOrder가 이미 동기화해도 idempotent).
+- 수금수단 UI 노출은 cash/card/kakao 3종(card_keyin은 타입엔 허용하나 미수금 수금 시나리오상 UI 미노출).
+
+## Known Gaps (열린 채로)
+- 지점 RBAC 서버차단: 타지점 staff가 타지점 미수금 수금 차단 — 서버 액션 레벨 미신설(브리프 범위 외, 기존 화면접근 권한 필터에 위임).
+- 부분 수금(분할 입금)·수금 취소(되돌리기) UI 없음(범위 외).
+- 비외상 UNSETTLED 자동수금 AI 도구 없음(범위 외, 의도적).
+
+---
+
 # BUILD-LOG — SMS/알림톡 발송 고도화
 
 ## 과제
@@ -60,3 +87,21 @@
 ## Step B — Known Gaps (스코프 고정, 미수정)
 - 검색 결과는 페이지당 30명만 표시(페이지네이션 '더보기' UI 없음) — 검색어를 좁혀 선택 유도(안내 문구로 처리). 무한스크롤/페이지 버튼은 후속.
 - 대량발송 시 send-many 단일 호출(청킹 없음) → Step C 범위 유지.
+
+---
+
+## Step — 미수금(UNSETTLED) 수금 처리 (BRIEF 작성, 빌드 대기)
+- 상태: BRIEFED. 분개 정확성 코드 검증 완료.
+- 잠근 결정:
+  - **A(분개 근거)**: createSaleJournal(accounting-actions.ts L405-408)는 차변계정을 paymentMethod로만 결정(cash→1110/credit→1115/그외→1120). 별도 미수금 계정 없음.
+  - **비외상 UNSETTLED 수금 = 분개 없음**(판매시점 이미 1110/1120 차변 기록됨, 추가분개는 이중계상). 상태만 COMPLETED.
+  - **credit UNSETTLED 수금** = settleCreditOrder 위임(1115 회수 분개 차변1110/1120 ← 대변1115) + approval_status=COMPLETED를 신규 액션에서 1회 추가.
+  - **C 갭수정 = YES**: settleCreditOrder도 approval_status를 COMPLETED로 동기화. 단 **현재값=UNSETTLED일 때만**(CARD_PENDING/COMPLETED 불변, 회귀 차단).
+  - **신규 AI 도구 미추가**: settle_credit_order 유지. schema.ts BUSINESS_RULES 1줄만 보강.
+  - UI: SalesDetailDrawer 액션 클러스터(L3201~)에 approval_status==='UNSETTLED'일 때 "수금 완료" 버튼 + 수금수단 명시 선택.
+- 신규 액션: settleSalesOrderReceivable(orderId, settledMethod) — accounting-actions.ts.
+- 에스컬레이션: 없음(스펙 범위 내 결정). 단 PO 확인 권장 1건 → 아래 Known Gaps.
+
+### Step 미수금 — Known Gaps (스코프 고정)
+- 부분 수금/수금 취소/지점 RBAC 서버측 강제 미구현(현행 화면접근 권한에 위임).
+- 비외상 UNSETTLED용 신규 AI 도구 없음.

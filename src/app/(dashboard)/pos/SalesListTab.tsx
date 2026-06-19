@@ -10,6 +10,7 @@ import { fmtDateKST, fmtTimeKST, fmtDateTimeKST, kstTodayString, kstDayStart, ks
 import { cancelSalesOrder } from '@/lib/sales-cancel-actions';
 import { addSalesOrderItem, removeSalesOrderItem, updateSalesOrderItem, convertOrderToParcel, convertOrderToPickup, updateSalesOrderDetails } from '@/lib/sales-revise-actions';
 import { bulkUpdateReceiptStatus } from '@/lib/shipping-actions';
+import { settleSalesOrderReceivable } from '@/lib/accounting-actions';
 import { useEscClose } from '@/hooks/useEscClose';
 
 function getCookie(name: string): string | null {
@@ -1643,6 +1644,10 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
   const [markingReceipt, setMarkingReceipt] = useState(false);
+  // 미수금 수금 처리 (#39)
+  const [showSettleForm, setShowSettleForm] = useState(false);
+  const [settleMethod, setSettleMethod] = useState<'cash' | 'card' | 'kakao'>('cash');
+  const [settling, setSettling] = useState(false);
   // 수령 전 전표 품목 추가/삭제
   const [revising, setRevising] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -2315,6 +2320,24 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
       onChanged();
     } finally {
       setRevising(false);
+    }
+  };
+
+  const handleSettleReceivable = async () => {
+    if (!order || settling) return;
+    setSettling(true);
+    try {
+      const res = await settleSalesOrderReceivable({ orderId: order.id, settledMethod: settleMethod });
+      if (!res.success) { alert(res.error || '수금 처리에 실패했습니다.'); return; }
+      setOrder((prev: any) => prev ? {
+        ...prev,
+        approval_status: 'COMPLETED',
+        credit_settled: prev.payment_method === 'credit' ? true : prev.credit_settled,
+      } : prev);
+      setShowSettleForm(false);
+      onChanged();
+    } finally {
+      setSettling(false);
     }
   };
 
@@ -3224,7 +3247,39 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                   {cancelling ? '취소 중...' : '🚫 판매 취소'}
                 </button>
               )}
+              {order.approval_status === 'UNSETTLED' && !showSettleForm && (
+                <button onClick={() => setShowSettleForm(true)}
+                  className="flex-1 min-w-[120px] py-2 text-sm rounded-md border border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                  title="미수금을 수금 완료 처리합니다.">
+                  💰 수금 완료
+                </button>
+              )}
             </div>
+            {order.approval_status === 'UNSETTLED' && showSettleForm && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 p-3">
+                <span className="text-sm font-medium text-emerald-800">수금 수단:</span>
+                <select
+                  value={settleMethod}
+                  onChange={e => setSettleMethod(e.target.value as 'cash' | 'card' | 'kakao')}
+                  disabled={settling}
+                  className="rounded-md border border-emerald-300 bg-white px-2 py-1.5 text-sm disabled:opacity-50"
+                >
+                  <option value="cash">현금</option>
+                  <option value="card">카드</option>
+                  <option value="kakao">카카오페이</option>
+                </select>
+                <button onClick={handleSettleReceivable}
+                  disabled={settling}
+                  className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm text-white hover:bg-emerald-700 disabled:opacity-50">
+                  {settling ? '처리 중...' : '수금 확정'}
+                </button>
+                <button onClick={() => setShowSettleForm(false)}
+                  disabled={settling}
+                  className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+                  취소
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>

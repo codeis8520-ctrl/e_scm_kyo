@@ -727,7 +727,7 @@ export async function settleCreditOrder(params: {
   // 1. 주문 조회
   const { data: order, error: fetchErr } = await sb
     .from('sales_orders')
-    .select('id, order_number, total_amount, credit_settled, ordered_at')
+    .select('id, order_number, total_amount, credit_settled, ordered_at, approval_status')
     .eq('id', params.orderId)
     .eq('payment_method', 'credit')
     .single();
@@ -737,13 +737,15 @@ export async function settleCreditOrder(params: {
 
   const now = new Date().toISOString();
 
-  // 2. 수금 처리 업데이트
+  // 2. 수금 처리 업데이트 — 미수금(UNSETTLED) 건이면 판매현황 배지도 함께 닫음(COMPLETED).
+  //    CARD_PENDING/이미 COMPLETED 건은 건드리지 않음.
   const { error: updateErr } = await sb
     .from('sales_orders')
     .update({
       credit_settled: true,
       credit_settled_at: now,
       credit_settled_method: params.settledMethod,
+      ...(order.approval_status === 'UNSETTLED' ? { approval_status: 'COMPLETED' } : {}),
     })
     .eq('id', params.orderId);
 
@@ -793,5 +795,45 @@ export async function settleCreditOrder(params: {
     console.warn('수금 분개 생성 실패(무시):', journalErr?.message);
   }
 
+  return { success: true };
+}
+
+// ─── 미수금(UNSETTLED) 수금 처리 ───────────────────────────────────────────
+// 판매현황에서 approval_status='UNSETTLED' 전표를 직접 수금 완료 처리.
+// - credit(미회수): settleCreditOrder 위임(credit_settled + 1115 회수 분개).
+// - 비외상/이미 회수된 credit: 분개 생성 없이 상태만 COMPLETED(이중계상 방지).
+export async function settleSalesOrderReceivable(params: {
+  orderId: string;
+  settledMethod: 'cash' | 'card' | 'kakao' | 'card_keyin';
+}): Promise<{ success: boolean; error?: string }> {
+  const sb = await createClient() as any;
+
+  const { data: order, error: fetchErr } = await sb
+    .from('sales_orders')
+    .select('id, order_number, total_amount, payment_method, credit_settled, approval_status')
+    .eq('id', params.orderId)
+    .single();
+
+  if (fetchErr || !order) return { success: false, error: '주문을 찾을 수 없습니다.' };
+  if (order.approval_status !== 'UNSETTLED') {
+    return { success: false, error: '미수금 상태 전표만 수금 처리할 수 있습니다.' };
+  }
+
+  // credit 미회수 건만 분개 위임(1115 회수). 비외상은 판매 시점에 이미 1110/1120 차변 기록됨.
+  if (order.payment_method === 'credit' && order.credit_settled !== true) {
+    const res = await settleCreditOrder({ orderId: params.orderId, settledMethod: params.settledMethod });
+    if (!res.success) return res;
+    // settleCreditOrder는 approval_status가 UNSETTLED면 이미 COMPLETED로 동기화하므로
+    // 여기서는 명시적으로 한 번 더 보장(위임 경로 중복 update 1회 한정).
+  }
+
+  const { error: updateErr } = await sb
+    .from('sales_orders')
+    .update({ approval_status: 'COMPLETED' })
+    .eq('id', params.orderId);
+
+  if (updateErr) return { success: false, error: updateErr.message };
+
+  revalidatePath('/pos');
   return { success: true };
 }

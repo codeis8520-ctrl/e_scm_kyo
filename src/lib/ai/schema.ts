@@ -199,6 +199,7 @@ sales_orders.approval_status: 결제 승인 라이프사이클 (status와 직교
   - CARD_PENDING: 카드 키인 승인 대기
   - UNSETTLED: 미수금(외상/계좌이체 대기 등) — UI 표기 '미수금'. 거래관리 미수금 내역과 동일 개념.
   ※ approval_status=UNSETTLED 건은 "미수금 건 정리/수금" 대상.
+  ※ 수금 처리(settleSalesOrderReceivable): credit이면 1115(외상매출금) 회수 분개 생성, 비외상은 판매시점에 이미 1110/1120 차변 기록되어 분개 없이 approval_status만 COMPLETED로 변경(이중계상 방지). 거래관리 settleCreditOrder 수금도 이제 UNSETTLED→COMPLETED 동기화(판매현황 미수금 배지 닫힘).
 
 [수령]
 sales_orders.receipt_status: 제품 수령 흐름 (현장판매는 대부분 RECEIVED).
