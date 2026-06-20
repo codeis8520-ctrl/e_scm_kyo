@@ -240,6 +240,7 @@ sales_orders.receipt_status: 품목 receipt_status 집계. 품목 모두 RECEIVE
 - "안전재고 N개로 설정" → set_safety_stock(product_name, safety_stock, branch_name?)
 - "판매 등록해줘 / OO 팔았어" → create_sales_order (단순 판매. 택배=recipient_name/phone/address 지정 시 shipments 1:1 PENDING 자동 생성. 할인·외상·분할은 미지원 → POS 화면 안내, 확인 필요)
 - 다건/대량 요청(배송지N·고객N·납품N)은 batch_execute로 팬아웃: {tool, common_args, items[]}. 대상=create_sales_order(택배=recipient_* 지정)/create_customer/create_b2b_sales_order. 건별 독립 실행(부분실패 허용), 최대 50건.
+- 엑셀/스프레드시트 첨부(.xlsx/.csv) = 텍스트표로 들어옴(고정양식 아님). 컬럼 자유해석 → 배송지/고객/납품 리스트면 batch_execute 팬아웃. 실행 전 매핑·해석 요약 확인 1회.
 - "캠페인 만들어줘" → create_campaign (DRAFT 생성, 본사 전용)
 - "캠페인 활성화해줘" → activate_campaign (DRAFT→ACTIVE, 본사 전용)
 - "캠페인 발송해줘" → send_campaign (ACTIVE 캠페인 다수 고객 실발송, 본사 전용·확인 필요·되돌릴 수 없음)

@@ -21,6 +21,7 @@ const SYSTEM_PROMPT = `당신은 경옥채(한약·건강기능식품 전문 기
 3. 이름·지점·제품이 불분명하면 → 먼저 조회 도구로 확인 후 작업.
 4. 한 번에 하나의 도구만 호출한다. 여러 작업이 필요하면 순서대로 처리.
 5. BRANCH_STAFF/PHARMACY_STAFF 역할 → 담당 지점 업무만 처리.
+6. 스프레드시트(엑셀) 첨부 시: 컬럼을 고정 양식으로 보지 말고 자유 해석해 의도를 파악한다. 다건이면 batch_execute로 팬아웃하고, 실행 전 해석결과(예: "N행을 택배전표로, 발송인=X, 컬럼매핑 수령자→recipient_name…")를 한 번 요약해 확인받는다.
 
 == 도구 호출 규칙 (중요) ==
 - 선택적 파라미터는 값이 없으면 아예 생략한다. null이나 "null"을 보내지 않는다.
@@ -57,10 +58,12 @@ ${BUSINESS_RULES}`;
 // 첨부 파일 — 클라이언트가 base64로 인코딩해서 전송. 파일 자체는 저장하지 않고
 // agent_conversations에는 [첨부: img×2, pdf×1] 형태로 메타만 표기.
 interface AgentAttachment {
-  kind: 'image' | 'pdf';
-  media_type: string;   // image/png, image/jpeg, image/webp, image/gif, application/pdf
-  data: string;         // base64
+  kind: 'image' | 'pdf' | 'sheet';
+  media_type?: string;  // image/png, image/jpeg, image/webp, image/gif, application/pdf
+  data?: string;        // base64 (image/pdf만)
   name?: string;        // 원본 파일명(로깅용)
+  text?: string;        // 추출 텍스트표 (sheet만)
+  rowCount?: number;    // 추출 행 수 (sheet만)
 }
 
 interface AgentRequest {
@@ -81,6 +84,7 @@ function summarizeAttachments(atts: AgentAttachment[] | undefined): string {
   const parts: string[] = [];
   if (counts.image) parts.push(`이미지 ${counts.image}장`);
   if (counts.pdf) parts.push(`PDF ${counts.pdf}건`);
+  if (counts.sheet) parts.push(`엑셀 ${counts.sheet}건`);
   return parts.length > 0 ? ` [첨부: ${parts.join(', ')}]` : '';
 }
 
@@ -98,6 +102,11 @@ function buildUserContent(message: string, atts: AgentAttachment[] | undefined):
       blocks.push({
         type: 'document',
         source: { type: 'base64', media_type: 'application/pdf', data: a.data },
+      });
+    } else if (a.kind === 'sheet' && typeof a.text === 'string' && a.text.trim()) {
+      blocks.push({
+        type: 'text',
+        text: `== 첨부 스프레드시트: ${a.name || 'sheet'} (${a.rowCount ?? '?'}행) ==\n${a.text}\n(컬럼명은 사용자 데이터이며 고정 양식이 아니다. 의도에 맞게 자유 해석하라.)`,
       });
     }
   }
@@ -139,6 +148,15 @@ export async function POST(req: NextRequest) {
       }
       if (pdfCount > 2) {
         return NextResponse.json({ type: 'error', message: 'PDF는 한 번에 최대 2건까지 첨부할 수 있습니다.' }, { status: 400 });
+      }
+      const sheetCount = attachments.filter(a => a.kind === 'sheet').length;
+      if (sheetCount > 2) {
+        return NextResponse.json({ type: 'error', message: '엑셀은 한 번에 최대 2건까지 첨부할 수 있습니다.' }, { status: 400 });
+      }
+      const MAX_SHEET_TEXT = 60 * 1024; // 추출표 텍스트 상한
+      const bigSheet = attachments.find(a => a.kind === 'sheet' && (a.text?.length || 0) > MAX_SHEET_TEXT);
+      if (bigSheet) {
+        return NextResponse.json({ type: 'error', message: '첨부 스프레드시트가 너무 큽니다 (행/열을 줄여주세요).' }, { status: 400 });
       }
       const MAX_B64 = 11 * 1024 * 1024; // 약 8MB 원본
       const oversize = attachments.find(a => (a.data?.length || 0) > MAX_B64);

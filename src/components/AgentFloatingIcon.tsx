@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import * as XLSX from 'xlsx';
 
 interface PendingAction {
   tool: string;
@@ -11,12 +12,14 @@ interface PendingAction {
 // 클라이언트가 보유하는 첨부 (전송 시 base64로 인코딩)
 interface Attachment {
   id: string;             // UI key
-  kind: 'image' | 'pdf';
+  kind: 'image' | 'pdf' | 'sheet';
   media_type: string;     // image/png, application/pdf, ...
   name: string;
   size: number;           // bytes
   previewUrl?: string;    // object URL (이미지만)
-  data: string;           // base64 (헤더 제외)
+  data?: string;          // base64 (헤더 제외) — image/pdf만. sheet는 미사용
+  text?: string;          // 추출 텍스트표 (sheet만)
+  rowCount?: number;      // 추출 행 수 (sheet만)
 }
 
 interface Message {
@@ -29,9 +32,39 @@ interface Message {
 
 const MAX_IMAGES = 5;
 const MAX_PDFS = 2;
+const MAX_SHEETS = 2;
 const MAX_FILE_BYTES = 8 * 1024 * 1024; // 8MB
+const SHEET_MAX_ROWS = 200;             // 추출표 행 상한 (초과분 절단)
+const SHEET_MAX_CHARS = 40 * 1024;      // 추출표 문자 상한 (~40KB)
 const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const ALLOWED_PDF_TYPES = new Set(['application/pdf']);
+const SHEET_EXTS = ['.xlsx', '.xls', '.csv'];
+function isSheetFile(name: string): boolean {
+  const n = name.toLowerCase();
+  return SHEET_EXTS.some(ext => n.endsWith(ext));
+}
+// File → 추출 텍스트표 (TSV: 헤더+데이터행). 빈셀 제거, 행/문자 상한 절단.
+async function fileToSheetText(file: File): Promise<{ text: string; rowCount: number }> {
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
+  const first = wb.SheetNames[0];
+  if (!first) throw new Error('시트 없음');
+  const ws = wb.Sheets[first];
+  let csv = XLSX.utils.sheet_to_csv(ws, { blankrows: false, FS: '\t' });
+  csv = csv.replace(/\n+$/, '');
+  const lines = csv.length > 0 ? csv.split('\n') : [];
+  const total = lines.length;
+  let out: string;
+  if (total > SHEET_MAX_ROWS) {
+    out = lines.slice(0, SHEET_MAX_ROWS).join('\n') + `\n…(이하 ${total - SHEET_MAX_ROWS}행 생략, 총 ${total}행)`;
+  } else {
+    out = lines.join('\n');
+  }
+  if (out.length > SHEET_MAX_CHARS) {
+    out = out.slice(0, SHEET_MAX_CHARS) + '\n…(길이 초과 절단)';
+  }
+  return { text: out, rowCount: total };
+}
 
 // File → base64 (헤더 제외)
 function fileToBase64(file: File): Promise<string> {
@@ -101,15 +134,17 @@ export default function AgentFloatingIcon() {
   // 첨부 카운트
   const imageCount = attachments.filter(a => a.kind === 'image').length;
   const pdfCount = attachments.filter(a => a.kind === 'pdf').length;
+  const sheetCount = attachments.filter(a => a.kind === 'sheet').length;
 
   // 파일 추가 (드롭, 선택, paste 모두 이걸 호출)
   const addFiles = async (files: FileList | File[]) => {
     setAttachError('');
     const next: Attachment[] = [];
     for (const file of Array.from(files)) {
-      let kind: 'image' | 'pdf' | null = null;
+      let kind: 'image' | 'pdf' | 'sheet' | null = null;
       if (ALLOWED_IMAGE_TYPES.has(file.type)) kind = 'image';
       else if (ALLOWED_PDF_TYPES.has(file.type)) kind = 'pdf';
+      else if (isSheetFile(file.name || '')) kind = 'sheet';
       else { setAttachError(`지원하지 않는 형식: ${file.name} (${file.type || 'unknown'})`); continue; }
       if (file.size > MAX_FILE_BYTES) {
         setAttachError(`${file.name}: 8MB 초과 (실제 ${(file.size / 1024 / 1024).toFixed(1)}MB)`);
@@ -118,8 +153,28 @@ export default function AgentFloatingIcon() {
       // 카운트 가드 (현재 + 새로 추가될 것까지)
       const willImg = imageCount + next.filter(a => a.kind === 'image').length + (kind === 'image' ? 1 : 0);
       const willPdf = pdfCount + next.filter(a => a.kind === 'pdf').length + (kind === 'pdf' ? 1 : 0);
+      const willSheet = sheetCount + next.filter(a => a.kind === 'sheet').length + (kind === 'sheet' ? 1 : 0);
       if (willImg > MAX_IMAGES) { setAttachError(`이미지는 최대 ${MAX_IMAGES}장까지 첨부할 수 있습니다.`); continue; }
       if (willPdf > MAX_PDFS) { setAttachError(`PDF는 최대 ${MAX_PDFS}건까지 첨부할 수 있습니다.`); continue; }
+      if (willSheet > MAX_SHEETS) { setAttachError(`엑셀은 최대 ${MAX_SHEETS}건까지 첨부할 수 있습니다.`); continue; }
+
+      if (kind === 'sheet') {
+        try {
+          const { text, rowCount } = await fileToSheetText(file);
+          if (rowCount === 0 || text.trim().length === 0) {
+            setAttachError(`${file.name}: 시트가 비어있습니다.`);
+            continue;
+          }
+          next.push({
+            id: crypto.randomUUID(),
+            kind: 'sheet', media_type: file.type || '', name: file.name || 'sheet.xlsx',
+            size: file.size, text, rowCount,
+          });
+        } catch {
+          setAttachError(`${file.name}: 엑셀 파싱 실패`);
+        }
+        continue;
+      }
 
       try {
         const data = await fileToBase64(file);
@@ -225,9 +280,11 @@ export default function AgentFloatingIcon() {
       };
 
       if (attsToSend.length > 0) {
-        body.attachments = attsToSend.map(a => ({
-          kind: a.kind, media_type: a.media_type, data: a.data, name: a.name,
-        }));
+        body.attachments = attsToSend.map(a =>
+          a.kind === 'sheet'
+            ? { kind: 'sheet', name: a.name, text: a.text, rowCount: a.rowCount }
+            : { kind: a.kind, media_type: a.media_type, data: a.data, name: a.name }
+        );
       }
 
       if (confirmAction) {
@@ -436,6 +493,14 @@ export default function AgentFloatingIcon() {
                         className="w-12 h-12 object-cover rounded border border-slate-200"
                         title={`${a.name} (${(a.size / 1024).toFixed(0)}KB)`}
                       />
+                    ) : a.kind === 'sheet' ? (
+                      <div
+                        className="max-w-[140px] h-12 flex items-center gap-1 px-2 rounded border border-slate-200 bg-emerald-50 text-emerald-700 text-[11px] font-medium"
+                        title={`${a.name} (${a.rowCount ?? 0}행)`}
+                      >
+                        <span>📊</span>
+                        <span className="truncate">엑셀: {a.name} ({a.rowCount ?? 0}행)</span>
+                      </div>
                     ) : (
                       <div
                         className="w-12 h-12 flex flex-col items-center justify-center rounded border border-slate-200 bg-red-50 text-red-700 text-[10px] font-medium"
@@ -471,7 +536,7 @@ export default function AgentFloatingIcon() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif,application/pdf"
+                accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,.xlsx,.xls,.csv"
                 multiple
                 hidden
                 onChange={async e => {
