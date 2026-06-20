@@ -227,7 +227,7 @@ export async function POST(req: NextRequest) {
     const totalUsage: TokenUsage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0 };
     let lastRound = 0;
 
-    for (let rounds = 0; rounds < 8; rounds++) {
+    for (let rounds = 0; rounds < 12; rounds++) {
       lastRound = rounds;
       let responseMsg: any;
       let finish_reason: string;
@@ -480,6 +480,13 @@ function buildSuccessDetail(tool: string, parsed: any): string {
       return parsed.변경내용 || '';
     case 'bulk_update_product_costs':
       return `${parsed.기준}\n${(parsed.상세 || []).slice(0, 5).join('\n')}${parsed.안내 ? `\n${parsed.안내}` : ''}`;
+    case 'batch_execute': {
+      const head = `[${parsed.대상도구}] 총 ${parsed.총건수}건 · 성공 ${parsed.성공건수} / 실패 ${parsed.실패건수}`;
+      const fails = Array.isArray(parsed.실패목록)
+        ? parsed.실패목록.slice(0, 5).map((f: any) => `  - #${f.index} ${f.item요약}: ${f.사유}`).join('\n')
+        : '';
+      return fails ? `${head}\n실패:\n${fails}` : head;
+    }
     default:
       return '';
   }
@@ -742,6 +749,10 @@ function buildConfirmDescription(toolName: string, args: Record<string, any>): s
       }
       add('결제수단', methodLabels[args.payment_method] || args.payment_method);
       if (args.use_points) add('포인트 사용', '예');
+      if (args.recipient_name || args.recipient_phone || args.recipient_address) {
+        add('택배 받는분', args.recipient_name);
+        add('택배 주소', args.recipient_address);
+      }
       break;
     }
     case 'create_campaign': {
@@ -795,6 +806,19 @@ function buildConfirmDescription(toolName: string, args: Record<string, any>): s
       add('사유', args.reason);
       lines.push('⚠️ 차감했던 재고를 복원(IN)합니다. 수금이 진행된 전표는 취소할 수 없습니다.');
       break;
+    case 'batch_execute': {
+      const cnt = Array.isArray(args.items) ? args.items.length : 0;
+      lines.push('📦 일괄 실행 확인');
+      add('대상 도구', args.tool);
+      add('건수', `${cnt}건`);
+      if (args.common_args && typeof args.common_args === 'object') {
+        const ca = Object.entries(args.common_args)
+          .map(([k, v]) => `${k}=${typeof v === 'object' ? '...' : v}`).slice(0, 6).join(', ');
+        if (ca) add('공통 인자', ca);
+      }
+      lines.push('⚠️ 건별 독립 실행됩니다. 일부 실패 시 나머지는 그대로 처리되며 자동 롤백되지 않습니다.');
+      break;
+    }
     default:
       return `⚠️ 작업 확인\n\n${JSON.stringify(args, null, 2)}`;
   }

@@ -1,81 +1,128 @@
-# Architect Brief — processPosCheckout 라운드트립 최적화
+# Architect Brief — 재사용 토대 2개 (택배 프리미티브 + 범용 팬아웃)
+
+이전 전용도구(create_gift_batch) 브리프는 폐기. 이 브리프가 유효본.
 
 ## Goal
-결제 버튼(`processPosCheckout`, src/lib/actions.ts L2437~L2948)의 순차 DB 라운드트립 ~13–15회를 ~7–8회로 감소. **숫자·재고·포인트·movements·shipment·분개·에러폴백 100% 보존. 동작 변경 0.** 읽기 통합 + 쓰기 배치 + 알림 비차단만.
+AI 에이전트가 "전표 생성→택배"를 단일 프리미티브로 조합하고, 임의의 단일대상 쓰기 도구를 리스트에 팬아웃할 수 있게 토대 2개를 깐다. 이후 선물발송·대량 고객등록·B2B 다건은 코드 추가 없이 batch_execute 조합으로 처리.
 
-## 절대 보존 (한 결제라도 틀리면 실패)
-총액·VAT·할인·taxableAmount/exemptAmount/vatAmount 계산·pointsEarned/pointsToUse·재고 차감량·inventory_movements 행(개수·reference_type·memo·quantity·branch_id)·point_history 행(개수·balance·type·points)·shipment·반환값 `{ orderNumber, pointsEarned, stockUpdates }`·모든 컬럼부재 폴백 체인. **같은 결제 = 단일 흐름이라 race 무관, 멱등/순서 무관.**
+---
 
-## Build Order
+## 토대 A — 택배 매출 프리미티브 (create_sales_order 확장)
 
-### C. products 단일 조회 (먼저 — B의 입력이 됨)
-- L2472 select에 `is_taxable` 추가: `'id, product_type, track_inventory, is_phantom, is_taxable'`.
-- **폴백 체인 확장(순서 중요, 더 신생 컬럼부터 떨굼)**: is_phantom 부재 → is_taxable 유지하고 is_phantom만 제거 재시도 / track_inventory 부재 → 그 다음. is_taxable는 가장 오래된 마이그(006)이므로 마지막까지 유지. 단순화 위해: 1차 full → is_phantom 빠지면 `'id, product_type, track_inventory, is_taxable'` → track_inventory 빠지면 `'id, product_type, is_taxable'` → (만약 is_taxable까지 없는 환경이면) `'id, product_type'`. **is_taxable 부재 시 기존 동작(전부 과세=true)으로 폴백 보장.**
-- ⓪ 루프에서 `isTaxableByProduct: Map<string, boolean>` 동시 채움: `isTaxableByProduct.set(p.id, p.is_taxable !== false)` (컬럼 부재 시 undefined → !== false → true = 기존 폴백과 동일).
-- **L2570–2572 제거**: 별도 products 조회 삭제. L2569~2599 과세 블록은 `isTaxableByProduct` 맵을 그대로 사용 (`isTaxable.get(item.productId) === false` 로직 동일). 단 ⓪에서 products 조회가 에러였을 때를 위해: 기존 `if (!taxErr)` 게이트는 "맵이 채워졌는가"로 대체 — products 조회 자체가 실패(에러)면 맵이 비어 전부 과세=기본값. **결과 동일.**
-- Flag: cart의 productId가 ⓪ productIds에 전부 포함됨(둘 다 cart.map). 누락 위험 없음. 단 ⓪는 `if (productIds.length > 0)` 가드 안에서만 맵을 채우므로, cart 비었으면 과세 블록도 `if (cart.length > 0)`로 스킵 — 정합.
+### 결정 (LOCK)
+- **신규 도구 안 만든다. 기존 `create_sales_order` 도구 + `createSimpleSalesOrder` 액션을 확장한다.** 모든 택배 필드는 optional → 기존 호출 100% 하위호환.
+- 엔진 = `processPosCheckout`(src/lib/actions.ts L2437). CheckoutPayload는 이미 `shipping`/`shipFromBranchId`/cart deliveryType을 다 받는다. `createSimpleSalesOrder`(L2967)가 단지 그걸 안 넘길 뿐. **새 회계/재고 로직 0.**
 
-### B. 재고 SELECT 배치 (가장 큰 절감)
-- 현 구조: decrementStock가 품목(material)당 SELECT(L2817)→UPDATE/INSERT→movements INSERT = 3 라운드트립, Promise.all 병렬이나 키 수만큼.
-- **변경**: L2849~L2894 배치 블록 내에서 normalMap/phantomMap **합산 완료 후**(이 dedup 로직 L2855~2878 전부 무변경 — phantom 분해·decimalByMaterial·Math.ceil/round·trackByProduct 스킵 그대로):
-  1. 차감 대상 product_id 집합 = `[...normalMap.keys(), ...phantomMap.keys()]` (중복 가능 → `new Set`). **빈 배열이면 전체 스킵.**
-  2. **단일 SELECT**: `supabase.from('inventories').select('id, quantity').eq('branch_id', stockBranchId).in('product_id', ids)`. → `Map<product_id, {id, quantity}>` 구성.
-  3. 각 키별로 `before = toNum(existing?.quantity)`, `after = before - qty` 계산(decrementStock와 **동일 산술**). `stockUpdates[productId] = after` 기록(반환형 보존).
-  4. **UPDATE는 병렬**(Promise.all): 기존 행 있으면 `update({quantity: after}).eq('id', existing.id)`, 없으면 신규 INSERT `{branch_id: stockBranchId, product_id, quantity: after, safety_stock: 0}`. (단일 upsert/RPC는 **금지** — onConflict 제약·safety_stock 덮어쓰기 위험. 병렬 UPDATE/INSERT가 안전.)
-  5. **movements는 배열 1회 INSERT**: normalMap 키 → `reference_type:'POS_SALE', memo: movementMemo, quantity: qty`; phantomMap 키 → `reference_type:'PHANTOM_DECOMPOSE', memo: phantomMemo(해당 키의 memo), quantity: qty`. 각 행 `branch_id: stockBranchId, movement_type:'OUT', reference_id: saleOrderId`. **행 개수·필드 = 기존 N건과 동일.**
-- **정확성 근거**: decrementStock는 stockBranchId+product_id로 maybeSingle SELECT 후 그 행만 갱신. 배치 SELECT는 같은 stockBranchId, 같은 키 집합. before 값은 결제 시작 시점 스냅샷이며 이 함수 외 동시 차감 없음(단일 결제). after 산술 동일. movements 행은 키별 1행으로 1:1.
-- **decrementStock 헬퍼(L2811~2844) 처리**: 인라인 배치로 대체되면 헬퍼 미사용 → 제거 가능. 단 다른 호출처 없는지 Bob이 grep 확인(이 파일 내 `decrementStock(` 사용처가 L2883/2889 둘뿐이면 제거, 아니면 보존).
-- Flag: UPDATE 실패는 기존도 무처리(에러 throw 안 함, after만 반환)였음 — **에러 핸들링도 동일하게**(조용히 진행, 반환값만). movements INSERT 에러도 기존과 동일(무체크). 동작 보존 위해 **새 에러 게이트 추가 금지.**
+### Build Order
+1. **src/lib/actions.ts `createSimpleSalesOrder`(L2967)** — input에 optional 추가:
+   ```
+   ship_from_branch_id?: string;
+   shipping?: {
+     recipient_name: string; recipient_phone: string; recipient_address: string;
+     recipient_zipcode?: string; recipient_address_detail?: string;
+     delivery_message?: string; delivery_type?: 'PARCEL'|'QUICK';
+   } | null;
+   ```
+   - payload 조립부(L3008~)에 `shipping`이 있으면 `payload.shipping = {...input.shipping, delivery_type: input.shipping.delivery_type || 'PARCEL'}`, `payload.shipFromBranchId = input.ship_from_branch_id || input.branch_id` 추가.
+   - **sender_*는 안 채운다** (processPosCheckout이 ''로 넣고, 기존 CJ export resolveSenderForRow가 출고지점 폴백 처리 — 기존 정책과 충돌 금지).
+   - shipping 없으면 기존 동작 그대로(방문 판매).
 
-### A. 알림 비차단 (⑥ L2923~L2945)
-- 현재: customers SELECT(L2925)+branches SELECT(L2930)을 **await**한 뒤 fireNotificationTrigger(이미 .catch fire-and-forget). 앞 두 SELECT가 함수 반환(return)을 막음.
-- **변경**: ⑥ 전체 블록을 함수 `return` **이전에 두되 await하지 않는** 비동기로 분리. 구체 방법:
-  - ⑥ 블록을 즉시실행 async fn으로 감싸 `.catch(()=>{})` — `void (async () => { ...customers/branches 조회 + fireNotificationTrigger... })();` 형태. **await 제거**가 핵심. 그 다음 줄에서 바로 `return { orderNumber, pointsEarned, stockUpdates }`.
-  - **주의(Next.js 서버액션 백그라운드 보장)**: 서버액션은 응답 후 미완 promise가 중단될 수 있음. 현재도 fireNotificationTrigger는 fire-and-forget이라 **이미 best-effort 알림**(보장 안 됨)이 설계 전제. 따라서 customers/branches 조회를 같은 fire-and-forget 안으로 넣어도 **신뢰성 등급 동일**(알림은 원래 보장 대상 아님). → 동작 보존 OK. 만약 Bob이 "조회는 await 유지, 알림만 분리"가 더 안전하다 판단하면 그 대안도 허용(이 경우 절감은 0이나 회귀 위험 0). **PO 결정: 알림 신뢰성을 낮추지 않는 선에서만. customers/phone 등이 payload에 없으므로 조회는 필요 — fire-and-forget 내부로 이동이 1순위.**
-- Flag: br는 `branchId`로 조회(판매지점). B/D의 branches 조회와 **목적이 다름**(아래 D 참고) — 합칠 때 id 집합 주의.
+2. **src/lib/ai/tools.ts `execCreateSalesOrder`(L3853) + 도구 정의(L1108 인근)** — optional 택배 args 추가:
+   ```
+   recipient_name?, recipient_phone?, recipient_address?,
+   recipient_zipcode?, recipient_address_detail?, delivery_message?
+   ```
+   - exec: recipient_name/phone/address 중 **하나라도 있으면 택배 모드** → 셋 다 필수 검증(하나만 비면 에러), shipping 객체 조립해 `createSimpleSalesOrder`에 전달. `ship_from_branch_id`=resolveBranchForWrite로 푼 branch.id(판매=출고 동일).
+   - 도구 정의 description의 **"미지원: 택배 배송"(L1111) 문구 삭제** + "택배: recipient_* 지정 시 shipments 1:1 자동 생성, 송장발행은 update_shipment_tracking 별도" 추가. 분할/외상/할인 미지원은 유지.
+   - 반환에 택배일 때 `배송: '택배 레코드 생성됨(PENDING)'` 한 줄 추가.
 
-### D. point_history 배치 + branches 중복 + resolvePointRate
-- **D1 point_history 2→1**: L2902~2920. use+earn 두 insert(L2904/2909) → **배열 1회 insert**. balance는 JS에서 이미 계산(afterUse, afterUse+pointsEarned) — DB 의존 없음. 행 순서·type·points·balance·description 전부 동일하게 배열 `[useRow, earnRow]`. else 분기(earn만)는 1행 그대로. **maybeSingle 잔액 조회(L2898)는 유지**(앞단계 의존 없음).
-- **D2 branches 중복 제거**: 현재 branches 조회 2곳 — L2805(차감메모, `[branchId, stockBranchId]`, `stockBranchId !== branchId`일 때만) + L2930(알림, `branchId`만). **합치기**: L2805 블록에서 이미 조회한 결과에 branchId 행이 포함되므로, 알림용 branchName을 그 결과에서 재사용. 단 L2805는 조건부(출고처 다를 때만) 실행 → 합치려면: 알림 블록(A)이 fire-and-forget로 분리되므로 **branchName이 응답경로 밖**. 따라서 **무리한 통합 금지** — A 분리로 L2930이 이미 비차단이면 D2 절감 효과 미미. **D2는 보류(hold)**: A 적용 후 L2930은 응답을 안 막으므로 중복 조회 1회는 백그라운드 비용일 뿐. 회귀 위험 > 이득. **건드리지 않음.**
-- **D3 resolvePointRate(L2223~2257) 2→1**: matrix 쿼리(L2245)가 1차 grade 쿼리(L2231)의 `gradeRow.id`에 **데이터 의존** → 병합 불가(순차 필수). **보류(hold).** 위험 대비 이득 없음.
-- → **D는 D1만 적용. D2/D3 보류.**
+### 토대 A Out of Scope (→ Known Gaps)
+- 포인트 사용(차감): use_points는 기존 그대로(택배라고 강제 false 아님 — 단건은 사용자가 명시 가능). **단, 팬아웃 대량 시 포인트 차감은 의도 밖 → batch_execute common_args에서 use_points 기본 미설정.**
+- 비회원 발송인은 기존 create_sales_order 동작(customer 못 찾으면 비회원 진행) 그대로 — 포인트만 미적립.
+- 배송비 개념 없음(금액=상품가 합).
 
-## Build 순서 (의존)
-1. C (products 통합) — B가 phantom/track 맵에 의존하나 그건 기존, is_taxable만 추가라 독립.
-2. B (재고 배치) — 가장 큰 절감, C와 무관하게 가능.
-3. A (알림 비차단).
-4. D1 (point_history 배치).
-순서 무관하나 위 순으로. 각 항목 독립 — 하나 실패해도 나머지 유효.
+---
 
-## Out of Scope (→ BUILD-LOG Known Gaps if surfaces)
-- D2 branches 중복 통합 / D3 resolvePointRate 병합 (보류 — 의존성·회귀위험).
-- inventories upsert/RPC 전환 (safety_stock 위험).
-- 분개(journal)·shipment·sales_order_items 배치(이미 ③ L2783 배열 1회)·결제기록 — 무변경.
-- 음수재고 정책·BOM·decimal 로직 — 무변경.
+## 토대 B — batch_execute 메타도구 (범용 팬아웃)
+
+### 시그니처 (LOCK)
+도구명: **`batch_execute`** (WRITE + DANGEROUS)
+```
+tool: string            // 대상 도구명 (FANOUT_TOOLS 화이트리스트 必). required
+common_args?: object    // 전 item 공통 인자 (branch_name, payment_method 등)
+items: object[]         // 개별 인자 배열. required, 1~50건
+```
+- 각 item 최종 인자 = `{ ...common_args, ...item }` (item이 common을 override).
+- exec: `execBatchExecute(sb, args, ctx)` (src/lib/ai/tools.ts).
+
+### 내부 디스패치 (LOCK — 재진입 안전)
+- **executeTool(args.tool, merged, sb, ctx)를 item마다 직접 호출.** 기존 switch 정식 경로를 그대로 타므로 **대상 도구의 RBAC·검증을 100% 상속**(우회 불가).
+- **재귀 차단 (가드 순서대로)**:
+  1. `args.tool === 'batch_execute'` → 즉시 에러("batch_execute는 중첩 호출할 수 없습니다.").
+  2. `!FANOUT_TOOLS.has(args.tool)` → 에러("'X'는 일괄 실행 대상이 아닙니다.").
+- 각 item은 **독립 try/catch + 독립 commit**. executeTool은 item마다 새 processPosCheckout/액션을 호출하고 각자 DB 커밋 → 3번째 실패해도 1·2 생존(전역 트랜잭션 래퍼 없음 = 의도된 설계).
+- executeTool 반환은 **JSON 문자열**. 각 item 결과를 `JSON.parse` 시도 → `.error` 있으면 실패, 없으면 성공. parse 실패 시 실패로 간주(raw 일부 보존).
+
+### FANOUT_TOOLS 화이트리스트 (LOCK — 초기 멤버)
+```
+'create_sales_order',       // 토대 A — 택배/방문 단건 (선물발송·다건 판매)
+'create_customer',          // 대량 고객등록
+'create_b2b_sales_order',   // B2B 다건 납품
+```
+- send_campaign·delete_record·refund_sales_order·cancel_* 등 위험·비가역 도구는 **의도적으로 제외**(팬아웃 금지).
+- batch_execute 자체는 FANOUT_TOOLS에 **넣지 않는다**(가드1과 이중방어).
+
+### 결과 압축 + 상한 (LOCK)
+- items 상한 **50**. 초과 시 에러("일괄 실행은 최대 50건까지 가능합니다.").
+- 반환:
+  ```
+  {
+    성공: true,
+    대상도구: <tool>,
+    총건수: N, 성공건수, 실패건수,
+    성공샘플: [ {index, 식별자} ...최대 5건 ],   // 식별자 = 결과의 주문번호/전표번호/수령인/고객명 중 존재하는 것, 없으면 index만
+    실패목록: [ {index, item요약, 사유} ...전체 ], // 실패는 전량 노출(없으면 생략)
+    안내: "건별 독립 실행됨 — 실패 건은 다른 건에 영향 없음. 재시도하려면 실패 item만 다시 호출하세요."
+  }
+  ```
+  - 성공은 카운트+샘플5만(컨텍스트 폭주 가드). 실패는 전량(사용자가 재시도 판단).
+  - `item요약` = item의 첫 1~2개 식별 필드(recipient_name/customer_name/partner 등)만, 길면 절단.
+
+### route.ts 변경 (LOCK)
+1. **iteration 상한**: `src/app/api/agent/route.ts` L230 `for (let rounds = 0; rounds < 8; rounds++)` → **`< 12`**. (현재 6 아님, 8이 실제값. batch_execute가 팬아웃을 1턴 흡수하므로 소폭만.)
+2. **confirm-gate 동작 확인(코드 변경 불필요, 검증만)**: L284~ WRITE_TOOLS 감지 → batch_execute는 WRITE라 **1회 confirm 발생(전체 팬아웃에 대한 단일 확인)**. 승인 경로 L155-156이 `executeTool(pending_action.tool,...)` 직접 호출 → 내부 루프의 item별 executeTool은 route confirm-gate를 안 거침(정상 — item마다 재확인 안 함).
+3. **buildConfirmDescription / buildSuccessDetail (route.ts L420~/L470~ 부근 switch)**: batch_execute용 default/case가 읽을 만한 문장을 내도록 case 추가 — confirm: `"[일괄] {tool} {items.length}건 실행"`. success: 성공/실패 건수 요약. (switch에 없으면 깨지는 게 아니라 밋밋한 기본문구라 **Nice-to-have이나 권장**.)
+
+---
+
+## AI Sync (필수 — 매 커밋 매트릭스)
+- **src/lib/ai/tools.ts**:
+  - `batch_execute` 도구 정의 추가(AGENT_TOOLS 배열) + `execBatchExecute` + switch case(L1565 인근) 등록.
+  - `create_sales_order` 도구 정의에 택배 optional 필드 + description 수정.
+  - **WRITE_TOOLS**(L1321)에 `'batch_execute'` 추가. **DANGEROUS_TOOLS**(L1380)에 `'batch_execute'` 추가.
+  - **FANOUT_TOOLS** 신규 상수(WRITE/DANGEROUS 인근에 export const) = 위 3멤버.
+  - ToolContext RBAC는 대상 도구가 상속하므로 batch_execute 자체엔 추가 게이트 불필요(단, items 상한·화이트리스트가 게이트).
+- **src/lib/ai/schema.ts** BUSINESS_RULES [자주 쓰는 패턴]에 1줄:
+  `"다건/대량 요청(배송지N·고객N·납품N)은 batch_execute로 팬아웃: {tool, common_args, items[]}. 대상=create_sales_order(택배=recipient_* 지정)/create_customer/create_b2b_sales_order. 건별 독립 실행(부분실패 허용), 최대 50건."`
+- **src/lib/actions.ts**: createSimpleSalesOrder 확장(액션 추가/시그니처 변경 — DB스키마 변경 아님, schema.ts DB_SCHEMA 영향 없음).
+
+## 마이그레이션
+- **불필요.** CheckoutPayload·shipments·createSimpleSalesOrder 전부 기존 구조 재사용. 094 shipments_sales_order UNIQUE는 건별 1:1이라 위반 없음.
+
+## Out of Scope (→ BUILD-LOG Known Gaps)
+- 배송지별 **다른 상품/다른 발송인**: batch_execute items[]에 각자 다른 product_name/customer_name 넣으면 사실상 지원됨(공통이 아닌 건 item에). 단 create_sales_order 단건은 여전히 1발송인. "동일상품 강제" 같은 제약은 없음 — 토대가 더 일반적.
+- 송장 자동발행·택배사 연동: shipment PENDING 생성만. 발송=update_shipment_tracking 별도.
+- 포인트 차감(use_points): 팬아웃 시 기본 미설정 권장. 전역 정책 강제는 안 함.
+- **전역 트랜잭션 롤백 미제공**: 건별 독립 commit이 설계. N건 중 일부 실패 시 성공분은 유지(역롤백 없음).
+- 비회원 발송인: create_sales_order 기존 동작 상속(포인트만 미적립).
 
 ## Acceptance
-- `npm run build` 0 error.
-- **라운드트립 before/after 표**(아래) 제시.
-- 코드 리뷰로 산술 동치 확인: 동일 cart 입력 → stockUpdates·movements행·point_history행·taxableAmount/vatAmount **비트 동일**.
-- 폴백 체인(products 4단·sales_orders·shipments·items) 전부 유지.
+- create_sales_order에 recipient_3필드 지정 → sales_order 1 + items + inventory OUT + shipment 1:1(PENDING, recipient 채워짐) + 매출분개 + payments. recipient 미지정 시 기존 방문판매 무회귀.
+- batch_execute {tool:'create_sales_order', common_args:{product_name,payment_method,branch_name}, items:[배송지3]} → 전표 3건(고객=common customer면 발송인 귀속), 3번째 일부러 실패시켜도 1·2 생존 + 실패목록에 1건.
+- batch_execute {tool:'batch_execute',...} → 가드1 에러. {tool:'send_campaign',...} → 가드2 에러. items 51건 → 상한 에러.
+- create_customer/create_b2b_sales_order 팬아웃도 동작(executeTool 정식경로 RBAC 상속 확인).
+- route.ts rounds<12. batch_execute 호출 시 confirm 1회만.
+- npm run build 0 error.
 
-## 라운드트립 표 (대략, customer+1품목+택배 기준)
-| 단계 | Before | After |
-|---|---|---|
-| ⓪ products(type/track/phantom) | 1 | 1 |
-| 과세 products(is_taxable) | 1 | 0 (C: ⓪에 흡수) |
-| point rate (resolvePointRate) | 2 | 2 (D3 보류) |
-| phantom BOM | 0~1 | 동일 |
-| decimal material | 0~1 | 동일 |
-| sales_orders insert | 1 | 1 |
-| payments insert | 1 | 1 |
-| shipments insert | 0~1 | 동일 |
-| items insert | 1 | 1 |
-| 차감 branches(메모) | 0~1 | 동일 |
-| **재고 SELECT** | N키 | **1** (B) |
-| **재고 UPDATE/INSERT** | N키(병렬) | N키(병렬, 변동無) |
-| **movements INSERT** | N키 | **1** (B) |
-| point_history select | 0~1 | 동일 |
-| **point_history insert** | 1~2 | **1** (D1) |
-| ⑥ customers+branches | 2 (응답차단) | 2 (**비차단**, A) |
-| **응답 경로 합계** | **~13–15** | **~7–8** |
+## Build 순서 권장
+A1(actions.ts createSimpleSalesOrder) → A2(execCreateSalesOrder + 도구정의) → B1(execBatchExecute + FANOUT_TOOLS + switch + WRITE/DANGEROUS) → B2(route.ts rounds 12 + confirm/success case) → schema.ts AI Sync → npm run build → self-review → REVIEW-REQUEST.md.

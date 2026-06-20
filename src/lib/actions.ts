@@ -2975,6 +2975,17 @@ export async function createSimpleSalesOrder(input: {
   payment_method: 'cash' | 'card' | 'kakao';
   use_points?: boolean;
   user_id?: string | null;
+  // 택배 확장 (전부 optional — 미지정 시 기존 방문판매 동작 그대로)
+  ship_from_branch_id?: string;
+  shipping?: {
+    recipient_name: string;
+    recipient_phone: string;
+    recipient_address: string;
+    recipient_zipcode?: string;
+    recipient_address_detail?: string;
+    delivery_message?: string;
+    delivery_type?: 'PARCEL' | 'QUICK';
+  } | null;
 }): Promise<{ orderNumber?: string; pointsEarned?: number; error?: string }> {
   if (!input.items || input.items.length === 0) {
     return { error: '판매 품목이 없습니다.' };
@@ -3022,6 +3033,16 @@ export async function createSimpleSalesOrder(input: {
     pointsToUse,
     userId: input.user_id || null,
   };
+
+  // 택배: shipping 지정 시에만 (sender_*는 비움 — processPosCheckout이 ''로 넣고
+  //   CJ export resolveSenderForRow가 출고지점 폴백 처리. 기존 정책과 충돌 금지).
+  if (input.shipping) {
+    payload.shipping = {
+      ...input.shipping,
+      delivery_type: input.shipping.delivery_type || 'PARCEL',
+    };
+    payload.shipFromBranchId = input.ship_from_branch_id || input.branch_id;
+  }
 
   return processPosCheckout(payload);
 }

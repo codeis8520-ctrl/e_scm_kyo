@@ -1106,9 +1106,10 @@ sales_orders·inventories 등 핵심 거래 테이블은 삭제 불가.`,
     type: 'function',
     function: {
       name: 'create_sales_order',
-      description: `단순 현장판매(POS) 주문을 등록. 회원/비회원 모두 가능하며 단일 결제(현금/카드/카카오페이)·할인 없음·현장 수령 전용입니다.
+      description: `단순 판매(POS) 주문을 등록. 회원/비회원 모두 가능하며 단일 결제(현금/카드/카카오페이)·할인 없음입니다.
 사용 예: "강남점 공진단 2개 현금으로 판매 등록", "홍길동님 침향환 1개 카드로 팔았어 포인트 쓸게".
-미지원: 택배 배송, 분할 결제, 외상(미수금), 할인 — 이런 요청은 POS 화면을 안내하세요.
+택배: recipient_name/recipient_phone/recipient_address 지정 시 shipments 1:1 자동 생성(PENDING). 송장발행은 update_shipment_tracking 별도. 미지정 시 현장 수령.
+미지원: 분할 결제, 외상(미수금), 할인 — 이런 요청은 POS 화면을 안내하세요.
 등급·적립율은 서버가 자동 계산합니다. 되돌리려면 환불(refund_sales_order)을 이용하세요.`,
       parameters: {
         type: 'object',
@@ -1130,8 +1131,45 @@ sales_orders·inventories 등 핵심 거래 테이블은 삭제 불가.`,
           },
           payment_method: { type: 'string', enum: ['cash', 'card', 'kakao'], description: '결제 수단 (현금/카드/카카오페이)' },
           use_points: { type: 'boolean', description: '보유 포인트 사용 여부 (회원 한정, 기본 false)' },
+          recipient_name: { type: 'string', description: '택배 받는분 이름. 지정 시 택배 모드(name/phone/address 셋 다 필수)' },
+          recipient_phone: { type: 'string', description: '택배 받는분 전화번호' },
+          recipient_address: { type: 'string', description: '택배 받는분 주소 (도로명/지번)' },
+          recipient_zipcode: { type: 'string', description: '택배 우편번호 (선택)' },
+          recipient_address_detail: { type: 'string', description: '택배 상세주소 (선택)' },
+          delivery_message: { type: 'string', description: '배송 메시지 (선택)' },
         },
         required: ['items', 'payment_method'],
+      },
+    },
+  },
+  // ── 일괄 실행 (범용 팬아웃, DANGEROUS) ───────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'batch_execute',
+      description: `동일 쓰기 도구를 여러 대상(리스트)에 한 번에 팬아웃 실행. 다건/대량 요청에 사용합니다.
+사용 예: "이 배송지 5곳에 공진단 1개씩 택배 발송", "고객 10명 한꺼번에 등록", "거래처 3곳 B2B 납품 등록".
+대상 도구(tool)는 화이트리스트만 가능: create_sales_order(택배=recipient_* 지정)/create_customer/create_b2b_sales_order.
+각 item 최종 인자 = {...common_args, ...item} (item이 공통값 override). 건별 독립 실행 — 일부 실패해도 나머지는 그대로 처리됩니다(부분실패 허용, 자동 롤백 없음). 최대 50건.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          tool: {
+            type: 'string',
+            enum: ['create_sales_order', 'create_customer', 'create_b2b_sales_order'],
+            description: '팬아웃할 대상 도구명',
+          },
+          common_args: {
+            type: 'object',
+            description: '전 item 공통 인자 (예: branch_name, payment_method). 생략 가능',
+          },
+          items: {
+            type: 'array',
+            description: '개별 인자 객체 배열 (1~50건). 각 item이 common_args를 덮어씁니다.',
+            items: { type: 'object' },
+          },
+        },
+        required: ['tool', 'items'],
       },
     },
   },
@@ -1374,6 +1412,8 @@ export const WRITE_TOOLS = new Set([
   'create_b2b_sales_order',
   'settle_b2b_order',
   'cancel_b2b_order',
+  // 토대 B: 범용 팬아웃
+  'batch_execute',
 ]);
 
 /** 되돌릴 수 없는 고위험 작업 — confirm 시 추가 경고 라인을 붙인다. */
@@ -1392,6 +1432,19 @@ export const DANGEROUS_TOOLS = new Set<string>([
   'create_shipment',
   'create_b2b_sales_order',
   'cancel_b2b_order',
+  // 토대 B: 다건 쓰기 — 전체 팬아웃에 단일 confirm
+  'batch_execute',
+]);
+
+/**
+ * 토대 B — batch_execute 팬아웃 허용 대상(화이트리스트).
+ * 위험·비가역 도구(send_campaign·delete_record·refund_*·cancel_*)는 의도적으로 제외.
+ * batch_execute 자신도 넣지 않는다(가드1과 이중방어).
+ */
+export const FANOUT_TOOLS = new Set<string>([
+  'create_sales_order',     // 토대 A — 택배/방문 단건 (선물발송·다건 판매)
+  'create_customer',        // 대량 고객등록
+  'create_b2b_sales_order', // B2B 다건 납품
 ]);
 
 // ─── Shared Helpers ──────────────────────────────────────────────────────────
@@ -1571,6 +1624,8 @@ export async function executeTool(
       case 'create_b2b_sales_order':   return execCreateB2bSalesOrder(sb, args as any, ctx);
       case 'settle_b2b_order':         return execSettleB2bOrder(sb, args as any);
       case 'cancel_b2b_order':         return execCancelB2bOrder(sb, args as any);
+      // 토대 B: 범용 팬아웃 메타도구
+      case 'batch_execute':            return execBatchExecute(sb, args as any, ctx);
       default: return JSON.stringify({ error: `알 수 없는 도구: ${toolName}` });
     }
   } catch (e: any) {
@@ -3849,6 +3904,90 @@ async function execCancelCreditOrder(sb: any, args: {
   });
 }
 
+// ── 일괄 실행 (범용 팬아웃, DANGEROUS) ─────────────────────────────────────────
+// 대상 도구를 executeTool 정식 경로로 item마다 호출 → RBAC·검증 100% 상속(우회 불가).
+// 각 item 독립 try/catch + 독립 commit. 전역 트랜잭션 없음 = 부분실패 허용(의도된 설계).
+async function execBatchExecute(sb: any, args: {
+  tool?: string;
+  common_args?: Record<string, any>;
+  items?: Record<string, any>[];
+}, ctx: ToolContext): Promise<string> {
+  const tool = args.tool;
+  // 가드1: 재귀 차단 — batch_execute 중첩 호출 금지
+  if (tool === 'batch_execute') {
+    return JSON.stringify({ error: 'batch_execute는 중첩 호출할 수 없습니다.' });
+  }
+  // 가드2: 화이트리스트만 허용
+  if (!tool || !FANOUT_TOOLS.has(tool)) {
+    return JSON.stringify({ error: `'${tool ?? '(없음)'}'는 일괄 실행 대상이 아닙니다.` });
+  }
+
+  const items = args.items;
+  if (!Array.isArray(items) || items.length === 0) {
+    return JSON.stringify({ error: '일괄 실행할 항목(items)이 없습니다.' });
+  }
+  if (items.length > 50) {
+    return JSON.stringify({ error: '일괄 실행은 최대 50건까지 가능합니다.' });
+  }
+
+  const common = args.common_args || {};
+  const successSamples: Array<{ index: number; 식별자?: string }> = [];
+  const failures: Array<{ index: number; item요약: string; 사유: string }> = [];
+
+  // item 식별 필드 추출 (성공샘플 식별자 / 실패 item요약 공용)
+  const idOf = (obj: Record<string, any>): string | undefined => {
+    const v = obj.recipient_name ?? obj.customer_name ?? obj.partner_name
+      ?? obj.partner ?? obj.name ?? obj.phone;
+    if (v == null) return undefined;
+    const s = String(v);
+    return s.length > 40 ? s.slice(0, 40) + '…' : s;
+  };
+
+  let successCount = 0;
+  for (let i = 0; i < items.length; i++) {
+    const merged = { ...common, ...items[i] }; // item이 common override
+    try {
+      const raw = await executeTool(tool, merged, sb, ctx);
+      let parsed: any;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        // parse 실패 → 실패로 간주(raw 일부 보존)
+        failures.push({
+          index: i,
+          item요약: idOf(items[i]) || `#${i}`,
+          사유: String(raw).slice(0, 120),
+        });
+        continue;
+      }
+      if (parsed && parsed.error) {
+        failures.push({ index: i, item요약: idOf(items[i]) || `#${i}`, 사유: String(parsed.error) });
+      } else {
+        successCount++;
+        if (successSamples.length < 5) {
+          const id = parsed?.주문번호 ?? parsed?.전표번호 ?? parsed?.수령인
+            ?? parsed?.고객 ?? parsed?.고객명 ?? idOf(items[i]);
+          successSamples.push(id != null ? { index: i, 식별자: String(id) } : { index: i });
+        }
+      }
+    } catch (e: any) {
+      failures.push({ index: i, item요약: idOf(items[i]) || `#${i}`, 사유: e?.message || String(e) });
+    }
+  }
+
+  const result: Record<string, any> = {
+    성공: true,
+    대상도구: tool,
+    총건수: items.length,
+    성공건수: successCount,
+    실패건수: failures.length,
+    성공샘플: successSamples,
+    안내: '건별 독립 실행됨 — 실패 건은 다른 건에 영향 없음. 재시도하려면 실패 item만 다시 호출하세요.',
+  };
+  if (failures.length > 0) result.실패목록 = failures;
+  return JSON.stringify(result);
+}
+
 // ── 판매 등록 (DANGEROUS) ──────────────────────────────────────────────────────
 async function execCreateSalesOrder(sb: any, args: {
   customer_name?: string;
@@ -3857,11 +3996,23 @@ async function execCreateSalesOrder(sb: any, args: {
   items?: { product_name: string; quantity: number }[];
   payment_method: 'cash' | 'card' | 'kakao';
   use_points?: boolean;
+  recipient_name?: string;
+  recipient_phone?: string;
+  recipient_address?: string;
+  recipient_zipcode?: string;
+  recipient_address_detail?: string;
+  delivery_message?: string;
 }, ctx: ToolContext): Promise<string> {
   // 1) 판매 지점 (staff 본인 지점 강제)
   const branchRes = await resolveBranchForWrite(sb, ctx, args.branch_name);
   if (!branchRes.ok) return JSON.stringify({ error: branchRes.error });
   const branch = branchRes.branch;
+
+  // 1.5) 택배 모드 판정 — recipient_* 중 하나라도 있으면 셋 다 필수
+  const isParcel = !!(args.recipient_name || args.recipient_phone || args.recipient_address);
+  if (isParcel && !(args.recipient_name && args.recipient_phone && args.recipient_address)) {
+    return JSON.stringify({ error: '택배 발송은 받는분 이름·전화번호·주소가 모두 필요합니다.' });
+  }
 
   // 2) 품목 검증
   if (!args.items || args.items.length === 0) {
@@ -3909,6 +4060,19 @@ async function execCreateSalesOrder(sb: any, args: {
     payment_method: args.payment_method,
     use_points: args.use_points,
     user_id: ctx.userId || null,
+    // 택배: 발송지점=판매지점(동일), sender_*는 비움(CJ export 폴백 처리)
+    ...(isParcel ? {
+      ship_from_branch_id: branch.id,
+      shipping: {
+        recipient_name: args.recipient_name!,
+        recipient_phone: args.recipient_phone!,
+        recipient_address: args.recipient_address!,
+        recipient_zipcode: args.recipient_zipcode,
+        recipient_address_detail: args.recipient_address_detail,
+        delivery_message: args.delivery_message,
+        delivery_type: 'PARCEL' as const,
+      },
+    } : {}),
   });
   if (res.error) return JSON.stringify({ error: res.error });
 
@@ -3922,6 +4086,7 @@ async function execCreateSalesOrder(sb: any, args: {
     합계: `${total.toLocaleString()}원`,
     결제수단: methodLabels[args.payment_method] || args.payment_method,
     적립포인트: `${(res.pointsEarned ?? 0).toLocaleString()}P`,
+    ...(isParcel ? { 배송: `택배 레코드 생성됨(PENDING) → ${args.recipient_name}` } : {}),
   });
 }
 

@@ -1,3 +1,44 @@
+# BUILD-LOG — 재사용 토대 2개 (택배 프리미티브 + batch_execute 팬아웃)
+
+## 🔒 Locked Decisions — 2026-06-20 (브리프 발행, 빌드 대기)
+방향전환: 전용도구(create_gift_batch) **폐기**. 재사용 토대 2개로 대체. Project Owner 지시 = "엣지케이스마다 전용도구 깎지 말고 AI가 시스템 안에서 응용·팬아웃하도록 토대를 깔아라."
+
+- **토대 A**: create_sales_order **확장**(신규도구 X). createSimpleSalesOrder(actions.ts)에 optional shipping+ship_from_branch_id 추가 → processPosCheckout이 이미 받는 필드 전달. 회계/재고 로직 0. 도구 description "미지원: 택배 배송" 삭제. recipient_* 셋 다 필수(하나라도 있으면 택배 모드).
+- **토대 B**: batch_execute 메타도구 신설(WRITE+DANGEROUS). {tool, common_args, items[]} → executeTool 정식경로 item별 직접 호출(RBAC 상속). 재귀차단 2가드(self·非FANOUT). 건별 독립 commit(부분실패 허용, 전역롤백 미제공). items 상한 50. 결과압축(성공 카운트+샘플5, 실패 전량).
+- **FANOUT_TOOLS 화이트리스트**: create_sales_order, create_customer, create_b2b_sales_order. (send_campaign·delete·refund·cancel 의도적 제외.)
+- **route.ts**: iteration `rounds < 8` → `< 12`(L230). confirm-gate는 batch_execute에 1회만 발생(승인경로 L155-156이 executeTool 직접호출 → item은 재확인 안 함). buildConfirmDescription/buildSuccessDetail case 권장(밋밋해도 안 깨짐).
+- **마이그레이션 불필요**. AI Sync: tools.ts(도구정의·exec·switch·WRITE/DANGEROUS·FANOUT 상수) + schema.ts(BUSINESS_RULES 팬아웃 패턴 1줄).
+
+### Known Gaps (이 토대 범위 밖)
+- 송장 자동발행·택배사 연동(shipment PENDING만, update_shipment_tracking 별도).
+- 포인트 차감(use_points): 팬아웃 시 기본 미설정 권장, 전역 강제 안 함.
+- 전역 트랜잭션 롤백 미제공 — 건별 독립 commit이 설계(N건 중 일부 실패 시 성공분 유지).
+- 비회원 발송인: create_sales_order 기존 동작 상속(포인트만 미적립).
+- 배송지별 다른 상품/발송인은 batch_execute items[]로 사실상 지원(공통 아닌 건 item에).
+
+## 🔨 빌드완료 (리뷰대기) — 2026-06-20 (Bob)
+브리프 그대로 토대 2개 빌드. 신규 회계/재고 로직 0, 마이그 0. `npm run build` 0 error.
+
+### A — 택배 매출 프리미티브 (create_sales_order 확장)
+- **src/lib/actions.ts `createSimpleSalesOrder`**: input에 optional `ship_from_branch_id` + `shipping{recipient_*, delivery_message, delivery_type}` 추가(하위호환). payload 조립부에서 `input.shipping` 있으면 `payload.shipping`(delivery_type 기본 PARCEL) + `payload.shipFromBranchId`(미지정 시 branch_id) 세팅. **sender_* 미설정**(processPosCheckout ''→CJ resolveSenderForRow 폴백 정책 보존). shipping 없으면 기존 방문판매 동작 그대로.
+- **src/lib/ai/tools.ts `execCreateSalesOrder`**: optional 택배 args 6개 추가. recipient_name/phone/address 중 하나라도 있으면 택배 모드 → 셋 다 필수 검증(하나만 비면 에러). createSimpleSalesOrder에 ship_from_branch_id=branch.id(판매=출고) + shipping 객체 전달. 반환에 `배송: '택배 레코드 생성됨(PENDING) → {수령인}'` 추가.
+- **도구 정의**: description "미지원: 택배 배송" 삭제 + 택배(recipient_* 지정 시 shipments 1:1 PENDING, 송장은 update_shipment_tracking 별도) 문구 추가. parameters에 recipient_*/delivery_message 6필드 추가. 분할/외상/할인 미지원은 유지.
+
+### B — batch_execute 메타도구 (범용 팬아웃)
+- **src/lib/ai/tools.ts `execBatchExecute`**: 가드1(tool==='batch_execute'→에러), 가드2(!FANOUT_TOOLS.has→에러), items 1~50 검증(0건/51건 에러). item마다 `executeTool(tool, {...common_args, ...item}, sb, ctx)` 직접 호출(RBAC 상속). 독립 try/catch — raw JSON.parse 후 `.error` 유무로 성공/실패 판정, parse 실패=실패(raw 120자 보존). 결과 압축: 성공 카운트+샘플5(주문번호/전표번호/수령인/고객 등 식별자), 실패 전량(index·item요약·사유).
+- **상수**: WRITE_TOOLS·DANGEROUS_TOOLS에 `'batch_execute'` 추가. 신규 `export const FANOUT_TOOLS`(create_sales_order/create_customer/create_b2b_sales_order). batch_execute 자신은 FANOUT 미포함(가드1과 이중방어).
+- **도구 정의 + switch case** 등록.
+- **src/app/api/agent/route.ts**: L230 `rounds < 8` → `< 12`. confirm-gate는 batch_execute가 WRITE라 1회 발생(승인경로 L155-156이 executeTool 직접호출 → item별 재확인 없음, 검증만·코드변경 없음). buildConfirmDescription/buildSuccessDetail에 batch_execute case 추가(권장사항). create_sales_order confirm에 택배 받는분/주소 라인 추가.
+
+### AI Sync
+- **src/lib/ai/schema.ts** BUSINESS_RULES [자주 쓰는 패턴]: create_sales_order 줄을 택배 포함으로 갱신 + batch_execute 팬아웃 1줄 추가.
+- tools.ts(정의·exec·switch·WRITE/DANGEROUS/FANOUT 상수) 동기화 완료. DB_SCHEMA 무변경(스키마 변경 없음).
+
+### Known Gaps (추가 발견 없음 — 상기 토대 범위 밖 항목 그대로)
+- sanitizeToolArgs(route.ts)는 items 배열 내부로 재귀하지 않음 → item 내 숫자문자열 미강제 변환. 다운스트림(Number(quantity) 등)이 처리하므로 무해. 추적용 기록만.
+
+---
+
 # BUILD-LOG — processPosCheckout 라운드트립 최적화 (A/B/C/D1)
 
 ## 🔨 빌드완료 (리뷰대기) — 2026-06-19
