@@ -246,6 +246,24 @@ export const AGENT_TOOLS: MiniMaxTool[] = [
   {
     type: 'function',
     function: {
+      name: 'record_stock_usage',
+      description: '재고를 자가사용·시음·로스 등으로 소모 차감합니다(판매 아님 → 매출·분개 없음). 팬텀 세트 품목(예: 침향 10환)은 자동으로 base(침향 30환)에서 분수 차감됩니다. ▸ 30환을 통째로 1개 소모 → product_name="침향 30환", quantity=1 (30환 -1). ▸ 30환 중 10환만 시음 → product_name="침향 10환", quantity=1 (30환 -0.333). 출고 방향이라 수량은 1 이상 정수. 단순 재고 조정(입고/실사)은 adjust_inventory 를 쓰고, 소모(시음·로스·자가사용)는 반드시 이 도구를 쓰세요.',
+      parameters: {
+        type: 'object',
+        properties: {
+          branch_name: { type: 'string', description: '소모 지점명' },
+          product_name: { type: 'string', description: '소모 품목명. 분할 단위로 소모하면 그 단위명(예: "침향 10환")으로 지정 — base가 자동 분수 차감됨.' },
+          quantity: { type: 'number', description: '소모 수량(1 이상 정수)' },
+          usage_type: { type: 'string', description: '소모 사용유형(예: 시음/로스/자가사용/기타). 사용유형 이름·코드와 부분일치로 해석.' },
+          memo: { type: 'string', description: '사유 메모 (선택)' },
+        },
+        required: ['branch_name', 'product_name', 'quantity', 'usage_type'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'transfer_inventory',
       description: '지점 간 재고를 이동합니다. 출발 지점 재고가 차감되고 도착 지점에 추가됩니다.',
       parameters: {
@@ -1359,6 +1377,7 @@ sales_orders·inventories 등 핵심 거래 테이블은 삭제 불가.`,
 export const WRITE_TOOLS = new Set([
   'bulk_adjust_inventory',
   'adjust_inventory',
+  'record_stock_usage',
   'transfer_inventory',
   'create_customer',
   'update_customer',
@@ -1584,6 +1603,7 @@ export async function executeTool(
       case 'get_production_orders':    return execGetProductionOrders(sb, args);
       case 'bulk_adjust_inventory':    return execBulkAdjustInventory(sb, args as any, ctx);
       case 'adjust_inventory':         return execAdjustInventory(sb, args as any, ctx);
+      case 'record_stock_usage':       return execRecordStockUsage(sb, args as any, ctx);
       case 'transfer_inventory':       return execTransferInventory(sb, args as any, ctx);
       case 'create_customer':          return execCreateCustomer(sb, args as any);
       case 'update_customer':          return execUpdateCustomer(sb, args as any);
@@ -2139,6 +2159,87 @@ async function execAdjustInventory(sb: any, args: { branch_name: string; product
     성공: true,
     메시지: `${branch.name} · ${product.name} ${typeLabel[args.movement_type] || args.movement_type} ${args.quantity}개 처리 완료`,
     이전재고: current, 변경후재고: newQty,
+  });
+}
+
+// 재고 소모(자가사용·시음·로스) — UI recordStockUsage(actions.ts)의 에이전트판.
+//   팬텀 품목은 product_bom 으로 base 에서 분수 차감(소수 자재 4자리 반올림, 그 외 올림),
+//   reference_type='USAGE' + usage_type_id + created_by(ctx.userId). 음수 재고 허용(소모 정책).
+//   ⚠ 로직은 actions.ts recordStockUsage 와 동일 규칙 — 한쪽 수정 시 양쪽 동기화.
+async function execRecordStockUsage(
+  sb: any,
+  args: { branch_name: string; product_name: string; quantity: number; usage_type: string; memo?: string },
+  ctx: ToolContext,
+): Promise<string> {
+  const r = await resolveBranchForWrite(sb, ctx, args.branch_name);
+  if (!r.ok) return JSON.stringify({ error: r.error });
+  const branch = r.branch;
+
+  const qty = Number(args.quantity);
+  if (!Number.isInteger(qty) || qty < 1) return JSON.stringify({ error: '소모 수량은 1 이상의 정수여야 합니다.' });
+
+  const product = await findProduct(sb, args.product_name);
+  if (!product) return JSON.stringify({ error: `제품 "${args.product_name}" 없음` });
+
+  // 사용유형 해석 — 이름/코드 부분일치(활성만)
+  const { data: utList } = await sb.from('inventory_usage_types').select('id, code, name, is_active').eq('is_active', true);
+  const uts = (utList as any[] | null) || [];
+  const utNorm = (s: string) => (s || '').replace(/\s+/g, '').toLowerCase();
+  const utTarget = utNorm(args.usage_type);
+  const ut = uts.find((u) => utNorm(u.name) === utTarget || utNorm(u.code) === utTarget)
+          || uts.find((u) => utNorm(u.name).includes(utTarget) || utNorm(u.code).includes(utTarget));
+  if (!ut) return JSON.stringify({ error: `사용유형 "${args.usage_type}" 없음. 사용 가능: ${uts.map((u) => u.name).join(', ') || '없음(시스템코드에 먼저 등록)'}` });
+
+  // 팬텀 여부 로드(findProduct 는 is_phantom 미반환)
+  const { data: meta } = await sb.from('products').select('is_phantom, track_inventory').eq('id', product.id).maybeSingle();
+  const isPhantom = (meta as any)?.is_phantom === true;
+  const trackInv = (meta as any)?.track_inventory;
+
+  // 단건 OUT 차감 + 이력(USAGE). 음수 허용(소모 정책 — UI 와 동일).
+  const deductOne = async (productId: string, q: number, lineMemo: string | null) => {
+    const { data: curArr } = await sb.from('inventories').select('quantity').eq('branch_id', branch.id).eq('product_id', productId);
+    const cur = (curArr as any[] | null)?.[0];
+    if (!cur) {
+      await sb.from('inventories').insert({ branch_id: branch.id, product_id: productId, quantity: -q, safety_stock: 0 });
+    } else {
+      await sb.from('inventories').update({ quantity: Number(cur.quantity) - q }).eq('branch_id', branch.id).eq('product_id', productId);
+    }
+    await sb.from('inventory_movements').insert({
+      branch_id: branch.id, product_id: productId, movement_type: 'OUT',
+      quantity: q, reference_type: 'USAGE', usage_type_id: ut.id, memo: lineMemo,
+      created_by: ctx.userId || null,
+    });
+  };
+
+  const lines: { product: string; qty: number }[] = [];
+  if (isPhantom) {
+    const { data: bomRows } = await sb.from('product_bom').select('material_id, quantity').eq('product_id', product.id);
+    const bom = (bomRows as any[] | null) || [];
+    if (bom.length === 0) return JSON.stringify({ error: `"${product.name}"은 분해 BOM이 없어 소모할 수 없습니다.` });
+    const matIds = bom.map((b) => b.material_id);
+    const { data: matRows } = await sb.from('products').select('id, name, allow_decimal_stock').in('id', matIds);
+    const mats = (matRows as any[] | null) || [];
+    const decById = new Map<string, boolean>(mats.map((m) => [m.id, m.allow_decimal_stock === true]));
+    const nameById = new Map<string, string>(mats.map((m) => [m.id, m.name]));
+    const phantomMemo = [args.memo, `세트분해: ${product.name} ×${qty}`].filter(Boolean).join(' · ');
+    for (const c of bom) {
+      const raw = Number(c.quantity) * qty;
+      const dq = decById.get(c.material_id) ? Math.round(raw * 10000) / 10000 : Math.ceil(raw);
+      if (dq <= 0) continue;
+      await deductOne(c.material_id, dq, phantomMemo);
+      lines.push({ product: nameById.get(c.material_id) || c.material_id, qty: dq });
+    }
+  } else if (trackInv === false) {
+    return JSON.stringify({ error: `"${product.name}"은 재고 비관리 품목이라 소모 대상이 아닙니다.` });
+  } else {
+    await deductOne(product.id, qty, args.memo || null);
+    lines.push({ product: product.name, qty });
+  }
+
+  return JSON.stringify({
+    성공: true,
+    메시지: `${branch.name} · ${product.name} ${qty}개 소모(${ut.name}) 처리 완료${isPhantom ? ' — 세트 분해 차감' : ''}`,
+    차감내역: lines.map((l) => `${l.product} -${l.qty}`),
   });
 }
 
