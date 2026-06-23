@@ -82,7 +82,7 @@ export async function getInventoryMovements(filters: {
   let q = supabase
     .from('inventory_movements')
     .select(
-      'id, branch_id, product_id, movement_type, quantity, reference_id, reference_type, memo, created_at, branch:branches(id, name)',
+      'id, branch_id, product_id, movement_type, quantity, reference_id, reference_type, memo, created_at, created_by, branch:branches(id, name)',
       { count: 'exact' },
     )
     .eq('product_id', filters.productId)
@@ -97,7 +97,17 @@ export async function getInventoryMovements(filters: {
 
   const { data, error, count } = await q;
   if (error) return { error: error.message, data: [], count: 0 };
-  return { data: data || [], count: count ?? 0 };
+
+  // 처리자명 부착 — FK 임베드 대신 별도 조회(PostgREST 스키마 캐시 지연에 견고).
+  //   created_by 가 있는 행만 users 에서 이름을 받아 creator_name 으로 붙인다.
+  const rows = (data || []) as any[];
+  const creatorIds = Array.from(new Set(rows.map((r) => r.created_by).filter(Boolean)));
+  if (creatorIds.length > 0) {
+    const { data: users } = await supabase.from('users').select('id, name').in('id', creatorIds);
+    const nameById = new Map<string, string>((users || []).map((u: any) => [u.id, u.name]));
+    for (const r of rows) r.creator_name = r.created_by ? (nameById.get(r.created_by) || null) : null;
+  }
+  return { data: rows, count: count ?? 0 };
 }
 
 // ─── 박스 분해/재포장 (Pack / Unpack) ────────────────────────────────────────

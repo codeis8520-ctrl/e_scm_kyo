@@ -15,6 +15,8 @@ type Movement = {
   reference_type: string | null;
   memo: string | null;
   created_at: string;
+  created_by?: string | null;
+  creator_name?: string | null; // 처리자명 (getInventoryMovements 에서 부착)
   branch?: { id: string; name: string } | null;
 };
 
@@ -153,14 +155,15 @@ export default function MovementHistoryModal({ product, branches, initialBranchI
                   <th>유형</th>
                   <th className="text-right">증감</th>
                   <th>사유</th>
+                  <th>처리자</th>
                   <th>메모</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={6} className="text-center text-slate-400 py-8">로딩 중...</td></tr>
+                  <tr><td colSpan={7} className="text-center text-slate-400 py-8">로딩 중...</td></tr>
                 ) : items.length === 0 ? (
-                  <tr><td colSpan={6} className="text-center text-slate-400 py-8">이력이 없습니다</td></tr>
+                  <tr><td colSpan={7} className="text-center text-slate-400 py-8">이력이 없습니다</td></tr>
                 ) : items.map(m => {
                   const typeDef = MOVEMENT_TYPE_LABEL[m.movement_type] || { label: m.movement_type, cls: 'bg-slate-100 text-slate-600' };
                   const refLabel = m.reference_type ? (REFERENCE_LABEL[m.reference_type] || m.reference_type) : '-';
@@ -190,6 +193,7 @@ export default function MovementHistoryModal({ product, branches, initialBranchI
                         {isPositive ? '+' : ''}{signedQty.toLocaleString()}
                       </td>
                       <td className="text-sm text-slate-600">{refLabel}</td>
+                      <td className="text-xs text-slate-600 whitespace-nowrap">{m.creator_name || '-'}</td>
                       <td className="text-xs text-slate-500">{m.memo || '-'}</td>
                     </tr>
                   );

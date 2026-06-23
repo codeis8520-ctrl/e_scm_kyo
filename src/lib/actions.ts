@@ -1212,6 +1212,7 @@ export async function recordStockUsage(input: {
     await db.from('inventory_movements').insert({
       branch_id: branchId, product_id: productId, movement_type: 'OUT',
       quantity: qty, reference_type: 'USAGE', usage_type_id: usageTypeId, memo: lineMemo,
+      created_by: session.id, // 처리자(자가사용·시음·로스 등록자) — 변동 이력 표시용
     });
   };
 
