@@ -71,6 +71,9 @@ export default function StockUsageModal({
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [phantomUnits, setPhantomUnits] = useState<PhantomUnit[]>([]);
+  // base 제품 id → 그 base 를 분해 소모하는 팬텀 단위 이름들(예: FCH30 → ["침향 10환","침향 1환"]).
+  // 사용자가 base(30환)를 추가했을 때 "더 작은 단위는 세트로 검색" 안내에 사용.
+  const [phantomsByBase, setPhantomsByBase] = useState<Map<string, string[]>>(new Map());
 
   // 팬텀 소모 단위 로드 — is_phantom 제품 중 product_bom(분수 BOM)이 있는 것만.
   // 본인 재고가 없어 inventories 후보엔 안 잡히므로 별도 조회해 검색 후보로 제공.
@@ -97,13 +100,19 @@ export default function StockUsageModal({
         arr.push(b); bomByPhantom.set(b.product_id, arr);
       }
       const units: PhantomUnit[] = [];
+      const baseMap = new Map<string, string[]>(); // base id → 팬텀 단위 이름들
       for (const p of phs) {
         const comps = bomByPhantom.get(p.id);
         if (!comps || comps.length === 0) continue; // BOM 있는 팬텀만 소모 단위로 노출
         const label = comps.map((c) => `${matName.get(c.material_id) || '자재'} ${fmtStock(c.quantity, true)}/개`).join(', ');
         units.push({ product_id: p.id, name: p.name, code: p.code, decomposeLabel: label });
+        for (const c of comps) {
+          const arr = baseMap.get(c.material_id) || [];
+          if (!arr.includes(p.name)) arr.push(p.name);
+          baseMap.set(c.material_id, arr);
+        }
       }
-      if (alive) setPhantomUnits(units);
+      if (alive) { setPhantomUnits(units); setPhantomsByBase(baseMap); }
     })().catch(() => { /* 팬텀 로드 실패 시 무시 — 일반 소모는 정상 동작 */ });
     return () => { alive = false; };
   }, []);
@@ -338,6 +347,12 @@ export default function StockUsageModal({
                           </>
                         )}
                       </p>
+                      {/* base(30환 등) 추가 시 — 더 작은 단위는 세트 팬텀으로 검색하라고 안내 */}
+                      {!r.isPhantom && (phantomsByBase.get(r.product_id)?.length ?? 0) > 0 && (
+                        <p className="text-xs text-amber-600 mt-0.5">
+                          더 작은 단위로 소모하려면 검색에서 ‘{phantomsByBase.get(r.product_id)!.join('’, ‘')}’ (세트)로 추가하세요.
+                        </p>
+                      )}
                     </div>
                     <input
                       type="number"
