@@ -12,7 +12,7 @@ export const AGENT_TOOLS: MiniMaxTool[] = [
     type: 'function',
     function: {
       name: 'get_inventory',
-      description: '지점별 재고 현황 조회. "재고 얼마야?", "경옥고 재고 확인해줘", "강남점 재고" 등에 사용. 안전재고 미달 여부 포함.',
+      description: '지점별 재고 현황 조회. "재고 얼마야?", "경옥고 재고 확인해줘", "강남점 재고" 등 특정 제품 재고 조회의 표준 도구(이 목적엔 analyze_data 대신 반드시 이것 사용). 제품명은 띄어쓰기·대소문자 무시로 매칭하고 변형 접미사보다 기본형을 우선 선택한다. 안전재고 미달 여부 포함.',
       parameters: {
         type: 'object',
         properties: {
@@ -1663,9 +1663,11 @@ async function execGetInventory(sb: any, args: { branch_name?: string; product_n
     if (!b) return JSON.stringify({ error: `지점 "${args.branch_name}" 없음` });
     branchId = b.id;
   }
+  let product: { name: string; code: string } | null = null;
   if (args.product_name) {
     const p = await findProduct(sb, args.product_name);
-    if (!p) return JSON.stringify({ error: `제품 "${args.product_name}" 없음` });
+    if (!p) return JSON.stringify({ error: `제품 "${args.product_name}" 없음`, 힌트: '띄어쓰기·변형(골드/사은품/직원할인 등) 차이일 수 있음. 제품 코드로도 조회 가능.' });
+    product = { name: p.name, code: p.code };
     productId = p.id;
   }
 
@@ -1679,7 +1681,12 @@ async function execGetInventory(sb: any, args: { branch_name?: string; product_n
   if (error) return JSON.stringify({ error: error.message });
   // track_inventory=false 제품 제외 (컬럼 미적용 환경 호환: undefined → 표시 유지)
   const filtered = (data as any[] | null || []).filter((inv: any) => inv.products?.track_inventory !== false);
-  if (!filtered.length) return JSON.stringify({ 결과: '재고 데이터 없음' });
+  // 제품은 찾았으나 재고 0 → 어떤 제품을 봤는지 명시(엉뚱한 "미등록" 응답·변형 혼동 방지)
+  if (!filtered.length) {
+    return JSON.stringify(product
+      ? { 제품: product.name, 코드: product.code, 결과: '해당 조건 재고 0(품절/미등록)' }
+      : { 결과: '재고 데이터 없음' });
+  }
 
   return JSON.stringify(filtered.map(inv => ({
     지점: inv.branches?.name,

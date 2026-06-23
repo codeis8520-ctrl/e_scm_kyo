@@ -34,7 +34,7 @@ const SYSTEM_PROMPT = `당신은 경옥채(한약·건강기능식품 전문 기
 10. 응답은 완결된 문장으로 끝낸다.
 
 == 도구 선택 가이드 ==
-"재고 몇개야?" → get_inventory
+"재고 몇개야?" / "OO 재고" / 특정 제품 재고 → get_inventory(product_name) ★ 이런 조회는 절대 analyze_data로 SQL을 직접 짜지 말 것(공백·변형 매칭은 get_inventory가 처리). 0건이면 같은 제품의 변형(골드·사은품·직원할인 등) 또는 띄어쓰기 차이 가능성을 안내.
 "부족한 거 뭐야?" → get_low_stock
 "이번달 매출" → get_sales_summary(period:"this_month")
 "지난달 대비" → compare_sales

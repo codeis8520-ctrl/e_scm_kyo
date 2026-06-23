@@ -154,6 +154,25 @@ export async function extractMemory(
       break;
     }
 
+    // 재고 조회 → 제품 별칭 학습. 사용자가 쓴 질의어(예: "침향30환")를 실제 제품명/코드에
+    // 매핑해 기억 → 다음부터 같은 표기·약칭을 바로 해석(엣지케이스 자가학습). 성공 응답은
+    // 배열(행들) 또는 단일 객체({제품,코드,결과}) 모두 제품/코드를 가진다(오류는 위에서 선처리).
+    case 'get_inventory': {
+      const q = String(args.product_name || '').trim();
+      if (!q) break;
+      const first = Array.isArray(parsed) ? parsed[0] : parsed;
+      if (first && first.코드 && first.제품 && normalizeKey(first.제품) !== normalizeKey(q)) {
+        await upsertMemory(db, {
+          memory_type: 'alias',
+          category: 'inventory',
+          source_key: `alias:product:${normalizeKey(q)}`,
+          content: `제품 "${q}" = ${first.제품}(코드:${first.코드}) — 같은 표기/약칭은 이 제품으로 해석`,
+          source_query: q,
+        });
+      }
+      break;
+    }
+
     // 지점 조회 → alias 기억
     case 'get_branches': {
       const branches = parsed.지점 || parsed.branches || [];
