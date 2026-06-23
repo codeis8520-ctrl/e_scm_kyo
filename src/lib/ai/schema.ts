@@ -228,7 +228,8 @@ sales_orders.receipt_status: 품목 receipt_status 집계. 품목 모두 RECEIVE
 ※ 점포 운영 화면: /system-codes → "지점별 적립율" 탭(매트릭스 인라인 편집). 빈 셀 = 등급 기본 사용.
 
 [자주 쓰는 패턴]
-- 제품명 매칭은 띄어쓰기·대소문자 무시: 사용자 "침향30환" = 제품명 "침향 30환"(공백 있음). 재고/제품 조회는 get_inventory(product_name)·find* 도구 권장(공백무시 매칭 내장). analyze_data 직접 SQL이면 replace(p.name,' ','') ILIKE replace('%침향30환%',' ','') 또는 코드(FCH30)로 조회 — 공백 차이로 "재고 없음" 오판 금지.
+- "OO 재고 / 재고조회" → get_inventory(product_name, branch_name?) 사용(즉석 analyze_data SQL 지양 — 도구가 공백무시·정확일치 우선 매칭 내장).
+- 제품명 매칭은 띄어쓰기·대소문자 무시: 사용자 "침향30환" = 제품명 "침향 30환"(공백 있음). 또 같은 제품에 변형(골드·사은품·직원할인 등 접미사)이 있으니, 사용자가 기본형을 물으면 정확명/코드(예: FCH30)를 우선하라 — 변형의 0재고를 전체 재고 0으로 오판 금지. analyze_data 직접 SQL이면 replace(p.name,' ','') ILIKE replace('%침향30환%',' ','') 또는 코드로 조회.
 - "이번달 매출" → get_sales_summary(period: "this_month")
 - "지난달 대비" → compare_sales(period1=이번달, period2=지난달)
 - "재고 부족" → get_low_stock

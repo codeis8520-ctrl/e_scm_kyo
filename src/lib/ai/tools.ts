@@ -1458,24 +1458,24 @@ async function findProduct(sb: any, name: string) {
   type P = { id: string; name: string; code: string; price: number; cost: number; unit: string };
   const raw = (name || '').trim();
   if (!raw) return null;
-  const SEL = 'id, name, code, price, cost, unit';
-  // 1) 빠른 경로: 이름 부분일치(입력 띄어쓰기·대소문자가 제품명과 맞는 흔한 경우 — 기존 동작 보존)
-  const fast = await sb.from('products').select(SEL).eq('is_active', true).ilike('name', `%${raw}%`).limit(1).maybeSingle();
-  if (fast.data) return fast.data as P;
-  // 2) 폴백: 띄어쓰기·대소문자 무시 매칭. 입력 "침향30환" ↔ 제품명 "침향 30환", 또는 코드 "FCH30".
-  //    (ILIKE 는 컬럼 내부 공백을 무시 못 해 매칭 실패 → 정규화 후 JS 매칭)
+  // 띄어쓰기·대소문자 무시 매칭. 입력 "침향30환" ↔ 제품명 "침향 30환", 코드 "FCH30" 모두 인식.
+  // ILIKE 는 컬럼 내부 공백을 무시 못 하고, 부분일치는 변형(골드·사은품·직원할인)이 섞여
+  // 임의 1건을 고르면 0재고 변형을 잡을 수 있다 → 정규화 후 "정확일치 우선" 결정적 매칭.
   const norm = (s: string) => (s || '').replace(/\s+/g, '').toLowerCase();
   const target = norm(raw);
   if (!target) return null;
-  const { data } = await sb.from('products').select(SEL).eq('is_active', true);
+  const { data } = await sb.from('products').select('id, name, code, price, cost, unit').eq('is_active', true);
   const list = (data as P[] | null) || [];
-  const hit =
-    list.find(p => norm(p.code) === target) ||   // 코드 정확
-    list.find(p => norm(p.name) === target) ||   // 이름 정확(공백무시)
-    list.find(p => norm(p.name).includes(target)) || // 이름 부분(공백무시)
-    list.find(p => norm(p.code).includes(target)) || // 코드 부분
-    null;
-  return hit ?? null;
+  // 우선순위: 코드 정확 → 이름 정확(공백무시) → 이름 부분(짧은 이름=기본형 우선) → 코드 부분
+  const exactCode = list.find(p => norm(p.code) === target);
+  if (exactCode) return exactCode;
+  const exactName = list.find(p => norm(p.name) === target);
+  if (exactName) return exactName;
+  const partNames = list
+    .filter(p => norm(p.name).includes(target))
+    .sort((a, b) => a.name.length - b.name.length); // "침향 30환" < "침향 30환 골드"
+  if (partNames.length) return partNames[0];
+  return list.find(p => norm(p.code).includes(target)) ?? null;
 }
 
 async function findCustomer(sb: any, args: { customer_name?: string; phone?: string; name?: string }) {
