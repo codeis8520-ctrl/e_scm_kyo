@@ -1182,41 +1182,68 @@ export async function recordStockUsage(input: {
     // 폴백 — 컬럼 부재 등으로 확인 실패 시 제한 생략
   }
 
+  // ── pass 1.5: 품목 메타(팬텀/재고추적) 로드 ──
+  //   팬텀(침향 10환 등)은 본인 재고가 없고 product_bom 으로 base(침향 30환)에서 분수 차감 —
+  //   판매(processPosCheckout)와 동일 규칙. 소수점 재고 자재는 4자리 반올림, 아니면 올림.
+  const itemIds = items.map((i) => i.product_id);
+  let metaRows: any[] = [];
+  {
+    let r: any = await db.from('products').select('id, name, is_phantom, track_inventory').in('id', itemIds);
+    if (r.error && /is_phantom/i.test(String(r.error?.message))) {
+      r = await db.from('products').select('id, name, track_inventory').in('id', itemIds);
+    }
+    metaRows = r.error ? [] : (r.data || []);
+  }
+  const metaById = new Map<string, any>(metaRows.map((p: any) => [p.id, p]));
+
+  // 단일 품목 OUT 차감 + 이력 1건 (음수 재고 허용). 순차 호출이라 동일 자재 중복도 안전(매번 재읽기).
+  const deductOne = async (productId: string, qty: number, lineMemo: string | null) => {
+    const { data: curArr } = await db
+      .from('inventories').select('quantity')
+      .eq('branch_id', branchId).eq('product_id', productId);
+    const cur = curArr?.[0];
+    if (!cur) {
+      // 행 없음 → 음수 재고 행 생성 (소모는 OUT 이므로 음수가 맞음. abs 분기 복붙 금지.)
+      await db.from('inventories').insert({ branch_id: branchId, product_id: productId, quantity: -qty, safety_stock: 0 });
+    } else {
+      await db.from('inventories').update({ quantity: toNum(cur.quantity) - qty }) // 음수 허용
+        .eq('branch_id', branchId).eq('product_id', productId);
+    }
+    await db.from('inventory_movements').insert({
+      branch_id: branchId, product_id: productId, movement_type: 'OUT',
+      quantity: qty, reference_type: 'USAGE', usage_type_id: usageTypeId, memo: lineMemo,
+    });
+  };
+
   // ── pass 2: 실제 차감 (라인 루프, 비트랜잭션 — 기존 코드 일관) ──
   for (const item of items) {
-    const { data: currentArr } = await db
-      .from('inventories')
-      .select('quantity')
-      .eq('branch_id', branchId)
-      .eq('product_id', item.product_id);
-    const current = currentArr?.[0];
-
-    if (!current) {
-      // 행 없음 → 음수 재고 행 생성 (소모는 OUT 이므로 음수가 맞음. abs 분기 복붙 금지.)
-      await db.from('inventories').insert({
-        branch_id: branchId,
-        product_id: item.product_id,
-        quantity: -item.quantity,
-        safety_stock: 0,
-      });
-    } else {
-      const newQuantity = toNum(current.quantity) - item.quantity; // 음수 허용
-      await db
-        .from('inventories')
-        .update({ quantity: newQuantity })
-        .eq('branch_id', branchId)
-        .eq('product_id', item.product_id);
+    const meta = metaById.get(item.product_id);
+    // 팬텀: BOM 분해 → base 자재에서 분수 차감 (예: 침향 10환 1개 → 침향 30환 0.333)
+    if (meta?.is_phantom === true) {
+      const { data: bomRows } = await db.from('product_bom')
+        .select('material_id, quantity').eq('product_id', item.product_id);
+      const bom = (bomRows as any[]) || [];
+      if (bom.length === 0) continue; // BOM 없는 팬텀 — 차감 대상 없음(skip)
+      const matIds = bom.map((b) => b.material_id);
+      let decRows: any[] = [];
+      {
+        const r: any = await db.from('products').select('id, allow_decimal_stock').in('id', matIds);
+        decRows = r.error ? [] : (r.data || []); // 087 미적용 폴백 → 전부 올림
+      }
+      const decById = new Map<string, boolean>(decRows.map((m: any) => [m.id, m.allow_decimal_stock === true]));
+      const phantomMemo = [memo, `세트분해: ${meta.name || ''} ×${item.quantity}`].filter(Boolean).join(' · ');
+      for (const c of bom) {
+        const raw = toNum(c.quantity) * item.quantity;
+        const qty = decById.get(c.material_id) ? Math.round(raw * 10000) / 10000 : Math.ceil(raw);
+        if (qty <= 0) continue;
+        await deductOne(c.material_id, qty, phantomMemo);
+      }
+      continue;
     }
-
-    await db.from('inventory_movements').insert({
-      branch_id: branchId,
-      product_id: item.product_id,
-      movement_type: 'OUT',
-      quantity: item.quantity,
-      reference_type: 'USAGE',
-      usage_type_id: usageTypeId,
-      memo: memo || null,
-    });
+    // 재고 비관리(SERVICE 등): skip
+    if (meta && meta.track_inventory === false) continue;
+    // 일반 제품: 직접 차감
+    await deductOne(item.product_id, item.quantity, memo || null);
   }
 
   revalidatePath('/inventory');

@@ -27,7 +27,7 @@ inventories: id, branch_id, product_id, quantity, safety_stock  [UNIQUE(branch_i
   ※ quantity 음수 허용 (CHECK 제약 없음). 판매·생산 시 부족해도 차단하지 않고 마이너스로 차감, 입고/반품 시 누적 복원.
   ※ quantity·safety_stock 은 NUMERIC(14,4) (마이그 087) — REST 응답에서 JS 문자열로 옴. 산술·비교 전 반드시 숫자 변환(앱은 toNum 사용). 소수는 allow_decimal_stock=true 제품에만 발생.
 inventory_movements: id, branch_id, product_id, movement_type(IN/OUT/ADJUST/TRANSFER/PRODUCTION), quantity(NUMERIC(14,4), 마이그 087·문자열 직렬화 주의), memo, created_at, usage_type_id(소모 사용유형 FK, reference_type=USAGE 일 때만 값 존재; 그 외 NULL)
-  ※ reference_type(VARCHAR free-form): POS_SALE / ONLINE_SALE(자사몰 판매차감, reference_id=sales_order_items.id) / ONLINE_SALE_CANCEL·ONLINE_REFUND(자사몰 취소·전체환불 시 ONLINE_SALE 차감분 복원 IN, reference_id=sales_order_items.id, #48) / PHANTOM_DECOMPOSE / PACK_UNPACK / USAGE(재고 소모=로스·자가사용·시음용 등) / TRANSFER / SALE_CANCEL / CREDIT_CANCEL 등.
+  ※ reference_type(VARCHAR free-form): POS_SALE / ONLINE_SALE(자사몰 판매차감, reference_id=sales_order_items.id) / ONLINE_SALE_CANCEL·ONLINE_REFUND(자사몰 취소·전체환불 시 ONLINE_SALE 차감분 복원 IN, reference_id=sales_order_items.id, #48) / PHANTOM_DECOMPOSE / PACK_UNPACK / USAGE(재고 소모=로스·자가사용·시음용 등; 팬텀 품목 소모 시 base 자재로 분해 차감, 메모 "세트분해") / TRANSFER / SALE_CANCEL / CREDIT_CANCEL 등.
   ※ TRANSFER(지점이동, #31): 사용자가 이동일자를 직접 선택 가능 → created_at 이 곧 이동일자(삽입시각 아님). OUT 기록=출발(출고)일, IN 기록=도착예정일. 미입력 시 now(). 즉 이동 기록의 날짜 질의/집계는 created_at 기준이면 정확.
 inventory_usage_types(마이그 079): id, code(UNIQUE), name, sort_order, is_system(true=삭제금지·비활성만), is_active
   ※ 재고 소모 사용유형 코드(로스/자가사용/시음용/기타). 판매 아님. 소모 기록은 inventory_movements.movement_type='OUT' + reference_type='USAGE' + usage_type_id.
@@ -271,7 +271,7 @@ sales_orders.receipt_status: 품목 receipt_status 집계. 품목 모두 RECEIVE
 [Phantom BOM(세트 상품) 운영 규칙]
 - products.is_phantom=true 제품은 "묶음 명칭일 뿐" 본인 재고 관리 대상이 아님.
 - BOM 구성품은 각각 단독으로도 판매 가능한 일반 제품(non-phantom)이며, 개별 재고로 관리됨.
-- POS 판매 시 phantom 본인 재고는 차감하지 않고, product_bom의 구성품을 분해 차감.
+- POS 판매 시 phantom 본인 재고는 차감하지 않고, product_bom의 구성품을 분해 차감. 재고 소모(USAGE: 시음·로스·자가사용)도 동일하게 base 자재로 분해 차감(예: 침향 10환 시음 1개 → 침향 30환 -0.333).
 - 재고 화면/백필 대상에서 phantom 본인은 제외. 구성품(non-phantom)이 단독 SKU로 재고 추적됨.
 - 사용자가 "세트상품 재고 얼마야?" 같은 질문을 하면, phantom의 BOM 구성품 중 가장 부족한 품목 기준으로 답해야 함.
 

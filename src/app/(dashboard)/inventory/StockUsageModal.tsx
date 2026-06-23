@@ -1,9 +1,17 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { recordStockUsage } from '@/lib/actions';
 import { useEscClose } from '@/hooks/useEscClose';
 import { toNum, fmtStock } from '@/lib/validators';
+
+// 팬텀 소모 단위 — 본인 재고가 없고 product_bom 으로 base 에서 분수 차감되는 제품(예: 침향 10환 → 30환 0.333).
+interface PhantomUnit {
+  product_id: string;
+  name: string;
+  code: string;
+  decomposeLabel: string; // 예: "침향 30환 0.3333/개"
+}
 
 interface Inventory {
   id: string;
@@ -34,6 +42,8 @@ interface UsageRow {
   name: string;
   code: string;
   quantity: number;
+  isPhantom?: boolean;       // 팬텀 소모 단위(본인 재고 없음 → base 분수 차감)
+  decomposeLabel?: string;   // 팬텀 행 안내 문구
 }
 
 export default function StockUsageModal({
@@ -60,6 +70,43 @@ export default function StockUsageModal({
   });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [phantomUnits, setPhantomUnits] = useState<PhantomUnit[]>([]);
+
+  // 팬텀 소모 단위 로드 — is_phantom 제품 중 product_bom(분수 BOM)이 있는 것만.
+  // 본인 재고가 없어 inventories 후보엔 안 잡히므로 별도 조회해 검색 후보로 제공.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { createClient } = await import('@/lib/supabase/client');
+      const client = createClient();
+      const phRes: any = await client.from('products')
+        .select('id, name, code').eq('is_active', true).eq('is_phantom', true).order('name');
+      if (phRes.error) return; // is_phantom 컬럼 부재 등 → 팬텀 기능 비활성(기존 동작 유지)
+      const phs = (phRes.data || []) as { id: string; name: string; code: string }[];
+      if (phs.length === 0) { if (alive) setPhantomUnits([]); return; }
+      const ids = phs.map((p) => p.id);
+      const bomRes: any = await client.from('product_bom').select('product_id, material_id, quantity').in('product_id', ids);
+      const boms = (bomRes.data || []) as { product_id: string; material_id: string; quantity: number }[];
+      if (boms.length === 0) { if (alive) setPhantomUnits([]); return; }
+      const matIds = Array.from(new Set(boms.map((b) => b.material_id)));
+      const matRes: any = await client.from('products').select('id, name').in('id', matIds);
+      const matName = new Map<string, string>((matRes.data || []).map((m: any) => [m.id, m.name]));
+      const bomByPhantom = new Map<string, { material_id: string; quantity: number }[]>();
+      for (const b of boms) {
+        const arr = bomByPhantom.get(b.product_id) || [];
+        arr.push(b); bomByPhantom.set(b.product_id, arr);
+      }
+      const units: PhantomUnit[] = [];
+      for (const p of phs) {
+        const comps = bomByPhantom.get(p.id);
+        if (!comps || comps.length === 0) continue; // BOM 있는 팬텀만 소모 단위로 노출
+        const label = comps.map((c) => `${matName.get(c.material_id) || '자재'} ${fmtStock(c.quantity, true)}/개`).join(', ');
+        units.push({ product_id: p.id, name: p.name, code: p.code, decomposeLabel: label });
+      }
+      if (alive) setPhantomUnits(units);
+    })().catch(() => { /* 팬텀 로드 실패 시 무시 — 일반 소모는 정상 동작 */ });
+    return () => { alive = false; };
+  }, []);
 
   useEscClose(onClose, {
     isDirty: () => rows.length > 0 || usageTypeId !== '' || memo.trim() !== '',
@@ -82,7 +129,7 @@ export default function StockUsageModal({
     if (!q) return [];
     const addedIds = new Set(rows.map((r) => r.product_id));
     const seen = new Set<string>();
-    const out: { product_id: string; name: string; code: string }[] = [];
+    const out: { product_id: string; name: string; code: string; isPhantom?: boolean; decomposeLabel?: string }[] = [];
     for (const inv of inventories) {
       const p = inv.product;
       if (!p) continue;
@@ -94,11 +141,19 @@ export default function StockUsageModal({
         out.push({ product_id: inv.product_id, name: p.name, code: p.code });
       }
     }
+    // 팬텀 소모 단위(침향 10환 등) — 본인 재고는 없지만 base 에서 분수 차감
+    for (const u of phantomUnits) {
+      if (seen.has(u.product_id) || addedIds.has(u.product_id)) continue;
+      if (u.name.toLowerCase().includes(q) || u.code.toLowerCase().includes(q)) {
+        seen.add(u.product_id);
+        out.push({ product_id: u.product_id, name: u.name, code: u.code, isPhantom: true, decomposeLabel: u.decomposeLabel });
+      }
+    }
     return out.slice(0, 20);
-  }, [search, inventories, rows]);
+  }, [search, inventories, rows, phantomUnits]);
 
-  const addRow = (c: { product_id: string; name: string; code: string }) => {
-    setRows((prev) => [...prev, { ...c, quantity: 1 }]);
+  const addRow = (c: { product_id: string; name: string; code: string; isPhantom?: boolean; decomposeLabel?: string }) => {
+    setRows((prev) => [...prev, { product_id: c.product_id, name: c.name, code: c.code, quantity: 1, isPhantom: c.isPhantom, decomposeLabel: c.decomposeLabel }]);
     setSearch('');
   };
 
@@ -241,6 +296,9 @@ export default function StockUsageModal({
                     >
                       <span className="font-medium">{c.name}</span>
                       <span className="text-slate-500"> · {c.code}</span>
+                      {c.isPhantom && (
+                        <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-xs">세트</span>
+                      )}
                     </button>
                   </li>
                 ))}
@@ -252,21 +310,32 @@ export default function StockUsageModal({
           {rows.length > 0 && (
             <div className="border border-slate-200 rounded-lg divide-y">
               {rows.map((r) => {
-                const stock = stockOf(r.product_id);
-                const over = stock !== null && r.quantity > stock;
+                const stock = r.isPhantom ? null : stockOf(r.product_id);
+                const over = !r.isPhantom && stock !== null && r.quantity > stock;
                 return (
                   <div key={r.product_id} className="flex items-center gap-3 p-3">
                     <div className="flex-1 min-w-0">
-                      <p className="font-medium truncate">{r.name}</p>
+                      <p className="font-medium truncate">
+                        {r.name}
+                        {r.isPhantom && (
+                          <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-xs align-middle">세트</span>
+                        )}
+                      </p>
                       <p className="text-xs text-slate-500">
-                        {r.code} · 현재고:{' '}
-                        <span className="font-semibold">
-                          {stock === null ? '없음(0)' : fmtStock(stock, allowDecimalOf(r.product_id))}
-                        </span>
-                        {over && (
-                          <span className="ml-2 px-1.5 py-0.5 rounded bg-red-100 text-red-700">
-                            현재고 초과
-                          </span>
+                        {r.isPhantom ? (
+                          <>{r.code} · 세트 분해 차감{r.decomposeLabel ? ` · ${r.decomposeLabel}` : ''}</>
+                        ) : (
+                          <>
+                            {r.code} · 현재고:{' '}
+                            <span className="font-semibold">
+                              {stock === null ? '없음(0)' : fmtStock(stock, allowDecimalOf(r.product_id))}
+                            </span>
+                            {over && (
+                              <span className="ml-2 px-1.5 py-0.5 rounded bg-red-100 text-red-700">
+                                현재고 초과
+                              </span>
+                            )}
+                          </>
                         )}
                       </p>
                     </div>
