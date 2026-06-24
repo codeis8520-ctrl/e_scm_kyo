@@ -8,6 +8,7 @@ import { createClient } from '@/lib/supabase/client';
 import { processPosCheckout, createCustomer } from '@/lib/actions';
 import { saveDraft, listDrafts, getDraft, deleteDraft, type DraftRow } from '@/lib/sales-draft-actions';
 import ReceiptModal from './ReceiptModal';
+import CustomerModal from '@/app/(dashboard)/customers/CustomerModal';
 import { kstTodayString } from '@/lib/date';
 import { buildCategoryInfo, type CategoryInfo } from '@/lib/category-tree';
 import { toNum, fmtStock } from '@/lib/validators';
@@ -297,6 +298,7 @@ function POSPageInner() {
   const [discountType, setDiscountType] = useState<'amount' | 'percent'>('amount');
   const [discountInput, setDiscountInput] = useState('');
   const [showAddCustomerModal, setShowAddCustomerModal] = useState(false);
+  const [editCustomer, setEditCustomer] = useState<Customer | null>(null); // POS 인라인 고객 수정 대상
 
   // 고객 이력 (상담·주문) — 좌측 상단 패널에 표시
   const [history, setHistory] = useState<{
@@ -1119,6 +1121,38 @@ function POSPageInner() {
     setShowAddCustomerModal(false);
   };
 
+  // POS 인라인 고객 수정 — 주소 등 누락 대비 최신 전체행을 로드한 뒤 모달을 띄운다.
+  const openEditCustomer = async (c: Customer) => {
+    const supabase = createClient() as any;
+    const { data: full } = await supabase
+      .from('customers')
+      .select('id, name, phone, phone2, email, address, grade, primary_branch_id, health_note, is_active')
+      .eq('id', c.id).maybeSingle();
+    setEditCustomer({ ...c, ...(full || {}) } as Customer);
+  };
+
+  // 수정 저장 후 — 로컬 목록·검색결과·선택중 고객을 최신값으로 갱신(재검색 없이 즉시 반영).
+  const handleCustomerEdited = async () => {
+    const target = editCustomer;
+    setEditCustomer(null);
+    if (!target) return;
+    const supabase = createClient() as any;
+    const [{ data: grades }, { data: fresh }] = await Promise.all([
+      supabase.from('customer_grades').select('code, point_rate'),
+      supabase.from('customers')
+        .select('id, name, phone, phone2, email, address, grade, primary_branch_id, health_note, is_active')
+        .eq('id', target.id).maybeSingle(),
+    ]);
+    if (!fresh) return;
+    const gMap = new Map((grades || []).map((g: any) => [g.code, parseFloat(g.point_rate) || 1.0]));
+    const enriched = { ...target, ...fresh, grade_point_rate: gMap.get(fresh.grade) || 1.0 } as Customer;
+    setCustomers(prev => prev.map(p => (p.id === enriched.id ? { ...p, ...enriched } : p)));
+    setCustomerResults(prev => prev.map(p => (p.id === enriched.id ? { ...p, ...enriched } : p)));
+    setSelectedCustomer(prev => (prev && prev.id === enriched.id
+      ? { ...prev, ...fresh, grade_point_rate: enriched.grade_point_rate }
+      : prev));
+  };
+
   const clearCustomer = () => {
     setSelectedCustomer(null);
     setCustomerSearch('');
@@ -1808,8 +1842,18 @@ function POSPageInner() {
                     <span>주문 {history.orders.length}건 · 상담 {history.consultations.length}건</span>
                   </div>
                 </div>
-                <button onClick={clearCustomer}
-                  className="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0 ml-2">✕</button>
+                <div className="flex items-center gap-1 shrink-0 ml-2">
+                  <button
+                    type="button"
+                    onClick={() => openEditCustomer(selectedCustomer)}
+                    className="text-[11px] px-2 py-1 rounded border border-blue-300 text-blue-700 hover:bg-blue-100 whitespace-nowrap"
+                    title="고객 정보 수정 (마이그레이션 오류 정정 등)"
+                  >
+                    ✎ 수정
+                  </button>
+                  <button onClick={clearCustomer}
+                    className="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+                </div>
               </div>
             ) : (
               <div className="flex gap-2">
@@ -1863,8 +1907,10 @@ function POSPageInner() {
                 onWheel={(e) => e.stopPropagation()}
               >
                 {customerResults.map((c, idx) => (
-                  <button
+                  <div
                     key={c.id}
+                    role="option"
+                    aria-selected={idx === customerHighlightIdx}
                     onMouseDown={() => selectCustomer(c)}
                     onMouseEnter={() => setCustomerHighlightIdx(idx)}
                     ref={el => {
@@ -1873,12 +1919,12 @@ function POSPageInner() {
                         el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
                       }
                     }}
-                    className={`w-full text-left px-3 py-2.5 border-b border-slate-100 last:border-b-0 transition-colors ${
+                    className={`w-full text-left px-3 py-2.5 border-b border-slate-100 last:border-b-0 transition-colors cursor-pointer ${
                       idx === customerHighlightIdx ? 'bg-blue-50' : 'hover:bg-blue-50'
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <div>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
                         <p className="font-medium text-sm flex items-center gap-1.5">
                           <span><Highlight text={c.name} terms={customerSearchTerms} /></span>
                           {(c as any).is_active === false && (
@@ -1898,11 +1944,22 @@ function POSPageInner() {
                           </p>
                         )}
                       </div>
-                      <span className={`px-1.5 py-0.5 text-xs rounded ${GRADE_BADGE[c.grade]}`}>
-                        {GRADE_LABELS[c.grade]}
-                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className={`px-1.5 py-0.5 text-xs rounded ${GRADE_BADGE[c.grade]}`}>
+                          {GRADE_LABELS[c.grade]}
+                        </span>
+                        {/* 선택 전 인라인 수정 — 행 선택(onMouseDown)으로 전파되지 않게 차단 */}
+                        <button
+                          type="button"
+                          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); openEditCustomer(c); }}
+                          className="text-slate-400 hover:text-blue-600 text-xs px-1 py-0.5 rounded hover:bg-blue-100"
+                          title="이 고객 정보 수정"
+                        >
+                          ✎
+                        </button>
+                      </div>
                     </div>
-                  </button>
+                  </div>
                 ))}
                 {customerResults.length === 0 && (
                   <div className="p-3 text-center text-xs text-slate-400">
@@ -3190,6 +3247,16 @@ function POSPageInner() {
           defaultBranchId={selectedBranch}
           onClose={() => setShowAddCustomerModal(false)}
           onCreated={handleCustomerCreated}
+        />
+      )}
+
+      {/* POS 인라인 고객 수정 — 고객 탭 모달 재사용(삭제 버튼 숨김). 마이그레이션 오류 즉시 정정. */}
+      {editCustomer && (
+        <CustomerModal
+          customer={editCustomer as any}
+          hideDelete
+          onClose={() => setEditCustomer(null)}
+          onSuccess={handleCustomerEdited}
         />
       )}
 

@@ -29,6 +29,8 @@ interface Props {
   customer?: Customer | null;
   onClose: () => void;
   onSuccess: () => void;
+  /** 삭제 버튼 숨김 (예: POS 판매입력 인라인 수정 — 판매 중 오삭제 방지). 기본 false. */
+  hideDelete?: boolean;
 }
 
 function splitAddress(address: string | null): [string, string] {
@@ -38,7 +40,7 @@ function splitAddress(address: string | null): [string, string] {
   return [address.slice(0, idx), address.slice(idx + 1)];
 }
 
-export default function CustomerModal({ customer, onClose, onSuccess }: Props) {
+export default function CustomerModal({ customer, onClose, onSuccess, hideDelete = false }: Props) {
   useEscClose(onClose);
   const [branches, setBranches] = useState<any[]>([]);
   const [grades, setGrades] = useState<any[]>([]);
@@ -310,7 +312,7 @@ export default function CustomerModal({ customer, onClose, onSuccess }: Props) {
             <button type="submit" disabled={loading} className="flex-1 btn-primary">
               {loading ? '처리 중...' : (customer?.id ? '수정' : '등록')}
             </button>
-            {customer?.id && (
+            {customer?.id && !hideDelete && (
               <button
                 type="button"
                 onClick={handleDelete}
