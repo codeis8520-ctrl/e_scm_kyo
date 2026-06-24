@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { cookies } from 'next/headers';
 import { requireSession, writeAuditLog } from '@/lib/session';
 import { fireNotificationTrigger } from '@/lib/notification-triggers';
+import { createSaleJournal } from '@/lib/accounting-actions';
 import { kstDayStart, kstDayEnd, kstTodayString } from '@/lib/date';
 
 function getUserId(): string | null {
@@ -125,6 +126,41 @@ export async function processRefund(params: {
         total_price: i.quantity * i.unit_price,
       }))
     );
+
+    // 6.5 환불 역분개 (매출·부가세·재고원가) — 재고/포인트/상태 변경 *이전*에 수행.
+    // 분개 생성이 실패하면 여기서 throw하여 catch가 return_orders(+cascade items)를 삭제,
+    // 아직 손대지 않은 재고·포인트·상태는 원형 보존 → 전체 롤백 보장.
+    // COGS는 실원가(products.cost) 기준. 과세분은 원본 과세금액 컬럼이 없어 전액 과세 가정
+    // (면세 정밀 안분은 후속 스텝).
+    {
+      const productIds = [...new Set(items.map(i => i.product_id))];
+      const { data: costRows } = await db
+        .from('products')
+        .select('id, cost')
+        .in('id', productIds);
+      const costMap = new Map<string, number>(
+        (costRows || []).map((r: any) => [r.id, Number(r.cost) || 0])
+      );
+      const refundCogs = items.reduce(
+        (sum, i) => sum + i.quantity * (costMap.get(i.product_id) || 0), 0
+      );
+
+      const journalId = await createSaleJournal({
+        orderId: originalOrderId,
+        orderNumber: originalOrder.order_number,
+        orderDate: kstTodayString(),
+        totalAmount: -refundAmount,        // 음수 = 역분개
+        paymentMethod: originalOrder.payment_method ?? 'cash',
+        cogs: refundCogs,
+        sourceType: 'RETURN',
+        createdBy: userId,
+      });
+
+      // createSaleJournal은 실패 시 null을 반환(silent). 이번 호출의 신규 분개 id로 결정적 검증.
+      if (!journalId) {
+        throw new Error('환불 역분개 생성에 실패했습니다.');
+      }
+    }
 
     // 7. 재고 역복원
     for (const item of items) {

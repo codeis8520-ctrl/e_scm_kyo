@@ -412,7 +412,7 @@ export async function createSaleJournal(params: {
   const cogsId       = accMap['5110'];
   const inventoryId  = accMap['1130'];
 
-  if (!receivableId || !revenueId) return;
+  if (!receivableId || !revenueId) return null;
 
   const isRefund = params.totalAmount < 0;
   const absTotal = Math.abs(params.totalAmount);
@@ -432,6 +432,11 @@ export async function createSaleJournal(params: {
 
   const sourceType = params.sourceType || (isRefund ? 'RETURN' : 'SALE');
 
+  // 헤더 차/대 합계: 환불(RETURN)은 COGS 양변 쌍을 포함해 라인 합과 일치시킨다(이번 스텝 균형 보장).
+  // 정상 매출은 COGS를 헤더에서 제외하는 기존 규약을 유지(차/대 헤더 불균형은 Step3 범위).
+  const cogsInHeader = isRefund && cogsId && inventoryId && params.cogs > 0 ? params.cogs : 0;
+  const headerTotal = absTotal + cogsInHeader;
+
   const { data: entry, error } = await sb
     .from('journal_entries')
     .insert({
@@ -442,15 +447,15 @@ export async function createSaleJournal(params: {
         : `매출 인식 (${params.orderNumber})`,
       source_type: sourceType,
       source_id: params.orderId,
-      total_debit: absTotal,
-      total_credit: absTotal,
+      total_debit: headerTotal,
+      total_credit: headerTotal,
       ...(params.reversalOf ? { reversal_of: params.reversalOf } : {}),
       ...(params.createdBy ? { created_by: params.createdBy } : {}),
     })
     .select('id')
     .single();
 
-  if (error) return;
+  if (error) return null;
 
   const lines: any[] = [];
 
@@ -475,15 +480,30 @@ export async function createSaleJournal(params: {
     }
   }
 
-  // COGS (매출원가) — 정상 매출 시만
-  if (!isRefund && cogsId && inventoryId && params.cogs > 0) {
-    lines.push(
-      { journal_entry_id: entry.id, account_id: cogsId, debit: params.cogs, credit: 0, memo: '매출원가' },
-      { journal_entry_id: entry.id, account_id: inventoryId, debit: 0, credit: params.cogs, memo: '재고 감소' }
-    );
+  // COGS (매출원가)
+  if (cogsId && inventoryId && params.cogs > 0) {
+    if (isRefund) {
+      // 환불: 재고 복원(차변 1130) / 매출원가 취소(대변 5110) — 정상매출의 반대방향
+      lines.push(
+        { journal_entry_id: entry.id, account_id: inventoryId, debit: params.cogs, credit: 0, memo: '재고 복원' },
+        { journal_entry_id: entry.id, account_id: cogsId, debit: 0, credit: params.cogs, memo: '매출원가 취소' }
+      );
+    } else {
+      lines.push(
+        { journal_entry_id: entry.id, account_id: cogsId, debit: params.cogs, credit: 0, memo: '매출원가' },
+        { journal_entry_id: entry.id, account_id: inventoryId, debit: 0, credit: params.cogs, memo: '재고 감소' }
+      );
+    }
   }
 
-  await sb.from('journal_entry_lines').insert(lines);
+  const { error: linesError } = await sb.from('journal_entry_lines').insert(lines);
+  if (linesError) {
+    // 라인 삽입 실패 시 고아 헤더 제거 후 실패 신호
+    await sb.from('journal_entries').delete().eq('id', entry.id);
+    return null;
+  }
+
+  return entry.id as string;
 }
 
 /**

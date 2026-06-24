@@ -324,6 +324,7 @@ sales_orders.receipt_status: 품목 receipt_status 집계. 품목 모두 RECEIVE
 [반품]
 - return_orders: 기존 sales_order 참조, 환불금액/포인트복원 포함
 - 반품 완료 시 재고 복구(IN) + 환불 분개 자동 생성
+- 환불(processRefund)도 매출·부가세·재고원가 역분개 생성: journal_entries.source_type='RETURN', source_id=원본 sales_order. 라인=매출(차변)+부가세예수금(차변,과세시)+수금계정(대변) + COGS 쌍(재고자산 1130 차변 / 매출원가 5110 대변, 정상매출의 반대방향). RETURN 엔트리는 COGS 쌍을 헤더에 포함해 total_debit=total_credit=환불총액+COGS로 균형(라인 합=헤더 합). COGS는 products.cost(실원가)×수량 기준. 현재 전액 과세 가정(면세 정밀안분 미적용). 분개를 재고·포인트·상태 변경 *이전*에 생성하므로, 생성 실패 시 환불 전체 롤백(return_orders·재고·포인트·상태 모두 미반영).
 
 [AI 에이전트 로그]
 - agent_conversations: 매 대화 자동 저장 (user_message, assistant_response, tools_used, tokens, model)
