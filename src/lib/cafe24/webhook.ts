@@ -606,6 +606,24 @@ async function handleOrderPaid(
   // #42: 매출 = total − discount(쿠폰 + 자사몰 적립금). 적립금은 현금/카드 수취가 아니라
   //   할인이므로 카드 차변 = 매출 대변 = net 으로 양변 정합(gross 게시 시 적립금만큼 과대).
   const netSaleAmount = Number(order.total_amount) - Number(order.discount_amount || 0);
+
+  // COGS(매출원가) — 보수적 처리: 내부제품에 매핑된(product_id 있는) 품목분만 실원가 합산.
+  //   미매핑 품목은 0(과대 COGS 방지). 매핑 비율이 낮으면 그만큼 COGS가 과소될 수 있으나
+  //   과대보다 보수적이라 선택(매핑 보강 시 신규 거래부터 자동 정합).
+  let cogs = 0;
+  try {
+    const { data: items } = await getSupabase()
+      .from('sales_order_items')
+      .select('quantity, product_id, product:products(cost)')
+      .eq('sales_order_id', order.id);
+    for (const it of (items as any[]) || []) {
+      if (!it.product_id) continue;                 // 미매핑 → COGS 0
+      cogs += Number(it.quantity || 0) * (Number(it.product?.cost) || 0);
+    }
+  } catch {
+    cogs = 0;   // 조회 실패 시 보수적으로 0
+  }
+
   try {
     await createSaleJournal({
       orderId: order.id,
@@ -613,7 +631,7 @@ async function handleOrderPaid(
       orderDate: now.slice(0, 10),
       totalAmount: netSaleAmount,
       paymentMethod: order.payment_method ?? 'card',
-      cogs: 0,
+      cogs,
     });
   } catch (journalErr) {
     await logSyncEvent('order_paid_journal_warn', orderCode, { journalErr }, 'success', '분개 생성 실패(무시됨)');

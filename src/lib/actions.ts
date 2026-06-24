@@ -8,6 +8,7 @@ import { computeBomCost } from '@/lib/production-actions';
 import { kstTodayString } from '@/lib/date';
 import { requireSession, type SessionUser } from '@/lib/session';
 import { toNum, parseStockInput } from '@/lib/validators';
+import { createSaleJournal } from '@/lib/accounting-actions';
 
 // ============ Products ============
 
@@ -2499,20 +2500,22 @@ export async function processPosCheckout(payload: CheckoutPayload) {
   // 과세 여부도 동일 조회에서 흡수 (C: L2571 별도조회 제거). is_taxable는 006(최고령) 컬럼이라
   // 폴백 체인에서 가장 마지막까지 유지. 부재 시 맵 미설정 → 아래 과세 블록에서 기본 true(과세).
   const isTaxableByProduct = new Map<string, boolean>();
+  // 실원가(cost) — 매출분개 COGS 산정용. cost는 006 이전부터 존재해 폴백 체인 전 구간 유지.
+  const costByProduct = new Map<string, number>();
   if (productIds.length > 0) {
     let ptRes: any = await db.from('products')
-      .select('id, product_type, track_inventory, is_phantom, is_taxable').in('id', productIds);
+      .select('id, product_type, track_inventory, is_phantom, is_taxable, cost').in('id', productIds);
     if (ptRes.error && /is_phantom/i.test(String(ptRes.error.message))) {
-      // 061 미적용 — is_phantom 없이 재시도 (is_taxable 유지)
-      ptRes = await db.from('products').select('id, product_type, track_inventory, is_taxable').in('id', productIds);
+      // 061 미적용 — is_phantom 없이 재시도 (is_taxable·cost 유지)
+      ptRes = await db.from('products').select('id, product_type, track_inventory, is_taxable, cost').in('id', productIds);
     }
     if (ptRes.error && /track_inventory/i.test(String(ptRes.error.message))) {
-      // 059 미적용 — track_inventory 없이 재시도 (is_taxable 유지)
-      ptRes = await db.from('products').select('id, product_type, is_taxable').in('id', productIds);
+      // 059 미적용 — track_inventory 없이 재시도 (is_taxable·cost 유지)
+      ptRes = await db.from('products').select('id, product_type, is_taxable, cost').in('id', productIds);
     }
     if (ptRes.error && /is_taxable/i.test(String(ptRes.error.message))) {
-      // 006 미적용(이론상 도달 안 함) — is_taxable 없이 재시도 → 전부 과세 폴백
-      ptRes = await db.from('products').select('id, product_type').in('id', productIds);
+      // 006 미적용(이론상 도달 안 함) — is_taxable 없이 재시도 → 전부 과세 폴백 (cost 유지)
+      ptRes = await db.from('products').select('id, product_type, cost').in('id', productIds);
     }
     if (!ptRes.error && Array.isArray(ptRes.data)) {
       const blocked = (ptRes.data as any[]).find(
@@ -2526,6 +2529,7 @@ export async function processPosCheckout(payload: CheckoutPayload) {
         phantomByProduct.set(p.id, p.is_phantom === true);
         // is_taxable 컬럼 부재 시 undefined → !== false → true(과세) = 기존 폴백 동일
         isTaxableByProduct.set(p.id, p.is_taxable !== false);
+        costByProduct.set(p.id, Number(p.cost) || 0);
       }
     }
   }
@@ -2561,11 +2565,17 @@ export async function processPosCheckout(payload: CheckoutPayload) {
       new Set(Array.from(bomByPhantom.values()).flat().map(c => c.material_id)),
     );
     if (materialIds.length > 0) {
-      const adRes: any = await db
-        .from('products').select('id, allow_decimal_stock').in('id', materialIds);
+      let adRes: any = await db
+        .from('products').select('id, allow_decimal_stock, cost').in('id', materialIds);
+      if (adRes.error && /allow_decimal_stock/i.test(String(adRes.error.message))) {
+        // 087 미적용 — allow_decimal_stock 없이 재시도 (cost는 유지)
+        adRes = await db.from('products').select('id, cost').in('id', materialIds);
+      }
       if (!adRes.error && Array.isArray(adRes.data)) {
         for (const p of adRes.data as any[]) {
           decimalByMaterial.set(p.id, p.allow_decimal_stock === true);
+          // 팬텀 분해 자재의 실원가 — COGS 산정에 사용(재고 OUT분과 일치).
+          costByProduct.set(p.id, Number(p.cost) || 0);
         }
       }
       // 컬럼 부재(폴백) 시 map 비어있음 → 아래 분기에서 전부 비허용(Math.ceil) 처리.
@@ -2832,6 +2842,9 @@ export async function processPosCheckout(payload: CheckoutPayload) {
 
   // ④ 재고 차감 + 이동 기록 (출고 지점 기준)
   const stockUpdates: Record<string, number> = {};
+  // COGS(매출원가) — 실제 재고 OUT된 분(일반 + 팬텀 분해 자재) × products.cost 누적.
+  // 재고자산(1130) 감소와 정확히 일치시키기 위해 ④ 차감 큐에서 직접 합산.
+  let posCogs = 0;
   let movementMemo: string | null = null;
   if (stockBranchId !== branchId) {
     const { data: bns } = await supabase
@@ -2901,6 +2914,8 @@ export async function processPosCheckout(payload: CheckoutPayload) {
         const before = toNum(existing?.quantity);
         const after = before - qty;
         stockUpdates[productId] = after;
+        // COGS 누적 — 실제 OUT된 product_id(일반 or 분해 자재)의 실원가 × 수량.
+        posCogs += qty * (costByProduct.get(productId) || 0);
         if (existing) {
           writeTasks.push(db.from('inventories').update({ quantity: after }).eq('id', existing.id));
         } else {
@@ -2956,6 +2971,25 @@ export async function processPosCheckout(payload: CheckoutPayload) {
         description: `구매 적립 (${orderNumber})`,
       });
     }
+  }
+
+  // ⑤-b 매출 분개 (source_type='SALE') — best-effort.
+  //   매출(4110)/부가세예수금(2151)/수금계정 + 실원가 COGS(매출원가5110 차 / 재고자산1130 대).
+  //   현장 결제는 이미 끝난 거래이므로 분개 실패가 판매를 롤백/차단하면 안 됨(경고만).
+  try {
+    await createSaleJournal({
+      orderId: saleOrderId,
+      orderNumber,
+      orderDate: (payload.saleDate || new Date().toISOString()).slice(0, 10),
+      totalAmount: finalAmount,        // 고객 실수령 결제액(net, VAT 포함)
+      paymentMethod: topMethod,
+      cogs: posCogs,
+      taxableAmount,                   // ②에서 산정한 과세분(0이면 면세 → VAT 라인 없음)
+      sourceType: 'SALE',
+      createdBy: userId || undefined,
+    });
+  } catch (e) {
+    console.error('[processPosCheckout] createSaleJournal failed (best-effort):', e);
   }
 
   // ⑥ 주문 완료 알림톡 자동 발송 (등록 고객 + 매핑 존재 시)
