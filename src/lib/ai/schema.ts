@@ -59,7 +59,7 @@ legacy_order_items(마이그 070): id, order_id(→legacy_orders ON DELETE CASCA
   ※ 라인아이템 단위(66,090). UNIQUE(order_id, line_seq).
 
 --- 판매(POS) ---
-sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, buyer_name, buyer_phone, recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail, ordered_by(담당자), total_amount, discount_amount, points_used, points_earned, payment_method(cash/card/card_keyin/kakao/credit/cod/mixed), credit_settled(bool), credit_settled_at, credit_settled_method, memo, status(COMPLETED/CANCELLED/REFUNDED/PARTIALLY_REFUNDED), ordered_at, receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date, approval_status(COMPLETED/CARD_PENDING/UNSETTLED), payment_info, taxable_amount, exempt_amount, vat_amount, ship_from_branch_id(마이그 096·출고처 override·NULL허용·plain UUID FK없음; NULL이면 매출처로 폴백)
+sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, buyer_name, buyer_phone, recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail, ordered_by(담당자), total_amount, discount_amount, points_used, points_earned, payment_method(cash/card/card_keyin/kakao/credit/cod/mixed), credit_settled(bool), credit_settled_at, credit_settled_method, memo, status(COMPLETED/CANCELLED/REFUNDED/PARTIALLY_REFUNDED), ordered_at, receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date, approval_status(COMPLETED/CARD_PENDING/UNSETTLED), payment_info, taxable_amount, exempt_amount, vat_amount, ship_from_branch_id(마이그 096·출고처 override·NULL허용·plain UUID FK없음; NULL이면 매출처로 폴백), smartstore_order_id(마이그 097·네이버 주문번호·스마트스토어 엑셀 임포트 dedup키·NULL허용 unique)
   ※ buyer_name/buyer_phone: 자사몰(카페24) 주문자 스냅샷(마이그 074). customer_id 연결과 무관하게 보존 — customer_id=NULL이어도 주문자명/전화 표시(판매현황 "비회원" 방지). 고객 분석·집계는 여전히 customer_id 기준.
   ※ recipient_*는 카페24 받는분(수령자) 스냅샷(마이그 083) — buyer_*(주문자)와 별개. 출고 후엔 shipments.recipient_* 우선.
   ※ 매출 기준 통일(#18): total_amount = 상품총액(할인 전 gross). **매출(실결제) = total_amount − discount_amount** 로 전 채널 통일(POS/백화점/cafe24 동일). 할인·포인트·쿠폰을 별도 매출항목으로 분리하지 않음. points_used는 결제수단(tender)이라 매출에서 빼지 않음. legacy_orders.total_amount는 이미 net(할인 컬럼 없음). 집계 SQL은 항상 (total_amount − COALESCE(discount_amount,0)) 사용.
@@ -78,7 +78,7 @@ sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, buyer_n
   ※ taxable_amount/exempt_amount/vat_amount=거래 시점 스냅샷(마이그 058). 카트 내 products.is_taxable
     기준으로 라인별 분리 → finalAmount(고객 실수령)에 비례 배분. vat=round(taxable×10/110).
     세 값 합 ≒ finalAmount(반올림 1원 이내). 058 미적용 주문은 0/NULL → reports는 사후 집계로 폴백.
-sales_order_items: id, sales_order_id, product_id(nullable — 080), quantity, unit_price, discount_amount, total_price, order_option, item_text(080), delivery_type(PICKUP/PARCEL/QUICK), receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date
+sales_order_items: id, sales_order_id, product_id(nullable — 080), quantity, unit_price, discount_amount, total_price, order_option, item_text(080), delivery_type(PICKUP/PARCEL/QUICK), receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date, smartstore_product_order_no(마이그 097·네이버 상품주문번호·품목 멱등)
   ※ order_option=품목별 부가 옵션(보자기 포장/쇼핑백/색상/서비스 지급 등).
   ※ item_text=카페24 텍스트 품목(우리 products 매핑 안 됨, product_id=null인 행). 렌더 폴백: product?.name || item_text.
   ※ delivery_type=품목별 배송 방식 — 같은 전표에서 품목별로 다를 수 있음(예: 3품목 중 1품목만 택배, 2품목 현장수령). 단 shipments는 주문당 1건 유지(수령지 1곳만 전제; 2곳 이상은 새 전표 분리).
@@ -152,6 +152,7 @@ campaign_event_types: code, name, emoji, is_recurring_default, default_month, de
 users: id, name, email, phone, role(SUPER_ADMIN/HQ_OPERATOR/PHARMACY_STAFF/BRANCH_STAFF/EXECUTIVE), branch_id
 cafe24_tokens: id, mall_id, access_token, refresh_token, access_token_expires_at
 cafe24_product_map(마이그 082): id, cafe24_product_code, option_value(정규화된 옵션조합 키, 무선택은 ''), product_id(→products.id), created_at — UNIQUE(cafe24_product_code, option_value). 카페24 품목→내부 product 매핑. 송장/배송 짧은 품목명 표시용.
+smartstore_product_map(마이그 097): id, smartstore_product_no(네이버 상품번호), option_value(옵션정보, 단일상품 ''), product_id(→products.id), product_name_snapshot, created_at — UNIQUE(smartstore_product_no, option_value). 스마트스토어 엑셀 임포트 시 상품명+옵션→내부 product 매핑(cafe24_product_map 동일 메커니즘). 채널 'SMARTSTORE'(스마트스토어). 임포트=src/lib/smartstore/, 출고/재고차감=본사, 회원매칭=구매자연락처(전화) dedup·자동생성X.
 seasons: id, name, season_type(NEW_YEAR/LUNAR_NEW_YEAR/CHUSEOK/EVENT/ETC), start_date, end_date, target_amount, is_active
 `;
 
