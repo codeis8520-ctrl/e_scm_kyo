@@ -59,7 +59,7 @@ legacy_order_items(마이그 070): id, order_id(→legacy_orders ON DELETE CASCA
   ※ 라인아이템 단위(66,090). UNIQUE(order_id, line_seq).
 
 --- 판매(POS) ---
-sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, buyer_name, buyer_phone, recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail, ordered_by(담당자), total_amount, discount_amount, points_used, points_earned, payment_method(cash/card/card_keyin/kakao/credit/cod/mixed), credit_settled(bool), credit_settled_at, credit_settled_method, memo, status(COMPLETED/CANCELLED/REFUNDED/PARTIALLY_REFUNDED), ordered_at, receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date, approval_status(COMPLETED/CARD_PENDING/UNSETTLED), payment_info, taxable_amount, exempt_amount, vat_amount
+sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, buyer_name, buyer_phone, recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail, ordered_by(담당자), total_amount, discount_amount, points_used, points_earned, payment_method(cash/card/card_keyin/kakao/credit/cod/mixed), credit_settled(bool), credit_settled_at, credit_settled_method, memo, status(COMPLETED/CANCELLED/REFUNDED/PARTIALLY_REFUNDED), ordered_at, receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date, approval_status(COMPLETED/CARD_PENDING/UNSETTLED), payment_info, taxable_amount, exempt_amount, vat_amount, ship_from_branch_id(마이그 096·출고처 override·NULL허용·plain UUID FK없음; NULL이면 매출처로 폴백)
   ※ buyer_name/buyer_phone: 자사몰(카페24) 주문자 스냅샷(마이그 074). customer_id 연결과 무관하게 보존 — customer_id=NULL이어도 주문자명/전화 표시(판매현황 "비회원" 방지). 고객 분석·집계는 여전히 customer_id 기준.
   ※ recipient_*는 카페24 받는분(수령자) 스냅샷(마이그 083) — buyer_*(주문자)와 별개. 출고 후엔 shipments.recipient_* 우선.
   ※ 매출 기준 통일(#18): total_amount = 상품총액(할인 전 gross). **매출(실결제) = total_amount − discount_amount** 로 전 채널 통일(POS/백화점/cafe24 동일). 할인·포인트·쿠폰을 별도 매출항목으로 분리하지 않음. points_used는 결제수단(tender)이라 매출에서 빼지 않음. legacy_orders.total_amount는 이미 net(할인 컬럼 없음). 집계 SQL은 항상 (total_amount − COALESCE(discount_amount,0)) 사용.
@@ -316,7 +316,8 @@ sales_orders.receipt_status: 품목 receipt_status 집계. 품목 모두 RECEIVE
 - status: PENDING→PRINTED→SHIPPED→DELIVERED (QUICK은 PRINTED 생략, SHIPPED부터 운영 일반적)
 - tracking_number 등록 + SHIPPED 전환 시 알림톡 자동 발송 (PARCEL 한정)
 - shipments.branch_id = 출고 지점(재고 차감 지점). POS 배송 주문에서 판매 지점(sales_orders.branch_id)과 다를 수 있음. "어느 지점에서 팔렸나"는 sales_orders.branch_id로, "어느 지점에서 나갔나"는 shipments.branch_id로 집계.
-- 출고처(판매 전표의 재고 차감 지점) 일관 도출(#35) = shipments.branch_id(배송 있으면) ?? sales_orders.branch_id. 방문수령·자사몰은 배송 레코드 없어 sales_orders.branch_id(=차감지점)로 폴백. 즉 출고처는 항상 존재. 자사몰(ONLINE) 주문은 자사몰 지점 재고에서 차감(현행 유지) → 출고처=자사몰.
+- 출고처(판매 전표의 재고 차감 지점) 일관 도출(#35, 마이그096 보강) = shipments.branch_id(배송 있으면) ?? sales_orders.ship_from_branch_id(override) ?? sales_orders.branch_id. 방문수령·자사몰은 배송 레코드 없어 ship_from_branch_id 또는 매출처로 폴백. 즉 출고처는 항상 존재. 자사몰(ONLINE) 주문은 자사몰 지점 재고에서 차감(현행 유지) → 출고처=자사몰.
+- 출고처 사후 변경: changeSalesOrderShipFromBranch(sales-revise-actions) — ship_from_branch_id 기록 + 이 전표의 OUT/IN movement(reference_id=주문/품목)를 새 지점으로 이전(옛 지점 +복원, 새 지점 −차감, movement.branch_id 재지정). shipments 있으면 shipments.branch_id도 동기화. 매출처(branch_id)는 귀속만이라 재고 미이동.
 - 에이전트 배송 등록(create_shipment): source는 STORE(직접입력) 고정, CAFE24는 자사몰 동기화 전용. 발송인(sender_name/phone)은 출고 지점 정보로 자동 채움(지점 phone 없으면 ''). 단순 insert만 — 외부 발송 없음. 송장번호 등록·SHIPPED 전환(알림톡 발송)은 update_shipment_tracking 별도 처리.
 
 [반품]

@@ -8,7 +8,7 @@ import ReceiptModal from './ReceiptModal';
 import RefundModal from './RefundModal';
 import { fmtDateKST, fmtTimeKST, fmtDateTimeKST, kstTodayString, kstDayStart, kstDayEnd } from '@/lib/date';
 import { cancelSalesOrder } from '@/lib/sales-cancel-actions';
-import { addSalesOrderItem, removeSalesOrderItem, updateSalesOrderItem, convertOrderToParcel, convertOrderToPickup, updateSalesOrderDetails } from '@/lib/sales-revise-actions';
+import { addSalesOrderItem, removeSalesOrderItem, updateSalesOrderItem, convertOrderToParcel, convertOrderToPickup, updateSalesOrderDetails, changeSalesOrderShipFromBranch } from '@/lib/sales-revise-actions';
 import { bulkUpdateReceiptStatus } from '@/lib/shipping-actions';
 import { settleSalesOrderReceivable } from '@/lib/accounting-actions';
 import { useEscClose } from '@/hooks/useEscClose';
@@ -1736,6 +1736,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
   // #23: 기본정보 확대 수정 (판매일시·매출처·담당자·수령상태)
   const [edOrderedAt, setEdOrderedAt] = useState('');       // datetime-local 값
   const [edBranchId, setEdBranchId] = useState('');
+  const [edShipFromBranchId, setEdShipFromBranchId] = useState(''); // 출고처(재고 차감 지점)
   const [edOrderedBy, setEdOrderedBy] = useState('');
   const [edReceiptStatus, setEdReceiptStatus] = useState('');
   const [edBranchOptions, setEdBranchOptions] = useState<{ id: string; name: string }[]>([]);
@@ -2130,6 +2131,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
               receipt_status, receipt_date, approval_status, payment_info,
               handler:users!sales_orders_ordered_by_fkey(id, name),
               branch:branches(id, name),
+              ship_from_branch_id,
               customer:customers(id, name, phone),
               buyer_name, buyer_phone,
               recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail
@@ -2218,6 +2220,27 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
     setConsultsLoaded(false);
   }, [loadDetail]);
 
+  // 지점 목록 1회 로드 — 출고처 표시(override 지점명)·매출처/출고처 드롭다운 공용.
+  useEffect(() => {
+    if (edBranchOptions.length > 0) return;
+    const sb = createClient() as any;
+    sb.from('branches').select('id, name, sort_order').eq('is_active', true).order('sort_order').order('name')
+      .then((r: any) => setEdBranchOptions((r.data as any[]) || []));
+  }, []);
+  // 지점 id→이름 맵 (출고처 override 표시용)
+  const branchNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const b of edBranchOptions) m.set(b.id, b.name);
+    return m;
+  }, [edBranchOptions]);
+  // 현재 출고처 도출: 배송 있으면 shipment 지점 ?? override(ship_from) ?? 매출처
+  const shipFromId: string | null =
+    shipment?.branch?.id ?? (order?.ship_from_branch_id || null) ?? order?.branch?.id ?? null;
+  const shipFromName: string =
+    shipment?.branch?.name
+    ?? (order?.ship_from_branch_id ? branchNameById.get(order.ship_from_branch_id) : undefined)
+    ?? order?.branch?.name ?? '-';
+
   // 수령 전 전표만 품목 추가/삭제 가능 (status=COMPLETED + receipt_status 존재 + ≠RECEIVED)
   const editable = order?.status === 'COMPLETED' && !!order?.receipt_status && order.receipt_status !== 'RECEIVED';
   // 전표 상세 직접 수정 가능 여부 (취소·환불 전표 제외)
@@ -2234,6 +2257,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
     // #23: 판매일시·매출처·담당자·수령상태 prefill + 지점/담당자 목록 지연 로드
     setEdOrderedAt(isoToKstLocal(order.ordered_at));
     setEdBranchId(order.branch?.id || '');
+    setEdShipFromBranchId(shipFromId || ''); // 현재 출고처(배송지점/override/매출처) prefill
     setEdOrderedBy(order.handler?.id || '');
     setEdReceiptStatus(order.receipt_status || 'RECEIVED');
     if (edBranchOptions.length === 0 || edStaffOptions.length === 0) {
@@ -2295,6 +2319,18 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
         reason: edReason.trim() || undefined,
       });
       if ('error' in res && res.error) { alert(res.error); return; }
+      // 출고처 변경 — 사용자가 현재 출고처와 다르게 골랐을 때만(재고 이전 동반).
+      if (edShipFromBranchId && edShipFromBranchId !== shipFromId) {
+        const shipRes = await changeSalesOrderShipFromBranch({
+          orderId: order.id,
+          ship_from_branch_id: edShipFromBranchId,
+          reason: edReason.trim() || undefined,
+        });
+        if ('error' in shipRes && shipRes.error) { alert(`출고처 변경 실패: ${shipRes.error}`); return; }
+        if ('moved' in shipRes) {
+          alert(`출고처가 변경되었습니다. 재고 ${shipRes.moved}품목이 새 출고처로 이전되었습니다.`);
+        }
+      }
       setEditingDetails(false);
       await loadDetail(true);
       onChanged();
@@ -2490,8 +2526,8 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
               <div>
                 <p className="text-[11px] text-slate-500">출고처 <span className="text-slate-400">(재고 차감 기준)</span></p>
                 <p>
-                  {shipment?.branch?.name || order.branch?.name || '-'}
-                  {shipment?.branch?.id && shipment.branch.id !== order.branch?.id && (
+                  {shipFromName}
+                  {shipFromId && order.branch?.id && shipFromId !== order.branch.id && (
                     <span className="ml-1 text-[10px] px-1 rounded bg-indigo-50 text-indigo-700 border border-indigo-100">🚚 출고지점</span>
                   )}
                 </p>
@@ -2697,6 +2733,19 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                       <option value="">미지정</option>
                       {edBranchOptions.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                     </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500">출고처 <span className="text-slate-400">(재고 차감 지점)</span></label>
+                    <select value={edShipFromBranchId} onChange={e => setEdShipFromBranchId(e.target.value)}
+                      className="w-full text-sm border border-slate-300 rounded px-2 py-1">
+                      <option value="">미지정</option>
+                      {edBranchOptions.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                    </select>
+                    {edShipFromBranchId && edShipFromBranchId !== shipFromId && (
+                      <p className="mt-0.5 text-[10px] text-indigo-600">
+                        ⚠ 변경 시 이미 차감된 재고가 <b>{branchNameById.get(edShipFromBranchId) || '새 지점'}</b>(으)로 이전됩니다(옛 지점 복원·새 지점 차감).
+                      </p>
+                    )}
                   </div>
                   <div>
                     <label className="text-[10px] text-slate-500">담당자</label>

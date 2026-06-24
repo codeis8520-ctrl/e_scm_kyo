@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { requireSession, writeAuditLog } from '@/lib/session';
 import { kstTodayString } from '@/lib/date';
+import { toNum } from '@/lib/validators';
 
 /**
  * 수령 전 전표 품목 추가/삭제 (Step 1)
@@ -1068,5 +1069,137 @@ async function finishUpdateSalesOrderDetails(
     return { success: true };
   } catch (err: any) {
     return { error: `수정 실패: ${err.message}` };
+  }
+}
+
+/**
+ * 출고처(재고 차감 지점) 변경 — 기존 매출 수정 폼에서 호출.
+ *
+ * 출고처 = 재고가 실제로 차감된 지점. 잘못 등록된 출고처를 정정하면서 이미 차감된
+ * 재고도 함께 새 지점으로 옮긴다(옛 지점 복원 +, 새 지점 차감 −, movements 지점 재지정).
+ *
+ * 동작:
+ *  1. 이 전표의 출고 movement(reference_id=주문/품목, OUT/IN) 를 모두 수집.
+ *  2. (현재 지점, 제품)별 순차감량 = ΣOUT − ΣIN 계산. 새 지점과 다른 지점 그룹만 이전.
+ *  3. 옛 지점 재고 += 순차감량(복원), 새 지점 재고 −= 순차감량(재차감, 음수 허용=판매 정책).
+ *  4. 해당 movement 행의 branch_id 를 새 지점으로 재지정(이력이 새 출고처를 가리키게).
+ *  5. shipments 있으면 shipments.branch_id, 항상 sales_orders.ship_from_branch_id 갱신.
+ *
+ * 재고 미관리/서비스 품목 등 movement 가 없으면 라벨(ship_from)만 갱신.
+ * 트랜잭션은 기존 코드 일관성상 비사용(Supabase) — 라인 단위 순차 처리.
+ */
+export async function changeSalesOrderShipFromBranch(input: {
+  orderId: string;
+  ship_from_branch_id: string;
+  reason?: string;
+}): Promise<{ success: true; moved: number } | { error: string }> {
+  let session;
+  try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
+
+  if (!input.orderId) return { error: '전표가 지정되지 않았습니다.' };
+  if (!input.ship_from_branch_id) return { error: '새 출고처를 선택하세요.' };
+
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  // 전표·상태 확인
+  const { data: order, error: ordErr } = await db
+    .from('sales_orders')
+    .select('id, order_number, status, branch_id, ship_from_branch_id')
+    .eq('id', input.orderId)
+    .single();
+  if (ordErr || !order) return { error: '전표를 찾을 수 없습니다.' };
+  if (['CANCELLED', 'REFUNDED', 'PARTIALLY_REFUNDED'].includes(order.status)) {
+    return { error: '취소/환불된 전표는 출고처를 변경할 수 없습니다.' };
+  }
+
+  const newBranchId = input.ship_from_branch_id;
+
+  // 새 지점 유효성
+  const { data: newBranch } = await db.from('branches').select('id, name').eq('id', newBranchId).maybeSingle();
+  if (!newBranch) return { error: '선택한 출고처 지점을 찾을 수 없습니다.' };
+
+  try {
+    // 1) 이 전표의 출고 관련 movement 수집 — POS(reference_id=주문) + 온라인(reference_id=품목)
+    const { data: itemRows } = await db.from('sales_order_items').select('id').eq('sales_order_id', input.orderId);
+    const itemIds = ((itemRows as any[]) || []).map((r) => r.id);
+    const refIds = [input.orderId, ...itemIds];
+
+    const { data: movRows } = await db
+      .from('inventory_movements')
+      .select('id, branch_id, product_id, movement_type, quantity')
+      .in('reference_id', refIds);
+    const movements = ((movRows as any[]) || []).filter((m) =>
+      m.movement_type === 'OUT' || m.movement_type === 'IN');
+
+    // 2) (현재 지점, 제품)별 순차감량 = ΣOUT − ΣIN. 새 지점 그룹은 이전 불필요.
+    //    netByBranchProduct[branch][product] = 양수면 그만큼 그 지점에서 빠져나간 양.
+    const netByBP = new Map<string, Map<string, number>>();
+    const moveMovementIds: string[] = [];
+    for (const m of movements) {
+      if (m.branch_id === newBranchId) continue; // 이미 새 지점 = 이전 대상 아님
+      const sign = m.movement_type === 'OUT' ? 1 : -1; // OUT=차감(+net), IN=복원(−net)
+      const bMap = netByBP.get(m.branch_id) || new Map<string, number>();
+      bMap.set(m.product_id, (bMap.get(m.product_id) || 0) + sign * toNum(m.quantity));
+      netByBP.set(m.branch_id, bMap);
+      moveMovementIds.push(m.id);
+    }
+
+    // 3) 재고 이전 — 옛 지점 복원(+net), 새 지점 차감(−net). net<=0(순복원/0)도 안전 처리.
+    let movedLines = 0;
+    for (const [oldBranchId, prodMap] of netByBP) {
+      for (const [productId, net] of prodMap) {
+        if (net === 0) continue;
+        // 옛 지점: +net 복원
+        await adjustBranchStock(db, oldBranchId, productId, net);
+        // 새 지점: −net 차감(음수 허용)
+        await adjustBranchStock(db, newBranchId, productId, -net);
+        movedLines++;
+      }
+    }
+
+    // 4) movement 행 재지정 — 새 출고처를 가리키게
+    if (moveMovementIds.length > 0) {
+      // chunk 로 안전하게 update (in() 길이 제한 회피)
+      for (let i = 0; i < moveMovementIds.length; i += 100) {
+        const chunk = moveMovementIds.slice(i, i + 100);
+        await db.from('inventory_movements').update({ branch_id: newBranchId }).in('id', chunk);
+      }
+    }
+
+    // 5) 라벨 저장 — shipment 있으면 shipments.branch_id, 항상 sales_orders.ship_from_branch_id
+    const { data: ship } = await db.from('shipments').select('id').eq('sales_order_id', input.orderId).maybeSingle();
+    if (ship?.id) {
+      await db.from('shipments').update({ branch_id: newBranchId }).eq('id', ship.id);
+    }
+    await db.from('sales_orders').update({ ship_from_branch_id: newBranchId }).eq('id', input.orderId);
+
+    // audit
+    writeAuditLog({
+      userId: session.id,
+      action: 'UPDATE',
+      tableName: 'sales_orders',
+      recordId: input.orderId,
+      description: `출고처 변경: ${order.order_number} → ${newBranch.name}, 재고이전 ${movedLines}품목, 사유: ${input.reason?.trim() || '-'}`,
+      oldData: { ship_from_branch_id: order.ship_from_branch_id ?? order.branch_id },
+      newData: { ship_from_branch_id: newBranchId },
+    }).catch(() => {});
+
+    revalidatePath('/pos');
+    revalidatePath('/inventory');
+    return { success: true, moved: movedLines };
+  } catch (err: any) {
+    return { error: `출고처 변경 실패: ${err.message}` };
+  }
+}
+
+// 단일 (지점,제품) 재고를 delta 만큼 증감. 행 없으면 delta 로 신규(음수 허용). 음수 재고 허용.
+async function adjustBranchStock(db: any, branchId: string, productId: string, delta: number): Promise<void> {
+  const { data: arr } = await db.from('inventories').select('id, quantity').eq('branch_id', branchId).eq('product_id', productId);
+  const cur = (arr as any[] | null)?.[0];
+  if (!cur) {
+    await db.from('inventories').insert({ branch_id: branchId, product_id: productId, quantity: delta, safety_stock: 0 });
+  } else {
+    await db.from('inventories').update({ quantity: toNum(cur.quantity) + delta }).eq('id', cur.id);
   }
 }
