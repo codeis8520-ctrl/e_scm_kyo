@@ -8,6 +8,7 @@ import { getProducts } from '@/lib/actions';
 import * as XLSX from 'xlsx';
 import { fmtDateKST, kstTodayString } from '@/lib/date';
 import PageTabs from '@/components/PageTabs';
+import SmartstoreImportModal from './SmartstoreImportModal';
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -155,6 +156,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
   const [activeTab, setActiveTab] = useState<TabType>(
     embedded === 'parcel' ? 'list' : 'cafe24'
   );
+  const [showSmartstore, setShowSmartstore] = useState(false);
 
   // ── Cafe24 탭 ─────────────────────────────────────────────────────────────
   const today = new Date();
@@ -1045,6 +1047,14 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
               <div className="ml-auto flex gap-2">
                 <button
                   type="button"
+                  className="px-3 py-2 text-sm rounded bg-green-50 text-green-700 border border-green-300 hover:bg-green-100"
+                  onClick={() => setShowSmartstore(true)}
+                  title="네이버 스마트스토어 주문 엑셀(암호) 가져오기"
+                >
+                  🟢 스마트스토어 가져오기
+                </button>
+                <button
+                  type="button"
                   className="px-3 py-2 text-sm rounded border border-slate-300 hover:bg-slate-50 disabled:opacity-50"
                   onClick={handleRefreshToken}
                   disabled={tokenRefreshing}
@@ -1900,6 +1910,13 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
             </div>
           </div>
         </div>
+      )}
+
+      {showSmartstore && (
+        <SmartstoreImportModal
+          onClose={() => setShowSmartstore(false)}
+          onImported={() => { /* 생성 주문은 판매현황에 표시됨 — 별도 갱신 불필요 */ }}
+        />
       )}
     </div>
   );

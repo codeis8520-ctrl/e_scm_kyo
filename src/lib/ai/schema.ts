@@ -126,7 +126,7 @@ journal_entry_lines: id, journal_entry_id, account_id, debit, credit, memo
 accounting_period_closes: id, period(YYYY-MM), closed_at, closed_by, memo
 
 --- 배송 ---
-shipments: id, source(CAFE24/STORE), delivery_type(PARCEL/QUICK), cafe24_order_id, sales_order_id, sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail, recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail, tracking_number, status(PENDING/PRINTED/SHIPPED/DELIVERED), branch_id, created_at
+shipments: id, source(CAFE24/STORE/SMARTSTORE·마이그098), delivery_type(PARCEL/QUICK), cafe24_order_id, sales_order_id, sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail, recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail, tracking_number, status(PENDING/PRINTED/SHIPPED/DELIVERED), branch_id, created_at
   ※ sender_*: 배송 행 생성 시점 스냅샷. CAFE24 출처는 /admin/shippingorigins(폴백 /admin/store)에서 자동 채움.
   ※ 대한통운 엑셀 다운로드 시 발송지는 별도 모달에서 지점 선택(본사/한남점 등) — branches.sender_* 우선, 없으면 branches.address/phone 폴백. 모든 행에 통일 적용.
   ※ branch_id = 출고 지점 (재고가 차감된 지점). POS에서 배송 활성 시 판매 지점과 다를 수 있음. 판매 지점은 sales_orders.branch_id 참조.
@@ -312,7 +312,7 @@ sales_orders.receipt_status: 품목 receipt_status 집계. 품목 모두 RECEIVE
 - **자사몰 재고 차감(#14, deductOnlineOrderInventory)**: 매핑된(product_id 있는) 품목을 **주문 branch_id=자사몰 지점**에서 차감 + inventory_movements(movement_type='OUT', reference_type='ONLINE_SALE', reference_id=sales_order_items.id) 기록. 멱등(품목당 movement 존재 시 skip) → 매 동기화·나중 매핑 모두 안전. 미매핑 품목은 매핑 시점(createCafe24ProductMap 백필)에 차감. track_inventory=false 제외. point_history(적립)는 여전히 없음. ⚠️ 주문 취소 시 재고 복원은 미구현(동기화는 취소건 미처리).
 
 [배송]
-- shipments: source=CAFE24(자사몰)/STORE(직접입력)
+- shipments: source=CAFE24(자사몰)/STORE(직접입력)/SMARTSTORE(스마트스토어 엑셀 임포트)
 - delivery_type: PARCEL=택배(tracking_number + 알림톡 플로우), QUICK=퀵배송(당일 인편 — tracking 없이 현장 처리)
 - status: PENDING→PRINTED→SHIPPED→DELIVERED (QUICK은 PRINTED 생략, SHIPPED부터 운영 일반적)
 - tracking_number 등록 + SHIPPED 전환 시 알림톡 자동 발송 (PARCEL 한정)

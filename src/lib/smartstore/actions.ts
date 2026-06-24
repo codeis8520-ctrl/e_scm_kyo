@@ -253,7 +253,12 @@ export async function commitSmartstoreOrders(formData: FormData): Promise<SSComm
     const taxableNet = resolved.reduce((s, r) => s + (metaById.get(r.pid!)?.taxable ? r.it.lineTotal : 0), 0);
     const cogs = resolved.reduce((s, r) => s + (metaById.get(r.pid!)?.cost || 0) * r.it.quantity, 0);
     const orderedAt = o.paidAt || o.orderedAt || new Date().toISOString();
-    const receiptStatus = o.shipping.trackingNo ? 'PARCEL_SHIPPED' : 'PARCEL_PLANNED';
+    // 배송완료·구매확정 → 수령완료(RECEIVED), 그 외(배송중 등)는 택배예정(PARCEL_PLANNED).
+    //   ※ sales_orders.receipt_status CHECK = RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED.
+    //     발송 진행상태는 shipments.status(SHIPPED/DELIVERED)가 보유.
+    const delivered = /배송완료|구매\s*확정/.test(o.status);
+    const receiptStatus = delivered ? 'RECEIVED' : 'PARCEL_PLANNED';
+    const shipmentStatus = delivered ? 'DELIVERED' : (o.shipping.trackingNo ? 'SHIPPED' : 'PENDING');
     const payInfoLines = [`스마트스토어 결제수단: ${o.payMethod || '-'}`, o.shippingFee ? `배송비 ${o.shippingFee.toLocaleString('ko-KR')}원` : ''].filter(Boolean);
 
     // 1) 주문
@@ -313,19 +318,20 @@ export async function commitSmartstoreOrders(formData: FormData): Promise<SSComm
       await db.from('shipments').insert({
         sales_order_id: orderId,
         branch_id: hqId,
-        source: 'smartstore',
+        source: 'SMARTSTORE',
         delivery_type: 'PARCEL',
-        status: o.shipping.trackingNo ? 'SHIPPED' : 'PENDING',
+        status: shipmentStatus,
         tracking_number: o.shipping.trackingNo || null,
-        sender_name: hq.sender_name || null,
-        sender_phone: hq.sender_phone || null,
+        // sender_name/phone·recipient_name/phone/address 는 NOT NULL → 빈문자 폴백(본사 sender 미설정 대비).
+        sender_name: hq.sender_name || hq.name || '경옥채',
+        sender_phone: hq.sender_phone || '',
         sender_zipcode: hq.sender_zipcode || null,
         sender_address: hq.sender_address || null,
         sender_address_detail: hq.sender_address_detail || null,
-        recipient_name: o.recipient.name || null,
-        recipient_phone: o.recipient.phone || null,
+        recipient_name: o.recipient.name || '',
+        recipient_phone: o.recipient.phone || '',
         recipient_zipcode: o.recipient.zipcode || null,
-        recipient_address: o.recipient.address || null,
+        recipient_address: o.recipient.address || '',
         recipient_address_detail: o.recipient.addressDetail || null,
         delivery_message: o.recipient.message || null,
         ...(o.shipping.shippedAt ? { created_at: o.shipping.shippedAt } : {}),
