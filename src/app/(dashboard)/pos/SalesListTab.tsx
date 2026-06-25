@@ -530,7 +530,7 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
       colTotals.set(colId, (colTotals.get(colId) || 0) + r.total);
       grandTotal += r.total;
     }
-    const periods = [...periodSet].sort((a, b) => a.localeCompare(b));
+    const periods = [...periodSet].sort((a, b) => b.localeCompare(a));   // #58 최신 일자 상단(내림차순)
     const rows = periods.map(p => {
       const row = cell.get(p);
       const values = cols.map(c => row?.get(c.id) || 0);
