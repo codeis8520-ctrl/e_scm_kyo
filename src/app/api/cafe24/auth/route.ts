@@ -17,7 +17,8 @@ export async function GET(req: NextRequest) {
     client_id: clientId,
     state: crypto.randomUUID(),
     redirect_uri: redirectUri,
-    scope: 'mall.read_order,mall.read_customer,mall.read_personal,mall.read_store',
+    // #62 Phase2: mall.write_order = 송장 역연동(createShipment/updateOrderStatus) 위해 추가. 재인증 필요(운영).
+    scope: 'mall.read_order,mall.write_order,mall.read_customer,mall.read_personal,mall.read_store',
   });
 
   const authUrl = `https://${mallId}.cafe24api.com/api/v2/oauth/authorize?${params}`;

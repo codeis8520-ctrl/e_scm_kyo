@@ -27,6 +27,11 @@ export class Cafe24Client {
     this.tokenExpiresAt = tokens.expires_at;
   }
 
+  // getValidAccessToken() 결과만으로 인증 — write 호출(#62) 등 토큰만 필요한 경로용.
+  setAccessToken(token: string) {
+    this.accessToken = token;
+  }
+
   getTokens(): Cafe24OAuthTokens | null {
     if (!this.accessToken || !this.refreshToken) {
       return null;
@@ -177,6 +182,48 @@ export class Cafe24Client {
     const query = searchParams.toString();
     const endpoint = `/admin/members${query ? `?${query}` : ''}`;
     return this.request<{ members: Cafe24Member[]; total_count: number }>(endpoint);
+  }
+
+  // ─── write_order 메서드 (#62 Phase2 송장 역연동) — mall.write_order scope 필요 ───────────────
+  //   orderNo = raw cafe24 order_no(shipments.cafe24_order_id). C24-{mall}-{no}(분개 reference)와 무관.
+  //   request() 범용(POST/PUT body) 활용. 인증 실패·권한거부는 success:false 반환(throw 안 함) → 호출부 best-effort.
+
+  // 송장 등록 — POST /admin/orders/{orderNo}/shipments. shipment_status='shipping'(배송중)로 1차 등록.
+  async createShipment(
+    orderNo: string,
+    payload: { shipping_company_code: string; tracking_no: string; shipment_status?: string }
+  ): Promise<Cafe24APIResponse<any>> {
+    const shopNo = Number(process.env.CAFE24_SHOP_NO ?? '1');
+    // 카페24 v2 송장 등록 바디: shop_no + requests[] (주문 전체 발송 — order_item_code 미지정 시 주문단위).
+    const body = {
+      shop_no: shopNo,
+      request: {
+        tracking_no: payload.tracking_no,
+        shipping_company_code: payload.shipping_company_code,
+        status: payload.shipment_status ?? 'shipping',
+      },
+    };
+    return this.request<any>(`/admin/orders/${orderNo}/shipments`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  // 주문 상태 전환 보강 — PUT /admin/orders/{orderNo}. createShipment 로 배송중 미전환 시 사용.
+  async updateOrderStatus(orderNo: string, status: string): Promise<Cafe24APIResponse<any>> {
+    const shopNo = Number(process.env.CAFE24_SHOP_NO ?? '1');
+    const body = { shop_no: shopNo, request: { order_status: status } };
+    return this.request<any>(`/admin/orders/${orderNo}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    });
+  }
+
+  // 택배사 코드 확인용(읽기) — GET /admin/carriers. 운영이 CJ대한통운 shipping_company_code 확인 → env 주입.
+  async getCarriers(): Promise<Cafe24APIResponse<{ carriers: Array<{ carrier_id: number; carrier_name: string; default_carrier?: string }> }>> {
+    return this.request<{ carriers: Array<{ carrier_id: number; carrier_name: string; default_carrier?: string }> }>(
+      '/admin/carriers'
+    );
   }
 
   static generateCode(orderNo: number, mallId: string): string {

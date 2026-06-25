@@ -7,6 +7,8 @@ import { syncReceiptStatusFromShipment } from '@/lib/receipt-sync';
 import { confirmCafe24OrderAsSale } from '@/lib/cafe24/webhook';
 import { requireSession } from '@/lib/session';
 import { kstTodayString } from '@/lib/date';
+import { Cafe24Client } from '@/lib/cafe24/client';
+import { getValidAccessToken } from '@/lib/cafe24/token-store';
 
 export interface ShipmentInput {
   source: 'CAFE24' | 'STORE';
@@ -157,6 +159,85 @@ export async function createShipment(data: ShipmentInput) {
   return { success: true };
 }
 
+// ─── #62 Phase2: 우리 송장 → 카페24 자동 역연동 (best-effort·멱등·실패격리) ───────────────
+//   호출 조건은 updateShipment 에서 판정. 여기선 멱등체크→env게이트→인증→createShipment→sync_logs 기록.
+//   throw 절대 안 함(반환값 무시 가능) — 카페24 실패해도 우리 송장저장·알림톡·배송처리 진행.
+//   sync_type='shipment_writeback' 의 success 레코드가 멱등 단일 진실원(shipments 컬럼 추가 없음).
+async function writebackTrackingToCafe24(
+  supabase: any,
+  cafe24OrderId: string,
+  trackingNo: string
+): Promise<void> {
+  try {
+    // 1) 멱등: 이미 success 기록 있으면 skip(재전송 안 함).
+    const { data: done } = await supabase
+      .from('cafe24_sync_logs')
+      .select('id')
+      .eq('sync_type', 'shipment_writeback')
+      .eq('cafe24_order_id', cafe24OrderId)
+      .eq('status', 'success')
+      .limit(1);
+    if (done?.length) return;
+
+    const logFailed = async (msg: string) => {
+      try {
+        await supabase.from('cafe24_sync_logs').insert({
+          sync_type: 'shipment_writeback', cafe24_order_id: cafe24OrderId,
+          data: { tracking_no: trackingNo }, status: 'failed',
+          error_message: msg, processed_at: new Date().toISOString(),
+        });
+      } catch { /* 로그 실패도 흐름 무영향 */ }
+    };
+
+    // 2) env 게이트: CJ 택배사 코드(카페24 carriers 고유값, SweetTracker t_code와 무관) 미설정 → 조용한 누락 금지.
+    const carrierCode = process.env.CAFE24_CJ_CARRIER_CODE;
+    if (!carrierCode) {
+      await logFailed('CAFE24_CJ_CARRIER_CODE 미설정 — 운영 env 주입 필요(carriers 코드 확인 후)');
+      return;
+    }
+
+    // 3) 인증: getValidAccessToken(만료 시 갱신). 미인증/권한거부(write_order 재인증 전)는 createShipment 가 success:false.
+    const mallId = process.env.CAFE24_MALL_ID;
+    const clientId = process.env.CAFE24_CLIENT_ID;
+    const clientSecret = process.env.CAFE24_CLIENT_SECRET;
+    if (!mallId || !clientId || !clientSecret) { await logFailed('카페24 env(mall/client) 미설정'); return; }
+    const token = await getValidAccessToken();
+    if (!token) { await logFailed('카페24 토큰 없음/만료 — 재인증 필요'); return; }
+
+    const client = new Cafe24Client(mallId, clientId, clientSecret);
+    client.setAccessToken(token);
+
+    // 4) 송장 등록(배송중). 응답 검사: 성공 또는 dup(이미 등록)=success 취급 → 다음부터 skip.
+    const res = await client.createShipment(cafe24OrderId, {
+      shipping_company_code: carrierCode,
+      tracking_no: trackingNo,
+      shipment_status: 'shipping',
+    });
+    const errMsg = String(res.error?.message || '').toLowerCase();
+    const errCode = String(res.error?.code || '');
+    const isDup = errMsg.includes('already') || errMsg.includes('duplicate') || errMsg.includes('exist') || errCode === '409';
+    if (res.success || isDup) {
+      await supabase.from('cafe24_sync_logs').insert({
+        sync_type: 'shipment_writeback', cafe24_order_id: cafe24OrderId,
+        data: { tracking_no: trackingNo, dup: isDup && !res.success },
+        status: 'success', processed_at: new Date().toISOString(),
+      });
+      return;
+    }
+    // 5) 실패 → failed 로그(error_message). throw 안 함.
+    await logFailed(`${errCode || 'WRITE_FAIL'}: ${res.error?.message || '카페24 송장 등록 실패'}`);
+  } catch (e: any) {
+    // 어떤 예외든 격리 — 호출부 흐름 무영향.
+    try {
+      await supabase.from('cafe24_sync_logs').insert({
+        sync_type: 'shipment_writeback', cafe24_order_id: cafe24OrderId,
+        data: { tracking_no: trackingNo }, status: 'failed',
+        error_message: `예외: ${e?.message || String(e)}`, processed_at: new Date().toISOString(),
+      });
+    } catch { /* noop */ }
+  }
+}
+
 export async function updateShipment(
   id: string,
   data: Partial<ShipmentInput & { tracking_number: string | null; status: string }> & Record<string, unknown>
@@ -235,8 +316,42 @@ export async function updateShipment(
     /* 알림톡 실패가 업무 흐름을 막지 않음 */
   }
 
+  // #62 Phase2: 우리 송장 신규부여/SHIPPED 전환 시 카페24 주문에 송장 자동 역연동(best-effort).
+  //   cafe24_order_id 있는 자사몰 배송만(직접입력 STORE 는 없어 자동 skip). throw 없음 — 우리 흐름 무영향.
+  try {
+    const becameShipped = prevStatus !== 'SHIPPED' && newStatus === 'SHIPPED';
+    const gotTracking = !prevTracking && !!newTracking;
+    const cafe24OrderId = (prev as any)?.cafe24_order_id;
+    if ((becameShipped || gotTracking) && cafe24OrderId && newTracking) {
+      await writebackTrackingToCafe24(supabase, String(cafe24OrderId), String(newTracking));
+    }
+  } catch {
+    /* 역연동 실패가 배송 처리를 막지 않음(헬퍼 내부도 격리됨, 이중 방어) */
+  }
+
   revalidatePath('/shipping');
   return { success: true };
+}
+
+// #62 Phase2: 카페24 송장 역연동 실패건 조회(본사 전용) — 배송화면 실패목록/배지용.
+//   PO "실패 주문·사유 확인" 충족. 최근 실패 200건(주문번호 + 사유 + 시각).
+export async function getShipmentWritebackFailures() {
+  let session;
+  try { session = await requireSession(); } catch (e: any) { return { error: e.message, rows: [] }; }
+  // 본사/관리자만(지점직원 제외) — 자사몰 운영 데이터.
+  if (session.role === 'BRANCH_STAFF' || session.role === 'PHARMACY_STAFF') {
+    return { error: '권한이 없습니다.', rows: [] };
+  }
+  const supabase = await createClient() as any;
+  const { data, error } = await supabase
+    .from('cafe24_sync_logs')
+    .select('cafe24_order_id, error_message, processed_at')
+    .eq('sync_type', 'shipment_writeback')
+    .eq('status', 'failed')
+    .order('processed_at', { ascending: false })
+    .limit(200);
+  if (error) { console.error('getShipmentWritebackFailures error:', error); return { error: error.message, rows: [] }; }
+  return { rows: (data as any[]) || [] };
 }
 
 export async function deleteShipment(id: string) {

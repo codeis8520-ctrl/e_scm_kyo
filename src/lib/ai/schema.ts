@@ -151,6 +151,8 @@ campaign_event_types: code, name, emoji, is_recurring_default, default_month, de
 --- 시스템 ---
 users: id, name, email, phone, role(SUPER_ADMIN/HQ_OPERATOR/PHARMACY_STAFF/BRANCH_STAFF/EXECUTIVE), branch_id
 cafe24_tokens: id, mall_id, access_token, refresh_token, access_token_expires_at
+cafe24_sync_logs: id, sync_type, cafe24_order_id, data(JSONB), status('pending'|'success'|'failed'), error_message, processed_at — 카페24 연동 이벤트 로그.
+  ※ sync_type='shipment_writeback'(#62 Phase2): 우리 송장→카페24 자동 역연동 결과. success 레코드 = 멱등 단일진실원(shipments 컬럼 추가 없이 재전송 skip 판정). failed = 배송화면 실패배너(주문번호+사유) 노출원.
 cafe24_product_map(마이그 082): id, cafe24_product_code, option_value(정규화된 옵션조합 키, 무선택은 ''), product_id(→products.id), created_at — UNIQUE(cafe24_product_code, option_value). 카페24 품목→내부 product 매핑. 송장/배송 짧은 품목명 표시용.
 smartstore_product_map(마이그 097): id, smartstore_product_no(네이버 상품번호), option_value(옵션정보, 단일상품 ''), product_id(→products.id), product_name_snapshot, created_at — UNIQUE(smartstore_product_no, option_value). 스마트스토어 엑셀 임포트 시 상품명+옵션→내부 product 매핑(cafe24_product_map 동일 메커니즘). 채널 'SMARTSTORE'(스마트스토어). 임포트=src/lib/smartstore/, 출고/재고차감=본사, 회원매칭=구매자연락처(전화) dedup·자동생성X.
 seasons: id, name, season_type(NEW_YEAR/LUNAR_NEW_YEAR/CHUSEOK/EVENT/ETC), start_date, end_date, target_amount, is_active
@@ -300,6 +302,7 @@ sales_orders.receipt_status: 품목 receipt_status 집계. 품목 모두 RECEIVE
 - RPC legacy_sales_summary(p_start date, p_end date, p_search text) → (cnt bigint, total numeric). 레거시 판매현황 요약카드(건수·합계). 필터=ordered_at BETWEEN + 검색(콤마-AND: p_search를 ','로 분리한 각 토큰을 AND, 토큰별 recipient_name/recipient_phone/phone ILIKE). legacy_orders 단독(현행 sales 미포함). 마이그 099→100(콤마-AND).
 
 [자사몰(카페24) 매출 동기화 — 주문자 고객 표시/등록]
+- **송장 자동 역연동(#62 Phase2, write_order)**: 우리 송장 신규부여/SHIPPED 전환 시(updateShipment) 카페24 주문에 송장 자동 등록 + 배송중 전환을 best-effort 시도. cafe24_order_id 있는 자사몰 배송만(직접입력 STORE skip). 멱등=cafe24_sync_logs(sync_type='shipment_writeback', status='success') 존재 시 재전송 skip + 카페24 dup 에러도 success 취급. 택배사 코드=env CAFE24_CJ_CARRIER_CODE(카페24 carriers 고유값, SweetTracker t_code와 무관) — 미설정 시 writeback skip + failed 로그. 실패(권한/토큰/코드/네트워크)는 throw 안 함(우리 송장저장·알림톡·배송처리 정상) + cafe24_sync_logs(failed) 기록 → 배송화면 실패배너. 운영전제: 개발자센터 mall.write_order + /api/cafe24/auth 재인증 + CAFE24_CJ_CARRIER_CODE env. forward-only(과거 송장 소급 안 함), CJ 단일.
 - **수집/매출인식 분리(#25, 이카운트식)**: ONLINE(카페24/자사몰) 주문은 배송화면 '배송 추가' 확정(confirmCafe24OrderAsSale) 시에만 sales_order·sales_order_items·매출분개(SALE) 생성. 확정 시 receipt_status='PARCEL_PLANNED', receipt_date=확정일(KST 오늘). shipment.sales_order_id 로 직접 연결. 재확정(중복)해도 COMPLETED면 분개 재생성 안 함(멱등). 크론(syncCafe24PaidOrdersCore)은 수집·재고차감(확정주문만)·배송상태 동기화만, 매출은 미생성(created 항상 0).
 - 동기화 시 주문자(orderer)를 sales_orders.buyer_name/buyer_phone 에 항상 스냅샷 저장 → 판매현황에서 customer_id 없어도 주문자명/전화 표시(과거 "비회원" 노출 해소).
 - **자사몰 결제완료 주문자 자동 고객생성 정책(#59, 2026-06-25 PO 승인)**: 결제완료 온라인 주문(카페24 webhook handleOrderPaid · 스마트스토어 import)은 수집 시점에 주문자(buyer)를 ERP 고객으로 **자동 dedup 등록·연결**한다. 공용 헬퍼 = autoRegisterOnlineCustomer(cafe24/webhook.ts, anon 클라이언트). 반환 status=linked|created|needs_review.

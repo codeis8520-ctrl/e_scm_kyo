@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, Fragment } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { getShipments, createShipment, updateShipment, deleteShipment, bulkUpdateShipmentStatus } from '@/lib/shipping-actions';
+import { getShipments, createShipment, updateShipment, deleteShipment, bulkUpdateShipmentStatus, getShipmentWritebackFailures } from '@/lib/shipping-actions';
 import { refreshCafe24Token, registerCafe24Customers, createCafe24ProductMap, deleteCafe24ProductMap } from '@/lib/cafe24-actions';
 import { getProducts } from '@/lib/actions';
 import * as XLSX from 'xlsx';
@@ -207,6 +207,9 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
   // ── 카페24 품목 매핑 (본사 전용 연결/해제) ────────────────────────────────
   const userRole = getCookie('user_role');
   const isHQ = userRole === 'SUPER_ADMIN' || userRole === 'HQ_OPERATOR';
+  // #62 Phase2: 카페24 송장 역연동 실패건(본사 전용 표시 — 주문번호+사유)
+  const [writebackFailures, setWritebackFailures] = useState<{ cafe24_order_id: string; error_message: string | null; processed_at: string | null }[]>([]);
+  const [showWritebackFailures, setShowWritebackFailures] = useState(false);
   const [allProducts, setAllProducts] = useState<{ id: string; name: string; code: string }[]>([]);
   const [productsLoaded, setProductsLoaded] = useState(false);
   const [expandedOrders, setExpandedOrders] = useState<Set<string>>(new Set());
@@ -312,6 +315,15 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
       setBranchSenders(list);
     })();
   }, []);
+
+  // #62 Phase2: 카페24 송장 역연동 실패건 로드(본사 전용). 실패만 표시 — 없으면 배너 미노출.
+  useEffect(() => {
+    if (!isHQ) return;
+    (async () => {
+      const res = await getShipmentWritebackFailures();
+      if (!res.error && res.rows) setWritebackFailures(res.rows);
+    })();
+  }, [isHQ]);
 
   // ── Daum 우편번호 스크립트 로드 ──────────────────────────────────────────
   useEffect(() => {
@@ -1016,6 +1028,33 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
   // ── 렌더링 ─────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
+      {/* #62 Phase2: 카페24 송장 역연동 실패 배너(본사 전용) — 실패건 있을 때만. 주문번호+사유 확인. */}
+      {isHQ && writebackFailures.length > 0 && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+          <button
+            onClick={() => setShowWritebackFailures(v => !v)}
+            className="flex items-center gap-2 text-sm font-medium text-amber-800"
+          >
+            <span>⚠️ 카페24 송장 자동등록 실패 {writebackFailures.length}건</span>
+            <span className="text-amber-500">{showWritebackFailures ? '▾' : '▸'}</span>
+          </button>
+          {showWritebackFailures && (
+            <div className="mt-2 max-h-60 overflow-y-auto divide-y divide-amber-200">
+              {writebackFailures.map((f, i) => (
+                <div key={i} className="py-1.5 text-xs flex flex-wrap gap-x-3">
+                  <span className="font-mono text-amber-900">{f.cafe24_order_id}</span>
+                  <span className="text-amber-700 flex-1 min-w-[200px]">{f.error_message || '-'}</span>
+                  <span className="text-amber-400">{f.processed_at ? new Date(f.processed_at).toLocaleString('ko-KR') : ''}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="mt-1.5 text-[11px] text-amber-600">
+            재인증(mall.write_order) + CAFE24_CJ_CARRIER_CODE 설정 후 해당 주문 송장을 다시 저장하면 재전송됩니다(우리 송장·배송은 이미 정상 처리됨).
+          </p>
+        </div>
+      )}
+
       {/* Tabs — embedded 시 부모(/pos)가 탭바를 그리므로 생략(이중 탭바 회피) */}
       {!embedded && (
         <PageTabs
