@@ -111,6 +111,13 @@ const RECEIPT_STATUS_BADGE: Record<string, string> = {
   QUICK_PLANNED: 'bg-purple-100 text-purple-700',   // 퀵예정 = 강조
   PARCEL_PLANNED: 'bg-blue-100 text-blue-700',      // 택배예정 = 강조
 };
+// 발송축(#55) — shipments.status 단일진실원천의 읽기전용 보조표시. 수령축(receipt_status)을 덮어쓰지 않는다(#57 규칙 유지).
+//   라벨은 shipping/page.tsx STATUS_LABEL 과 동일 문구(중복 정의, 출처 명시). 발송=중립 슬레이트 색으로 수령배지와 시각 구분.
+//   PRINTED/SHIPPED 만 보조배지 노출(필수). PENDING(대기중)·shipment 없음·방문/퀵은 미표시(노이즈 방지).
+//   DELIVERED 는 receipt 가 이미 RECEIVED 로 종결되므로 중복 회피 위해 보조배지 생략.
+const SHIP_STAGE_LABEL: Record<string, string> = {
+  PRINTED: '출력완료', SHIPPED: '발송완료',
+};
 const APPROVAL_STATUS_LABEL: Record<string, string> = {
   COMPLETED: '결제완료', CARD_PENDING: '미승인(카드)', UNSETTLED: '미수금',
 };
@@ -754,6 +761,15 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
                       <span className={`badge text-[10px] ${RECEIPT_STATUS_BADGE[receiptKey] || 'bg-slate-100 text-slate-600'}`}>
                         {receiptStatusLabelFor(o.receipt_status)}
                       </span>
+                      {/* 발송단계 보조배지(#55) — 연결 shipment.status 읽기전용. 수령배지와 별개 표시(택배관리에서 처리 시 새로고침 반영). */}
+                      {firstShip?.status && SHIP_STAGE_LABEL[firstShip.status] && (
+                        <span
+                          className="badge text-[10px] mt-0.5 ml-1 bg-slate-100 text-slate-500 border border-slate-200"
+                          title="택배관리 발송 진행단계(읽기전용)"
+                        >
+                          🚚 {SHIP_STAGE_LABEL[firstShip.status]}
+                        </span>
+                      )}
                       {o.receipt_date && <p className="text-[10px] text-slate-500 mt-0.5">{o.receipt_date}</p>}
                     </td>
                     <td className="text-xs text-slate-700 whitespace-nowrap align-top">{o.branch?.name || '-'}</td>
