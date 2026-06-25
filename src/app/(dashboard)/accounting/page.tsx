@@ -209,7 +209,24 @@ export default function AccountingPage() {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* 손익계산서 */}
               <div className="card">
-                <h2 className="font-bold text-slate-800 mb-5">손익계산서</h2>
+                <div className="flex items-center justify-between mb-5">
+                  <h2 className="font-bold text-slate-800">손익계산서</h2>
+                  {pl.source === 'GL' ? (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-medium">GL 기반</span>
+                  ) : pl.source === 'OPERATING_BY_BRANCH' ? (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 font-medium">지점별: 운영테이블 기준 (GL 지점차원 준비중)</span>
+                  ) : null}
+                </div>
+                {pl.source === 'GL' && pl.verify && (() => {
+                  const d = pl.verify.diff;
+                  const maxDiff = Math.max(Math.abs(d.netRevenue), Math.abs(d.cogs), Math.abs(d.grossProfit));
+                  if (maxDiff === 0) return null;
+                  return (
+                    <div className="mb-4 text-xs px-3 py-2 rounded-lg bg-amber-50 text-amber-800 border border-amber-200">
+                      운영테이블과 차이: 순매출 {d.netRevenue >= 0 ? '+' : ''}{d.netRevenue.toLocaleString()}원 · 매출원가 {d.cogs >= 0 ? '+' : ''}{d.cogs.toLocaleString()}원 · 매출총이익 {d.grossProfit >= 0 ? '+' : ''}{d.grossProfit.toLocaleString()}원 — 과거 미분개분(POS 매출분개/COGS 도입 이전) 가능성
+                    </div>
+                  );
+                })()}
                 <div className="space-y-1 text-sm">
                   <Row label="총 매출" value={pl.grossRevenue} />
                   <Row label="  (-) 포인트 할인" value={-pl.totalDiscount} indent />

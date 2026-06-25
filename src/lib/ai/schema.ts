@@ -288,7 +288,8 @@ sales_orders.receipt_status: 품목 receipt_status 집계. 품목 모두 RECEIVE
 [회계]
 - gl_accounts: 계정과목, journal_entries+journal_entry_lines: 분개
 - POS/매입/생산/반품/B2B 이벤트마다 분개 자동 생성
-- POS(processPosCheckout) 매출도 journal_entries source_type='SALE' 분개 생성(이전엔 누락). 모든 표준매출(POS·smartstore·cafe24) 분개는 실원가 COGS(매출원가5110 차/재고자산1130 대, products.cost 기준) 포함. COGS는 실제 재고 OUT분과 일치(POS는 팬텀 분해 자재 cost 합산, cafe24는 매핑된 품목분만·미매핑은 0). POS 분개는 best-effort(분개 실패해도 결제는 성공). 단, 집계(getProfitLoss/getVatReport)는 아직 운영테이블(sales_orders) 기준(GL 단일원천 재배선은 후속).
+- POS(processPosCheckout) 매출도 journal_entries source_type='SALE' 분개 생성(이전엔 누락). 모든 표준매출(POS·smartstore·cafe24) 분개는 실원가 COGS(매출원가5110 차/재고자산1130 대, products.cost 기준) 포함. COGS는 실제 재고 OUT분과 일치(POS는 팬텀 분해 자재 cost 합산, cafe24는 매핑된 품목분만·미매핑은 0). POS 분개는 best-effort(분개 실패해도 결제는 성공).
+- 손익(getProfitLoss) 전사(지점 미지정) 집계는 GL 단일원천: 매출=4110 정상잔액(Σ대−Σ차, 환불 역분개 차변 자동 차감), 매출원가=5110 정상잔액(Σ차−Σ대, 환불 재고복원 대변 자동 차감). grossProfit=매출−매출원가. 반환에 source:'GL' + verify{operating,gl,diff}(운영테이블 병행값) 동봉. **매출·매출원가의 진실원천은 GL**(sales_orders 직접합산은 비공식 참고치). 단 **지점 선택 시는 운영테이블 경로**(journal_entries에 branch_id 컬럼 없음 → source:'OPERATING_BY_BRANCH', 지점별 GL은 후속 Step3b). VAT(getVatReport)·계정잔액(getGlBalances)은 이미 GL. 제품마진(getProductMargins)·월트렌드(getMonthlyTrend)는 운영테이블 유지. 과거(Step1/2 도입 이전) 기간은 GL에 분개가 없어 GL손익이 과소→verify.diff로 차이 노출.
 - VAT: 공급가=price÷1.1, 부가세=price×10/110
 - accounting_period_closes: 월 마감 후 해당 기간 수정 차단
 

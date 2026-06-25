@@ -84,9 +84,10 @@ export async function getLedger(accountId: string, startDate?: string, endDate?:
 
 // ─── 손익계산서 (운영 테이블 직접 집계) ───────────────────────
 
-export async function getProfitLoss(startDate: string, endDate: string, branchId?: string) {
-  const sb = await createClient() as any;
-
+// 운영테이블 기준 손익 집계 (지점별 경로 + 전사 GL 경로의 verify 값으로 공용).
+async function computeOperatingProfitLoss(
+  sb: any, startDate: string, endDate: string, branchId?: string,
+) {
   const startDT = kstDayStart(startDate);
   const endDT   = kstDayEnd(endDate);
 
@@ -134,7 +135,7 @@ export async function getProfitLoss(startDate: string, endDate: string, branchId
     }
   }
 
-  // 4. 매입 (이 기간 확정/입고 발주)
+  // 4. 매입 (이 기간 확정/입고 발주) — 참고지표(grossProfit 계산식엔 미반영)
   let purchaseQ = sb
     .from('purchase_orders')
     .select('total_amount, status')
@@ -160,6 +161,95 @@ export async function getProfitLoss(startDate: string, endDate: string, branchId
     totalPurchases,
     orderCount: (salesRows || []).length,
     refundCount: (refundRows || []).length,
+  };
+}
+
+export async function getProfitLoss(startDate: string, endDate: string, branchId?: string) {
+  const sb = await createClient() as any;
+
+  // 지점별 손익: journal_entries에 branch_id 차원이 없어 GL 집계 불가 → 운영테이블 경로 유지.
+  if (branchId) {
+    const op = await computeOperatingProfitLoss(sb, startDate, endDate, branchId);
+    return { ...op, source: 'OPERATING_BY_BRANCH' as const };
+  }
+
+  // ── 전사 손익: GL(journal_entries) 단일원천 ──
+  // 매출 4110(REVENUE) 정상잔액 = Σcredit − Σdebit (환불 역분개 차변이 자동 차감 → totalRefunds 별도 차감 금지).
+  // 매출원가 5110(COGS) 정상잔액 = Σdebit − Σcredit (환불 시 재고복원 대변이 자동 차감).
+  const { data: accounts } = await sb
+    .from('gl_accounts')
+    .select('id, code')
+    .in('code', ['4110', '5110']);
+  const revAccId  = (accounts || []).find((a: any) => a.code === '4110')?.id;
+  const cogsAccId = (accounts || []).find((a: any) => a.code === '5110')?.id;
+
+  // 4110/5110 라인만 대상으로 한정(행수 축소) + .range() 페이지네이션으로 전 페이지 누적.
+  //   PostgREST 기본 max-rows(보통 1000) 상한에 종속되지 않도록 page-full이면 다음 페이지를 계속 조회.
+  //   account_id가 없는(계정 미존재) 경우 빈 배열로 안전 처리.
+  const targetAccIds = [revAccId, cogsAccId].filter(Boolean) as string[];
+  let revCredit = 0, revDebit = 0, cogsDebit = 0, cogsCredit = 0;
+  if (targetAccIds.length > 0) {
+    // 서버 max-rows 값(1000일 수도, 더 낮을 수도)에 무관하게 정확하도록:
+    //   실제 반환 행수만큼 커서를 전진하고, 빈 페이지가 올 때까지 누적한다.
+    const PAGE = 1000;
+    let from = 0;
+    for (;;) {
+      const { data: page, error: pageErr } = await sb
+        .from('journal_entry_lines')
+        .select('account_id, debit, credit, journal_entry:journal_entries!inner(entry_date)')
+        .in('account_id', targetAccIds)
+        .gte('journal_entry.entry_date', startDate)
+        .lte('journal_entry.entry_date', endDate)
+        .order('id', { ascending: true })   // 안정 정렬 — 오프셋 페이지 경계 행 누락/중복 방지
+        .range(from, from + PAGE - 1);
+      if (pageErr) throw new Error(`손익 GL 집계 실패: ${pageErr.message}`);
+      const rows = (page || []) as any[];
+      for (const line of rows) {
+        if (line.account_id === revAccId) {
+          revCredit += Number(line.credit || 0);
+          revDebit  += Number(line.debit || 0);
+        } else if (line.account_id === cogsAccId) {
+          cogsDebit  += Number(line.debit || 0);
+          cogsCredit += Number(line.credit || 0);
+        }
+      }
+      if (rows.length === 0) break;     // 빈 페이지 = 소진 → 종료
+      from += rows.length;             // 실제 반환분만큼 전진. 서버 max-rows가 PAGE보다 작아도
+                                       // (예: 500) 누락 없이 다음 윈도를 이어받음. 종료는 오직 빈 페이지로 판단.
+    }
+  }
+
+  const netRevenue  = revCredit - revDebit;   // 환불 역분개 차변 자동 반영(이중차감 없음)
+  const cogs        = cogsDebit - cogsCredit; // 환불 재고복원 대변 자동 반영
+  const grossProfit = netRevenue - cogs;
+  const grossMargin = netRevenue > 0 ? Math.round(grossProfit / netRevenue * 100) : 0;
+
+  // 매입 참고지표는 GL(입고분개 1130/1150/2110)과 의미가 달라 운영테이블 값 유지.
+  const op = await computeOperatingProfitLoss(sb, startDate, endDate);
+  const totalPurchases = op.totalPurchases;
+
+  return {
+    // GL 단일원천이므로 grossRevenue=netRevenue(환불 반영 후), totalDiscount/totalRefunds는 GL에 분해항목 없어 0.
+    grossRevenue: netRevenue,
+    totalDiscount: 0,
+    totalRefunds: 0,
+    netRevenue,
+    cogs,
+    grossProfit,
+    grossMargin,
+    totalPurchases,
+    orderCount: 0,   // GL 경로는 주문건수 차원 없음(키 유지용 0)
+    refundCount: 0,
+    source: 'GL' as const,
+    verify: {
+      operating: { netRevenue: op.netRevenue, cogs: op.cogs, grossProfit: op.grossProfit },
+      gl: { netRevenue, cogs, grossProfit },
+      diff: {
+        netRevenue: netRevenue - op.netRevenue,
+        cogs: cogs - op.cogs,
+        grossProfit: grossProfit - op.grossProfit,
+      },
+    },
   };
 }
 
