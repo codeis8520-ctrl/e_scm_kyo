@@ -237,7 +237,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
   // 배송완료(종결) 숨기기 — 기본 ON. 전체/대기중/발송완료 뷰에서 배송완료 제외(배송완료 버킷 직접선택 시엔 무시).
   const [hideDelivered, setHideDelivered] = useState(true);
   // 택배관리 정렬 기준 — 사용자 선택(콤보)
-  const [shipSort, setShipSort] = useState<'receipt_asc' | 'latest' | 'oldest'>('receipt_asc');
+  const [shipSort, setShipSort] = useState<'receipt_desc' | 'latest' | 'oldest'>('receipt_desc');
   const [listSearch, setListSearch] = useState('');
   const [listStartDate, setListStartDate] = useState(fmt(oneWeekAgo));
   const [listEndDate, setListEndDate] = useState(fmt(today));
@@ -957,13 +957,13 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
       // 오래된 등록순(등록일 오름차순)
       return ca < cb ? -1 : ca > cb ? 1 : 0;
     }
-    // receipt_asc(기본, #26 발송 준비 순서): 수령일/택배예정일 오름차순(임박한 것 먼저),
-    //   없으면 맨 뒤. 동일하면 등록일 최신순.
+    // receipt_desc(기본, #60): 수령일/택배예정일 내림차순(최신 우선),
+    //   값 없는 행은 맨 뒤(미정 건이 위로 튀지 않게). 동일하면 등록일 최신순.
     const ra = a.sale_receipt_date || '', rb = b.sale_receipt_date || '';
     if (ra !== rb) {
       if (!ra) return 1;
       if (!rb) return -1;
-      return ra < rb ? -1 : 1;
+      return ra < rb ? 1 : -1;
     }
     return cb < ca ? -1 : cb > ca ? 1 : 0;
   });
@@ -1516,7 +1516,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                 className="input text-sm py-1.5 w-44"
                 title="정렬 기준"
               >
-                <option value="receipt_asc">수령예정일 임박순</option>
+                <option value="receipt_desc">수령일/택배예정일 최신순</option>
                 <option value="latest">최신 등록순</option>
                 <option value="oldest">오래된 등록순</option>
               </select>
