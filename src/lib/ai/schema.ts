@@ -71,7 +71,7 @@ sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, buyer_n
   ※ 전표 수정(수령 전 품목 추가/삭제/수량·단가수정): status=COMPLETED & receipt_status≠RECEIVED 전표에 한해 품목 추가/삭제/수정 가능(addSalesOrderItem/removeSalesOrderItem/updateSalesOrderItem). 즉시 total_amount/taxable/exempt/vat·적립포인트·재고가 재계산됨. 재고 movement reference_type='SALE_REVISE_ADD'(차감,OUT)/'SALE_REVISE_REMOVE'(복원,IN)/'SALE_REVISE_EDIT'(수량변경 차액 OUT or IN), phantom은 'PHANTOM_DECOMPOSE'. 결제 차액은 sales_order_payments 1행(memo='전표 수정 자동 추가결제/부분환불'). 매출 분개는 차액분만 추가(journal_entries.source_type='SALE_REVISE', orderNumber 'REVISE-...'). 적립포인트 차액은 point_history type='adjust'(description='전표 수정 적립 조정'). 주문할인(discount_amount) 재배분은 없음(기존값 유지). 수령완료 품목/마지막 품목 삭제는 거부. 품목수정(#36): 수량 변경=차액만큼 재고 OUT/IN, 단가만 변경=재고 불변·금액만, 판매번호(order_number) 불변·audit_logs에 수정이력.
   ※ receipt_status=수령현황(수령완료/방문예정/퀵예정/택배예정). 기본 RECEIVED. 배송 활성 시 PARCEL_PLANNED/QUICK_PLANNED 자동 지정. 배송 SHIPPED는 수령상태 불변(발송은 shipment.status로만 추적), DELIVERED→RECEIVED만 자동연동(#43, 마이그091).
   ※ 수령상태 일괄변경(#38, bulkUpdateReceiptStatus): 여러 주문을 발송완료(PARCEL_SHIPPED 아님—shipment SHIPPED)/수령완료(RECEIVED)로 일괄. 배송 연결건은 shipment.status 동기화 + syncReceiptStatusFromShipment 재사용. 전진 전이만 허용(비RECEIVED만). 판매현황 수령현황 뷰의 다중선택 일괄처리.
-  ※ 주문 옵션 송장 반영(#40→#46): sales_order_items.order_option(보자기/쇼핑백/선물 등)은 getShipments 가 order_options 파생. 저장 데이터 무변경(조회 도출). cafe24는 items_summary에 이미 옵션 포함. #46 분리: 배송메시지=순수 delivery_message(고객 배송요청)만(composeDeliveryMessage 합성 제거). 옵션은 배송목록 '포장/옵션' 셀(화면) + CJ export는 품목명에 ' / 옵션' 병기(실제 CJ 양식 12컬럼엔 옵션 전용 컬럼 없음 → 품목명 구분값 병기, 송장에 품목명으로 인쇄). 배송메세지2 컬럼은 실제 양식에 없어 미사용.
+  ※ 주문 옵션 송장 반영(#40→#46→#61): sales_order_items.order_option(보자기/쇼핑백/선물 등)은 getShipments 가 order_options 파생. 저장 데이터 무변경(조회 도출). **#61: cafe24 매핑성공 품목(product_id 있음)은 order_option 미저장(NULL) — 옵션은 내부 품목 매핑조건(키)으로만 쓰고 우리 필드로 흘리지 않음. 미매핑(product_id=null)만 옵션 유지(점진 매핑 유도). 직접입력(POS, channel≠ONLINE)은 무영향(actions.ts 경로, webhook 안 거침).** forward-only(과거 ONLINE 옵션 잔존=Known Gap). #46 분리: 배송메시지=순수 delivery_message(고객 배송요청)만. 옵션은 배송목록 '포장/옵션' 셀(화면) + CJ export는 품목명에 ' / 옵션' 병기(매핑 cafe24는 옵션 NULL→자동 미병기, 미매핑/직접입력만 병기). 배송메세지2 컬럼은 실제 양식에 없어 미사용.
   ※ approval_status=결제 승인 라이프사이클(status와 직교). card_keyin→CARD_PENDING, credit→UNSETTLED 자동 추론 가능.
   ※ payment_info=레거시 자유기입 컬럼(2026-04 UI 제거). 신규 입력 없음. 과거 데이터 조회만 노출.
   ※ ordered_by=판매·상담 담당자.
@@ -79,7 +79,7 @@ sales_orders: id, order_number(SA-...), channel, branch_id, customer_id, buyer_n
     기준으로 라인별 분리 → finalAmount(고객 실수령)에 비례 배분. vat=round(taxable×10/110).
     세 값 합 ≒ finalAmount(반올림 1원 이내). 058 미적용 주문은 0/NULL → reports는 사후 집계로 폴백.
 sales_order_items: id, sales_order_id, product_id(nullable — 080), quantity, unit_price, discount_amount, total_price, order_option, item_text(080), delivery_type(PICKUP/PARCEL/QUICK), receipt_status(RECEIVED/PICKUP_PLANNED/QUICK_PLANNED/PARCEL_PLANNED), receipt_date, smartstore_product_order_no(마이그 097·네이버 상품주문번호·품목 멱등)
-  ※ order_option=품목별 부가 옵션(보자기 포장/쇼핑백/색상/서비스 지급 등).
+  ※ order_option=품목별 부가 옵션(보자기 포장/쇼핑백/색상/서비스 지급 등). #61: cafe24 매핑성공 품목은 NULL(옵션=매핑조건으로만), 미매핑·직접입력만 값 유지.
   ※ item_text=카페24 텍스트 품목(우리 products 매핑 안 됨, product_id=null인 행). 렌더 폴백: product?.name || item_text.
   ※ delivery_type=품목별 배송 방식 — 같은 전표에서 품목별로 다를 수 있음(예: 3품목 중 1품목만 택배, 2품목 현장수령). 단 shipments는 주문당 1건 유지(수령지 1곳만 전제; 2곳 이상은 새 전표 분리).
   ※ receipt_status=품목별 수령 상태. sales_orders.receipt_status는 품목 상태 집계 결과. 품목 전부 RECEIVED이면 주문 RECEIVED + shipments.status=DELIVERED 자동.
@@ -212,7 +212,7 @@ sales_orders.receipt_status: 제품 수령 흐름 (현장판매는 대부분 REC
   ※ 배송(shipments) 생성 시 delivery_type에 맞춰 receipt_status 자동 추론.
   ※ 배송→수령 자동연동(#43): 배송목록/AI/카페24웹훅에서 shipment SHIPPED는 수령상태 불변(발송은 shipment.status로만 추적), DELIVERED 시 택배품목→RECEIVED. receipt_date는 기존 수령(예정)일 보존, 비어있을 때만 오늘로 fill(#47). 방문/퀵/이미수령 품목 무손상. 공용 헬퍼 syncReceiptStatusFromShipment(receipt-sync.ts).
   ※ receipt_date: 수령(예정) 날짜. 방문예정·택배예정 조회 시 핵심 축.
-sales_order_items.order_option: 품목별 주문 부가 옵션(보자기/쇼핑백/색상/서비스 등). 배송 방식 기록용 아님.
+sales_order_items.order_option: 품목별 주문 부가 옵션(보자기/쇼핑백/색상/서비스 등). 배송 방식 기록용 아님. #61: cafe24 매핑성공 품목은 미저장(NULL, 옵션은 매핑 키로만), 미매핑 cafe24·POS 직접입력만 옵션 유지.
 sales_order_items.delivery_type + receipt_status: 같은 전표 내 품목별 배송·수령 추적. 3품목 중 1품목만 택배 같은 혼합 시나리오 정식 지원(수령지는 1곳만 가정).
 sales_orders.receipt_status: 품목 receipt_status 집계. 품목 모두 RECEIVED이면 자동 전이. 발송(shipment SHIPPED)은 수령상태 불변, 배송완료(DELIVERED) 시에만 택배품목→RECEIVED(#43).
 전표 배송전환(방문↔택배, 수정가능 전표=COMPLETED·receipt_status∉{RECEIVED,null}만): 방문→택배는 미수령 품목을 PARCEL_PLANNED로 바꾸고 shipment(status=PENDING) 생성, 택배→방문은 shipment.status='PENDING'(송장 미발행)일 때만 shipment 삭제 후 품목 RECEIVED 전환. 금액 불변(배송비 없음). RECEIVED 품목은 보존.

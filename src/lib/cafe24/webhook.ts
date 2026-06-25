@@ -354,7 +354,9 @@ ${optValue}`;
             quantity,
             unit_price: unitPrice,
             total_price: unitPrice * quantity,
-            order_option: extractItemOptions(i) || null,
+            // #61: 매핑 성공(pid)=확정 품목명만 남기고 옵션 누수 차단 → order_option=null.
+            //   미매핑은 식별 위해 옵션 유지(점진 매핑 유도). extractItemOptions=표시용(매핑 키 normalizeOptionValue(option_value)와 별개).
+            order_option: pid ? null : (extractItemOptions(i) || null),
             // delivery_type / receipt_status: 명시 안 함 → DB DEFAULT(PICKUP/RECEIVED, 마이그052).
           };
         });
