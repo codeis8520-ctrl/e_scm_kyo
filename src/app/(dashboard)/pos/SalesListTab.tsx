@@ -166,7 +166,7 @@ interface PersistedFilters {
   branchFilter: string;
   paymentFilter: string;
   statusFilter: string;
-  subView: 'list' | 'compare';
+  subView: 'list' | 'compare' | 'legacy';
   listSort: 'order' | 'receipt';
   receiptStatusFilter: string;
   approvalStatusFilter: string;
@@ -195,7 +195,7 @@ function readSalesFilters(): Partial<PersistedFilters> {
   }
 }
 
-export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'compare' } = {}) {
+export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'compare' | 'legacy' } = {}) {
   const router = useRouter();
   const userRole = getCookie('user_role');
   const userBranchId = getCookie('user_branch_id');
@@ -248,7 +248,13 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
 
   // 서브뷰: 목록 ↔ 지점비교 (본사/관리자 전용). 지점비교는 기간 행 × 지점 열 매트릭스.
   //   forcedView 가 주어지면(판매현황=list / 지점별매출 탭=compare) 그 뷰로 고정하고 토글 숨김.
-  const [subView, setSubView] = useState<'list' | 'compare'>(() => forcedView ?? saved.subView ?? 'list');
+  // 지점직원은 compare(전사 매출)·legacy(전 지점 PII) 진입 금지 — 복원/주입값을 'list'로 강등(branchFilter 219 가드와 동일 원칙).
+  //   클라 토글 숨김만 의존하면 잔존/주입 localStorage 로 우회 가능 → 초기값에서 차단.
+  const [subView, setSubView] = useState<'list' | 'compare' | 'legacy'>(() => {
+    const want = forcedView ?? saved.subView ?? 'list';
+    if (isBranchUser && (want === 'compare' || want === 'legacy')) return 'list';
+    return want;
+  });
   // 일자별 요약 표시 토글 — 기본 숨김(고객별 내역 우선, 일자별 요약은 옵션)
   const [showDailySummary, setShowDailySummary] = useState(false);
   // 목록 정렬 토글: 'order'=주문일순(현행 flat) / 'receipt'=수령일자별 그룹
@@ -267,6 +273,23 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
   const [compareGrain, setCompareGrain] = useState<'day' | 'month' | 'year'>('month');
   // compare 진입 시 기본기간(올해 1/1~오늘) 1회 세팅 가드.
   const [compareInit, setCompareInit] = useState(false);
+
+  // ── 레거시(이카운트 대체 조회) 서브뷰 상태 — legacy_orders 직접 쿼리·서버 페이징(읽기전용) ──
+  const LEGACY_PAGE_SIZE = 50;
+  interface LegacyItemRow { line_seq: number | null; item_code: string | null; item_text: string | null; option_text: string | null; quantity: number | null; total_amount: number | null; }
+  interface LegacyOrderRow {
+    id: string; legacy_order_no: string | null; ordered_at: string | null; channel_text: string | null;
+    branch_code_raw: string | null; recipient_name: string | null; recipient_phone: string | null;
+    recipient_address: string | null; payment_status: string | null; total_amount: number | null;
+    branch: { name: string } | null; legacy_order_items: LegacyItemRow[];
+  }
+  const [legacyRows, setLegacyRows] = useState<LegacyOrderRow[]>([]);
+  const [legacyPage, setLegacyPage] = useState(0);          // 0-based
+  const [legacyTotal, setLegacyTotal] = useState(0);
+  const [legacyLoading, setLegacyLoading] = useState(false);
+  const [legacyError, setLegacyError] = useState<string | null>(null);
+  const [legacySearch, setLegacySearch] = useState('');     // 받는분/전화 검색(헤더 필드만, 품목은 Known Gap)
+  const [expandedLegacy, setExpandedLegacy] = useState<Set<string>>(new Set());
 
   // 조회조건 변경 시 localStorage 저장 → 새로고침 후 복원. (compare 파생/모달/로딩 상태는 제외)
   useEffect(() => {
@@ -487,8 +510,8 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
 
   // 비교뷰 진입 시에만 페치 (목록 진입 시 불필요 페치 금지).
   useEffect(() => {
-    if (subView === 'compare') loadCompare();
-  }, [subView, loadCompare]);
+    if (!isBranchUser && subView === 'compare') loadCompare();
+  }, [subView, loadCompare, isBranchUser]);
 
   // compare 최초 진입 시 기본기간(올해 1/1~오늘)·월 단위로 1회 세팅. 사용자가 이미 바꿨으면 덮지 않음.
   useEffect(() => {
@@ -500,6 +523,55 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
       setCompareInit(true);
     }
   }, [subView, compareInit]);
+
+  // ── 레거시 조회 로드 — legacy_orders 직접 쿼리·서버 페이징(.range + count:'exact', 47k/1000캡 대응) ──
+  //   기간(startDate/endDate 재사용) + 받는분/전화 검색 + 최신순. 읽기전용. 고객상세 쿼리 구조 차용(거긴 customer_id 전량, 여긴 기간+검색+페이징).
+  const loadLegacy = useCallback(async () => {
+    setLegacyLoading(true);
+    setLegacyError(null);
+    const sb = createClient() as any;
+    let q = sb
+      .from('legacy_orders')
+      .select(
+        'id, legacy_order_no, ordered_at, channel_text, branch_code_raw, recipient_name, recipient_phone, recipient_address, payment_status, total_amount, branch:branches(name), legacy_order_items(line_seq, item_code, item_text, option_text, quantity, total_amount)',
+        { count: 'exact' }
+      )
+      .gte('ordered_at', startDate)
+      .lte('ordered_at', endDate);
+    const sq = legacySearch.trim();
+    if (sq) {
+      // 헤더 필드만(받는분/전화). 품목명(item_text)은 임베드라 .or 불가 → Known Gap.
+      // PostgREST .or 필터 메타문자(% _ , ( ))를 이스케이프 — LIKE 와일드카드 과매칭·필터 구문깨짐 방지.
+      const esc = sq.replace(/[%_(),]/g, '\\$&');
+      q = q.or(`recipient_name.ilike.%${esc}%,recipient_phone.ilike.%${esc}%,phone.ilike.%${esc}%`);
+    }
+    const from = legacyPage * LEGACY_PAGE_SIZE;
+    const { data, count, error } = await q
+      .order('ordered_at', { ascending: false })
+      .order('legacy_order_no', { ascending: false })
+      .range(from, from + LEGACY_PAGE_SIZE - 1);
+    if (error) {
+      console.error('[SalesListTab] legacy load error:', error);
+      setLegacyRows([]);
+      setLegacyTotal(0);
+      setLegacyError('레거시 판매내역을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.');
+      setLegacyLoading(false);
+      return;
+    }
+    setLegacyRows((data as LegacyOrderRow[]) || []);
+    setLegacyTotal(count ?? 0);
+    setLegacyLoading(false);
+  }, [startDate, endDate, legacySearch, legacyPage]);
+
+  // 레거시 진입/페이지·검색 변경 시 페치 (다른 뷰 진입 시 불필요 페치 금지).
+  useEffect(() => {
+    if (!isBranchUser && subView === 'legacy') loadLegacy();
+  }, [subView, loadLegacy, isBranchUser]);
+
+  const toggleLegacy = (id: string) =>
+    setExpandedLegacy(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  const legacyTotalPages = Math.max(1, Math.ceil(legacyTotal / LEGACY_PAGE_SIZE));
 
   // 매트릭스 빌드 — rows=기간(period_date 오름차순), cols=선택 지점 + 고정 '미매칭'(branch_id NULL) 열.
   // RPC 가 이미 period+branch_id 로 집계했으므로 여기선 열 매핑·합계만.
@@ -980,7 +1052,7 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
       {/* 서브뷰 토글 — 본사/관리자 전용 (지점직원은 목록만). forcedView(탭 분리) 시 숨김. */}
       {!isBranchUser && !forcedView && (
         <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1 w-fit">
-          {([['list', '매출 현황'], ['compare', '지점별 매출']] as ['list' | 'compare', string][]).map(([k, label]) => (
+          {([['list', '매출 현황'], ['compare', '지점별 매출'], ['legacy', '레거시']] as ['list' | 'compare' | 'legacy', string][]).map(([k, label]) => (
             <button
               key={k}
               onClick={() => setSubView(k)}
@@ -1016,15 +1088,15 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
           ))}
           <div className="flex items-center gap-1.5 ml-2">
             <input type="date" value={startDate}
-              onChange={e => { setStartDate(e.target.value); setPeriod('custom'); }}
+              onChange={e => { setStartDate(e.target.value); setPeriod('custom'); setLegacyPage(0); }}
               className="input text-sm py-1 w-36" />
             <span className="text-slate-400">~</span>
             <input type="date" value={endDate}
-              onChange={e => { setEndDate(e.target.value); setPeriod('custom'); }}
+              onChange={e => { setEndDate(e.target.value); setPeriod('custom'); setLegacyPage(0); }}
               className="input text-sm py-1 w-36" />
           </div>
           <button
-            onClick={subView === 'compare' ? loadCompare : loadOrders}
+            onClick={subView === 'legacy' ? () => { setLegacyPage(0); loadLegacy(); } : subView === 'compare' ? loadCompare : loadOrders}
             className="btn-secondary text-sm py-1.5 ml-auto">조회</button>
           {subView === 'list' && (
             <>
@@ -1094,7 +1166,7 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
         )}
 
         {/* 지점비교 — 집계 단위(일/월/연) + 지점 다수선택 */}
-        {subView === 'compare' && (
+        {!isBranchUser && subView === 'compare' && (
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <span className="text-xs text-slate-500">집계 단위</span>
@@ -1437,7 +1509,7 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
       </>)}
 
       {/* 지점비교 매트릭스 (본사/관리자) — legacy+sales 통합, 일/월/연 */}
-      {subView === 'compare' && (
+      {!isBranchUser && subView === 'compare' && (
         <div className="card">
           <div className="flex items-center justify-between mb-2">
             <h3 className="font-semibold text-slate-700">
@@ -1488,6 +1560,111 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
                   </tr>
                 </tfoot>
               </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 레거시(이카운트 대체) 조회 — legacy_orders 직접·서버 페이징·읽기전용. 본사/관리자 전용(지점직원 PII 차단). */}
+      {!isBranchUser && subView === 'legacy' && (
+        <div className="card space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              value={legacySearch}
+              onChange={e => setLegacySearch(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { setLegacyPage(0); loadLegacy(); } }}
+              placeholder="받는분 · 전화번호로 검색"
+              className="input text-sm py-1 flex-1 min-w-[220px]"
+              title="레거시 받는분 이름·전화로 검색합니다(품목명 검색은 추후 지원)"
+            />
+            <button
+              onClick={() => { setLegacyPage(0); loadLegacy(); }}
+              className="btn-secondary text-sm py-1.5">레거시 검색</button>
+            <span className="text-xs text-slate-400 ml-auto">총 {legacyTotal.toLocaleString()}건 · {startDate} ~ {endDate}</span>
+          </div>
+
+          {legacyError ? (
+            <div className="text-center py-10 text-amber-600 text-sm">{legacyError}</div>
+          ) : legacyLoading ? (
+            <div className="text-center py-10 text-slate-400">로딩 중...</div>
+          ) : legacyRows.length === 0 ? (
+            <div className="text-center py-10 text-slate-400">해당 조건의 레거시 판매내역이 없습니다</div>
+          ) : (
+            <div className="space-y-1.5">
+              {legacyRows.map(o => {
+                const items = [...(o.legacy_order_items || [])].sort((a, b) => (a.line_seq ?? 0) - (b.line_seq ?? 0));
+                const isOpen = expandedLegacy.has(o.id);
+                const shipFrom = o.branch?.name || o.branch_code_raw || '-';
+                return (
+                  <div key={o.id} className="border border-slate-200 rounded-lg overflow-hidden">
+                    <button
+                      onClick={() => toggleLegacy(o.id)}
+                      className="w-full text-left px-3 py-2.5 bg-slate-50 hover:bg-slate-100 transition-colors"
+                    >
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                        <span className="text-slate-400 text-xs">{isOpen ? '▾' : '▸'}</span>
+                        <span className="text-sm font-medium text-slate-700 whitespace-nowrap">{o.ordered_at || '-'}</span>
+                        <span className="text-xs text-slate-500">{o.channel_text || '-'}</span>
+                        {o.branch?.name ? (
+                          <span className="inline-block px-2 py-0.5 rounded bg-blue-50 text-blue-700 text-xs">{o.branch.name}</span>
+                        ) : (
+                          <span className="text-slate-400 font-mono text-[11px]">{o.branch_code_raw || '-'}</span>
+                        )}
+                        <span className="text-xs text-slate-600">{o.recipient_name || '-'}</span>
+                        <span className="text-[11px] text-slate-400">{o.recipient_phone || ''}</span>
+                        {o.payment_status === '결제 완료' ? (
+                          <span className="inline-block px-1.5 py-0.5 rounded bg-green-100 text-green-700 text-xs">완료</span>
+                        ) : o.payment_status === '미결' ? (
+                          <span className="inline-block px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-xs">미결</span>
+                        ) : o.payment_status ? (
+                          <span className="text-slate-500 text-xs">{o.payment_status}</span>
+                        ) : null}
+                        <span className="ml-auto text-sm font-semibold text-slate-800 whitespace-nowrap">
+                          {o.total_amount ? `${Number(o.total_amount).toLocaleString()}원` : '-'}
+                        </span>
+                        <span className="text-[11px] text-slate-400 whitespace-nowrap">({items.length}품목)</span>
+                      </div>
+                    </button>
+
+                    {isOpen && (
+                      <div className="divide-y divide-slate-100">
+                        <div className="px-3 py-1.5 text-[11px] text-slate-500 bg-white">출고지점: {shipFrom}</div>
+                        {items.length === 0 ? (
+                          <p className="px-3 py-2 text-xs text-slate-400">품목 정보가 없습니다.</p>
+                        ) : (
+                          items.map((it, idx) => (
+                            <div key={idx} className="px-3 py-2 flex items-start gap-3">
+                              <div className="flex-1 min-w-0">
+                                <div className="text-sm text-slate-800 whitespace-pre-wrap break-words">{it.item_text || '-'}</div>
+                                {it.option_text && <div className="text-xs text-slate-400">{it.option_text}</div>}
+                                {it.item_code && <div className="font-mono text-[10px] text-slate-300">{it.item_code}</div>}
+                              </div>
+                              <div className="text-center text-slate-600 text-sm whitespace-nowrap w-12">{it.quantity ?? '-'}</div>
+                              <div className="text-right font-medium text-slate-700 text-sm whitespace-nowrap w-24">
+                                {it.total_amount ? `${Number(it.total_amount).toLocaleString()}원` : '-'}
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* 페이지네이션 */}
+              <div className="flex items-center justify-center gap-3 pt-2">
+                <button
+                  onClick={() => setLegacyPage(p => Math.max(0, p - 1))}
+                  disabled={legacyPage === 0 || legacyLoading}
+                  className="btn-secondary text-sm py-1 px-3 disabled:opacity-40">이전</button>
+                <span className="text-xs text-slate-500">{legacyPage + 1} / {legacyTotalPages}</span>
+                <button
+                  onClick={() => setLegacyPage(p => (p + 1 < legacyTotalPages ? p + 1 : p))}
+                  disabled={legacyPage + 1 >= legacyTotalPages || legacyLoading}
+                  className="btn-secondary text-sm py-1 px-3 disabled:opacity-40">다음</button>
+              </div>
             </div>
           )}
         </div>
