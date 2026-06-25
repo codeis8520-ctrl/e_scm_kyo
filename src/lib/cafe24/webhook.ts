@@ -159,6 +159,95 @@ export async function linkOrCreateCustomer(params: {
   return customerId;
 }
 
+// ─── 온라인몰 주문자 자동 dedup 등록 헬퍼 (#59 — 2026-06-25 PO 승인) ─────────────
+// 결제완료 온라인 주문자(카페24 webhook paid · 스마트스토어 import)를 수집 시점에
+// ERP 고객으로 자동 dedup 등록·연결한다. anon 클라이언트(requireSession 불요) — webhook·서버액션 공용.
+//
+// dedup/멱등 보장:
+//   - customers.phone 은 UNIQUE → 전화(대시포맷)가 강한 식별키. 항상 전화로 먼저 조회.
+//   - 미존재 시 upsert(onConflict:'phone', ignoreDuplicates:true) → 동시성(webhook 중복호출)에도 중복 행 0.
+//   - upsert 후 재조회로 최종 id 확정. 재호출해도 항상 같은 고객으로 귀결(멱등).
+//
+// needs_review 판정(LOCKED #59):
+//   1) 전화 없음/자릿수 비정상(10·11 아님) → needs_review, 생성·연결 안 함(status='needs_review').
+//   2) 전화 매칭됐는데 기존 고객 이름과 불일치 → 연결은 하되 needs_review 플래그(오귀속 가능성 표시만, name 비파괴).
+//   3) 정상 전화 + 매칭 없음 → 생성(status='created').
+//   - 정상 전화 + 이름 일치 매칭 → 연결(status='linked').
+//
+// 비파괴 원칙: 기존 고객 name·source 절대 미수정. metadata.needs_review 플래그만 병합 기록(JSONB, 마이그 불요).
+export async function autoRegisterOnlineCustomer(params: {
+  name: string | null;
+  phone: string | null;
+  address?: string | null;
+  email?: string | null;
+  source?: string;                // 'CAFE24' | 'SMARTSTORE' 등. 신규 생성 시에만 사용.
+  cafe24MemberId?: string | null;
+}): Promise<{ status: 'linked' | 'created' | 'needs_review'; customerId: string | null; reason?: string }> {
+  const sb = getSupabase();
+  const name = (params.name || '').trim();
+  const digits = normalizePhoneDigits(params.phone);
+  const phone = formatPhoneDashed(digits);
+  const source = params.source || 'CAFE24';
+  const addr = (params.address || '').trim() || null;
+  const email = (params.email || '').trim() || null;
+
+  // 규칙 1: 전화 없음/비정상 → 생성·연결 안 함.
+  if (!digits || !phone || !name) {
+    return { status: 'needs_review', customerId: null, reason: 'missing_or_invalid_phone_or_name' };
+  }
+
+  // metadata.needs_review 비파괴 병합 기록 (기존 metadata 보존).
+  const flagNeedsReview = async (customerId: string, reason: string) => {
+    try {
+      const { data: cur } = await sb.from('customers').select('metadata').eq('id', customerId).maybeSingle();
+      const meta = (cur?.metadata && typeof cur.metadata === 'object') ? cur.metadata : {};
+      await sb.from('customers')
+        .update({ metadata: { ...meta, needs_review: true, review_reason: reason } })
+        .eq('id', customerId);
+    } catch {
+      /* 플래그 실패는 연결/생성 성공에 영향 주지 않음(best-effort) */
+    }
+  };
+
+  // 전화(UNIQUE) 기준 조회 — 강한 식별키.
+  const { data: exist } = await sb.from('customers')
+    .select('id, name, address, email, cafe24_member_id').eq('phone', phone).maybeSingle();
+
+  if (exist) {
+    // 빈 주소/이메일만 비파괴 보강(이름·source 미수정).
+    const patch: Record<string, unknown> = {};
+    if (!exist.address && addr) patch.address = addr;
+    if (!exist.email && email) patch.email = email;
+    if (params.cafe24MemberId && !exist.cafe24_member_id) patch.cafe24_member_id = params.cafe24MemberId;
+    if (Object.keys(patch).length) {
+      try { await sb.from('customers').update(patch).eq('id', exist.id); } catch { /* best-effort */ }
+    }
+    // 규칙 2: 전화 매칭 + 이름 불일치 → 연결하되 needs_review 표시.
+    if ((exist.name || '').trim() !== name) {
+      await flagNeedsReview(exist.id, 'phone_match_name_mismatch');
+      return { status: 'needs_review', customerId: exist.id, reason: 'phone_match_name_mismatch' };
+    }
+    return { status: 'linked', customerId: exist.id };
+  }
+
+  // 규칙 3: 정상 전화 + 매칭 없음 → 생성. ON CONFLICT DO NOTHING 으로 동시성/기존행 비파괴.
+  await sb.from('customers').upsert(
+    { name, phone, address: addr, email, cafe24_member_id: params.cafe24MemberId || null, source, is_active: true },
+    { onConflict: 'phone', ignoreDuplicates: true }
+  );
+  const { data: created } = await sb.from('customers')
+    .select('id, name').eq('phone', phone).maybeSingle();
+  if (!created) {
+    return { status: 'needs_review', customerId: null, reason: 'create_failed' };
+  }
+  // upsert 경합으로 타인이 같은 전화를 먼저 만들었고 이름이 다르면(드묾) 규칙 2 적용.
+  if ((created.name || '').trim() !== name) {
+    await flagNeedsReview(created.id, 'phone_match_name_mismatch');
+    return { status: 'needs_review', customerId: created.id, reason: 'phone_match_name_mismatch' };
+  }
+  return { status: 'created', customerId: created.id };
+}
+
 // 카페24 주문 객체 → 주문자 스냅샷/결제여부 추출 (handleOrderCreated · 백필 공용).
 export function extractBuyerInfo(cafe24Order: any): {
   buyerName: string | null;
@@ -582,7 +671,9 @@ async function handleOrderPaid(
   }
 
   // 결제완료 시점 — 아직 미연결(웹훅 order.created가 미결제로 먼저 온 경우)이면
-  // 저장된 주문자 스냅샷으로 고객 연결/생성 (자사몰만).
+  // 저장된 주문자 스냅샷으로 고객 자동 dedup 등록·연결 (자사몰만, #59 2026-06-25 PO 승인).
+  //   결제완료 경로만 자동 생성 ON. 미결제 게스트(handleOrderCreated)는 생성 OFF 유지.
+  //   고객 연결은 항상 주문자(buyer) 기준 — 수령자(recipient_*)는 별도 보존.
   try {
     const { data: full } = await getSupabase()
       .from('sales_orders')
@@ -590,16 +681,22 @@ async function handleOrderPaid(
       .eq('id', order.id)
       .maybeSingle();
     if (full && !full.customer_id && full.channel === 'ONLINE') {
-      await linkOrCreateCustomer({
-        orderId: full.id,
-        buyerName: full.buyer_name,
-        buyerPhone: full.buyer_phone,
-        memberId: null,
-        allowCreate: false,   // 자동 생성 안 함 — 기존 고객 연결만
+      const res = await autoRegisterOnlineCustomer({
+        name: full.buyer_name,
+        phone: full.buyer_phone,
+        source: 'CAFE24',
       });
+      // 미연결 전표만 연결(.is customer_id null) — 오귀속 방지·멱등. needs_review(전화없음/이상)면 customerId=null → 연결 생략.
+      if (res.customerId) {
+        await getSupabase()
+          .from('sales_orders')
+          .update({ customer_id: res.customerId })
+          .eq('id', full.id)
+          .is('customer_id', null);
+      }
     }
   } catch {
-    /* 고객 연결 실패가 매출 인식을 막지 않음 */
+    /* 고객 연결/생성 실패가 매출 인식을 막지 않음(best-effort, 실패 격리) */
   }
 
   // 매출 분개 생성 (결제 시점 수익 인식)

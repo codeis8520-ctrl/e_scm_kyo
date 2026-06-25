@@ -301,11 +301,15 @@ sales_orders.receipt_status: 품목 receipt_status 집계. 품목 모두 RECEIVE
 [자사몰(카페24) 매출 동기화 — 주문자 고객 표시/등록]
 - **수집/매출인식 분리(#25, 이카운트식)**: ONLINE(카페24/자사몰) 주문은 배송화면 '배송 추가' 확정(confirmCafe24OrderAsSale) 시에만 sales_order·sales_order_items·매출분개(SALE) 생성. 확정 시 receipt_status='PARCEL_PLANNED', receipt_date=확정일(KST 오늘). shipment.sales_order_id 로 직접 연결. 재확정(중복)해도 COMPLETED면 분개 재생성 안 함(멱등). 크론(syncCafe24PaidOrdersCore)은 수집·재고차감(확정주문만)·배송상태 동기화만, 매출은 미생성(created 항상 0).
 - 동기화 시 주문자(orderer)를 sales_orders.buyer_name/buyer_phone 에 항상 스냅샷 저장 → 판매현황에서 customer_id 없어도 주문자명/전화 표시(과거 "비회원" 노출 해소).
-- sync(webhook.ts linkOrCreateCustomer)는 **기존 고객 자동 "연결"만** 함: ①cafe24_member_id 일치 ②이름 AND 전화(대시포맷) 일치 → 연결(+member_id 백필). **자동 "생성"은 안 함**(allowCreate=false).
-- 모르는 주문자 고객 등록은 **수동**: 배송 카페24 주문탭에서 "✓고객/미등록" 표시 → 미등록 체크 후 registerCafe24Customers(cafe24-actions)로 고객 생성(이름+전화+주소+이메일, source='CAFE24') + 해당 sales_order.customer_id 연결. **배송추가/전표생성이 끝난 주문도 등록 가능**(미연결 전표를 연결).
+- **자사몰 결제완료 주문자 자동 고객생성 정책(#59, 2026-06-25 PO 승인)**: 결제완료 온라인 주문(카페24 webhook handleOrderPaid · 스마트스토어 import)은 수집 시점에 주문자(buyer)를 ERP 고객으로 **자동 dedup 등록·연결**한다. 공용 헬퍼 = autoRegisterOnlineCustomer(cafe24/webhook.ts, anon 클라이언트). 반환 status=linked|created|needs_review.
+  ※ dedup/멱등: customers.phone UNIQUE 강한 식별키 → 전화(대시포맷)로 먼저 조회, 미존재면 upsert(onConflict:'phone', ignoreDuplicates) 후 재조회 → 동시성·재호출에도 중복 고객 0.
+  ※ **needs_review 규칙**: ①전화 없음/자릿수 비정상(10·11 아님) → 생성·연결 안 함(customer_id=null) ②전화 매칭+기존 이름 불일치 → 연결은 하되 customers.metadata.needs_review=true + metadata.review_reason='phone_match_name_mismatch'(name 비파괴, 오귀속 표시만) ③정상 전화+매칭 없음 → 생성(source='CAFE24'|'SMARTSTORE'). customers.metadata.needs_review = 운영자 검수 대상 플래그(UI 큐는 미구현, 플래그 저장만).
+  ※ **미결제 게스트는 자동 생성 OFF**: webhook handleOrderCreated(미결제)는 여전히 linkOrCreateCustomer allowCreate=false(기존 고객 연결만). 결제완료 경로만 생성 ON.
+  ※ 비파괴·실패격리: 기존 고객 name·source 절대 미수정(빈 주소/이메일/member_id만 보강). 자동 등록 실패해도 매출 인식·전표 생성 무회귀(best-effort). 연결은 .is('customer_id',null) 미연결 전표만(재연결 자동 커버).
+- (참고) 수동 경로 잔존: 배송 카페24 주문탭 registerCafe24Customers(cafe24-actions)로도 고객 생성+연결 가능(검수 후 일괄). 자동화와 동일 dedup(전화 단독, name 비파괴). 자동 등록으로 대부분 커버되나 needs_review·미결제 건의 수동 보정 수단으로 유지.
 - **수동등록 매칭(#34)**: customers.phone UNIQUE → 전화가 강한 식별키. **전화 일치 시 이름이 달라도 기존 고객으로 "연결"**(신규 생성 안 함). 단 기존 고객의 name 은 절대 덮어쓰지 않고 빈 주소/이메일만 보강(오귀속·이름오염 방지). 미연결(customer_id=null) 전표만 연결, 이미 다른 고객에 연결된 전표는 비건드림.
 - 배송 카페24 주문탭 "✓고객/미등록" 판정: 확정(배송추가)주문은 **실제 sales_orders.customer_id 연결 상태** 기준(미연결이면 미등록=등록대상, 등록 후 즉시 ✓), 미확정주문은 이름 AND 전화 휴리스틱. customers.phone 대시포맷(010-XXXX-XXXX).
-- sync(webhook.ts linkOrCreateCustomer) 자동연결 기준은 여전히 이름 AND 전화(보수적): ①member_id ②이름AND전화. 수동등록만 전화 단독 연결 허용.
+- webhook **미결제(handleOrderCreated)** 자동연결 기준 = linkOrCreateCustomer 이름 AND 전화(보수적): ①member_id ②이름AND전화, 생성 안 함. **결제완료(handleOrderPaid)·스마트스토어 import** 는 #59 autoRegisterOnlineCustomer(전화 단독 dedup + 자동생성 + needs_review). 수동 registerCafe24Customers 도 전화 단독 연결.
 - cafe24 실결제(cafe24OrderTotal) = 모든 결제수단 합(payment_amount + naver_point + points_spent_amount + credits_spent_amount). naver_point·예치금(credits_spent_amount)·POS points_used 는 tender(매출 포함). 쿠폰은 할인(제외). 합이 0이면 firstPositiveAmount 폴백.
 - **단, 자사몰 적립금(actual_order_amount.points_spent_amount)은 #42 이후 tender 가 아니라 할인으로 매출 제외** (cafe24SelfPoints). 따라서 신규 cafe24 주문 매출 = 카드 실결제(naver_point 사용분은 여전히 매출 포함). 예: 카드 104,490 + 자사몰적립금 4,510 = gross 109,000 → 매출 104,490.
 - sales_orders 저장 시 gross 규약(#18): total_amount = cafe24OrderTotal + 쿠폰할인(cafe24OrderDiscount), discount_amount = 쿠폰 + 자사몰 적립금(cafe24SelfPoints). → 매출 = total_amount − discount_amount, POS와 동일 규약. 배송탭 표시 total_price는 cafe24OrderTotal(실결제, 적립금 포함) 그대로. (#42 forward-only: 기존 주문 백필 전이라 과거 cafe24 주문은 아직 적립금 미제외.)

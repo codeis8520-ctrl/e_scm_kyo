@@ -14,6 +14,7 @@ import { revalidatePath } from 'next/cache';
 import { parseSmartstoreExcel, normalizePhone, type SmartstoreOrder } from './parse';
 import { deductOnlineOrderInventory } from '@/lib/cafe24/online-inventory';
 import { createSaleJournal } from '@/lib/accounting-actions';
+import { autoRegisterOnlineCustomer } from '@/lib/cafe24/webhook';
 
 export interface SSItemPreview {
   productOrderNo: string;
@@ -247,6 +248,26 @@ export async function commitSmartstoreOrders(formData: FormData): Promise<SSComm
     const resolved = o.items.map((it) => ({ it, pid: mapByKey.get(mapKey(it.productNo, it.option)) || null }));
     if (resolved.some((r) => !r.pid)) { skippedUnmapped++; skippedOrderNos.push(o.orderNo); continue; }
 
+    // 고객 연결 — 전화 매칭(주문자=buyer 기준). 미매칭이면 자동 dedup 생성 후 id 채움(#59, PO 승인).
+    //   best-effort: 생성/연결 실패해도 전표는 진행(customer_id=null). 전화없음/이상=needs_review → null.
+    const buyerPhoneNorm = normalizePhone(o.buyer.phone);
+    let resolvedCustomerId: string | null = (buyerPhoneNorm && custByPhone.get(buyerPhoneNorm)) || null;
+    if (!resolvedCustomerId) {
+      try {
+        const reg = await autoRegisterOnlineCustomer({
+          name: o.buyer.name || null,
+          phone: o.buyer.phone || null,
+          source: 'SMARTSTORE',
+        });
+        if (reg.customerId) {
+          resolvedCustomerId = reg.customerId;
+          if (buyerPhoneNorm) custByPhone.set(buyerPhoneNorm, reg.customerId);   // 동일 임포트 내 재사용(멱등)
+        }
+      } catch {
+        /* 자동 등록 실패는 전표 생성을 막지 않음 */
+      }
+    }
+
     const gross = o.items.reduce((s, it) => s + it.unitPrice * it.quantity, 0);
     const net = o.items.reduce((s, it) => s + it.lineTotal, 0);          // 매출(VAT 포함)
     const discount = Math.max(0, gross - net);
@@ -268,7 +289,7 @@ export async function commitSmartstoreOrders(formData: FormData): Promise<SSComm
       branch_id: hqId,
       ship_from_branch_id: hqId,
       smartstore_order_id: o.orderNo,
-      customer_id: custByPhone.get(normalizePhone(o.buyer.phone)) ?? null,
+      customer_id: resolvedCustomerId,
       buyer_name: o.buyer.name || null,
       buyer_phone: o.buyer.phone || null,
       recipient_name: o.recipient.name || null,
