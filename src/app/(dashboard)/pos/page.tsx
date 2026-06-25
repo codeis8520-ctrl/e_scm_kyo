@@ -2851,14 +2851,14 @@ function POSPageInner() {
                       className="input text-sm" />
                   </div>
                   <div className="flex gap-2">
-                    <input type="text" readOnly value={shipping.recipient_zipcode}
-                      onClick={() => openPostcode('recipient')}
+                    <input type="text" value={shipping.recipient_zipcode}
+                      onChange={e => setShipping(p => ({ ...p, recipient_zipcode: e.target.value }))}
                       placeholder="우편번호"
-                      className="input text-sm w-24 bg-slate-50 cursor-pointer" />
-                    <input type="text" readOnly value={shipping.recipient_address}
-                      onClick={() => openPostcode('recipient')}
-                      placeholder="주소 검색 버튼을 눌러주세요 *"
-                      className="input text-sm flex-1 bg-slate-50 cursor-pointer" />
+                      className="input text-sm w-24" />
+                    <input type="text" value={shipping.recipient_address}
+                      onChange={e => setShipping(p => ({ ...p, recipient_address: e.target.value }))}
+                      placeholder="주소 직접 입력 또는 [주소 검색] *"
+                      className="input text-sm flex-1" />
                     <button type="button" onClick={() => openPostcode('recipient')}
                       className="btn-secondary text-sm whitespace-nowrap">주소 검색</button>
                   </div>
@@ -2904,14 +2904,14 @@ function POSPageInner() {
                           className="input text-sm" />
                       </div>
                       <div className="flex gap-2">
-                        <input type="text" readOnly value={shipping.sender_zipcode}
-                          onClick={() => openPostcode('sender')}
+                        <input type="text" value={shipping.sender_zipcode}
+                          onChange={e => setShipping(p => ({ ...p, sender_zipcode: e.target.value }))}
                           placeholder="우편번호"
-                          className="input text-sm w-24 bg-slate-50 cursor-pointer" />
-                        <input type="text" readOnly value={shipping.sender_address}
-                          onClick={() => openPostcode('sender')}
-                          placeholder="주소 검색 버튼을 눌러주세요"
-                          className="input text-sm flex-1 bg-slate-50 cursor-pointer" />
+                          className="input text-sm w-24" />
+                        <input type="text" value={shipping.sender_address}
+                          onChange={e => setShipping(p => ({ ...p, sender_address: e.target.value }))}
+                          placeholder="주소 직접 입력 또는 [주소 검색]"
+                          className="input text-sm flex-1" />
                         <button type="button" onClick={() => openPostcode('sender')}
                           className="btn-secondary text-sm whitespace-nowrap">주소 검색</button>
                       </div>
@@ -3499,10 +3499,9 @@ function CustomerAddModal({ defaultBranchId, onClose, onCreated }: {
               <input
                 type="text"
                 value={address1}
-                readOnly
-                onClick={openPostcode}
-                placeholder="주소 검색 버튼을 눌러주세요"
-                className="input text-sm flex-1 bg-slate-50 cursor-pointer"
+                onChange={e => setAddress1(e.target.value)}
+                placeholder="주소 직접 입력 또는 [주소 검색]"
+                className="input text-sm flex-1"
               />
               <button
                 type="button"
