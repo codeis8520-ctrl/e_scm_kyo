@@ -1715,22 +1715,20 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
                           </td>
                           <td className="align-top text-sm text-slate-700 whitespace-nowrap">{custName}</td>
                           <td className="align-top text-[11px] text-slate-400 whitespace-nowrap">{o.phone || '-'}</td>
-                          <td className="align-top text-xs text-slate-700 max-w-[220px]">
-                            <span className="line-clamp-2" title={items.map(it => it.item_text).filter(Boolean).join(', ')}>
-                              {firstItem}{items.length > 1 && <span className="text-slate-400"> 외 {items.length - 1}</span>}
-                            </span>
+                          <td className="align-top text-xs text-slate-700 whitespace-normal break-words min-w-[180px] max-w-[300px]">
+                            {firstItem}{items.length > 1 && <span className="text-slate-400"> 외 {items.length - 1}</span>}
                           </td>
                           <td className="text-center text-xs text-slate-600 align-top">{totalQty || '-'}</td>
                           <td className="text-right align-top font-semibold text-slate-800 whitespace-nowrap">
                             {o.total_amount ? `${Number(o.total_amount).toLocaleString()}원` : '-'}
                           </td>
                           <td className="align-top text-xs text-slate-600 whitespace-nowrap">{o.recipient_name || '-'}</td>
-                          <td className="align-top text-xs text-slate-500 max-w-[200px]">
-                            {o.note ? <span className="line-clamp-2" title={o.note}>{o.note}</span> : <span className="text-slate-300">-</span>}
+                          <td className="align-top text-xs text-slate-500 whitespace-normal break-words min-w-[200px] max-w-[340px]">
+                            {o.note ? o.note : <span className="text-slate-300">-</span>}
                           </td>
                           <td className="align-top text-[11px] text-slate-400 whitespace-nowrap">{o.recipient_phone || '-'}</td>
-                          <td className="align-top text-xs text-slate-500 max-w-[240px]">
-                            {fullAddr ? <span className="line-clamp-2" title={fullAddr}>{fullAddr}</span> : <span className="text-slate-300">-</span>}
+                          <td className="align-top text-xs text-slate-500 whitespace-normal break-words min-w-[220px] max-w-[360px]">
+                            {fullAddr ? fullAddr : <span className="text-slate-300">-</span>}
                           </td>
                           <td className="align-top text-[11px] font-mono text-slate-400 whitespace-nowrap">{o.staff_code || '-'}</td>
                         </tr>
