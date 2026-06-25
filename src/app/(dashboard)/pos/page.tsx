@@ -24,9 +24,9 @@ const ShippingPage = dynamic(() => import('@/app/(dashboard)/shipping/page'), {
   ssr: false,
   loading: () => <div className="py-10 text-center text-slate-400">로딩 중...</div>,
 });
-type MainTab = 'checkout' | 'list' | 'online' | 'parcel' | 'sales';
+type MainTab = 'checkout' | 'list' | 'online' | 'parcel' | 'sales' | 'legacy';
 
-const MAIN_TAB_KEYS: MainTab[] = ['checkout', 'list', 'online', 'parcel', 'sales'];
+const MAIN_TAB_KEYS: MainTab[] = ['checkout', 'list', 'online', 'parcel', 'sales', 'legacy'];
 
 function isMainTab(v: string | null): v is MainTab {
   return v != null && (MAIN_TAB_KEYS as string[]).includes(v);
@@ -1656,8 +1656,8 @@ function POSPageInner() {
           { key: 'list', label: '판매현황' },
           { key: 'online', label: '온라인몰' },
           { key: 'parcel', label: '택배관리' },
-          // 지점별 매출은 본사/관리자 전용(지점직원 제외)
-          ...(isBranchLocked ? [] : [{ key: 'sales', label: '지점별 매출' }]),
+          // 지점별 매출·레거시는 본사/관리자 전용(지점직원 제외 — 레거시 branch 매핑 부분적·전 지점 PII)
+          ...(isBranchLocked ? [] : [{ key: 'sales', label: '지점별 매출' }, { key: 'legacy', label: '레거시 조회' }]),
         ]}
         activeKey={mainTab}
         onChange={(k) => setMainTab(k as MainTab)}
@@ -1814,6 +1814,7 @@ function POSPageInner() {
       {mainTab === 'online' && <ShippingPage embedded="online" />}
       {mainTab === 'parcel' && <ShippingPage embedded="parcel" />}
       {mainTab === 'sales' && !isBranchLocked && <SalesListTab forcedView="compare" />}
+      {mainTab === 'legacy' && !isBranchLocked && <SalesListTab forcedView="legacy" />}
 
       {mainTab === 'checkout' && (
     <div className="flex flex-col lg:flex-row gap-4 lg:h-[calc(100vh-10rem)]">
