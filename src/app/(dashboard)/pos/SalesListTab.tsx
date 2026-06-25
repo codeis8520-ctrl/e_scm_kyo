@@ -289,7 +289,8 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
   const [legacyTotal, setLegacyTotal] = useState(0);
   const [legacyLoading, setLegacyLoading] = useState(false);
   const [legacyError, setLegacyError] = useState<string | null>(null);
-  const [legacySearch, setLegacySearch] = useState('');     // 받는분/전화 검색(헤더 필드만, 품목은 Known Gap)
+  const [legacySearchInput, setLegacySearchInput] = useState(''); // input 로컬 타이핑값(쿼리 트리거 안 함)
+  const [legacySearch, setLegacySearch] = useState('');     // 적용된 검색어 — 실제 쿼리/RPC deps. "검색"/Enter/조회에서만 갱신
   const [expandedLegacy, setExpandedLegacy] = useState<Set<string>>(new Set());
   // 레거시 전용 날짜 — list 의 startDate/endDate 와 완전 분리(판매현황 무회귀). 기본 = 2018-01-01 ~ 오늘.
   const [legacyStart, setLegacyStart] = useState('2018-01-01');
@@ -546,18 +547,28 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
       )
       .gte('ordered_at', legacyStart)
       .lte('ordered_at', legacyEnd);
-    if (sq) {
-      // 헤더 필드만(받는분/전화). 품목명(item_text)은 임베드라 .or 불가 → Known Gap.
-      // PostgREST .or 필터 메타문자(% _ , ( ))를 이스케이프 — LIKE 와일드카드 과매칭·필터 구문깨짐 방지.
-      const esc = sq.replace(/[%_(),]/g, '\\$&');
+    // 콤마-AND 검색(customers/search 규칙 미러링·RPC 와 동일): 콤마로 분리한 토큰들끼리 AND,
+    //   각 토큰 내부는 (받는분이름 OR 받는분전화 OR 주문자전화) ILIKE. 토큰별 .or() 체이닝 = 토큰 간 AND.
+    //   품목명(item_text)은 임베드라 .or 불가 → Known Gap. LIKE 메타문자(% _ , ( )) 이스케이프.
+    const tokens = sq.split(',').map(t => t.trim()).filter(Boolean);
+    for (const tok of tokens) {
+      const esc = tok.replace(/[%_(),]/g, '\\$&');
       q = q.or(`recipient_name.ilike.%${esc}%,recipient_phone.ilike.%${esc}%,phone.ilike.%${esc}%`);
     }
-    const from = legacyPage * LEGACY_PAGE_SIZE;
+    const from = Math.max(0, legacyPage * LEGACY_PAGE_SIZE);   // 음수 가드
     const { data, count, error } = await q
       .order('ordered_at', { ascending: false })
       .order('legacy_order_no', { ascending: false })
       .range(from, from + LEGACY_PAGE_SIZE - 1);
     if (error) {
+      // 416 Range Not Satisfiable = offset > 총건수(필터로 결과 줄었는데 page 가 큼) → 에러 대신 page 0 복구.
+      const code = String((error as any).code || '');
+      const msg = String((error as any).message || '').toLowerCase();
+      if (legacyPage > 0 && (code === 'PGRST103' || msg.includes('range not satisfiable') || msg.includes('416'))) {
+        setLegacyPage(0);          // page 0 으로 리셋 → effect 가 재페치(루프 아님: page=0 이면 416 재발 없음)
+        setLegacyLoading(false);
+        return;
+      }
       console.error('[SalesListTab] legacy load error:', error);
       setLegacyRows([]);
       setLegacyTotal(0);
@@ -1625,19 +1636,26 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
                 className="input text-sm py-1 w-36" />
             </div>
             <button
-              onClick={() => { setLegacyPage(0); loadLegacy(); }}
+              onClick={() => { setLegacySearch(legacySearchInput); setLegacyPage(0); }}
               className="btn-secondary text-sm py-1.5 ml-auto">조회</button>
           </div>
           <div className="flex flex-wrap gap-2">
+            {/* 검색: 타이핑은 로컬 입력값만(쿼리 미발생, 47k 테이블 보호). 적용=Enter/검색버튼에서 legacySearch 갱신+page0 → effect 재페치. */}
             <input
               type="text"
-              value={legacySearch}
-              onChange={e => setLegacySearch(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') { setLegacyPage(0); loadLegacy(); } }}
-              placeholder="받는분 · 전화번호로 검색 (품목명 검색은 추후 지원)"
+              value={legacySearchInput}
+              onChange={e => setLegacySearchInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { setLegacySearch(legacySearchInput); setLegacyPage(0); } }}
+              placeholder="받는분 · 전화번호 검색 후 Enter (콤마로 조건 추가 AND)"
               className="input text-sm py-1 flex-1 min-w-[240px]"
             />
+            <button
+              onClick={() => { setLegacySearch(legacySearchInput); setLegacyPage(0); }}
+              className="btn-secondary text-sm py-1.5">검색</button>
           </div>
+          <p className="text-[11px] text-slate-400">
+            Enter 또는 [검색]으로 조회 · 콤마(,)로 조건 추가(AND). 예: <span className="text-slate-500">지호어머니, 010</span> (이름·전화 모두 일치)
+          </p>
         </div>
 
         {/* 요약카드 2개 — legacy_sales_summary RPC(전체기간 정확 집계) */}
