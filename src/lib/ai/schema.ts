@@ -297,6 +297,7 @@ sales_orders.receipt_status: 품목 receipt_status 집계. 품목 모두 RECEIVE
 - 지점별 매출 = legacy_orders(ordered_at<2026-05-19) + sales_orders(ordered_at>=2026-05-19, status NOT IN CANCELLED/REFUNDED/PARTIALLY_REFUNDED) 통합. 컷오프 경계로 이중집계 없음.
 - RPC branch_sales_summary(p_from date, p_to date, p_grain text 'day'|'month'|'year') → (period_date, branch_id, total). 판매현황 '지점비교'에서 호출. total=최종 결제금액 기준: sales는 (total_amount − COALESCE(discount_amount,0)), legacy는 total_amount(이미 net). 마이그 084(#18).
 - legacy branch_id NULL = '미매칭' 그룹(제외 안 함). 날짜는 KST 일자 기준 grain 집계.
+- RPC legacy_sales_summary(p_start date, p_end date, p_search text) → (cnt bigint, total numeric). 레거시 판매현황 요약카드(건수·합계). 필터=ordered_at BETWEEN + (검색시 recipient_name/recipient_phone/phone ILIKE). legacy_orders 단독(현행 sales 미포함). 마이그 099.
 
 [자사몰(카페24) 매출 동기화 — 주문자 고객 표시/등록]
 - **수집/매출인식 분리(#25, 이카운트식)**: ONLINE(카페24/자사몰) 주문은 배송화면 '배송 추가' 확정(confirmCafe24OrderAsSale) 시에만 sales_order·sales_order_items·매출분개(SALE) 생성. 확정 시 receipt_status='PARCEL_PLANNED', receipt_date=확정일(KST 오늘). shipment.sales_order_id 로 직접 연결. 재확정(중복)해도 COMPLETED면 분개 재생성 안 함(멱등). 크론(syncCafe24PaidOrdersCore)은 수집·재고차감(확정주문만)·배송상태 동기화만, 매출은 미생성(created 항상 0).
