@@ -96,11 +96,11 @@ const PAY_LABEL: Record<string, string> = {
   credit: '외상', cod: '수령시수금', mixed: '복합',
 };
 const RECEIPT_STATUS_LABEL: Record<string, string> = {
-  RECEIVED: '수령', PICKUP_PLANNED: '방문예정', QUICK_PLANNED: '퀵예정', PARCEL_PLANNED: '택배예정',
+  RECEIVED: '수령완료', PICKUP_PLANNED: '방문예정', QUICK_PLANNED: '퀵예정', PARCEL_PLANNED: '택배예정',
 };
-// 최종 상태(RECEIVED)는 채널 불문 '수령'으로 통일 — 택배 배송완료·오프라인 수령을 하나로(원장 관점).
-//   내부 값 RECEIVED 는 그대로, 표시 라벨만 '수령'. hasShipment 인자는 호환 위해 유지(미사용).
-function receiptStatusLabelFor(status: string | null | undefined, _hasShipment?: boolean): string {
+// 수령현황 열 = 수령 처리 단계만(#57). 배송 진행상태(발송완료/배송완료/출력완료)는 택배관리 화면 담당.
+//   내부 값 RECEIVED → 표시 '수령완료'(상세 드로어 라벨과 일관). NULL 은 수령완료로 폴백(빈칸 금지).
+function receiptStatusLabelFor(status: string | null | undefined): string {
   const st = status || 'RECEIVED';
   return RECEIPT_STATUS_LABEL[st] || '-';
 }
@@ -111,36 +111,6 @@ const RECEIPT_STATUS_BADGE: Record<string, string> = {
   QUICK_PLANNED: 'bg-purple-100 text-purple-700',   // 퀵예정 = 강조
   PARCEL_PLANNED: 'bg-blue-100 text-blue-700',      // 택배예정 = 강조
 };
-// 택배 건(연결 shipment 존재) 표시 = shipment.status 단일원천(#48 P3). 택배관리 page.tsx 라벨과 일치.
-const SHIPMENT_STATUS_LABEL: Record<string, string> = {
-  PENDING: '대기중', PRINTED: '출력완료', SHIPPED: '발송완료', DELIVERED: '배송완료',
-};
-// 택배관리(shipping/page.tsx STATUS_BADGE)와 글자배경·글자색 100% 동일하게 — globals .badge-* 클래스 사용.
-//   PENDING='' (base badge·무배경), PRINTED=info(파랑), SHIPPED=warning(황색), DELIVERED=success(녹색).
-//   렌더의 base `badge` 와 합쳐져 택배관리의 `badge badge-info` 등과 동일 결과.
-const SHIPMENT_STATUS_BADGE: Record<string, string> = {
-  PENDING: '', PRINTED: 'badge-info', SHIPPED: 'badge-warning', DELIVERED: 'badge-success',
-};
-// 행/CSV 상태 표시: 택배 건은 shipment.status 라벨로 대체, 방문/퀵/직접(shipment 없음)은 기존 수령상태 라벨.
-//   shipment.status NULL/미지정 택배 건은 기존 receipt 라벨로 폴백(빈칸 금지).
-function displayStatusLabel(o: OrderRow): string {
-  const ship = o.shipments?.[0];
-  if (ship && ship.status) {
-    // 택배 건은 택배관리 상태값 그대로(최종=배송완료). 오프라인(shipment 없음)만 '수령'.
-    return SHIPMENT_STATUS_LABEL[ship.status] || receiptStatusLabelFor(o.receipt_status);
-  }
-  return receiptStatusLabelFor(o.receipt_status);
-}
-// 행 배지 색: 택배 건은 shipment.status 색, 그 외(또는 status 미지정)는 receipt 배지로 폴백.
-function displayStatusBadge(o: OrderRow, receiptKey: string): string {
-  const ship = o.shipments?.[0];
-  // 택배 건은 shipment.status 배지(택배관리와 동일). PENDING은 ''(무배경)이라 truthiness 대신 키 존재로 분기.
-  if (ship && ship.status && ship.status in SHIPMENT_STATUS_BADGE) {
-    // 택배 건은 택배관리 배지색 그대로(배송완료=green). 오프라인만 수령(slate).
-    return SHIPMENT_STATUS_BADGE[ship.status];
-  }
-  return RECEIPT_STATUS_BADGE[receiptKey] || 'bg-slate-100 text-slate-600';
-}
 const APPROVAL_STATUS_LABEL: Record<string, string> = {
   COMPLETED: '결제완료', CARD_PENDING: '미승인(카드)', UNSETTLED: '미수금',
 };
@@ -654,7 +624,7 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
     const ORDER = ['PICKUP_PLANNED', 'QUICK_PLANNED', 'PARCEL_PLANNED', 'RECEIVED'];
     const LABEL: Record<string, string> = {
       PICKUP_PLANNED: '방문예정', QUICK_PLANNED: '퀵예정', PARCEL_PLANNED: '택배예정',
-      RECEIVED: '수령', 기타: '기타',
+      RECEIVED: '수령완료', 기타: '기타',
     };
     const buckets = new Map<string, OrderRow[]>();
     for (const o of filtered) {
@@ -781,22 +751,30 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
                       </div>
                     </td>
                     <td className="whitespace-nowrap align-top">
-                      <span className={`badge text-[10px] ${displayStatusBadge(o, receiptKey)}`}>
-                        {displayStatusLabel(o)}
+                      <span className={`badge text-[10px] ${RECEIPT_STATUS_BADGE[receiptKey] || 'bg-slate-100 text-slate-600'}`}>
+                        {receiptStatusLabelFor(o.receipt_status)}
                       </span>
                       {o.receipt_date && <p className="text-[10px] text-slate-500 mt-0.5">{o.receipt_date}</p>}
                     </td>
                     <td className="text-xs text-slate-700 whitespace-nowrap align-top">{o.branch?.name || '-'}</td>
                     <td className="text-xs text-slate-700 whitespace-nowrap align-top">
-                      {shipFromName ? (
-                        shipFromId === o.branch?.id ? (
-                          <span className="text-slate-400">동일</span>
-                        ) : (
-                          <span className="inline-flex items-center px-1 text-[10px] rounded bg-indigo-50 text-indigo-700 border border-indigo-100">
-                            🚚 {shipFromName}
+                      <span className="inline-flex items-center gap-1">
+                        {/* 배송방식 아이콘(#57) — 택배(📦)/퀵(🛵) 단일 위치. 방문/현장은 null → 미표시. */}
+                        {recvIcon && (
+                          <span className={recvIcon === '🛵' ? 'text-indigo-600' : 'text-blue-600'}>
+                            {recvIcon}
                           </span>
-                        )
-                      ) : <span className="text-slate-300">-</span>}
+                        )}
+                        {shipFromName ? (
+                          shipFromId === o.branch?.id ? (
+                            <span className="text-slate-400">동일</span>
+                          ) : (
+                            <span className="inline-flex items-center px-1 text-[10px] rounded bg-indigo-50 text-indigo-700 border border-indigo-100">
+                              🚚 {shipFromName}
+                            </span>
+                          )
+                        ) : <span className="text-slate-300">-</span>}
+                      </span>
                     </td>
                     <td className="text-xs text-slate-700 whitespace-nowrap align-top">{o.handler?.name || '-'}</td>
                     <td className="align-top">
@@ -848,16 +826,10 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
                       )}
                     </td>
                     <td className="align-top">
-                      {(hasRecv || recvIcon) ? (
+                      {/* 받는분 = 이름/연락처/주소만(#57). 배송방식 아이콘은 출고처 열로 이동. */}
+                      {hasRecv ? (
                         <div className="text-xs leading-tight">
-                          <p className="text-slate-700 flex items-center gap-1">
-                            {recvIcon && (
-                              <span className={recvIcon === '🛵' ? 'text-indigo-600' : 'text-blue-600'}>
-                                {recvIcon}
-                              </span>
-                            )}
-                            {recv.name || '-'}
-                          </p>
+                          <p className="text-slate-700">{recv.name || '-'}</p>
                           <p className="text-[10px] text-slate-400">{recv.phone || ''}</p>
                           <p className="text-[10px] text-slate-500 line-clamp-1" title={`${recv.address || ''} ${recv.addressDetail || ''}`}>
                             {recv.address || ''}
@@ -951,7 +923,7 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
       const totalQty = (o.items || []).reduce((s, it) => s + (it.quantity || 0), 0);
       return [
         fmtDateKST(o.ordered_at),
-        displayStatusLabel(o),
+        receiptStatusLabelFor(o.receipt_status),
         o.receipt_date || '',
         o.branch?.name || '',
         shipFromBranch,
