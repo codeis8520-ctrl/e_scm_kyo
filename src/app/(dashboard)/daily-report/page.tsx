@@ -5,7 +5,7 @@
 //   오픈재고는 서버 템플릿이 전일 마감 이월. RBAC=서버액션(비관리자 본인매장 강제).
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  getDailyReport, getReportTemplate, saveDailyReport, getDailyReportBranches,
+  getDailyReport, getReportTemplate, saveDailyReport, getDailyReportBranches, listDailyReports,
   type DailyReportLineInput,
 } from '@/lib/daily-report-actions';
 import { kstTodayString } from '@/lib/date';
@@ -46,6 +46,12 @@ export default function DailyReportPage() {
   const [comboSearch, setComboSearch] = useState('');
   const [editedIdx, setEditedIdx] = useState<Set<number>>(new Set());
   const [showAll, setShowAll] = useState(false);   // [전체 보기] 토글(비관리자도 전 품목 그리드)
+  // Phase1.2 관리자 탭: 'input'(일보 입력) | 'status'(제출 현황). 비관리자는 항상 input.
+  const [mgrTab, setMgrTab] = useState<'input' | 'status'>('input');
+  const [statusRows, setStatusRows] = useState<Awaited<ReturnType<typeof listDailyReports>>['rows']>([]);
+  const [statusSummary, setStatusSummary] = useState<{ total: number; submitted: number; draft: number; missing: number } | null>(null);
+  const [statusLoading, setStatusLoading] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
 
   useEffect(() => {
     getDailyReportBranches().then(r => {
@@ -87,6 +93,25 @@ export default function DailyReportPage() {
   }, [branchId, reportDate]);
 
   useEffect(() => { load(); }, [load]);
+
+  // 제출 현황 로드(관리자·status 탭만). reportDate 공유.
+  const loadStatus = useCallback(async () => {
+    if (!isManager) return;
+    setStatusLoading(true); setStatusError(null);
+    const res = await listDailyReports(reportDate);
+    if (res.error) { setStatusError(res.error); setStatusRows([]); setStatusSummary(null); setStatusLoading(false); return; }
+    setStatusRows(res.rows || []);
+    setStatusSummary(res.summary || null);
+    setStatusLoading(false);
+  }, [isManager, reportDate]);
+
+  useEffect(() => { if (isManager && mgrTab === 'status') loadStatus(); }, [isManager, mgrTab, loadStatus]);
+
+  // 현황 행 클릭 → 일보 입력 탭 전환 + 해당 매장·날짜 세팅(date 공유) → 기존 그리드 로드.
+  const openDetail = (branchIdToOpen: string) => {
+    setBranchId(branchIdToOpen);
+    setMgrTab('input');
+  };
 
   // 라인 필드 변경 — 수동수정 안 한 라인은 closing_stock 을 자동값으로 유지.
   const updateLine = (i: number, field: keyof DailyReportLineInput, value: string) => {
@@ -264,13 +289,104 @@ export default function DailyReportPage() {
     <div className="max-w-2xl mx-auto space-y-4 pb-28">
       <div className="flex items-center gap-2">
         <h1 className="text-lg font-bold text-slate-800">📝 판매일보</h1>
-        {status && (
+        {(!isManager || mgrTab === 'input') && status && (
           <span className={`badge text-[11px] ${status === 'SUBMITTED' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}>
             {status === 'SUBMITTED' ? '제출완료' : '임시저장'}
           </span>
         )}
       </div>
 
+      {/* 관리자 전용 탭 — [일보 입력] / [제출 현황]. 비관리자는 탭 미노출(기존 입력만). */}
+      {isManager && (
+        <div className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit">
+          {([['input', '일보 입력'], ['status', '제출 현황']] as ['input' | 'status', string][]).map(([k, label]) => (
+            <button
+              key={k}
+              onClick={() => setMgrTab(k)}
+              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                mgrTab === k ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ── 제출 현황 탭(관리자) ── */}
+      {isManager && mgrTab === 'status' && (
+        <div className="space-y-3">
+          <div className="card">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-slate-500">일자</span>
+              <input type="date" value={reportDate} onChange={e => setReportDate(e.target.value)} className="input text-sm w-44" />
+            </label>
+          </div>
+
+          {statusError && <div className="rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-2">{statusError}</div>}
+
+          {statusSummary && (
+            <div className="grid grid-cols-4 gap-2">
+              <SummaryStat label="대상" value={statusSummary.total} />
+              <SummaryStat label="제출" value={statusSummary.submitted} tone="green" />
+              <SummaryStat label="임시" value={statusSummary.draft} tone="slate" />
+              <SummaryStat label="미제출" value={statusSummary.missing} tone="red" emphasize />
+            </div>
+          )}
+
+          {statusLoading ? (
+            <div className="text-center py-12 text-slate-400">불러오는 중...</div>
+          ) : statusRows.length === 0 ? (
+            <div className="card text-center py-10 text-slate-400 text-sm">대상(백화점) 매장이 없습니다.</div>
+          ) : (
+            <>
+              {/* 모바일 카드 */}
+              <div className="space-y-2 md:hidden">
+                {statusRows.map(r => (
+                  <button
+                    key={r.branch_id}
+                    onClick={() => openDetail(r.branch_id)}
+                    className="card w-full text-left flex items-center justify-between gap-2 hover:bg-slate-50"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-medium text-sm text-slate-800">{r.branch_name}</p>
+                      <p className="text-[11px] text-slate-400">{r.author_name || '—'}{r.submitted_at ? ` · ${new Date(r.submitted_at).toLocaleString('ko-KR')}` : ''}</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <StatusBadge status={r.status} />
+                      {r.status !== 'MISSING' && <p className="text-xs font-semibold text-slate-700 mt-1">{r.daily_total.toLocaleString()}원</p>}
+                    </div>
+                  </button>
+                ))}
+              </div>
+              {/* 데스크탑 표 */}
+              <div className="card hidden md:block overflow-x-auto">
+                <table className="table text-sm w-full">
+                  <thead>
+                    <tr className="text-xs text-slate-500">
+                      <th>매장</th><th>작성자</th><th>상태</th><th className="text-right">당일매출</th><th>제출시각</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {statusRows.map(r => (
+                      <tr key={r.branch_id} onClick={() => openDetail(r.branch_id)} className="cursor-pointer hover:bg-slate-50">
+                        <td className="font-medium text-slate-800">{r.branch_name}</td>
+                        <td className="text-slate-600">{r.author_name || '—'}</td>
+                        <td><StatusBadge status={r.status} /></td>
+                        <td className="text-right text-slate-700">{r.status !== 'MISSING' ? `${r.daily_total.toLocaleString()}원` : '—'}</td>
+                        <td className="text-[11px] text-slate-400">{r.submitted_at ? new Date(r.submitted_at).toLocaleString('ko-KR') : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ── 일보 입력 탭(비관리자 기본 / 관리자 input) ── */}
+      {(!isManager || mgrTab === 'input') && (<>
       {/* 매장·날짜 선택 */}
       <div className="card space-y-2">
         {isManager && (
@@ -377,6 +493,26 @@ export default function DailyReportPage() {
           <button onClick={() => save('SUBMITTED')} disabled={saving} className="btn-primary flex-1 py-2.5 disabled:opacity-40">제출</button>
         </div>
       )}
+      </>)}
+    </div>
+  );
+}
+
+function StatusBadge({ status }: { status: 'SUBMITTED' | 'DRAFT' | 'MISSING' }) {
+  const map = {
+    SUBMITTED: { cls: 'bg-green-100 text-green-700', label: '제출완료' },
+    DRAFT: { cls: 'bg-slate-100 text-slate-500', label: '임시저장' },
+    MISSING: { cls: 'bg-red-100 text-red-700', label: '미제출' },
+  }[status];
+  return <span className={`badge text-[10px] ${map.cls}`}>{map.label}</span>;
+}
+
+function SummaryStat({ label, value, tone, emphasize }: { label: string; value: number; tone?: 'green' | 'slate' | 'red'; emphasize?: boolean }) {
+  const color = tone === 'green' ? 'text-green-700' : tone === 'red' ? 'text-red-600' : 'text-slate-800';
+  return (
+    <div className={`card py-2 text-center ${emphasize && value > 0 ? 'ring-1 ring-red-300' : ''}`}>
+      <p className="text-[11px] text-slate-500">{label}</p>
+      <p className={`text-lg font-bold ${color}`}>{value}</p>
     </div>
   );
 }

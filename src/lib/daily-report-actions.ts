@@ -225,6 +225,70 @@ export async function saveDailyReport(input: {
   return { success: true, reportId: header.id, dailyTotal, status: input.status };
 }
 
+// ── 제출 현황(Phase 1.2) — 제출 대상 매장 정의 헬퍼 ─────────────────────────
+//   PO 결정 (A): 활성 + channel='DEPT_STORE'(백화점). 일보=백화점 판매사원 종이양식 대체.
+//   ⚠️ 분모 전환점: PO 가 (B)전 활성 / (C)직원배정으로 바꾸면 이 쿼리 한 줄만 수정.
+async function getTargetBranches(sb: any): Promise<{ id: string; name: string; sort_order: number | null }[]> {
+  const { data } = await sb
+    .from('branches')
+    .select('id, name, sort_order')
+    .eq('is_active', true)
+    .eq('channel', 'DEPT_STORE')      // (A) 백화점 채널. (B)→이 줄 제거, (C)→users.branch_id distinct 로 교체.
+    .order('sort_order', { ascending: true })
+    .order('name', { ascending: true });
+  return (data as any[]) || [];
+}
+
+// 특정 날짜 제출 현황 — 대상 매장 전체 기준 머지(일보 없으면 MISSING). 읽기 전용·관리자 전용.
+export async function listDailyReports(reportDate: string) {
+  const session = await requireSession();
+  if (!MANAGER_ROLES.has(session.role)) {
+    return { error: '제출 현황은 본사 관리자만 조회할 수 있습니다.', rows: [] };
+  }
+  if (!isValidDate(reportDate)) return { error: '날짜 형식이 올바르지 않습니다.', rows: [] };
+
+  const sb = (await createClient()) as any;
+  const targets = await getTargetBranches(sb);
+
+  const { data: reports, error } = await sb
+    .from('daily_sales_reports')
+    .select('id, branch_id, author_name, status, daily_total, created_at, updated_at')
+    .eq('report_date', reportDate);
+  if (error) { console.error('[daily-report] listDailyReports error:', error); return { error: error.message, rows: [] }; }
+
+  const byBranch = new Map<string, any>();
+  for (const r of (reports as any[]) || []) byBranch.set(r.branch_id, r);
+
+  const rows = targets.map(b => {
+    const r = byBranch.get(b.id);
+    if (!r) {
+      return {
+        branch_id: b.id, branch_name: b.name, report_id: null, author_name: null,
+        status: 'MISSING' as const, daily_total: 0, submitted_at: null,
+        sort_order: b.sort_order ?? 0,
+      };
+    }
+    return {
+      branch_id: b.id, branch_name: b.name, report_id: r.id, author_name: r.author_name,
+      status: (r.status as 'SUBMITTED' | 'DRAFT'), daily_total: num(r.daily_total),
+      submitted_at: r.updated_at || r.created_at || null,
+      sort_order: b.sort_order ?? 0,
+    };
+  });
+
+  // 미제출(MISSING) 먼저 부각 → 임시(DRAFT) → 제출(SUBMITTED), 동순위는 매장 sort_order.
+  const rank = (s: string) => (s === 'MISSING' ? 0 : s === 'DRAFT' ? 1 : 2);
+  rows.sort((a, b) => rank(a.status) - rank(b.status) || (a.sort_order - b.sort_order));
+
+  const summary = {
+    total: rows.length,
+    submitted: rows.filter(r => r.status === 'SUBMITTED').length,
+    draft: rows.filter(r => r.status === 'DRAFT').length,
+    missing: rows.filter(r => r.status === 'MISSING').length,
+  };
+  return { rows, summary };
+}
+
 // 관리자 매장 드롭다운용 — 활성 지점 목록.
 export async function getDailyReportBranches() {
   const session = await requireSession();
