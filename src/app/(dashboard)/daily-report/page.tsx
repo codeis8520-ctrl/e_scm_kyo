@@ -133,6 +133,12 @@ export default function DailyReportPage() {
     setEditedIdx(prev => prev.has(i) ? prev : new Set(prev).add(i));   // 값 건드린 라인=편집중
   };
 
+  // 표 셀에서 마감재고 직접 편집 — 입력 즉시 수동수정으로 표시(카드의 [직접 수정] 토글과 동일 효과).
+  const editClosingCell = (i: number, value: string) => {
+    setManualClosing(prev => prev.has(i) ? prev : new Set(prev).add(i));
+    updateLine(i, 'closing_stock', value);
+  };
+
   const toggleManual = (i: number) => {
     setManualClosing(prev => {
       const n = new Set(prev);
@@ -241,10 +247,8 @@ export default function DailyReportPage() {
     const auto = autoClosing(l);
     const isManual = manualClosing.has(i);
     const diff = num(l.closing_stock) - auto;
-    // 변동(판매/증정/입고/매출 등 0 아님) 라인 마킹 — 전 품목 그리드에서만(콤보는 변동만 보여 무의미).
-    const isChanged = showAll && editedIdx.has(i);
     return (
-      <div key={i} className={`card space-y-2 ${isChanged ? 'ring-2 ring-blue-300 bg-blue-50/50' : ''}`}>
+      <div key={i} className="card space-y-2">
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
             {l.product_id ? (
@@ -259,7 +263,6 @@ export default function DailyReportPage() {
             )}
             {l.product_code && <p className="text-[11px] text-slate-400 font-mono">{l.product_code}</p>}
           </div>
-          {isChanged && <span className="badge text-[10px] bg-blue-100 text-blue-700 shrink-0 mt-0.5">변동</span>}
           <button onClick={onRemove} className="text-slate-300 hover:text-red-500 text-lg leading-none px-1" title={removeTitle}>×</button>
         </div>
 
@@ -306,10 +309,72 @@ export default function DailyReportPage() {
     );
   };
 
-  // 전 품목 그리드(관리자 / [전체 보기] on). 라인 제거=removeLine(라인 자체 삭제).
+  // 전 품목 표(관리자 / [전체 보기] on). lines(저장 스냅샷) 기준 렌더 → 제품 추가·삭제 후에도
+  //   해당 일보에 기록된 시점의 품목 그대로 표시(라이브 카탈로그 재조회 안 함). 변동 라인만 마킹.
+  const cellCls = 'w-[68px] rounded border border-slate-200 px-1 py-1 text-sm text-right focus:border-blue-400 outline-none disabled:bg-slate-50';
   const fullGrid = (
-    <div className="space-y-3">
-      {lines.map((l, i) => renderCard(l, i, () => removeLine(i), '라인 삭제'))}
+    <div className="space-y-2">
+      <div className="overflow-x-auto rounded-lg border border-slate-200">
+        <table className="text-sm border-collapse min-w-[860px]">
+          <thead>
+            <tr className="text-[11px] text-slate-500 bg-slate-50 border-b border-slate-200">
+              <th className="text-left px-2 py-2 sticky left-0 bg-slate-50 z-10 min-w-[160px]">품목</th>
+              <th className="px-1 py-2 font-medium">오픈재고</th>
+              <th className="px-1 py-2 font-medium">입고/반품</th>
+              <th className="px-1 py-2 font-medium">현장판매</th>
+              <th className="px-1 py-2 font-medium">시음/파손</th>
+              <th className="px-1 py-2 font-medium">마감재고</th>
+              <th className="px-1 py-2 font-medium">현장매출</th>
+              <th className="px-1 py-2 font-medium">본사택배</th>
+              <th className="px-1 py-2 font-medium">택배매출</th>
+              <th className="px-1 py-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map((l, i) => {
+              const auto = autoClosing(l);
+              const isManual = manualClosing.has(i);
+              const isChanged = editedIdx.has(i);
+              const diff = num(l.closing_stock) - auto;
+              const rowBg = isChanged ? 'bg-blue-50' : 'bg-white';
+              return (
+                <tr key={i} className={`border-b border-slate-100 last:border-0 ${rowBg}`}>
+                  <td className={`px-2 py-1 sticky left-0 z-10 min-w-[160px] ${rowBg}`}>
+                    <div className="flex items-center gap-1.5">
+                      {l.product_id ? (
+                        <span className="text-slate-800 break-words">{l.product_name}</span>
+                      ) : (
+                        <input type="text" value={l.product_name}
+                          onChange={e => updateLine(i, 'product_name', e.target.value)}
+                          placeholder="품목명" className="w-32 rounded border border-slate-200 px-1.5 py-1 text-sm" />
+                      )}
+                      {isChanged && <span className="badge text-[10px] bg-blue-100 text-blue-700 shrink-0">변동</span>}
+                    </div>
+                    {l.product_code && <p className="text-[10px] text-slate-400 font-mono">{l.product_code}</p>}
+                  </td>
+                  <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.opening_stock} onChange={e => updateLine(i, 'opening_stock', e.target.value)} className={cellCls} /></td>
+                  <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.in_return} onChange={e => updateLine(i, 'in_return', e.target.value)} className={cellCls} /></td>
+                  <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.onsite_sold} onChange={e => updateLine(i, 'onsite_sold', e.target.value)} className={cellCls} /></td>
+                  <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.sample_damage} onChange={e => updateLine(i, 'sample_damage', e.target.value)} className={cellCls} /></td>
+                  <td className="px-1 py-1 text-center">
+                    <input type="number" inputMode="decimal" step="any" value={l.closing_stock}
+                      onChange={e => editClosingCell(i, e.target.value)}
+                      className={`${cellCls} font-semibold ${isManual ? 'border-amber-300' : ''}`} />
+                    {isManual && diff !== 0 && (
+                      <button onClick={() => toggleManual(i)} title={`자동 ${auto}로 되돌리기`}
+                        className="block mx-auto text-[10px] text-amber-600 mt-0.5">자동 {auto} ↺</button>
+                    )}
+                  </td>
+                  <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.onsite_revenue} onChange={e => updateLine(i, 'onsite_revenue', e.target.value)} className={`${cellCls} w-[88px]`} /></td>
+                  <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.hq_parcel} onChange={e => updateLine(i, 'hq_parcel', e.target.value)} className={cellCls} /></td>
+                  <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.parcel_revenue} onChange={e => updateLine(i, 'parcel_revenue', e.target.value)} className={`${cellCls} w-[88px]`} /></td>
+                  <td className="px-1 py-1 text-center"><button onClick={() => removeLine(i)} className="text-slate-300 hover:text-red-500 text-lg leading-none px-1" title="라인 삭제">×</button></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
       <button onClick={addLine} className="btn-secondary text-sm w-full py-2">+ 품목 추가</button>
     </div>
   );

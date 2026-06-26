@@ -86,11 +86,15 @@ UI: fieldset disabled 잠금(매장/날짜 밖), 승인/취소 확인모달, foo
 무회귀: 기존 액션·Phase1/1.1/1.2·POS createSaleJournal/processPosCheckout 무수정(재사용만).
 Known Gaps(수용): 시음/파손 비용분개 없음(GL 1130 갭)·면세 전액과세·1115 실입금 회수 후속·RPC 트랜잭션 미사용(분개검증 선행+조건부update로 최소화)·sales_orders 행 미생성.
 
-## 판매일보 Phase 1.2b — 제출현황 상세 = 전체 그리드 + 변동 마킹
+## 판매일보 Phase 1.2b — 제출현황 상세 = 전체 품목 표(행/열) + 변동 마킹
 Date: 2026-06-26
-Status: ✅ COMPLETE — Deploy Gate. build ✓. 표시 전용 단일 파일(page.tsx), 마이그/schema/액션 무변경.
-이슈: 제출현황 행 클릭 시 상세가 (1.1b 이후) 콤보로 떠 한눈 파악 어려움. 전체 품목 그리드로 열고 변동 품목만 마킹 요청.
-수정(page.tsx): ①openDetail 에 setShowAll(true) — 현황→상세는 전 품목 그리드. ②renderCard 변동 마킹 `isChanged = showAll && editedIdx.has(i)`(콤보는 무의미라 그리드에서만): card ring-2 ring-blue-300 + bg-blue-50/50 + 품목명 옆 '변동' 배지. editedIdx(load에서 판매/증정/입고/매출 0아님 라인 계산) 재사용. 무회귀(콤보·저장 무변경, 토글로 검색입력 복귀 가능).
+Status: ✅ COMPLETE (표 형태로 재구성) — Deploy Gate. build ✓. 표시/입력 레이어 단일 파일(page.tsx), 마이그/schema/액션 무변경.
+이슈: 제출현황 행 클릭 시 상세가 (1.1b 이후) 콤보로 떠 한눈 파악 어려움. 첫 이미지처럼 표(행/열) 형태로, 제품 추가·삭제돼도 그 일보 기록 시점 품목 반영.
+수정(page.tsx):
+- openDetail 에 setShowAll(true) → 현황→상세는 전 품목 표.
+- fullGrid 를 카드 리스트 → **표(table)**로 재구성: overflow-x-auto 가로스크롤, 첫 열(품목) sticky, 열=오픈재고/입고반품/현장판매/시음파손/마감재고/현장매출/본사택배/택배매출. 셀 편집은 기존 updateLine 재사용. **lines(저장 스냅샷) 기준 렌더**라 카탈로그 제품 추가·삭제 후에도 해당 일보 기록 품목 그대로 표시(라이브 재조회 안 함).
+- 변동(editedIdx) 행 bg-blue-50 + '변동' 배지. 마감재고 직접편집=editClosingCell(즉시 수동마킹, amber 테두리 + '자동 N ↺' 되돌리기). 콤보 모드 카드(renderCard)는 무변경(1.2b 임시 추가했던 ring/badge는 표로 이관하며 제거).
+무회귀: 콤보·저장·승인 로직 무변경. [전체 보기 ↔ 검색 입력] 토글 유지(모바일 입력은 콤보 권장).
 
 ## 판매일보 Phase 1.1b — 관리자도 입력은 검색 콤보 (UX 통일)
 Date: 2026-06-26
