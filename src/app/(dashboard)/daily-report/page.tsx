@@ -116,6 +116,7 @@ export default function DailyReportPage() {
   const openDetail = (branchIdToOpen: string) => {
     setBranchId(branchIdToOpen);
     setMgrTab('input');
+    setShowAll(true);   // 현황에서 열면 전체 품목 그리드로 표시(변동 품목만 마킹) — 한눈 파악
   };
 
   // 라인 필드 변경 — 수동수정 안 한 라인은 closing_stock 을 자동값으로 유지.
@@ -240,8 +241,10 @@ export default function DailyReportPage() {
     const auto = autoClosing(l);
     const isManual = manualClosing.has(i);
     const diff = num(l.closing_stock) - auto;
+    // 변동(판매/증정/입고/매출 등 0 아님) 라인 마킹 — 전 품목 그리드에서만(콤보는 변동만 보여 무의미).
+    const isChanged = showAll && editedIdx.has(i);
     return (
-      <div key={i} className="card space-y-2">
+      <div key={i} className={`card space-y-2 ${isChanged ? 'ring-2 ring-blue-300 bg-blue-50/50' : ''}`}>
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
             {l.product_id ? (
@@ -256,6 +259,7 @@ export default function DailyReportPage() {
             )}
             {l.product_code && <p className="text-[11px] text-slate-400 font-mono">{l.product_code}</p>}
           </div>
+          {isChanged && <span className="badge text-[10px] bg-blue-100 text-blue-700 shrink-0 mt-0.5">변동</span>}
           <button onClick={onRemove} className="text-slate-300 hover:text-red-500 text-lg leading-none px-1" title={removeTitle}>×</button>
         </div>
 

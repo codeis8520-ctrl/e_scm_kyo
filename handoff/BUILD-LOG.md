@@ -86,6 +86,12 @@ UI: fieldset disabled 잠금(매장/날짜 밖), 승인/취소 확인모달, foo
 무회귀: 기존 액션·Phase1/1.1/1.2·POS createSaleJournal/processPosCheckout 무수정(재사용만).
 Known Gaps(수용): 시음/파손 비용분개 없음(GL 1130 갭)·면세 전액과세·1115 실입금 회수 후속·RPC 트랜잭션 미사용(분개검증 선행+조건부update로 최소화)·sales_orders 행 미생성.
 
+## 판매일보 Phase 1.2b — 제출현황 상세 = 전체 그리드 + 변동 마킹
+Date: 2026-06-26
+Status: ✅ COMPLETE — Deploy Gate. build ✓. 표시 전용 단일 파일(page.tsx), 마이그/schema/액션 무변경.
+이슈: 제출현황 행 클릭 시 상세가 (1.1b 이후) 콤보로 떠 한눈 파악 어려움. 전체 품목 그리드로 열고 변동 품목만 마킹 요청.
+수정(page.tsx): ①openDetail 에 setShowAll(true) — 현황→상세는 전 품목 그리드. ②renderCard 변동 마킹 `isChanged = showAll && editedIdx.has(i)`(콤보는 무의미라 그리드에서만): card ring-2 ring-blue-300 + bg-blue-50/50 + 품목명 옆 '변동' 배지. editedIdx(load에서 판매/증정/입고/매출 0아님 라인 계산) 재사용. 무회귀(콤보·저장 무변경, 토글로 검색입력 복귀 가능).
+
 ## 판매일보 Phase 1.1b — 관리자도 입력은 검색 콤보 (UX 통일)
 Date: 2026-06-26
 Status: ✅ COMPLETE — Deploy Gate. build ✓. 표시 전용 단일 파일(page.tsx), 마이그/schema/액션 무변경(정식리뷰 생략, className/표시 레벨).
