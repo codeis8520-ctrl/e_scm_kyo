@@ -681,26 +681,40 @@ export async function getVatReport(params: { startDate: string; endDate: string 
   const outputVatAccId = accMap['2151']?.id; // 부가세예수금
   const inputVatAccId  = accMap['1150']?.id; // 부가세대급금
 
-  // 기간 내 분개 라인 집계
-  const { data: lines } = await sb
-    .from('journal_entry_lines')
-    .select('account_id, debit, credit, journal_entry:journal_entries!inner(entry_date)')
-    .gte('journal_entry.entry_date', params.startDate)
-    .lte('journal_entry.entry_date', params.endDate);
-
   let outputVatCredit = 0; // 매출 VAT (대변 합계)
   let outputVatDebit = 0;  // 매출 VAT 취소 (차변 합계, 환불 등)
   let inputVatDebit = 0;   // 매입 VAT (차변 합계)
   let inputVatCredit = 0;  // 매입 VAT 취소
 
-  for (const line of (lines || []) as any[]) {
-    if (line.account_id === outputVatAccId) {
-      outputVatCredit += Number(line.credit || 0);
-      outputVatDebit += Number(line.debit || 0);
-    }
-    if (line.account_id === inputVatAccId) {
-      inputVatDebit += Number(line.debit || 0);
-      inputVatCredit += Number(line.credit || 0);
+  // 2151/1150 라인만 대상 + .range() 페이지네이션으로 전 페이지 누적(getProfitLoss와 동일 패턴).
+  //   PostgREST max-rows(보통 1000) 상한에 종속되지 않도록: 안정정렬(.order('id'))로 페이지 경계 누락/중복을
+  //   막고, 실제 반환 행수만큼 커서를 전진해 빈 페이지가 올 때까지 누적한다. 계정 미존재 시 빈 배열 안전 처리.
+  const targetAccIds = [outputVatAccId, inputVatAccId].filter(Boolean) as string[];
+  if (targetAccIds.length > 0) {
+    const PAGE = 1000;
+    let from = 0;
+    for (;;) {
+      const { data: page, error: pageErr } = await sb
+        .from('journal_entry_lines')
+        .select('account_id, debit, credit, journal_entry:journal_entries!inner(entry_date)')
+        .in('account_id', targetAccIds)
+        .gte('journal_entry.entry_date', params.startDate)
+        .lte('journal_entry.entry_date', params.endDate)
+        .order('id', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (pageErr) throw new Error(`부가세 GL 집계 실패: ${pageErr.message}`);
+      const rows = (page || []) as any[];
+      for (const line of rows) {
+        if (line.account_id === outputVatAccId) {
+          outputVatCredit += Number(line.credit || 0);
+          outputVatDebit += Number(line.debit || 0);
+        } else if (line.account_id === inputVatAccId) {
+          inputVatDebit += Number(line.debit || 0);
+          inputVatCredit += Number(line.credit || 0);
+        }
+      }
+      if (rows.length === 0) break;
+      from += rows.length;
     }
   }
 
@@ -732,19 +746,32 @@ export async function getGlBalances(params: { startDate: string; endDate: string
     .eq('is_active', true)
     .order('sort_order');
 
-  const { data: lines } = await sb
-    .from('journal_entry_lines')
-    .select('account_id, debit, credit, journal_entry:journal_entries!inner(entry_date)')
-    .gte('journal_entry.entry_date', params.startDate)
-    .lte('journal_entry.entry_date', params.endDate);
-
-  // 계정별 집계
+  // 계정별 집계. 전 계정 대상이라 account_id 필터 불가 → 기간 내 전 분개 라인을 .range() 페이지네이션으로
+  //   전부 누적해야 한다(getProfitLoss와 동일 패턴). 단일 페치는 PostgREST max-rows(보통 1000)에서 잘려
+  //   계정 잔액이 과소집계됨. 안정정렬(.order('id'))로 페이지 경계 누락/중복 방지, 빈 페이지에서 종료.
   const balances = new Map<string, { debit: number; credit: number }>();
-  for (const line of (lines || []) as any[]) {
-    const cur = balances.get(line.account_id) || { debit: 0, credit: 0 };
-    cur.debit += Number(line.debit || 0);
-    cur.credit += Number(line.credit || 0);
-    balances.set(line.account_id, cur);
+  {
+    const PAGE = 1000;
+    let from = 0;
+    for (;;) {
+      const { data: page, error: pageErr } = await sb
+        .from('journal_entry_lines')
+        .select('account_id, debit, credit, journal_entry:journal_entries!inner(entry_date)')
+        .gte('journal_entry.entry_date', params.startDate)
+        .lte('journal_entry.entry_date', params.endDate)
+        .order('id', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (pageErr) throw new Error(`계정잔액 GL 집계 실패: ${pageErr.message}`);
+      const rows = (page || []) as any[];
+      for (const line of rows) {
+        const cur = balances.get(line.account_id) || { debit: 0, credit: 0 };
+        cur.debit += Number(line.debit || 0);
+        cur.credit += Number(line.credit || 0);
+        balances.set(line.account_id, cur);
+      }
+      if (rows.length === 0) break;
+      from += rows.length;
+    }
   }
 
   const result = ((accounts || []) as any[]).map(acc => {

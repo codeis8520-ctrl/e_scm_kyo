@@ -45,8 +45,14 @@ diff 검증 결론(예상): Step1/2 이후 신규기간 GL≈운영(미세 diff)
 소비처 확인: getProfitLoss는 accounting/page.tsx 1곳만(reports는 별도 salesData). 키 보존으로 렌더 불변.
 헬퍼/시그니처: getProfitLoss 입력 시그니처 불변. createSaleJournal·getVatReport·getGlBalances·getMonthlyTrend·getProductMargins 미수정.
 
-### Step 3.5 (큐, 🔴 우선) — getVatReport/getGlBalances 페이지네이션 버그
-부가세·계정잔액도 분개 라인 무페이지네이션 → 1000행 초과 시 과소집계. 부가세=핵심목표라 가까운 우선순위. Step3 .range()+.order('id') 패턴 복제.
+### Step 3.5 — getVatReport/getGlBalances 페이지네이션 버그  ← ✅ REVIEW CLEAN (APPROVED) → Deploy
+Date: 2026-06-26
+Status: ✅ COMPLETE — Richard clean(Must Fix 0, APPROVED) → 커밋/푸시(아래 push 후 해시 기입). build ✓. 마이그/schema 무변경(read-only 집계).
+구현(accounting-actions.ts 단일):
+- getVatReport: 2151/1150 `.in()` 필터 + .range() 페이지네이션 루프(.order('id') 안정정렬, 빈 페이지 종료, from += rows.length). 원본 두 독립 if→if/else if(account_id 상호배타라 동작 동일). 집계 산식·반환 불변.
+- getGlBalances: 전 계정 집계라 account 필터 불가 → 기간 내 전 라인 페이지네이션 누적. balances Map·정상잔액 부호·result 필터 불변.
+- 부수 개선: 원본 `const {data}` 에러 무시(무음 과소집계 은폐) → pageErr throw(은폐 방지, getProfitLoss 동형).
+효과: 분개 라인 1000건 초과 기간에서 부가세·계정잔액 과소집계 해소. getProfitLoss(Step3 77957d4)와 동일 패턴.
 
 ### Step 4 (큐) — DB 무결성
 journal_entries total_debit=total_credit CHECK 제약 + accounting_period_closes 마감기간 분개차단 트리거. 마이그 Arch 직접.
