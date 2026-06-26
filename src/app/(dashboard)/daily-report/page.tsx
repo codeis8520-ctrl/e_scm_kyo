@@ -6,6 +6,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   getDailyReport, getReportTemplate, saveDailyReport, getDailyReportBranches, listDailyReports,
+  approveDailyReport, unpostDailyReport,
   type DailyReportLineInput,
 } from '@/lib/daily-report-actions';
 import { kstTodayString } from '@/lib/date';
@@ -35,7 +36,9 @@ export default function DailyReportPage() {
   const [reportDate, setReportDate] = useState(() => kstTodayString());
   const [lines, setLines] = useState<DailyReportLineInput[]>([]);
   const [note, setNote] = useState('');
-  const [status, setStatus] = useState<'DRAFT' | 'SUBMITTED' | null>(null);
+  const [status, setStatus] = useState<'DRAFT' | 'SUBMITTED' | 'APPROVED' | null>(null);
+  const [reportId, setReportId] = useState<string | null>(null);   // 승인/취소 대상 id
+  const [confirmAction, setConfirmAction] = useState<null | 'approve' | 'unpost'>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,7 +52,7 @@ export default function DailyReportPage() {
   // Phase1.2 관리자 탭: 'input'(일보 입력) | 'status'(제출 현황). 비관리자는 항상 input.
   const [mgrTab, setMgrTab] = useState<'input' | 'status'>('input');
   const [statusRows, setStatusRows] = useState<Awaited<ReturnType<typeof listDailyReports>>['rows']>([]);
-  const [statusSummary, setStatusSummary] = useState<{ total: number; submitted: number; draft: number; missing: number } | null>(null);
+  const [statusSummary, setStatusSummary] = useState<{ total: number; approved?: number; submitted: number; draft: number; missing: number } | null>(null);
   const [statusLoading, setStatusLoading] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
 
@@ -64,12 +67,13 @@ export default function DailyReportPage() {
     if (!branchId) { setLoading(false); return; }
     setLoading(true); setError(null); setMsg(null); setManualClosing(new Set()); setComboSearch('');
     const res = await getDailyReport(branchId, reportDate);
-    if (res.error) { setError(res.error); setLines([]); setStatus(null); setLoading(false); return; }
+    if (res.error) { setError(res.error); setLines([]); setStatus(null); setReportId(null); setLoading(false); return; }
     if (res.report) {
       const l = res.report.lines;
       setLines(l);
       setNote(res.report.header.note || '');
-      setStatus(res.report.header.status);
+      setStatus(res.report.header.status as 'DRAFT' | 'SUBMITTED' | 'APPROVED');
+      setReportId(res.report.header.id);
       // 기존 저장분 중 자동값과 다른 closing 은 수동수정으로 간주(차이 배지 노출).
       const manual = new Set<number>();
       const edited = new Set<number>();
@@ -83,7 +87,8 @@ export default function DailyReportPage() {
       setEditedIdx(edited);
     } else {
       const tpl = await getReportTemplate(branchId, reportDate);
-      if (tpl.error) { setError(tpl.error); setLines([]); setStatus(null); setLoading(false); return; }
+      if (tpl.error) { setError(tpl.error); setLines([]); setStatus(null); setReportId(null); setLoading(false); return; }
+      setReportId(null);
       setLines(tpl.template?.lines || []);
       setNote('');
       setStatus(null);
@@ -208,6 +213,28 @@ export default function DailyReportPage() {
     setSaving(false);
   };
 
+  // 승인(재고+분개 반영) / 승인취소(역연동). 관리자만. 확인모달 경유.
+  const doApprove = async () => {
+    if (!reportId) return;
+    setSaving(true); setError(null); setMsg(null); setConfirmAction(null);
+    const res = await approveDailyReport(reportId);
+    if (res.error) { setError(res.error); setSaving(false); return; }
+    setMsg('승인되었습니다. 재고·매출이 반영되었습니다.');
+    setSaving(false);
+    await load();
+  };
+  const doUnpost = async () => {
+    if (!reportId) return;
+    setSaving(true); setError(null); setMsg(null); setConfirmAction(null);
+    const res = await unpostDailyReport(reportId);
+    if (res.error) { setError(res.error); setSaving(false); return; }
+    setMsg('승인이 취소되었습니다. 재고·매출이 원복되었습니다.');
+    setSaving(false);
+    await load();
+  };
+
+  const isApproved = status === 'APPROVED';   // 읽기전용 잠금 기준
+
   // 라인 입력 카드 — 관리자 그리드/전체보기/콤보 편집중 영역 공용. onRemove 만 모드별 주입.
   const renderCard = (l: DailyReportLineInput, i: number, onRemove: () => void, removeTitle: string) => {
     const auto = autoClosing(l);
@@ -290,8 +317,11 @@ export default function DailyReportPage() {
       <div className="flex items-center gap-2">
         <h1 className="text-lg font-bold text-slate-800">📝 판매일보</h1>
         {(!isManager || mgrTab === 'input') && status && (
-          <span className={`badge text-[11px] ${status === 'SUBMITTED' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}>
-            {status === 'SUBMITTED' ? '제출완료' : '임시저장'}
+          <span className={`badge text-[11px] ${
+            status === 'APPROVED' ? 'bg-blue-100 text-blue-700'
+            : status === 'SUBMITTED' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'
+          }`}>
+            {status === 'APPROVED' ? '승인완료' : status === 'SUBMITTED' ? '제출완료' : '임시저장'}
           </span>
         )}
       </div>
@@ -326,8 +356,9 @@ export default function DailyReportPage() {
           {statusError && <div className="rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-2">{statusError}</div>}
 
           {statusSummary && (
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-5 gap-2">
               <SummaryStat label="대상" value={statusSummary.total} />
+              <SummaryStat label="승인" value={statusSummary.approved ?? 0} tone="blue" />
               <SummaryStat label="제출" value={statusSummary.submitted} tone="green" />
               <SummaryStat label="임시" value={statusSummary.draft} tone="slate" />
               <SummaryStat label="미제출" value={statusSummary.missing} tone="red" emphasize />
@@ -405,6 +436,15 @@ export default function DailyReportPage() {
 
       {error && <div className="rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-2">{error}</div>}
       {msg && <div className="rounded-lg bg-green-50 border border-green-200 text-green-700 text-sm px-3 py-2">{msg}</div>}
+
+      {/* 승인 잠금 안내 — APPROVED 면 입력 잠금(fieldset disabled). 수정은 승인취소 선행. */}
+      {isApproved && (
+        <div className="rounded-lg bg-blue-50 border border-blue-200 text-blue-700 text-sm px-3 py-2">
+          🔒 승인 완료된 일보입니다(재고·매출 반영됨). 수정하려면 아래 [승인취소]를 먼저 실행하세요.
+        </div>
+      )}
+
+      <fieldset disabled={isApproved} className={isApproved ? 'opacity-70' : ''}><div className="space-y-4">
 
       {/* 비관리자 전용 [전체 보기] 토글 — 콤보 ↔ 전 품목 그리드. 관리자는 항상 그리드. */}
       {!loading && !isManager && lines.length > 0 && (
@@ -485,21 +525,60 @@ export default function DailyReportPage() {
           </label>
         </div>
       )}
+      </div></fieldset>
 
-      {/* 하단 고정 저장 버튼 */}
+      {/* 하단 고정 버튼 — 승인상태별 분기. 승인취소 버튼은 fieldset 밖(잠금 무관 클릭 가능). */}
       {!loading && (
         <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-4 py-3 flex gap-2 max-w-2xl mx-auto">
-          <button onClick={() => save('DRAFT')} disabled={saving} className="btn-secondary flex-1 py-2.5 disabled:opacity-40">임시저장</button>
-          <button onClick={() => save('SUBMITTED')} disabled={saving} className="btn-primary flex-1 py-2.5 disabled:opacity-40">제출</button>
+          {isApproved ? (
+            isManager ? (
+              <button onClick={() => setConfirmAction('unpost')} disabled={saving} className="btn-secondary flex-1 py-2.5 text-red-600 disabled:opacity-40">승인취소</button>
+            ) : (
+              <span className="flex-1 text-center text-sm text-slate-400 py-2.5">승인 완료된 일보입니다.</span>
+            )
+          ) : (
+            <>
+              <button onClick={() => save('DRAFT')} disabled={saving} className="btn-secondary flex-1 py-2.5 disabled:opacity-40">임시저장</button>
+              <button onClick={() => save('SUBMITTED')} disabled={saving} className="btn-primary flex-1 py-2.5 disabled:opacity-40">제출</button>
+              {isManager && status === 'SUBMITTED' && reportId && (
+                <button onClick={() => setConfirmAction('approve')} disabled={saving} className="btn-primary flex-1 py-2.5 bg-blue-700 disabled:opacity-40">승인</button>
+              )}
+            </>
+          )}
         </div>
       )}
       </>)}
+
+      {/* 승인/취소 확인 모달 */}
+      {confirmAction && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={() => setConfirmAction(null)}>
+          <div className="bg-white rounded-xl p-5 max-w-sm w-full space-y-3" onClick={e => e.stopPropagation()}>
+            <h3 className="font-bold text-slate-800">{confirmAction === 'approve' ? '일보 승인' : '승인 취소'}</h3>
+            <p className="text-sm text-slate-600">
+              {confirmAction === 'approve'
+                ? '승인하면 라인 수량이 실재고에 반영(현장판매·시음/파손 차감, 입고/반품 증가)되고 현장·택배매출이 매출분개(미수금)로 기록됩니다. 이후 수정하려면 승인취소가 필요합니다.'
+                : '승인을 취소하면 반영된 재고가 원복되고 매출분개가 역분개됩니다. 이후 일보를 다시 수정·승인할 수 있습니다.'}
+            </p>
+            <div className="flex gap-2 pt-1">
+              <button onClick={() => setConfirmAction(null)} className="btn-secondary flex-1 py-2">취소</button>
+              <button
+                onClick={confirmAction === 'approve' ? doApprove : doUnpost}
+                disabled={saving}
+                className={`flex-1 py-2 rounded-lg text-white font-medium disabled:opacity-40 ${confirmAction === 'approve' ? 'bg-blue-700' : 'bg-red-600'}`}
+              >
+                {confirmAction === 'approve' ? '승인' : '승인취소'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function StatusBadge({ status }: { status: 'SUBMITTED' | 'DRAFT' | 'MISSING' }) {
+function StatusBadge({ status }: { status: 'SUBMITTED' | 'DRAFT' | 'MISSING' | 'APPROVED' }) {
   const map = {
+    APPROVED: { cls: 'bg-blue-100 text-blue-700', label: '승인완료' },
     SUBMITTED: { cls: 'bg-green-100 text-green-700', label: '제출완료' },
     DRAFT: { cls: 'bg-slate-100 text-slate-500', label: '임시저장' },
     MISSING: { cls: 'bg-red-100 text-red-700', label: '미제출' },
@@ -507,8 +586,8 @@ function StatusBadge({ status }: { status: 'SUBMITTED' | 'DRAFT' | 'MISSING' }) 
   return <span className={`badge text-[10px] ${map.cls}`}>{map.label}</span>;
 }
 
-function SummaryStat({ label, value, tone, emphasize }: { label: string; value: number; tone?: 'green' | 'slate' | 'red'; emphasize?: boolean }) {
-  const color = tone === 'green' ? 'text-green-700' : tone === 'red' ? 'text-red-600' : 'text-slate-800';
+function SummaryStat({ label, value, tone, emphasize }: { label: string; value: number; tone?: 'green' | 'slate' | 'red' | 'blue'; emphasize?: boolean }) {
+  const color = tone === 'green' ? 'text-green-700' : tone === 'red' ? 'text-red-600' : tone === 'blue' ? 'text-blue-700' : 'text-slate-800';
   return (
     <div className={`card py-2 text-center ${emphasize && value > 0 ? 'ring-1 ring-red-300' : ''}`}>
       <p className="text-[11px] text-slate-500">{label}</p>

@@ -5,9 +5,40 @@
 ---
 
 ## Last Updated
-2026-06-11
+2026-06-24
 
-## Current State — 수령 전 전표 수정 (TMT 스프린트, 3-step)
+## Current State — Phase 0 회계 정합성 토대 (TMT 스프린트, 4-step)
+
+세무신고 고도화 진단 → 4단계 계획 확정. 두 결정 locked: **과세·면세 겸영** + **세무사 전달용 자료 생성**. 전자세금계산서 직접발행/신고서 작성은 범위 밖, 표준 export가 산출물.
+
+### ✅ Step 1 — 환불 역분개 보강 (커밋 76793cd push 완료, 2026-06-24)
+- processRefund가 환불 시 매출·부가세·재고원가(COGS, products.cost) 역분개 생성. 기존엔 분개 완전 누락 → 매출·부가세 과대계상 최우선 버그.
+- 분개 생성/검증을 파괴적 쓰기(재고복원·포인트·상태전환) *이전*(step6.5)으로 이동 → 실패 시 전체 롤백. createSaleJournal이 새 분개 id 반환 → 반복 부분환불 멱등성 정확. RETURN 헤더 차대합에 COGS 포함(라인합=헤더합).
+- Richard 1차 Must Fix 2(멱등성 오판+롤백 불완전 회귀) → Bob Rev2 수정 → 2차 clean. 마이그 없음. schema.ts 동기화.
+
+### ✅ Step 2 — 매출 실원가 COGS 기록 + POS 매출분개 신설 (커밋 512a247 push 완료, 2026-06-24)
+- **핵심 발견**: POS(processPosCheckout)는 매출분개를 *아예* 생성 안 했음(cogs=0 아니라 분개 부재). 지금 POS 매출이 손익에 잡히던 건 getProfitLoss가 GL 아닌 운영테이블을 읽어서 → Step3 재배선의 전제가 됨.
+- POS createSaleJournal 신설(best-effort, 실패해도 결제 롤백X). COGS=실제 OUT분(팬텀자재 포함)×products.cost로 1130 감소와 일치. track_inventory=false는 0. cafe24=매핑분만 COGS, 미매핑0(보수적). createSaleJournal 헬퍼 미수정. Richard clean.
+
+### 🎯 Phase 0 남은 큐 (한 번에 하나, 재정렬됨)
+1. **Step 3 — GL 단일원천 재배선**: getProfitLoss/getVatReport를 운영테이블 대신 journal_entries 기반(accounting-actions.ts:87,561). 이제 POS도 GL에 있으니 전환 안전.
+2. **Step 4 — DB 무결성**: journal_entries total_debit=total_credit CHECK + accounting_period_closes 마감기간 분개차단 트리거(마이그 Arch 직접).
+3. **Step 5 — 정상잔액 부호 버그 + 시산표 탭**: 자산·비용=차변/부채·자본·수익=대변 부호 구분 + 시산표(전계정 차/대 합계 + 일치검증).
+
+### Known Gaps (Phase 0)
+- 과거 매출 분개 백필 미실행(Step2는 신규거래부터, 별도 1회성 스크립트 필요).
+- sales-cancel COGS 역분개 미보강(취소 시 재고 복원하나 COGS 환원 없음).
+- cafe24 미매핑 품목 cogs=0(매핑 추가 시 신규부터 자가보정).
+- 면세 정밀 안분 미구현(전액 과세 가정).
+
+### Phase 1~3 (계획 확정, 미착수)
+- P1 정식 재무제표(손익 완전형·재무상태표·결산정리·고정자산/감가상각·비용전표 UI)
+- P2 겸영 부가세자료(분개 라인 거래처+증빙유형 태깅, customers 사업자번호, 세금계산서 테이블, 공통매입세액 안분, 합계표 export) ← 핵심 목표
+- P3 운영(세무사 전달 표준 export, 신고완료 마킹, 감사추적)
+
+---
+
+## (이전) Current State — 수령 전 전표 수정 (TMT 스프린트, 3-step)
 
 판매 전표를 **수령 전(receipt_status != 'RECEIVED')** 단계에서 수정하는 기능. 3단계로 분할.
 

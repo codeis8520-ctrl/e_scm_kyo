@@ -10,7 +10,8 @@
 //  오픈재고 = 직전(report_date<해당일, 같은 branch) 일보의 같은 product_id 라인 closing_stock 이월(없으면 0).
 // ════════════════════════════════════════════════════════════════════════════
 import { createClient } from '@/lib/supabase/server';
-import { requireSession } from '@/lib/session';
+import { requireSession, writeAuditLog } from '@/lib/session';
+import { createSaleJournal } from '@/lib/accounting-actions';
 import { revalidatePath } from 'next/cache';
 
 const MANAGER_ROLES = new Set(['SUPER_ADMIN', 'HQ_OPERATOR', 'EXECUTIVE']);
@@ -171,6 +172,18 @@ export async function saveDailyReport(input: {
 
   const sb = (await createClient()) as any;
 
+  // E3 수정 잠금(Phase2a): 승인(APPROVED)·posting 완료 일보는 재고/분개가 이미 반영돼 재저장 시 정합 깨짐 → 차단.
+  //   수정하려면 승인취소(unpostDailyReport) 선행. (UNIQUE branch_id,report_date 로 기존 1건 조회.)
+  const { data: existing } = await sb
+    .from('daily_sales_reports')
+    .select('status, posted')
+    .eq('branch_id', branchId)
+    .eq('report_date', input.report_date)
+    .maybeSingle();
+  if (existing && (existing.status === 'APPROVED' || existing.posted === true)) {
+    return { error: '승인된 일보는 수정할 수 없습니다. 승인취소 후 수정하세요.' };
+  }
+
   // 당일매출 = Σ(현장매출 + 택배매출) 서버 재계산(클라값 무시).
   const dailyTotal = (input.lines || []).reduce(
     (s, l) => s + num(l.onsite_revenue) + num(l.parcel_revenue), 0
@@ -270,18 +283,19 @@ export async function listDailyReports(reportDate: string) {
     }
     return {
       branch_id: b.id, branch_name: b.name, report_id: r.id, author_name: r.author_name,
-      status: (r.status as 'SUBMITTED' | 'DRAFT'), daily_total: num(r.daily_total),
+      status: (r.status as 'SUBMITTED' | 'DRAFT' | 'APPROVED'), daily_total: num(r.daily_total),
       submitted_at: r.updated_at || r.created_at || null,
       sort_order: b.sort_order ?? 0,
     };
   });
 
-  // 미제출(MISSING) 먼저 부각 → 임시(DRAFT) → 제출(SUBMITTED), 동순위는 매장 sort_order.
-  const rank = (s: string) => (s === 'MISSING' ? 0 : s === 'DRAFT' ? 1 : 2);
+  // 미제출(MISSING) 먼저 부각 → 임시(DRAFT) → 제출(SUBMITTED) → 승인(APPROVED), 동순위는 매장 sort_order.
+  const rank = (s: string) => (s === 'MISSING' ? 0 : s === 'DRAFT' ? 1 : s === 'SUBMITTED' ? 2 : 3);
   rows.sort((a, b) => rank(a.status) - rank(b.status) || (a.sort_order - b.sort_order));
 
   const summary = {
     total: rows.length,
+    approved: rows.filter(r => r.status === 'APPROVED').length,
     submitted: rows.filter(r => r.status === 'SUBMITTED').length,
     draft: rows.filter(r => r.status === 'DRAFT').length,
     missing: rows.filter(r => r.status === 'MISSING').length,
@@ -301,4 +315,288 @@ export async function getDailyReportBranches() {
   }
   const { data } = await sb.from('branches').select('id, name').eq('is_active', true).order('sort_order').order('name');
   return { branches: (data as any[]) || [] };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Phase 2a — 승인(approve) → 재고이동 + 매출분개 / 승인취소(unpost) → 역연동
+//   🔴 실재고+회계 이동. 안전원칙: 분개 먼저 검증→실패 시 전체 throw(재고 미적용),
+//      posting/unposting 각 1회(posted 조건부 update 동시성 멱등).
+// ════════════════════════════════════════════════════════════════════════════
+
+interface ProductMeta { is_phantom: boolean; cost: number; allow_decimal: boolean; }
+
+// 라인 집계 → 실제 재고변동 단위(자재) 맵 산출. 팬텀은 BOM 분해. 반환: outMap/inMap(product_id→qty), cogs(onsite_sold분만).
+async function computeStockDeltas(
+  sb: any,
+  lines: { product_id: string | null; onsite_sold: number; sample_damage: number; in_return: number }[]
+): Promise<{ outMap: Map<string, number>; inMap: Map<string, number>; cogs: number; error?: string }> {
+  const pids = Array.from(new Set(lines.map(l => l.product_id).filter(Boolean))) as string[];
+  const meta = new Map<string, ProductMeta>();
+  if (pids.length) {
+    let res: any = await sb.from('products').select('id, is_phantom, cost, allow_decimal_stock').in('id', pids);
+    if (res.error) res = await sb.from('products').select('id, cost').in('id', pids); // 폴백(컬럼 부재)
+    for (const p of (res.data as any[]) || []) {
+      meta.set(p.id, { is_phantom: p.is_phantom === true, cost: Number(p.cost) || 0, allow_decimal: p.allow_decimal_stock === true });
+    }
+  }
+  // 팬텀 BOM 로드
+  const phantomIds = pids.filter(id => meta.get(id)?.is_phantom);
+  const bom = new Map<string, { material_id: string; quantity: number }[]>();
+  const matIds = new Set<string>();
+  if (phantomIds.length) {
+    const { data: bomRows } = await sb.from('product_bom').select('product_id, material_id, quantity').in('product_id', phantomIds);
+    for (const r of (bomRows as any[]) || []) {
+      const arr = bom.get(r.product_id) || [];
+      arr.push({ material_id: r.material_id, quantity: Number(r.quantity) || 0 });
+      bom.set(r.product_id, arr);
+      matIds.add(r.material_id);
+    }
+    for (const pid of phantomIds) {
+      if (!(bom.get(pid) || []).length) return { outMap: new Map(), inMap: new Map(), cogs: 0, error: '세트(팬텀) 품목에 BOM이 없어 승인할 수 없습니다.' };
+    }
+  }
+  // 자재 cost 보강
+  if (matIds.size) {
+    const { data: matRows } = await sb.from('products').select('id, cost').in('id', [...matIds]);
+    for (const m of (matRows as any[]) || []) {
+      const cur = meta.get(m.id);
+      if (cur) cur.cost = Number(m.cost) || 0;
+      else meta.set(m.id, { is_phantom: false, cost: Number(m.cost) || 0, allow_decimal: false });
+    }
+  }
+
+  const outMap = new Map<string, number>();
+  const inMap = new Map<string, number>();
+  let cogs = 0;
+  const addTo = (map: Map<string, number>, id: string, q: number) => { if (q) map.set(id, (map.get(id) || 0) + q); };
+
+  for (const l of lines) {
+    if (!l.product_id) continue;
+    const m = meta.get(l.product_id);
+    const out = num(l.onsite_sold) + num(l.sample_damage);
+    const inn = num(l.in_return);
+    const onsite = num(l.onsite_sold);
+    if (m?.is_phantom) {
+      // 팬텀 → 구성 자재로 분해(수량 비례). COGS=onsite_sold분 자재 cost.
+      for (const c of bom.get(l.product_id) || []) {
+        const mm = meta.get(c.material_id);
+        if (out) addTo(outMap, c.material_id, out * c.quantity);
+        if (inn) addTo(inMap, c.material_id, inn * c.quantity);
+        if (onsite) cogs += onsite * c.quantity * (mm?.cost || 0);
+      }
+    } else {
+      if (out) addTo(outMap, l.product_id, out);
+      if (inn) addTo(inMap, l.product_id, inn);
+      if (onsite) cogs += onsite * (m?.cost || 0);
+    }
+  }
+  return { outMap, inMap, cogs };
+}
+
+// inventories 증감 1건(음수 허용) + inventory_movements 기록.
+async function applyMovement(
+  sb: any, branchId: string, productId: string, qty: number,
+  movementType: 'IN' | 'OUT', referenceType: string, referenceId: string, createdBy: string, memo: string
+) {
+  const signed = movementType === 'IN' ? qty : -qty;
+  const { data: curArr } = await sb.from('inventories').select('quantity').eq('branch_id', branchId).eq('product_id', productId);
+  const cur = curArr?.[0];
+  if (!cur) {
+    await sb.from('inventories').insert({ branch_id: branchId, product_id: productId, quantity: signed, safety_stock: 0 });
+  } else {
+    await sb.from('inventories').update({ quantity: (Number(cur.quantity) || 0) + signed }).eq('branch_id', branchId).eq('product_id', productId);
+  }
+  await sb.from('inventory_movements').insert({
+    branch_id: branchId, product_id: productId, movement_type: movementType,
+    quantity: qty, reference_type: referenceType, reference_id: referenceId, created_by: createdBy, memo,
+  });
+}
+
+// 승인 → 매출분개(먼저·검증) + 재고이동(OUT 현장판매+시음파손 / IN 입고반품) + posted 멱등.
+export async function approveDailyReport(reportId: string) {
+  const session = await requireSession();
+  if (!MANAGER_ROLES.has(session.role)) return { error: '승인 권한이 없습니다.' };
+
+  const sb = (await createClient()) as any;
+  const { data: header } = await sb
+    .from('daily_sales_reports')
+    .select('id, branch_id, report_date, status, posted, daily_total, branch:branches(code)')
+    .eq('id', reportId).maybeSingle();
+  if (!header) return { error: '일보를 찾을 수 없습니다.' };
+  if (header.status !== 'SUBMITTED' || header.posted === true) {
+    return { error: '제출(SUBMITTED) 상태의 미반영 일보만 승인할 수 있습니다.' };
+  }
+
+  const { data: lines } = await sb
+    .from('daily_sales_report_lines')
+    .select('product_id, onsite_sold, sample_damage, in_return, onsite_revenue, parcel_revenue')
+    .eq('report_id', reportId);
+  const lineArr = (lines as any[]) || [];
+
+  // 재고 변동·COGS 산출(팬텀 분해). 슬롯 점유 전 계산만(부작용 없음). 실패 시 슬롯 미점유라 안전.
+  const { outMap, inMap, cogs, error: calcErr } = await computeStockDeltas(sb, lineArr);
+  if (calcErr) return { error: calcErr };
+
+  const totalRevenue = lineArr.reduce((s, l) => s + num(l.onsite_revenue) + num(l.parcel_revenue), 0);
+
+  // ★ 슬롯 선점(MF): 부작용(분개·재고) **이전에** posted false→true 조건부 update 로 단 1회만 통과.
+  //   영향행 0이면 부작용 0으로 즉시 중단(동시/더블서밋 패배자 = 깨끗). 이후 단계 실패 시 반드시 posted=false 해제(재시도 가능).
+  const { data: claimed, error: claimErr } = await sb
+    .from('daily_sales_reports')
+    .update({ posted: true, posted_at: new Date().toISOString() })
+    .eq('id', reportId).eq('posted', false).eq('status', 'SUBMITTED')
+    .select('id');
+  if (claimErr) return { error: claimErr.message };
+  if (!claimed?.length) return { error: '이미 승인 중이거나 승인 완료된 일보입니다.' };
+
+  // 슬롯 해제 헬퍼 — 점유 후 단계 실패 시 영구잠금 방지(posted=false 원복).
+  const releaseSlot = async () => {
+    await sb.from('daily_sales_reports')
+      .update({ posted: false, posted_at: null })
+      .eq('id', reportId).then(() => {}, () => {});
+  };
+
+  // ① 매출분개(검증). 차변=미수금 1115(credit), 대변 매출/VAT, COGS 5110/1130. 실패/대차불일치 → 슬롯 해제 후 error.
+  let journalId: string | null = null;
+  if (totalRevenue > 0 || cogs > 0) {
+    journalId = await createSaleJournal({
+      orderId: reportId,
+      orderNumber: `DR-${header.branch?.code || header.branch_id}-${header.report_date}`,
+      orderDate: header.report_date,
+      totalAmount: totalRevenue,
+      paymentMethod: 'credit',            // 백화점 월정산 → 미수금 1115 차변(PO E1)
+      cogs,
+      sourceType: 'DAILY_REPORT',
+      createdBy: session.id,
+      // taxableAmount 미전달 → 전액 과세 가정(Phase2a 범위).
+    });
+    if (!journalId) {
+      await releaseSlot();
+      return { error: '매출분개 생성에 실패했습니다(대차 불일치 가능). 재고는 반영되지 않았습니다.' };
+    }
+  }
+
+  // ② 재고 이동(OUT/IN). 슬롯 점유 + 분개 성공 후에만. NUMERIC 소수 안전.
+  const memo = `판매일보 승인 ${header.report_date}`;
+  try {
+    for (const [pid, q] of outMap) await applyMovement(sb, header.branch_id, pid, q, 'OUT', 'DAILY_REPORT', reportId, session.id, memo);
+    for (const [pid, q] of inMap) await applyMovement(sb, header.branch_id, pid, q, 'IN', 'DAILY_REPORT', reportId, session.id, memo);
+  } catch (e: any) {
+    // 재고 적용 중 예외: 분개만 롤백, **슬롯은 해제하지 않음(posted=true 유지)**.
+    //   releaseSlot 으로 posted=false 원복하면 partial movements/inventories 가 남은 채 재승인 → 이중차감.
+    //   따라서 예외 경로를 프로세스 크래시와 동일한 safe-limbo(posted=true·status=SUBMITTED)로 통일한다:
+    //   재승인(posted=true 차단)·승인취소(status≠APPROVED 차단) 모두 막혀 자동 이중차감 0, 운영 수동개입으로만 복구.
+    if (journalId) await sb.from('journal_entries').delete().eq('id', journalId).then(() => {}, () => {});
+    return { error: `재고 반영 실패: ${e?.message || e}. 분개는 롤백됐으나 일부 재고가 적용됐을 수 있어 잠금 상태입니다(관리자 확인 필요).` };
+  }
+
+  // ③ 마무리 확정 update(이미 posted=true 슬롯 점유 상태) — approved_by/at·journal_entry_id·status 확정.
+  const { error: upErr } = await sb
+    .from('daily_sales_reports')
+    .update({
+      status: 'APPROVED', approved_by: session.id, approved_at: new Date().toISOString(),
+      journal_entry_id: journalId, updated_at: new Date().toISOString(),
+    })
+    .eq('id', reportId);
+  if (upErr) return { error: upErr.message };
+
+  await writeAuditLog({ userId: session.id, action: 'DAILY_REPORT_APPROVE', tableName: 'daily_sales_reports', recordId: reportId, description: `판매일보 승인(분개 ${journalId || '없음'}, 매출 ${totalRevenue})` });
+  revalidatePath('/daily-report');
+  return { success: true, journalId, cogs, totalRevenue };
+}
+
+// 승인취소 → 역분개(먼저) + 반대 movements(DAILY_REPORT_CANCEL) + posted=false. 멱등.
+export async function unpostDailyReport(reportId: string) {
+  const session = await requireSession();
+  if (!MANAGER_ROLES.has(session.role)) return { error: '승인취소 권한이 없습니다.' };
+
+  const sb = (await createClient()) as any;
+  const { data: header } = await sb
+    .from('daily_sales_reports')
+    .select('id, branch_id, report_date, status, posted, journal_entry_id, branch:branches(code)')
+    .eq('id', reportId).maybeSingle();
+  if (!header) return { error: '일보를 찾을 수 없습니다.' };
+  if (header.status !== 'APPROVED' || header.posted !== true) {
+    return { error: '승인(반영)된 일보만 승인취소할 수 있습니다.' };
+  }
+
+  // 멱등 1차(저렴한 사전 차단): 이미 취소 movements 있으면 중복복원 차단(슬롯 점유가 권위 가드).
+  const { data: prevCancel } = await sb
+    .from('inventory_movements').select('id')
+    .eq('reference_type', 'DAILY_REPORT_CANCEL').eq('reference_id', reportId).limit(1);
+  if (prevCancel?.length) return { error: '이미 승인취소가 진행된 일보입니다.' };
+
+  const journalEntryId = header.journal_entry_id;   // 슬롯 점유 후 헤더가 비워지므로 미리 캡처.
+
+  // ★ 슬롯 선점(approve 대칭): 부작용(역분개·복원) 이전에 posted true→false 조건부 update 로 단 1회만 통과.
+  //   영향행 0이면 부작용 0으로 즉시 중단(동시 취소 패배자 = 깨끗). 이후 단계 실패 시 posted=true 로 해제(재시도 가능).
+  const { data: claimed, error: claimErr } = await sb
+    .from('daily_sales_reports')
+    .update({ posted: false, posted_at: null })
+    .eq('id', reportId).eq('posted', true).eq('status', 'APPROVED')
+    .select('id');
+  if (claimErr) return { error: claimErr.message };
+  if (!claimed?.length) return { error: '이미 승인취소되었거나 처리 중인 일보입니다.' };
+
+  // 슬롯 해제(원복) — 점유 후 단계 실패 시 posted=true 로 되돌려 재시도 가능.
+  const restoreSlot = async () => {
+    await sb.from('daily_sales_reports')
+      .update({ posted: true, posted_at: new Date().toISOString() })
+      .eq('id', reportId).then(() => {}, () => {});
+  };
+
+  // 역분개용 COGS·매출 재계산(라인 잠금 상태라 승인 시점과 동일).
+  const { data: lines } = await sb
+    .from('daily_sales_report_lines')
+    .select('product_id, onsite_sold, sample_damage, in_return, onsite_revenue, parcel_revenue')
+    .eq('report_id', reportId);
+  const lineArr = (lines as any[]) || [];
+  const { cogs } = await computeStockDeltas(sb, lineArr);
+  const totalRevenue = lineArr.reduce((s, l) => s + num(l.onsite_revenue) + num(l.parcel_revenue), 0);
+
+  // ① 역분개(음수 totalAmount + reversalOf). 분개 있었던 경우만. 실패 시 슬롯 해제 후 error.
+  if (journalEntryId && (totalRevenue > 0 || cogs > 0)) {
+    const revId = await createSaleJournal({
+      orderId: reportId,
+      orderNumber: `DR-${header.branch?.code || header.branch_id}-${header.report_date}`,
+      orderDate: header.report_date,
+      totalAmount: -totalRevenue,         // 음수 → 역분개
+      paymentMethod: 'credit',
+      cogs,
+      sourceType: 'DAILY_REPORT_CANCEL',
+      reversalOf: journalEntryId,
+      createdBy: session.id,
+    });
+    if (!revId) { await restoreSlot(); return { error: '역분개 생성에 실패했습니다. 재고는 복원되지 않았습니다.' }; }
+  }
+
+  // ② 재고 복원 — 기존 DAILY_REPORT movements 조회 후 반대 movement 신규 insert(원본 삭제 금지).
+  const memo = `판매일보 승인취소 ${header.report_date}`;
+  try {
+    const { data: orig } = await sb
+      .from('inventory_movements')
+      .select('product_id, movement_type, quantity')
+      .eq('reference_type', 'DAILY_REPORT').eq('reference_id', reportId);
+    for (const m of (orig as any[]) || []) {
+      const opposite: 'IN' | 'OUT' = m.movement_type === 'OUT' ? 'IN' : 'OUT';
+      await applyMovement(sb, header.branch_id, m.product_id, Number(m.quantity) || 0, opposite, 'DAILY_REPORT_CANCEL', reportId, session.id, memo);
+    }
+  } catch (e: any) {
+    await restoreSlot();
+    return { error: `재고 복원 실패: ${e?.message || e}. 슬롯 해제됨(재시도 가능).` };
+  }
+
+  // ③ 마무리 확정(이미 posted=false 슬롯) — status·approved·journal_entry_id 비움.
+  const { error: upErr } = await sb
+    .from('daily_sales_reports')
+    .update({
+      status: 'SUBMITTED', approved_by: null, approved_at: null, journal_entry_id: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', reportId);
+  if (upErr) return { error: upErr.message };
+
+  await writeAuditLog({ userId: session.id, action: 'DAILY_REPORT_UNPOST', tableName: 'daily_sales_reports', recordId: reportId, description: `판매일보 승인취소(역분개 reversalOf ${journalEntryId})` });
+  revalidatePath('/daily-report');
+  return { success: true };
 }

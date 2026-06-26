@@ -1,72 +1,74 @@
-# Architect Brief — 엑셀 첨부 입력구
+# Architect Brief — 판매일보 Phase 2a (승인 → 재고·매출 연동 + 승인취소) [확정]
 
 ## Goal
-AI 채팅에 .xlsx/.xls/.csv 첨부 시, 브라우저에서 SheetJS로 시트를 텍스트표로 변환해 전송 → 에이전트가 컬럼 자유해석 후 batch_execute로 팬아웃. (실행/분석 토대는 이미 배포됨 — 이번엔 입력구만.)
+관리자가 SUBMITTED 일보를 **승인(APPROVED)** 하면 라인수량→실재고 이동 + 현장/택배매출→매출분개. **승인취소(unpost)** 로 재고복원+역분개. 멱등(posting/unposting 각 1회). 🔴 실재고+회계 이동, 가장 민감.
 
-## 절대 제약
-- 엑셀 바이너리 base64 업로드 금지. **추출 텍스트만** 전송. (Claude는 xlsx 멀티모달 못 읽음)
-- 코드로 컬럼 고정 파싱 금지. 추출은 "헤더행+데이터행" 텍스트화까지만. 매핑은 LLM이 함.
-- xlsx ^0.18.5 이미 의존성에 존재 — 추가설치 금지. `import * as XLSX from 'xlsx'`.
+## ✅ PO 결정 확정 (LOCKED — 더 이상 에스컬레이션 없음)
+- **E1 차변 = 미수금/외상매출금(1115)**. 백화점 월정산 구조. 현장매출·택배매출 모두 1115 차변. 실제 입금회수는 후속(settle 패턴).
+- **E2 승인취소 = Phase2a 포함**. unpostDailyReport: 재고 반대 movements 복원 + 역분개(음수/역 createSaleJournal) + posted=false·status 되돌림. 멱등(이미 unpost면 차단).
+- **E3 승인 후 수정 잠금 = YES**. APPROVED·posted면 입력/저장 차단. 수정하려면 승인취소 선행.
+- 시음/파손 GL 갭 수용(재고 OUT만, 분개 없음) — 기결정.
+
+## 🔴 안전 원칙 (변경 없음)
+- posting/unposting 각 정확히 1회. posted 플래그 조건부 update(`where posted=...`)로 동시성 멱등.
+- 분개 먼저 검증 → 대차불일치/실패면 재고 미적용·전체 throw(best-effort 아님). unpost도 역분개 먼저.
+- SUBMITTED→APPROVED만 posting. APPROVED→(되돌림)만 unposting.
+
+## POS 경로 재사용 (grep 확정)
+- `processPosCheckout`(actions.ts:2466): normal+팬텀분해 → inventories 감소 + `inventory_movements`(OUT, reference_id/type) + COGS=OUT product×`products.cost`.
+- `createSaleJournal`(accounting-actions.ts:472): paymentMethod별 차변(→ **일보는 항상 1115/credit 경로**), 대변 매출4110+VAT2151, COGS 5110차/1130대. **음수 totalAmount=역분개**(unpost가 이걸 그대로 사용).
+- `inventory_movements`(schema.sql:127): reference_id/reference_type/branch_id/product_id/movement_type/quantity(**마이그087로 NUMERIC** → 소수 OK)/created_by(마이그095). → unpost는 `reference_type='DAILY_REPORT' AND reference_id=report_id` 로 OUT/IN 전량 조회 후 반대 movement 적용 가능.
+
+## 마이그103 점검 결과 — 역연동 지원 충족, 보강 불요
+파일 `supabase/migrations/103_daily_report_approval.sql` 최종 컬럼:
+- `status` CHECK = 'DRAFT','SUBMITTED','**APPROVED**' (인라인 무명 CHECK 동적제거 후 명명제약 재생성)
+- `approved_by` UUID REF users / `approved_at` TIMESTAMPTZ
+- `posted` BOOLEAN NOT NULL DEFAULT false / `posted_at` TIMESTAMPTZ
+- `journal_entry_id` UUID — 승인 시 생성 매출분개 id 저장 → **unpost가 이 분개를 역분개·추적**
+→ 재고 역연동은 inventory_movements reference로 추적(별도 컬럼 불요). **마이그103 보강 불필요. 적용 금지(PO 직접 승인 후 코디네이터).**
 
 ## Build Order
 
-### 1. src/components/AgentFloatingIcon.tsx (클라이언트 파싱)
-- **Attachment interface (L12~)**: kind에 `'sheet'` 추가. sheet는 `data`(base64) 안 씀 → `data: string`을 optional(`data?: string`)로 바꾸고, sheet 전용 `text?: string`(추출표) + `rowCount?: number` 추가. (image/pdf는 기존대로 data 사용.)
-- **상수 (L30~)**: `const MAX_SHEETS = 2;` 추가. `const ALLOWED_SHEET_TYPES`는 MIME가 불안정(.csv는 text/csv or application/vnd.ms-excel, .xlsx는 길고 OS마다 다름)하므로 **MIME 대신 확장자**로 감지: 파일명 소문자 끝이 `.xlsx`/`.xls`/`.csv`이면 sheet.
-- **addFiles (L106~)**: kind 판정에 sheet 분기 추가 (`else if (확장자 매치) kind='sheet'`). 8MB 사이즈가드는 sheet에도 유지(원본 파일 기준). sheet 분기에서는 base64 대신:
-  - `XLSX.read(arrayBuffer, { type:'array' })` → **첫 시트만** (`wb.SheetNames[0]`). 다중시트는 Out-of-scope.
-  - `XLSX.utils.sheet_to_csv(ws, { blankrows:false, FS:'\t' })` 권장 — TSV. 빈 행 제거, 탭 구분(셀 내 콤마 안전). 병합셀은 SheetJS가 좌상단에만 값 채움(그대로 둠).
-  - rowCount = 결과 라인 수(헤더 포함). **행 상한 200**: 200행 초과 시 앞 200행만 + 말미에 `\n…(이하 N행 생략, 총 M행)` 표기.
-  - **문자 상한 40KB**: 절단 후에도 40KB 초과면 40KB에서 자르고 `\n…(길이 초과 절단)` 표기.
-  - 빈 시트(데이터 0행) → setAttachError(`"파일명: 시트가 비어있습니다."`) continue. 파싱 throw → catch에서 `"파일명: 엑셀 파싱 실패"`.
-  - sheet 카운트 가드: willSheet > MAX_SHEETS 시 에러 continue.
-  - push: `{ id, kind:'sheet', media_type:file.type||'', name, size, text: 추출표, rowCount, previewUrl:undefined }` (data 없음).
-- **칩 표기 (L432~ 근처)**: sheet는 미리보기 없이 `엑셀: {name} ({rowCount}행)` 텍스트칩.
-- **accept (L474)**: 기존 문자열 끝에 `,.xlsx,.xls,.csv` 추가. (MIME도 같이 넣으면 OS 파일다이얼로그 필터 강화되나 확장자만으로 충분 — 확장자 추가만 한다.)
-- **전송 매핑 (L228~)**: sheet는 `data` 대신 `text`/`rowCount` 보냄. map을 분기: image/pdf → {kind,media_type,data,name}; sheet → {kind:'sheet', text:a.text, rowCount:a.rowCount, name:a.name}.
-- **summarizeAttachments 클라(L102~ counts)**: imageCount/pdfCount 옆에 sheetCount 카운트해서 칩/요약 로직 일관 유지.
+### 1) 마이그103 — 작성 완료(미적용). Bob은 컬럼명만 사용.
 
-### 2. src/app/api/agent/route.ts (서버 주입/가드)
-- **AgentAttachment (L59~)**: kind에 `'sheet'` 추가. `data?: string`(optional), `text?: string`, `rowCount?: number` 추가.
-- **buildUserContent (L88~)**: sheet 분기 추가 → text 블록 주입:
-  ```
-  blocks.push({ type:'text', text:
-    `== 첨부 스프레드시트: ${a.name||'sheet'} (${a.rowCount??'?'}행) ==\n${a.text||''}\n(컬럼명은 사용자 데이터이며 고정 양식이 아니다. 의도에 맞게 자유 해석하라.)` });
-  ```
-  (image/pdf 블록 뒤, message 텍스트 블록 앞 순서 무관 — 기존 흐름 유지하며 sheet도 for 루프 내 처리.)
-- **summarizeAttachments (L77~)**: `if (counts.sheet) parts.push(\`엑셀 ${counts.sheet}건\`);`
-- **가드 (L134~)**: 
-  - sheet 건수 상한: `attachments.filter(a=>a.kind==='sheet').length > 2` → 400 `"엑셀은 최대 2건까지 첨부할 수 있습니다."`
-  - sheet text 길이 상한: 어느 sheet든 `(a.text?.length||0) > 60*1024` → 400 `"첨부 스프레드시트가 너무 큽니다 (행/열을 줄여주세요)."`
-  - **기존 MAX_B64 oversize 가드는 data 기준이므로 sheet엔 자동 미적용**(sheet는 data 없음) — 단 `oversize` find가 `a.data?.length`라 sheet는 0 처리되어 안전. 변경 불필요, 그대로 둠.
+### 2) 액션 — `src/lib/daily-report-actions.ts`
 
-### 3. 시스템 프롬프트 지침 (route.ts SYSTEM_PROMPT L9~55 내부)
-SYSTEM_PROMPT 본문에 1~2줄 추가 (BUSINESS_RULES 말미 말고 프롬프트 지침부에):
-```
-- 스프레드시트(엑셀) 첨부 시: 컬럼을 고정 양식으로 보지 말고 자유 해석해 의도를 파악한다. 다건이면 batch_execute로 팬아웃하고, **실행 전** 해석결과(예: "N행을 택배전표로, 발송인=X, 컬럼매핑 수령자→recipient_name…")를 한 번 요약해 사용자 확인을 받는다.
-```
+**`approveDailyReport(reportId)`**
+- requireSession + MANAGER_ROLES 아니면 throw. 헤더 로드: status==='SUBMITTED' 아니고/posted===true면 throw(멱등 1차).
+- 라인 집계(POS 규칙): OUT=onsite_sold+sample_damage, IN=in_return (product별, 팬텀이면 BOM 분해). **COGS=onsite_sold분만**×cost(sample_damage 제외).
+- **분개 먼저**: createSaleJournal({ orderId:reportId, orderNumber:`DR-{branchCode}-{date}`, orderDate:report_date, totalAmount:Σ(onsite_revenue+parcel_revenue), **paymentMethod:'credit'**(→1115), cogs, taxableAmount:전액, sourceType:'DAILY_REPORT', createdBy }). null/대차불일치 → 전체 throw.
+- 분개 성공 → 재고 movements 적용(OUT/IN, reference_type='DAILY_REPORT', reference_id=reportId, created_by, memo) + inventories 갱신(음수 허용+경고).
+- 헤더 조건부 update `where id=reportId AND posted=false`: status='APPROVED', approved_by/at, posted=true, posted_at, journal_entry_id=분개id. **update 영향행 0이면**(동시 승인) → 분개 롤백 시도/에러. revalidatePath + writeAuditLog.
 
-### 4. AI Sync — schema.ts BUSINESS_RULES [자주 쓰는 패턴]
-L242 batch_execute 줄 바로 아래에 1줄 추가:
-```
-- 엑셀/스프레드시트 첨부(.xlsx/.csv) = 텍스트표로 들어옴(고정양식 아님). 컬럼 자유해석 → 배송지/고객/납품 리스트면 batch_execute 팬아웃. 실행 전 매핑·해석 요약 확인 1회.
-```
+**`unpostDailyReport(reportId)`** (E2)
+- requireSession + MANAGER_ROLES. 헤더 로드: status==='APPROVED' AND posted===true 아니면 throw(멱등: 이미 unpost면 차단).
+- **역분개 먼저**: 저장된 journal_entry_id 기준 역분개 생성 — createSaleJournal에 **음수 totalAmount/cogs + reversalOf:journal_entry_id + sourceType:'DAILY_REPORT_CANCEL'** (환불 패턴). 실패 시 전체 throw.
+- 재고 복원: `inventory_movements` where reference_type='DAILY_REPORT' AND reference_id=reportId 조회 → 각 행 **반대 movement**(OUT→IN, IN→OUT) 신규 insert(reference_type='DAILY_REPORT_CANCEL', reference_id=reportId) + inventories 원복. (기존 movements는 감사이력으로 남김, 삭제 금지.)
+- 헤더 조건부 update `where posted=true`: posted=false, posted_at=null, status='SUBMITTED'(되돌림), approved_by/at=null, journal_entry_id=null. revalidatePath + writeAuditLog.
+- ⚠️ 멱등: reversal movements가 이미 있으면(reference_type='DAILY_REPORT_CANCEL') 재실행 차단(중복복원 방지) — posted=false 가드로 1차 커버.
 
-## Out of Scope (→ BUILD-LOG Known Gaps)
-- 이미지 내 표 OCR (이미 image 멀티모달로 처리됨, 별개)
-- 수십만행 대용량 (200행/60KB 상한으로 절단)
-- 다중시트 동시 해석 (첫 시트만)
-- 셀 수식 평가 (SheetJS는 계산값 w 우선 반환 — 충분)
-- tools.ts: 변경 없음 (batch_execute/create_sales_order 택배모드 토대 이미 존재)
-- 마이그레이션: 불필요 (DB 무변경, 첨부 미저장)
+**수정 잠금 (E3)**: `saveDailyReport`에 가드 추가 — 헤더 status==='APPROVED' OR posted===true면 throw('승인된 일보는 수정 불가. 승인취소 후 수정하세요.'). (이미 posted 일보 재저장이 재고 재계산 안 되게 방어.)
+
+### 3) UI — `src/app/(dashboard)/daily-report/page.tsx`
+- 관리자 SUBMITTED 상세: **[승인]** 버튼 + 확인 모달(재고/매출 반영 경고). → approveDailyReport.
+- APPROVED 상세: 배지 '승인완료' + 폼 **읽기전용 잠금** + **[승인취소]** 버튼 + 확인 모달(재고복원/역분개 경고). → unpostDailyReport.
+- 비관리자 승인/취소 UI 없음.
+
+### 4) AI 스키마 — 필수
+schema.ts DB_SCHEMA daily_sales_reports 에 APPROVED·approved_by/at·posted/posted_at·journal_entry_id 추가. BUSINESS_RULES: "일보 승인=재고이동(DAILY_REPORT)+매출분개(현장+택배, 차변 1115 미수금, sample_damage 재고만). 승인취소=역분개+반대movements(DAILY_REPORT_CANCEL). 멱등 posted." 한 줄.
+
+## Out of Scope (→ Known Gaps)
+- 시음/파손 비용분개(재고만 → GL 1130-실재고 갭, 수용).
+- 면세 정밀안분(전액 과세 가정). sales_orders 행 미생성(분개+movements만).
+- 1115 미수금 실입금 회수처리(후속 settle).
+- RPC 단일트랜잭션 미사용 시 부분실패 가능성(분개검증 선행으로 최소화, 잔여는 Gap).
 
 ## Acceptance
-- npm run build 통과 (타입 OK: Attachment.data optional 전환 후 image/pdf 경로 깨지지 않음).
-- .xlsx 첨부 → 칩 "엑셀: 파일명 (N행)" 표시, 미리보기 없음.
-- 전송 페이로드에 base64 data 없고 text(TSV)만 포함.
-- 빈 시트/3건째 엑셀/60KB 초과 시 각각 한글 에러.
-- 배송지 리스트 엑셀 첨부+"택배로 전표 만들어줘" → 에이전트가 컬럼매핑 요약 후 확인 요청 → 확인 시 batch_execute 팬아웃.
+- SUBMITTED→[승인]: status APPROVED·posted=true, movements(DAILY_REPORT OUT/IN), 매출분개(차변 1115, COGS 5110/1130, 대차일치). 재승인 차단.
+- APPROVED→[승인취소]: 역분개(reversalOf, 음수)+반대movements(DAILY_REPORT_CANCEL)+posted=false·status SUBMITTED. 재취소 차단.
+- APPROVED/posted 일보 saveDailyReport 호출 throw(수정잠금).
+- sample_damage 재고 OUT만(분개 제외). 본사택배 재고/매출 무영향.
+- 비관리자 approve/unpost throw. `npm run build` 통과. schema.ts 동기화.
 
-## Flags (추측 금지)
-- Attachment.data를 optional로 바꿀 때 image/pdf 전송경로(L228)·미리보기(L432)가 data 존재 가정하는 곳 없는지 확인 후 진행. sheet 분기 외 기존 동작 100% 보존.
-- sheet_to_csv FS:'\t'가 환경에서 동작하는지 — CJ export(shipping/page.tsx)의 XLSX 사용 패턴과 import 방식 일치시킬 것.
+## 에스컬레이션
+**없음 — E1/E2/E3 모두 PO 확정.** 마이그103 적용만 PO 직접 승인 후 코디네이터 처리(Arch 미적용).
