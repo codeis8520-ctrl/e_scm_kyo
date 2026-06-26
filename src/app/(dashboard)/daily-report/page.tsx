@@ -319,6 +319,7 @@ export default function DailyReportPage() {
           <thead>
             <tr className="text-[11px] text-slate-500 bg-slate-50 border-b border-slate-200">
               <th className="text-left px-2 py-2 sticky left-0 bg-slate-50 z-10 min-w-[160px]">품목</th>
+              <th className="px-2 py-2 font-medium text-right">판매가</th>
               <th className="px-1 py-2 font-medium">오픈재고</th>
               <th className="px-1 py-2 font-medium">입고/반품</th>
               <th className="px-1 py-2 font-medium">현장판매</th>
@@ -352,6 +353,7 @@ export default function DailyReportPage() {
                     </div>
                     {l.product_code && <p className="text-[10px] text-slate-400 font-mono">{l.product_code}</p>}
                   </td>
+                  <td className="px-2 py-1 text-right text-slate-600 whitespace-nowrap tabular-nums">{num(l.unit_price).toLocaleString()}</td>
                   <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.opening_stock} onChange={e => updateLine(i, 'opening_stock', e.target.value)} className={cellCls} /></td>
                   <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.in_return} onChange={e => updateLine(i, 'in_return', e.target.value)} className={cellCls} /></td>
                   <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.onsite_sold} onChange={e => updateLine(i, 'onsite_sold', e.target.value)} className={cellCls} /></td>
