@@ -384,7 +384,7 @@ export default function DailyReportPage() {
   const showFullGrid = showAll;
 
   return (
-    <div className="max-w-2xl mx-auto space-y-4 pb-28">
+    <div className={`${showFullGrid ? 'max-w-5xl' : 'max-w-2xl'} mx-auto space-y-4`}>
       <div className="flex items-center gap-2">
         <h1 className="text-lg font-bold text-slate-800">📝 판매일보</h1>
         {(!isManager || mgrTab === 'input') && status && (
@@ -600,7 +600,7 @@ export default function DailyReportPage() {
 
       {/* 하단 고정 버튼 — 승인상태별 분기. 승인취소 버튼은 fieldset 밖(잠금 무관 클릭 가능). */}
       {!loading && (
-        <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-4 py-3 flex gap-2 max-w-2xl mx-auto">
+        <div className="sticky bottom-0 z-30 px-4 py-3 bg-white border border-slate-200 rounded-t-xl flex gap-2 shadow-[0_-2px_10px_rgba(0,0,0,0.06)]">
           {isApproved ? (
             isManager ? (
               <button onClick={() => setConfirmAction('unpost')} disabled={saving} className="btn-secondary flex-1 py-2.5 text-red-600 disabled:opacity-40">승인취소</button>
