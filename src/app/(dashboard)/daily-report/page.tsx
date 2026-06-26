@@ -42,6 +42,10 @@ export default function DailyReportPage() {
   const [msg, setMsg] = useState<string | null>(null);
   // 마감재고 수동수정 토글(라인 인덱스 집합) — 토글 시 closing_stock 직접입력 허용.
   const [manualClosing, setManualClosing] = useState<Set<number>>(new Set());
+  // 판매사원 콤보모드: 검색어 + 편집중 라인 인덱스(콤보로 추가/제거). lines 자체는 전 품목 유지(저장 무변경).
+  const [comboSearch, setComboSearch] = useState('');
+  const [editedIdx, setEditedIdx] = useState<Set<number>>(new Set());
+  const [showAll, setShowAll] = useState(false);   // [전체 보기] 토글(비관리자도 전 품목 그리드)
 
   useEffect(() => {
     getDailyReportBranches().then(r => {
@@ -52,7 +56,7 @@ export default function DailyReportPage() {
 
   const load = useCallback(async () => {
     if (!branchId) { setLoading(false); return; }
-    setLoading(true); setError(null); setMsg(null); setManualClosing(new Set());
+    setLoading(true); setError(null); setMsg(null); setManualClosing(new Set()); setComboSearch('');
     const res = await getDailyReport(branchId, reportDate);
     if (res.error) { setError(res.error); setLines([]); setStatus(null); setLoading(false); return; }
     if (res.report) {
@@ -62,14 +66,22 @@ export default function DailyReportPage() {
       setStatus(res.report.header.status);
       // 기존 저장분 중 자동값과 다른 closing 은 수동수정으로 간주(차이 배지 노출).
       const manual = new Set<number>();
-      l.forEach((line, i) => { if (num(line.closing_stock) !== autoClosing(line)) manual.add(i); });
+      const edited = new Set<number>();
+      l.forEach((line, i) => {
+        if (num(line.closing_stock) !== autoClosing(line)) manual.add(i);
+        // 이미 움직인 라인(판매/증정/입고/매출 등 0 아님)은 콤보모드에서 편집중 카드로 노출.
+        if (num(line.onsite_sold) || num(line.sample_damage) || num(line.in_return) ||
+            num(line.hq_parcel) || num(line.onsite_revenue) || num(line.parcel_revenue)) edited.add(i);
+      });
       setManualClosing(manual);
+      setEditedIdx(edited);
     } else {
       const tpl = await getReportTemplate(branchId, reportDate);
       if (tpl.error) { setError(tpl.error); setLines([]); setStatus(null); setLoading(false); return; }
       setLines(tpl.template?.lines || []);
       setNote('');
       setStatus(null);
+      setEditedIdx(new Set());
     }
     setLoading(false);
   }, [branchId, reportDate]);
@@ -87,6 +99,7 @@ export default function DailyReportPage() {
       next[i] = line;
       return next;
     });
+    setEditedIdx(prev => prev.has(i) ? prev : new Set(prev).add(i));   // 값 건드린 라인=편집중
   };
 
   const toggleManual = (i: number) => {
@@ -103,21 +116,52 @@ export default function DailyReportPage() {
     });
   };
 
+  // 인덱스 집합 재계산(라인 삭제 시 i 이후 한 칸 당김).
+  const reindexAfterRemove = (set: Set<number>, removed: number): Set<number> => {
+    const n = new Set<number>();
+    set.forEach(idx => { if (idx < removed) n.add(idx); else if (idx > removed) n.add(idx - 1); });
+    return n;
+  };
+
   const removeLine = (i: number) => {
     setLines(prev => prev.filter((_, idx) => idx !== i));
-    setManualClosing(prev => {
-      const n = new Set<number>();
-      prev.forEach(idx => { if (idx < i) n.add(idx); else if (idx > i) n.add(idx - 1); });
-      return n;
-    });
+    setManualClosing(prev => reindexAfterRemove(prev, i));
+    setEditedIdx(prev => reindexAfterRemove(prev, i));
   };
 
   const addLine = () => {
-    setLines(prev => [...prev, {
-      product_id: null, product_code: null, product_name: '', unit_price: 0,
-      opening_stock: 0, onsite_sold: 0, sample_damage: 0, in_return: 0, closing_stock: 0,
-      hq_parcel: 0, onsite_revenue: 0, parcel_revenue: 0, sort_order: prev.length,
-    }]);
+    setLines(prev => {
+      const next = [...prev, {
+        product_id: null, product_code: null, product_name: '', unit_price: 0,
+        opening_stock: 0, onsite_sold: 0, sample_damage: 0, in_return: 0, closing_stock: 0,
+        hq_parcel: 0, onsite_revenue: 0, parcel_revenue: 0, sort_order: prev.length,
+      } as DailyReportLineInput];
+      setEditedIdx(prevSet => new Set(prevSet).add(next.length - 1));   // 새 라인=편집중 노출
+      return next;
+    });
+  };
+
+  // 콤보: 검색어로 미편집 라인 필터(이미 추가된 건 후보 제외). 추가 DB 조회 없음(메모리 lines).
+  const comboCandidates = useMemo(() => {
+    const q = comboSearch.trim().toLowerCase();
+    return lines
+      .map((l, i) => ({ l, i }))
+      .filter(({ l, i }) =>
+        !editedIdx.has(i) &&
+        (!q ||
+          (l.product_name || '').toLowerCase().includes(q) ||
+          (l.product_code || '').toLowerCase().includes(q))
+      )
+      .slice(0, 30);
+  }, [lines, comboSearch, editedIdx]);
+
+  const addToEdited = (i: number) => {
+    setEditedIdx(prev => new Set(prev).add(i));
+    setComboSearch('');
+  };
+  const removeFromEdited = (i: number) => {
+    // 라인 자체는 lines에 남아 이월값으로 저장됨(브리프 2번). 편집중 카드에서만 제거.
+    setEditedIdx(prev => { const n = new Set(prev); n.delete(i); return n; });
   };
 
   const totals = useMemo(() => {
@@ -138,6 +182,83 @@ export default function DailyReportPage() {
     setMsg(newStatus === 'SUBMITTED' ? '제출되었습니다.' : '임시저장되었습니다.');
     setSaving(false);
   };
+
+  // 라인 입력 카드 — 관리자 그리드/전체보기/콤보 편집중 영역 공용. onRemove 만 모드별 주입.
+  const renderCard = (l: DailyReportLineInput, i: number, onRemove: () => void, removeTitle: string) => {
+    const auto = autoClosing(l);
+    const isManual = manualClosing.has(i);
+    const diff = num(l.closing_stock) - auto;
+    return (
+      <div key={i} className="card space-y-2">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex-1 min-w-0">
+            {l.product_id ? (
+              <p className="font-medium text-sm text-slate-800 break-words">{l.product_name}</p>
+            ) : (
+              <input
+                type="text" value={l.product_name}
+                onChange={e => updateLine(i, 'product_name', e.target.value)}
+                placeholder="품목명 직접 입력"
+                className="input text-sm font-medium w-full"
+              />
+            )}
+            {l.product_code && <p className="text-[11px] text-slate-400 font-mono">{l.product_code}</p>}
+          </div>
+          <button onClick={onRemove} className="text-slate-300 hover:text-red-500 text-lg leading-none px-1" title={removeTitle}>×</button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <NumField label="오픈재고" value={l.opening_stock} onChange={v => updateLine(i, 'opening_stock', v)} />
+          <NumField label="입고/반품" value={l.in_return} onChange={v => updateLine(i, 'in_return', v)} />
+          <NumField label="현장판매" value={l.onsite_sold} onChange={v => updateLine(i, 'onsite_sold', v)} />
+          <NumField label="시음증정/파손" value={l.sample_damage} onChange={v => updateLine(i, 'sample_damage', v)} />
+        </div>
+
+        {/* 마감재고 — 자동 또는 수동 */}
+        <div className="rounded-lg bg-slate-50 px-3 py-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-slate-500">마감재고</span>
+            <button onClick={() => toggleManual(i)} className="text-[11px] text-blue-600 underline">
+              {isManual ? '자동으로' : '직접 수정'}
+            </button>
+          </div>
+          {isManual ? (
+            <div className="flex items-center gap-2 mt-1">
+              <input
+                type="number" inputMode="decimal" step="any"
+                value={l.closing_stock}
+                onChange={e => updateLine(i, 'closing_stock', e.target.value)}
+                className="input text-sm w-28 font-semibold"
+              />
+              {diff !== 0 && (
+                <span className={`badge text-[10px] ${diff > 0 ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}`}>
+                  자동 {auto} ({diff > 0 ? '+' : ''}{diff})
+                </span>
+              )}
+            </div>
+          ) : (
+            <p className="text-base font-semibold text-slate-800 mt-0.5">{auto}</p>
+          )}
+        </div>
+
+        <div className="grid grid-cols-3 gap-2">
+          <NumField label="현장매출" value={l.onsite_revenue} onChange={v => updateLine(i, 'onsite_revenue', v)} won />
+          <NumField label="본사택배" value={l.hq_parcel} onChange={v => updateLine(i, 'hq_parcel', v)} />
+          <NumField label="택배매출" value={l.parcel_revenue} onChange={v => updateLine(i, 'parcel_revenue', v)} won />
+        </div>
+      </div>
+    );
+  };
+
+  // 전 품목 그리드(관리자 / [전체 보기] on). 라인 제거=removeLine(라인 자체 삭제).
+  const fullGrid = (
+    <div className="space-y-3">
+      {lines.map((l, i) => renderCard(l, i, () => removeLine(i), '라인 삭제'))}
+      <button onClick={addLine} className="btn-secondary text-sm w-full py-2">+ 품목 추가</button>
+    </div>
+  );
+
+  const showFullGrid = isManager || showAll;
 
   return (
     <div className="max-w-2xl mx-auto space-y-4 pb-28">
@@ -169,80 +290,70 @@ export default function DailyReportPage() {
       {error && <div className="rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-2">{error}</div>}
       {msg && <div className="rounded-lg bg-green-50 border border-green-200 text-green-700 text-sm px-3 py-2">{msg}</div>}
 
+      {/* 비관리자 전용 [전체 보기] 토글 — 콤보 ↔ 전 품목 그리드. 관리자는 항상 그리드. */}
+      {!loading && !isManager && lines.length > 0 && (
+        <div className="flex justify-end">
+          <button onClick={() => setShowAll(v => !v)} className="text-xs text-blue-600 underline">
+            {showAll ? '← 검색 입력으로' : '전체 보기 →'}
+          </button>
+        </div>
+      )}
+
       {loading ? (
         <div className="text-center py-12 text-slate-400">불러오는 중...</div>
       ) : lines.length === 0 ? (
         <div className="card text-center py-10 text-slate-400 text-sm">
           취급 품목이 없습니다. 아래 [품목 추가]로 직접 입력하세요.
+          <div className="mt-3"><button onClick={addLine} className="btn-secondary text-sm py-2 px-4">+ 품목 추가</button></div>
         </div>
+      ) : showFullGrid ? (
+        fullGrid
       ) : (
+        // 판매사원 콤보 모드 — 검색해 움직인 품목만 입력 카드로 추가. 미선택 품목은 이월값으로 백그라운드 저장.
         <div className="space-y-3">
-          {lines.map((l, i) => {
-            const auto = autoClosing(l);
-            const isManual = manualClosing.has(i);
-            const diff = num(l.closing_stock) - auto;
-            return (
-              <div key={i} className="card space-y-2">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    {l.product_id ? (
-                      <p className="font-medium text-sm text-slate-800 break-words">{l.product_name}</p>
-                    ) : (
-                      <input
-                        type="text" value={l.product_name}
-                        onChange={e => updateLine(i, 'product_name', e.target.value)}
-                        placeholder="품목명 직접 입력"
-                        className="input text-sm font-medium w-full"
-                      />
-                    )}
-                    {l.product_code && <p className="text-[11px] text-slate-400 font-mono">{l.product_code}</p>}
-                  </div>
-                  <button onClick={() => removeLine(i)} className="text-slate-300 hover:text-red-500 text-lg leading-none px-1" title="라인 삭제">×</button>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <NumField label="오픈재고" value={l.opening_stock} onChange={v => updateLine(i, 'opening_stock', v)} />
-                  <NumField label="입고/반품" value={l.in_return} onChange={v => updateLine(i, 'in_return', v)} />
-                  <NumField label="현장판매" value={l.onsite_sold} onChange={v => updateLine(i, 'onsite_sold', v)} />
-                  <NumField label="시음증정/파손" value={l.sample_damage} onChange={v => updateLine(i, 'sample_damage', v)} />
-                </div>
-
-                {/* 마감재고 — 자동 또는 수동 */}
-                <div className="rounded-lg bg-slate-50 px-3 py-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-slate-500">마감재고</span>
-                    <button onClick={() => toggleManual(i)} className="text-[11px] text-blue-600 underline">
-                      {isManual ? '자동으로' : '직접 수정'}
+          <div className="card space-y-2">
+            <input
+              type="text"
+              value={comboSearch}
+              onChange={e => setComboSearch(e.target.value)}
+              placeholder="제품명·코드 검색 후 선택"
+              className="input text-sm w-full"
+            />
+            {comboSearch.trim() && (
+              comboCandidates.length === 0 ? (
+                <p className="text-xs text-slate-400 px-1">일치하는 품목이 없습니다.</p>
+              ) : (
+                <div className="max-h-56 overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-lg">
+                  {comboCandidates.map(({ l, i }) => (
+                    <button
+                      key={i}
+                      onClick={() => addToEdited(i)}
+                      className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center justify-between gap-2"
+                    >
+                      <span className="text-sm text-slate-700 truncate">
+                        {l.product_name}
+                        {l.product_code && <span className="text-[11px] text-slate-400 font-mono ml-1.5">{l.product_code}</span>}
+                      </span>
+                      <span className="text-[11px] text-blue-600 shrink-0">+ 추가</span>
                     </button>
-                  </div>
-                  {isManual ? (
-                    <div className="flex items-center gap-2 mt-1">
-                      <input
-                        type="number" inputMode="decimal" step="any"
-                        value={l.closing_stock}
-                        onChange={e => updateLine(i, 'closing_stock', e.target.value)}
-                        className="input text-sm w-28 font-semibold"
-                      />
-                      {diff !== 0 && (
-                        <span className={`badge text-[10px] ${diff > 0 ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}`}>
-                          자동 {auto} ({diff > 0 ? '+' : ''}{diff})
-                        </span>
-                      )}
-                    </div>
-                  ) : (
-                    <p className="text-base font-semibold text-slate-800 mt-0.5">{auto}</p>
-                  )}
+                  ))}
                 </div>
+              )
+            )}
+            <p className="text-[11px] text-slate-400 px-1">
+              움직인 품목만 검색해 추가하세요. 선택 안 한 품목은 어제 마감재고가 그대로 이월 저장됩니다.
+            </p>
+          </div>
 
-                <div className="grid grid-cols-3 gap-2">
-                  <NumField label="현장매출" value={l.onsite_revenue} onChange={v => updateLine(i, 'onsite_revenue', v)} won />
-                  <NumField label="본사택배" value={l.hq_parcel} onChange={v => updateLine(i, 'hq_parcel', v)} />
-                  <NumField label="택배매출" value={l.parcel_revenue} onChange={v => updateLine(i, 'parcel_revenue', v)} won />
-                </div>
-              </div>
-            );
-          })}
-          <button onClick={addLine} className="btn-secondary text-sm w-full py-2">+ 품목 추가</button>
+          {/* 편집중 카드 — editedIdx 라인만 */}
+          {[...editedIdx].sort((a, b) => a - b).map(i => (
+            lines[i] ? renderCard(lines[i], i, () => removeFromEdited(i), '입력 목록에서 제거(이월값으로 저장됨)') : null
+          ))}
+          {editedIdx.size === 0 && (
+            <div className="card text-center py-8 text-slate-400 text-sm">위에서 품목을 검색해 추가하세요.</div>
+          )}
+
+          <button onClick={addLine} className="btn-secondary text-sm w-full py-2">+ 취급외 품목 직접 추가</button>
         </div>
       )}
 
