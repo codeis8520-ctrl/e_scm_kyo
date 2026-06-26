@@ -30,6 +30,7 @@ export interface DailyReportLineInput {
   onsite_revenue: number;
   parcel_revenue: number;
   sort_order: number;
+  system_stock?: number | null;   // 표시/대조용 — 현재 시스템 재고(inventories.quantity). DB 저장 안 함.
 }
 
 export interface DailyReportHeader {
@@ -88,7 +89,22 @@ export async function getDailyReport(branchId: string, reportDate: string) {
     .order('sort_order', { ascending: true });
   if (lErr) { console.error('[daily-report] getDailyReport lines error:', lErr); return { error: lErr.message }; }
 
-  return { report: { header, lines: (lines as DailyReportLineInput[]) || [] }, branchId: resolved };
+  // 현재 시스템 재고(inventories.quantity) 대조용 — 저장 라인엔 없으므로 라이브 조회해 주입.
+  //   오픈재고(저장 스냅샷)와 다르면 UI 가 ⚠ 경고(승인 지연 또는 외부 재고변동).
+  const { data: invRows } = await sb
+    .from('inventories')
+    .select('product_id, quantity')
+    .eq('branch_id', resolved);
+  const stockByProduct = new Map<string, number>();
+  for (const r of (invRows as any[]) || []) {
+    if (r.product_id) stockByProduct.set(r.product_id, num(r.quantity));
+  }
+  const linesWithStock = ((lines as DailyReportLineInput[]) || []).map(l => ({
+    ...l,
+    system_stock: l.product_id ? (stockByProduct.get(l.product_id) ?? 0) : null,
+  }));
+
+  return { report: { header, lines: linesWithStock }, branchId: resolved };
 }
 
 // 일보 없을 때 prefill 템플릿: 취급 완제품 + 전일 마감 이월 오픈재고.
@@ -104,7 +120,7 @@ export async function getReportTemplate(branchId: string, reportDate: string) {
   //    (제품생성 시 전 지점 inventories 행이 깔리므로 이게 매장 취급목록 역할 — 별도 테이블 불요.)
   const { data: inv, error: invErr } = await sb
     .from('inventories')
-    .select('product_id, product:products(id, code, name, price, is_active, product_type)')
+    .select('product_id, quantity, product:products(id, code, name, price, is_active, product_type)')
     .eq('branch_id', resolved);
   if (invErr) { console.error('[daily-report] template inventories error:', invErr); return { error: invErr.message }; }
 
@@ -113,7 +129,16 @@ export async function getReportTemplate(branchId: string, reportDate: string) {
     .filter((p: any) => p && p.is_active && p.product_type === 'FINISHED')
     .sort((a: any, b: any) => String(a.code || '').localeCompare(String(b.code || '')));
 
-  // 2) 직전 일보(같은 branch, report_date < 해당일) 마감재고 → 오픈재고 이월.
+  // 2) 시스템 재고 맵(현재 inventories.quantity) — 표시/대조용. 승인 시 movements 로 갱신됨.
+  const stockByProduct = new Map<string, number>();
+  for (const r of (inv as any[]) || []) {
+    if (r.product_id) stockByProduct.set(r.product_id, num(r.quantity));
+  }
+
+  // 3) 오픈재고 = 직전 일보(같은 branch, report_date < 해당일) 마감재고 이월(없으면 0).
+  //    승인 지연과 무관하게 연속(어제 마감→오늘 오픈). 실재고와의 차이는 system_stock 으로 대조·경고
+  //    (관리자 승인 지연 또는 외부 재고변동 감지). 오픈재고를 실재고로 직접 연동하지 않는 이유=승인 시점에만
+  //    inventories 가 갱신돼 미승인분이 누락되기 때문.
   const { data: prevHeader } = await sb
     .from('daily_sales_reports')
     .select('id')
@@ -150,10 +175,11 @@ export async function getReportTemplate(branchId: string, reportDate: string) {
       onsite_revenue: 0,
       parcel_revenue: 0,
       sort_order: i,
+      system_stock: stockByProduct.get(p.id) ?? 0,
     };
   });
 
-  return { template: { lines, hasPrev: !!prevHeader?.id }, branchId: resolved };
+  return { template: { lines }, branchId: resolved };
 }
 
 // 헤더+라인 upsert. daily_total 서버 재계산, branch_id 비관리자 세션강제.

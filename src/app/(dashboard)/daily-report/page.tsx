@@ -315,12 +315,13 @@ export default function DailyReportPage() {
   const fullGrid = (
     <div className="space-y-2">
       <div className="overflow-x-auto rounded-lg border border-slate-200">
-        <table className="text-sm border-collapse min-w-[860px]">
+        <table className="text-sm border-collapse min-w-[1040px]">
           <thead>
             <tr className="text-[11px] text-slate-500 bg-slate-50 border-b border-slate-200">
               <th className="text-left px-2 py-2 sticky left-0 bg-slate-50 z-10 min-w-[160px]">품목</th>
               <th className="px-2 py-2 font-medium text-right">판매가</th>
               <th className="px-1 py-2 font-medium">오픈재고</th>
+              <th className="px-1 py-2 font-medium">시스템재고</th>
               <th className="px-1 py-2 font-medium">입고/반품</th>
               <th className="px-1 py-2 font-medium">현장판매</th>
               <th className="px-1 py-2 font-medium">시음/파손</th>
@@ -338,6 +339,9 @@ export default function DailyReportPage() {
               const isChanged = editedIdx.has(i);
               const diff = num(l.closing_stock) - auto;
               const rowBg = isChanged ? 'bg-blue-50' : 'bg-white';
+              // 시스템재고(라이브 inventories.quantity) ↔ 오픈재고(어제 마감 이월) 대조. 다르면 ⚠(승인지연/외부변동).
+              const sysStock = l.system_stock;
+              const sysMismatch = sysStock != null && num(sysStock) !== num(l.opening_stock);
               return (
                 <tr key={i} className={`border-b border-slate-100 last:border-0 ${rowBg}`}>
                   <td className={`px-2 py-1 sticky left-0 z-10 min-w-[160px] ${rowBg}`}>
@@ -355,6 +359,15 @@ export default function DailyReportPage() {
                   </td>
                   <td className="px-2 py-1 text-right text-slate-600 whitespace-nowrap tabular-nums">{num(l.unit_price).toLocaleString()}</td>
                   <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.opening_stock} onChange={e => updateLine(i, 'opening_stock', e.target.value)} className={cellCls} /></td>
+                  <td className="px-1 py-1 text-center whitespace-nowrap tabular-nums">
+                    {sysStock == null ? (
+                      <span className="text-slate-300">-</span>
+                    ) : (
+                      <span className={sysMismatch ? 'text-amber-600 font-semibold' : 'text-slate-400'} title={sysMismatch ? '오픈재고(어제 마감 이월)와 시스템 재고가 다릅니다. 전일 일보 미승인 또는 외부 재고변동일 수 있습니다.' : undefined}>
+                        {num(sysStock).toLocaleString()}{sysMismatch ? ' ⚠' : ''}
+                      </span>
+                    )}
+                  </td>
                   <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.in_return} onChange={e => updateLine(i, 'in_return', e.target.value)} className={cellCls} /></td>
                   <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.onsite_sold} onChange={e => updateLine(i, 'onsite_sold', e.target.value)} className={cellCls} /></td>
                   <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.sample_damage} onChange={e => updateLine(i, 'sample_damage', e.target.value)} className={cellCls} /></td>
