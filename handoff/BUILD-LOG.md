@@ -86,6 +86,12 @@ UI: fieldset disabled 잠금(매장/날짜 밖), 승인/취소 확인모달, foo
 무회귀: 기존 액션·Phase1/1.1/1.2·POS createSaleJournal/processPosCheckout 무수정(재사용만).
 Known Gaps(수용): 시음/파손 비용분개 없음(GL 1130 갭)·면세 전액과세·1115 실입금 회수 후속·RPC 트랜잭션 미사용(분개검증 선행+조건부update로 최소화)·sales_orders 행 미생성.
 
+## 판매일보 Phase 1.1b — 관리자도 입력은 검색 콤보 (UX 통일)
+Date: 2026-06-26
+Status: ✅ COMPLETE — Deploy Gate. build ✓. 표시 전용 단일 파일(page.tsx), 마이그/schema/액션 무변경(정식리뷰 생략, className/표시 레벨).
+이슈: 본부 대표(관리자) 로그인 시 일보 입력이 전 품목 그리드로 펼쳐짐. 지점 직원과 동일한 검색 콤보로 통일, 차이점은 매장 선택 가능만.
+수정(page.tsx 2-hunk): ①`showFullGrid = isManager || showAll` → `= showAll`(관리자도 콤보 기본, 전 품목은 토글로만). ②[전체 보기] 토글 게이트 `!isManager` 제거 → 관리자도 토글 사용 가능. 매장 드롭다운(`isManager &&`) 불변=관리자 차이점 유지. 데이터 로드·저장(콤보도 전 품목 lines 저장) 무변경.
+
 ## (배포완료) 판매일보 Phase 1.2 — 본사 제출 현황 (읽기 전용)
 Date: 2026-06-26
 Status: ✅ DEPLOYED (14bf0d9) — Richard clean(Must Fix 0, APPROVED) → 커밋/푸시. 읽기 전용, 마이그/schema 무변경. listDailyReports(MANAGER_ROLES 차단)+관리자 [제출현황] 탭(미제출 강조·행클릭 상세). 제출대상=활성+DEPT_STORE(getTargetBranches 헬퍼). 무회귀.

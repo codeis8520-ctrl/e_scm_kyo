@@ -310,7 +310,9 @@ export default function DailyReportPage() {
     </div>
   );
 
-  const showFullGrid = isManager || showAll;
+  // 입력 UX는 역할 무관 동일(검색 콤보 기본). 관리자 차이점은 '매장 선택 가능'뿐.
+  // 전 품목 그리드는 [전체 보기] 토글로만(관리자 포함 누구나) 진입.
+  const showFullGrid = showAll;
 
   return (
     <div className="max-w-2xl mx-auto space-y-4 pb-28">
@@ -446,8 +448,8 @@ export default function DailyReportPage() {
 
       <fieldset disabled={isApproved} className={isApproved ? 'opacity-70' : ''}><div className="space-y-4">
 
-      {/* 비관리자 전용 [전체 보기] 토글 — 콤보 ↔ 전 품목 그리드. 관리자는 항상 그리드. */}
-      {!loading && !isManager && lines.length > 0 && (
+      {/* [전체 보기] 토글 — 콤보 ↔ 전 품목 그리드. 역할 무관(관리자 포함). */}
+      {!loading && lines.length > 0 && (
         <div className="flex justify-end">
           <button onClick={() => setShowAll(v => !v)} className="text-xs text-blue-600 underline">
             {showAll ? '← 검색 입력으로' : '전체 보기 →'}
