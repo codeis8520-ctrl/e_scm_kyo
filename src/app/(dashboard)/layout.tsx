@@ -11,6 +11,7 @@ import AgentFloatingIcon from '@/components/AgentFloatingIcon';
 const ALL_NAV_ITEMS = [
   // ── 핵심 업무 ──
   { href: '/pos', label: '판매', icon: '💰', section: 'core' },
+  { href: '/daily-report', label: '판매일보', icon: '📝', section: 'core' },
   { href: '/customers', label: '고객', icon: '👥', section: 'core' },
   { href: '/inventory', label: '재고', icon: '🏪', section: 'core' },
   { href: '/production', label: '생산', icon: '🏭', section: 'core' },

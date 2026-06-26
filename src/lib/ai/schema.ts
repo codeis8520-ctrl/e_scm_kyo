@@ -156,6 +156,9 @@ cafe24_sync_logs: id, sync_type, cafe24_order_id, data(JSONB), status('pending'|
 cafe24_product_map(마이그 082): id, cafe24_product_code, option_value(정규화된 옵션조합 키, 무선택은 ''), product_id(→products.id), created_at — UNIQUE(cafe24_product_code, option_value). 카페24 품목→내부 product 매핑. 송장/배송 짧은 품목명 표시용.
 smartstore_product_map(마이그 097): id, smartstore_product_no(네이버 상품번호), option_value(옵션정보, 단일상품 ''), product_id(→products.id), product_name_snapshot, created_at — UNIQUE(smartstore_product_no, option_value). 스마트스토어 엑셀 임포트 시 상품명+옵션→내부 product 매핑(cafe24_product_map 동일 메커니즘). 채널 'SMARTSTORE'(스마트스토어). 임포트=src/lib/smartstore/, 출고/재고차감=본사, 회원매칭=구매자연락처(전화) dedup·자동생성X.
 seasons: id, name, season_type(NEW_YEAR/LUNAR_NEW_YEAR/CHUSEOK/EVENT/ETC), start_date, end_date, target_amount, is_active
+daily_sales_reports(마이그101, 판매일보 헤더): id, branch_id, report_date, author_user_id, author_name(스냅샷), status('DRAFT'|'SUBMITTED'), daily_total(현장매출+택배매출 합·표시용 비정규화), note — UNIQUE(branch_id, report_date).
+  ※ 🚨 Phase1 기록 전용: inventories/sales_orders/journal_entries 에 일절 반영 안 함(재고·매출·회계 무관). 백화점 매장 사원 휴대폰 종이일보 대체. 재고차감·매출분개는 Phase2.
+daily_sales_report_lines(마이그101, 판매일보 라인): id, report_id(→daily_sales_reports CASCADE), product_id(→products, NULL허용), product_code/product_name/unit_price(스냅샷), opening_stock(오픈=전일마감 이월), onsite_sold(현장판매), sample_damage(시음증정/파손), in_return(입고/반품), closing_stock(마감=opening+in_return−onsite_sold−sample_damage 자동+사원수정 최종값), hq_parcel(본사택배 수량), onsite_revenue(현장매출), parcel_revenue(택배매출), sort_order — UNIQUE(report_id, product_id).
 `;
 
 export const BUSINESS_RULES = `
