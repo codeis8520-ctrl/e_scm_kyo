@@ -1,28 +1,29 @@
-# Review Request — Step 3.5: getVatReport/getGlBalances 페이지네이션 버그 수정
-Date: 2026-06-26
+# Review Request — 판매일보 승인 팬텀 분해 차감을 POS와 동일화
+Date: 2026-06-27
 Ready for Review: YES
-🔴 재무 정합성(부가세·계정잔액 집계). 마이그/schema.ts 변경 없음(read-only 집계 로직).
+🔴 실재고 차감 로직(Phase 2a 승인 경로). 마이그/schema 변경 없음.
 
-build ✓ (compile, 에러·경고 0).
+build ✓.
 
-## 배경
-Step 3에서 getProfitLoss를 GL 단일원천으로 재배선하며 journal_entry_lines 무페이지네이션(1000행 무음절단) 버그를 .range() 루프로 해결함(커밋 77957d4). Arch가 동일 버그를 getVatReport·getGlBalances에서도 발견해 별도 스텝(3.5)으로 보고. 본 작업이 그 수정.
+## 배경 / 요구
+사용자: "침향 10환을 일보에 기록·승인하면 (POS 일반 판매등록과) 동일하게 30환(base)에서 분수 차감돼야 한다." 침향 10환은 팬텀(is_phantom), 실재고는 30환 base에 있고 product_bom 으로 분수 차감(10/30≈0.333).
 
-## Files Changed
-### src/lib/accounting-actions.ts (단일 파일)
-- **getVatReport** (671~): 단일 `.from('journal_entry_lines')` 페치(1000행 상한) → getProfitLoss 동일 패턴 페이지네이션 루프.
-  - 2151(부가세예수금)/1150(부가세대급금) 두 계정 ID로 `.in('account_id', targetAccIds)` 필터(행수 축소).
-  - `.order('id', {ascending:true})` 안정정렬 + `.range(from, from+PAGE-1)`, 빈 페이지에서 종료, `from += rows.length`(서버 max-rows<PAGE여도 정확).
-  - 계정 미존재 시 targetAccIds 빈 배열 → 루프 스킵(0 집계, 안전). pageErr → throw(`부가세 GL 집계 실패`).
-  - 집계 로직(outputVatCredit/Debit, inputVatDebit/Credit, netOutputVat/netInputVat/vatPayable) 및 반환 구조 **불변** — 누적 위치만 페이지 루프 안으로 이동, `if/else if`로 정정(원본은 두 독립 `if`였으나 account_id는 상호배타라 동작 동일).
-- **getGlBalances** (726~): 동일 버그·동일 수정. **전 계정 집계라 account_id 필터 불가** → 기간 내 전 분개 라인을 페이지네이션으로 전부 누적(누락 위험이 더 큼). balances Map 집계 로직·정상잔액 부호(isDebitNormal)·result 매핑·필터(거래있는 계정만) **불변**.
+## 진단
+- approveDailyReport → computeStockDeltas 가 이미 팬텀을 product_bom 으로 분해해 material(30환)에 OUT/IN 적립 → 30환 차감 자체는 동작 중이었음.
+- **불일치 발견**: POS(processPosCheckout actions.ts:2872-2876)는 분해 자재 수량을 `decimalByMaterial ? round(raw,4) : Math.ceil(raw)` 로 처리하는데, computeStockDeltas 는 `out * c.quantity` raw(반올림/올림 없음) + 자재 allow_decimal_stock 미조회. → 비-소수 자재에 분수 기록 가능, 소수 자재는 정밀도 차이. "동일하게" 요구 미충족.
 
-## 핵심 검증 포인트
-1. 페이지네이션 정확성: 빈 페이지 종료 + `from += rows.length`로 서버 max-rows가 PAGE(1000)보다 작아도 누락 0. getProfitLoss(검증·배포됨)와 동형.
-2. getVatReport `.in()` 필터 정당성: 2151/1150만 집계하므로 행 사전축소 안전(원본은 전 라인 페치 후 코드에서 필터링). 결과 동일.
-3. 집계 수치 불변: 페이지 경계로 인한 이중합/누락 없음(.order('id') 안정정렬). 반환 키·부호·요약 문구 무변경.
-4. 무회귀: 두 함수 외 무변경. getProfitLoss·closePeriod 등 미수정.
+## 변경 (daily-report-actions.ts, computeStockDeltas 단일)
+1. 자재 메타 로딩에 allow_decimal_stock 추가(+컬럼부재 폴백): `select('id, cost, allow_decimal_stock')` 실패 시 `select('id, cost')`.
+2. decompQty 헬퍼 신설 = POS와 동일: `raw<=0?0 : allow_decimal ? Math.round(raw*10000)/10000 : Math.ceil(raw)`.
+3. 팬텀 분해 루프: outMap/inMap/COGS 모두 decompQty 적용(out=onsite+sample, in=in_return, cogs=onsite분). 일반(비팬텀) 경로 무변경.
+
+## 검증 포인트
+1. POS 동일성: decompQty 가 POS 2872-2876과 동일 공식인가? 침향 10환(자재=30환 base, allow_decimal=true) → round(0.333…,4) 로 POS와 일치?
+2. 비-소수 자재: Math.ceil 로 POS와 동일?
+3. 무회귀: 일반 제품(비팬텀) 차감, approve/unpost 슬롯선점·분개·멱등, COGS 부호(5110/1130) 영향 없음?
+4. in_return 팬텀 분해(POS엔 IN 경로 없음)에도 동일 반올림 적용이 합리적인가(과차감/과복원 없는가)?
+5. COGS 를 raw→rounded(cogsQty)로 바꾼 게 분개 대차에 악영향 없는가(createSaleJournal 은 COGS 쌍 self-balance)?
 
 ## Out of Scope
-- 다른 분개 라인 스캔 함수(getLedger 등)는 본 스텝 범위 밖(필요 시 별도).
-- DB측 RPC 집계 전환(마이그 동반)은 미선택 — 코드 전용 수정으로 블로킹 회피(Step3 동일 결정).
+- 팬텀 행의 일보 표시(오픈재고/시스템재고가 phantom은 0/무의미) — 이번은 차감 로직만(표시 개선 별도).
+- 다단계 BOM(자재가 또 팬텀) — POS도 단일 레벨, 동일 가정.

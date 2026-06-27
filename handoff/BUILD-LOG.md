@@ -71,6 +71,15 @@ journal_entries total_debit=total_credit CHECK 제약 + accounting_period_closes
 - 과거 분개 백필(Step1/2 이전 POS·COGS·환불) 미실행 → 과거기간 GL손익 과소. 별도 1회성 스크립트 스텝.
 - GL 컷오프 날짜 정책 = Project Owner 결정 대기(에스컬레이션됨).
 
+## 판매일보 승인 — 팬텀 분해 차감을 POS와 동일화 (침향 10환→30환)
+Date: 2026-06-27
+Status: ✅ REVIEW CLEAN (APPROVED, Must Fix 0) — Deploy. build ✓. daily-report-actions.ts(computeStockDeltas) 단일. 마이그/schema 무변경.
+요구: 일보에 침향 10환(팬텀) 기록·승인 시 일반 판매등록(POS)과 동일하게 30환 base에서 분수 차감.
+진단: computeStockDeltas가 이미 product_bom으로 팬텀 분해(30환 차감 동작 중)했으나, POS(actions.ts:2872-2876)의 `decimalByMaterial ? round(raw,4) : Math.ceil(raw)` 규칙 미적용 + 자재 allow_decimal_stock 미조회 → "동일" 미충족(정밀도/비소수자재 차이).
+변경: ①자재 메타 로딩에 allow_decimal_stock 추가(+폴백) ②decompQty 헬퍼=POS와 동일 공식 ③팬텀 분해 outMap/inMap/COGS 전부 decompQty 적용. 일반(비팬텀) 경로 무변경.
+Richard: APPROVED(Must Fix 0). 검증 6건 통과(POS 동일성·무회귀·IN/OUT 대칭·COGS self-balance·독립반올림 허용오차).
+수용된 Should Fix(비차단): 메타 로딩 폴백 가드가 `if(error)` 광범위(POS는 컬럼-부재 메시지 한정). 결과 동일(두 마이그 적용 운영환경 차이 0)이고, 좁히면 비-컬럼 에러 시 무음 빈집계 위험 → 현행 유지(문서화).
+
 ## 판매일보 Phase 2a — 승인→재고·매출 연동 + 승인취소 (🔴 실재고+회계)
 Date: 2026-06-26
 Status: ✅ REVIEW CLEAN (APPROVED, Must Fix 0) — Deploy Gate 대기. build ✓. 마이그103 적용 완료, schema.ts 동기화 포함.

@@ -381,13 +381,15 @@ async function computeStockDeltas(
       if (!(bom.get(pid) || []).length) return { outMap: new Map(), inMap: new Map(), cogs: 0, error: '세트(팬텀) 품목에 BOM이 없어 승인할 수 없습니다.' };
     }
   }
-  // 자재 cost 보강
+  // 자재 cost + 소수점 허용 보강. allow_decimal_stock 는 POS와 동일한 분해 차감 규칙
+  //   (소수허용=4자리 반올림 / 비허용=Math.ceil) 적용에 필요.
   if (matIds.size) {
-    const { data: matRows } = await sb.from('products').select('id, cost').in('id', [...matIds]);
-    for (const m of (matRows as any[]) || []) {
+    let mres: any = await sb.from('products').select('id, cost, allow_decimal_stock').in('id', [...matIds]);
+    if (mres.error) mres = await sb.from('products').select('id, cost').in('id', [...matIds]); // 폴백(컬럼 부재)
+    for (const m of (mres.data as any[]) || []) {
       const cur = meta.get(m.id);
-      if (cur) cur.cost = Number(m.cost) || 0;
-      else meta.set(m.id, { is_phantom: false, cost: Number(m.cost) || 0, allow_decimal: false });
+      if (cur) { cur.cost = Number(m.cost) || 0; cur.allow_decimal = m.allow_decimal_stock === true; }
+      else meta.set(m.id, { is_phantom: false, cost: Number(m.cost) || 0, allow_decimal: m.allow_decimal_stock === true });
     }
   }
 
@@ -396,6 +398,13 @@ async function computeStockDeltas(
   let cogs = 0;
   const addTo = (map: Map<string, number>, id: string, q: number) => { if (q) map.set(id, (map.get(id) || 0) + q); };
 
+  // POS(processPosCheckout)와 동일한 팬텀 분해 차감 규칙: 자재가 소수재고 허용이면 4자리 반올림,
+  //   비허용이면 Math.ceil. 일반 판매등록의 침향 10환→30환(base) 분수차감과 정확히 일치시키기 위함.
+  const decompQty = (materialId: string, raw: number): number => {
+    if (raw <= 0) return 0;
+    return meta.get(materialId)?.allow_decimal ? Math.round(raw * 10000) / 10000 : Math.ceil(raw);
+  };
+
   for (const l of lines) {
     if (!l.product_id) continue;
     const m = meta.get(l.product_id);
@@ -403,12 +412,15 @@ async function computeStockDeltas(
     const inn = num(l.in_return);
     const onsite = num(l.onsite_sold);
     if (m?.is_phantom) {
-      // 팬텀 → 구성 자재로 분해(수량 비례). COGS=onsite_sold분 자재 cost.
+      // 팬텀 → 구성 자재로 분해(POS 동일 반올림). COGS=onsite_sold분 자재 cost(동일 규칙).
       for (const c of bom.get(l.product_id) || []) {
         const mm = meta.get(c.material_id);
-        if (out) addTo(outMap, c.material_id, out * c.quantity);
-        if (inn) addTo(inMap, c.material_id, inn * c.quantity);
-        if (onsite) cogs += onsite * c.quantity * (mm?.cost || 0);
+        const outQty = decompQty(c.material_id, out * c.quantity);
+        const inQty = decompQty(c.material_id, inn * c.quantity);
+        const cogsQty = decompQty(c.material_id, onsite * c.quantity);
+        if (outQty) addTo(outMap, c.material_id, outQty);
+        if (inQty) addTo(inMap, c.material_id, inQty);
+        if (cogsQty) cogs += cogsQty * (mm?.cost || 0);
       }
     } else {
       if (out) addTo(outMap, l.product_id, out);
