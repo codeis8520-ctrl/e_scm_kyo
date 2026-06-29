@@ -45,6 +45,8 @@ export default function DailyReportPage() {
   const [msg, setMsg] = useState<string | null>(null);
   // 마감재고 수동수정 토글(라인 인덱스 집합) — 토글 시 closing_stock 직접입력 허용.
   const [manualClosing, setManualClosing] = useState<Set<number>>(new Set());
+  // #76 현장매출 수동수정 라인(기본 자동=현장판매×판매가). 사용자가 직접 고친 라인만 자동계산 제외.
+  const [revenueManual, setRevenueManual] = useState<Set<number>>(new Set());
   // 판매사원 콤보모드: 검색어 + 편집중 라인 인덱스(콤보로 추가/제거). lines 자체는 전 품목 유지(저장 무변경).
   const [comboSearch, setComboSearch] = useState('');
   const [editedIdx, setEditedIdx] = useState<Set<number>>(new Set());
@@ -67,7 +69,7 @@ export default function DailyReportPage() {
 
   const load = useCallback(async () => {
     if (!branchId) { setLoading(false); return; }
-    setLoading(true); setError(null); setMsg(null); setManualClosing(new Set()); setComboSearch('');
+    setLoading(true); setError(null); setMsg(null); setManualClosing(new Set()); setRevenueManual(new Set()); setComboSearch('');
     const res = await getDailyReport(branchId, reportDate);
     if (res.error) { setError(res.error); setLines([]); setStatus(null); setReportId(null); setLoading(false); return; }
     if (res.report) {
@@ -79,13 +81,17 @@ export default function DailyReportPage() {
       // 기존 저장분 중 자동값과 다른 closing 은 수동수정으로 간주(차이 배지 노출).
       const manual = new Set<number>();
       const edited = new Set<number>();
+      const revManual = new Set<number>();
       l.forEach((line, i) => {
         if (num(line.closing_stock) !== autoClosing(line)) manual.add(i);
+        // #76: 저장된 현장매출이 자동값(현장판매×판매가)과 다르면 수동조정으로 간주(수량 변경 시 보존).
+        if (num(line.onsite_revenue) !== num(line.onsite_sold) * num(line.unit_price)) revManual.add(i);
         // 이미 움직인 라인(판매/증정/입고/매출 등 0 아님)은 콤보모드에서 편집중 카드로 노출.
         if (num(line.onsite_sold) || num(line.sample_damage) || num(line.in_return) ||
             num(line.hq_parcel) || num(line.onsite_revenue) || num(line.parcel_revenue)) edited.add(i);
       });
       setManualClosing(manual);
+      setRevenueManual(revManual);
       setEditedIdx(edited);
     } else {
       const tpl = await getReportTemplate(branchId, reportDate);
@@ -129,6 +135,10 @@ export default function DailyReportPage() {
       if (field !== 'closing_stock' && !manualClosing.has(i)) {
         line.closing_stock = autoClosing(line);   // 자동 추종
       }
+      // #76: 현장매출 자동계산 = 현장판매 × 판매가 (수동수정 안 한 라인만). 현장판매 입력 즉시 반영.
+      if (field === 'onsite_sold' && !revenueManual.has(i)) {
+        line.onsite_revenue = num(line.onsite_sold) * num(line.unit_price);
+      }
       next[i] = line;
       return next;
     });
@@ -139,6 +149,12 @@ export default function DailyReportPage() {
   const editClosingCell = (i: number, value: string) => {
     setManualClosing(prev => prev.has(i) ? prev : new Set(prev).add(i));
     updateLine(i, 'closing_stock', value);
+  };
+
+  // #76 현장매출 직접 편집 — 입력 즉시 수동수정으로 표시(이후 현장판매 변경에도 자동 덮어쓰기 안 함).
+  const editRevenue = (i: number, value: string) => {
+    setRevenueManual(prev => prev.has(i) ? prev : new Set(prev).add(i));
+    updateLine(i, 'onsite_revenue', value);
   };
 
   const toggleManual = (i: number) => {
@@ -165,6 +181,7 @@ export default function DailyReportPage() {
   const removeLine = (i: number) => {
     setLines(prev => prev.filter((_, idx) => idx !== i));
     setManualClosing(prev => reindexAfterRemove(prev, i));
+    setRevenueManual(prev => reindexAfterRemove(prev, i));
     setEditedIdx(prev => reindexAfterRemove(prev, i));
   };
 
@@ -303,7 +320,7 @@ export default function DailyReportPage() {
         </div>
 
         <div className="grid grid-cols-3 gap-2">
-          <NumField label="현장매출" value={l.onsite_revenue} onChange={v => updateLine(i, 'onsite_revenue', v)} won />
+          <NumField label="현장매출" value={l.onsite_revenue} onChange={v => editRevenue(i, v)} won />
           <NumField label="본사택배" value={l.hq_parcel} onChange={v => updateLine(i, 'hq_parcel', v)} />
           <NumField label="택배매출" value={l.parcel_revenue} onChange={v => updateLine(i, 'parcel_revenue', v)} won />
         </div>
@@ -382,7 +399,7 @@ export default function DailyReportPage() {
                         className="block mx-auto text-[10px] text-amber-600 mt-0.5">자동 {auto} ↺</button>
                     )}
                   </td>
-                  <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.onsite_revenue} onChange={e => updateLine(i, 'onsite_revenue', e.target.value)} className={`${cellCls} w-[88px]`} /></td>
+                  <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.onsite_revenue} onChange={e => editRevenue(i, e.target.value)} className={`${cellCls} w-[88px]`} /></td>
                   <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.hq_parcel} onChange={e => updateLine(i, 'hq_parcel', e.target.value)} className={cellCls} /></td>
                   <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.parcel_revenue} onChange={e => updateLine(i, 'parcel_revenue', e.target.value)} className={`${cellCls} w-[88px]`} /></td>
                   <td className="px-1 py-1 text-center"><button onClick={() => removeLine(i)} className="text-slate-300 hover:text-red-500 text-lg leading-none px-1" title="라인 삭제">×</button></td>
