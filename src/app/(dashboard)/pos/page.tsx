@@ -1697,9 +1697,18 @@ function POSPageInner() {
         ) : undefined}
       />
 
-      {/* 판매 메타 헤더 (일자 · 매출처) + 전표 정보 바(#70) */}
+      {/* 다른 탭 렌더 — 체크아웃 플렉스 컨테이너 밖(상호배타) */}
+      {mainTab === 'list' && <SalesListTab forcedView="list" />}
+      {mainTab === 'online' && <ShippingPage embedded="online" />}
+      {mainTab === 'parcel' && <ShippingPage embedded="parcel" />}
+      {mainTab === 'sales' && !isBranchLocked && <SalesListTab forcedView="compare" />}
+      {mainTab === 'legacy' && !isBranchLocked && <SalesListTab forcedView="legacy" />}
+
+      {/* 판매 메타 헤더 + 전표바(#70) + 본문을 한 플렉스 칼럼으로(#70 재조정):
+          상단바 높이가 가변이어도 본문이 남는 높이를 정확히 채워 결제 푸터가 화면 밖으로 밀리지 않게 함. */}
       {mainTab === 'checkout' && (
-      <div className="space-y-3">
+      <div className="lg:h-[calc(100vh-7rem)] lg:flex lg:flex-col gap-3">
+      <div className="space-y-3 lg:flex-shrink-0">
       <div className="card p-3 flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1">
           <label className="text-[11px] font-semibold text-slate-500 uppercase">일자</label>
@@ -1987,18 +1996,7 @@ function POSPageInner() {
         })()}
       </div>
       </div>
-      )}
-
-      {/* 판매현황 = 매출 현황(목록)만, 지점별 매출 = 지점비교(compare). 각각 뷰 고정. */}
-      {mainTab === 'list' && <SalesListTab forcedView="list" />}
-
-      {mainTab === 'online' && <ShippingPage embedded="online" />}
-      {mainTab === 'parcel' && <ShippingPage embedded="parcel" />}
-      {mainTab === 'sales' && !isBranchLocked && <SalesListTab forcedView="compare" />}
-      {mainTab === 'legacy' && !isBranchLocked && <SalesListTab forcedView="legacy" />}
-
-      {mainTab === 'checkout' && (
-    <div className="flex flex-col lg:flex-row gap-4 lg:h-[calc(100vh-10rem)]">
+    <div className="flex flex-col lg:flex-row gap-4 lg:flex-1 lg:min-h-0">
       {/* 왼쪽: 고객·이력·상담 + 제품 */}
       <div className="flex-1 flex flex-col min-w-0 gap-3">
         {/* 상단 — 고객·이력·상담 패널 */}
@@ -2527,7 +2525,7 @@ function POSPageInner() {
 
       {/* 오른쪽: 장바구니 + 결제 */}
       <div className={`
-        lg:w-[480px] lg:static lg:flex lg:flex-col lg:shrink-0
+        lg:w-[42%] lg:min-w-[480px] lg:max-w-[680px] lg:static lg:flex lg:flex-col lg:shrink-0
         fixed bottom-0 left-0 right-0 z-50 flex flex-col
         bg-white rounded-t-2xl lg:rounded-lg shadow
         transition-transform duration-300 ease-in-out
@@ -2544,8 +2542,11 @@ function POSPageInner() {
           </div>
         </div>
 
+        {/* 주문 내용 단일 스크롤 영역(#70 재조정) — 장바구니+결제옵션을 한 스크롤로 통합,
+            결제 푸터만 하단 고정. 좁은 칼럼 내 이중 스크롤(압박) 해소. */}
+        <div className="flex-1 min-h-0 overflow-y-auto">
         {/* 장바구니 목록 */}
-        <div className="flex-1 overflow-auto p-3 space-y-2 min-h-[140px] lg:min-h-[120px]">
+        <div className="p-3 space-y-2 min-h-[120px]">
           {cart.map(item => (
             <div key={item.productId} className="p-2.5 bg-slate-50 rounded-lg space-y-1.5">
               <div className="flex items-center gap-2">
@@ -2750,8 +2751,8 @@ function POSPageInner() {
           </div>
         )}
 
-        {/* 결제 옵션 영역 — 필요 시 스크롤. 결제 버튼은 별도 푸터로 분리(아래) */}
-        <div className="p-4 border-t space-y-3 overflow-y-auto flex-shrink-0 max-h-[55vh] lg:max-h-[55%]">
+        {/* 결제 옵션 영역 — 위 단일 스크롤 영역에 포함. 결제 버튼은 별도 푸터(아래) */}
+        <div className="p-4 border-t space-y-3">
           {/* 할인 */}
           <div className="flex items-center gap-2">
             <span className="text-xs text-slate-500 whitespace-nowrap">할인</span>
@@ -3096,6 +3097,7 @@ function POSPageInner() {
           )}
 
         </div>
+        </div>
 
         {/* 하단 고정 결제 푸터 — 결제 금액 한 줄 + 결제 버튼. 우측 칼럼 최하단에 항상 노출. */}
         <div className="border-t bg-white px-4 py-3 flex-shrink-0 space-y-2 lg:rounded-b-lg">
@@ -3216,6 +3218,7 @@ function POSPageInner() {
         />
       )}
     </div>
+      </div>
       )}
     </div>
   );
