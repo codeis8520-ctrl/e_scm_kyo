@@ -51,6 +51,8 @@ export default function DailyReportPage() {
   const [showAll, setShowAll] = useState(false);   // [전체 보기] 토글(비관리자도 전 품목 그리드)
   // Phase1.2 관리자 탭: 'input'(일보 입력) | 'status'(제출 현황). 비관리자는 항상 input.
   const [mgrTab, setMgrTab] = useState<'input' | 'status'>('input');
+  // #76: 진입 시 화면 기능·연동 기준 안내(접을 수 있음). 실사용 전 최종 검토 단계임을 명시.
+  const [showInfo, setShowInfo] = useState(true);
   const [statusRows, setStatusRows] = useState<Awaited<ReturnType<typeof listDailyReports>>['rows']>([]);
   const [statusSummary, setStatusSummary] = useState<{ total: number; approved?: number; submitted: number; draft: number; missing: number } | null>(null);
   const [statusLoading, setStatusLoading] = useState(false);
@@ -410,7 +412,26 @@ export default function DailyReportPage() {
             {status === 'APPROVED' ? '승인완료' : status === 'SUBMITTED' ? '제출완료' : '임시저장'}
           </span>
         )}
+        {!showInfo && (
+          <button onClick={() => setShowInfo(true)} className="ml-auto text-[11px] text-slate-400 hover:text-slate-600 underline">ℹ️ 안내</button>
+        )}
       </div>
+
+      {/* #76: 화면 기능·내용 정의 + 연동 기준 안내(진입 시). 실사용 전 최종 검토 단계. */}
+      {showInfo && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-900 space-y-1.5">
+          <div className="flex items-start justify-between gap-2">
+            <p className="font-semibold">ℹ️ 판매일보란? — 백화점 매장의 하루 판매를 마감·기록하는 화면입니다. <span className="text-amber-700">(실사용 전 최종 검토 단계)</span></p>
+            <button onClick={() => setShowInfo(false)} className="text-amber-400 hover:text-amber-700 shrink-0" title="안내 접기">✕</button>
+          </div>
+          <ul className="list-disc pl-4 space-y-0.5 text-amber-800">
+            <li><b>입력</b>: 품목별 오픈재고·현장판매·시음/파손·입고반품·마감재고 + 현장/택배 매출. (마감재고는 자동계산되며 수정 가능, 시스템재고와 다르면 ⚠ 표시)</li>
+            <li><b>연동 기준</b>: <b>[승인]</b> 시에만 해당 지점 재고가 차감/증가되고 매출이 분개(백화점 미수금)로 반영됩니다. 승인 전에는 <b>기록만</b> 됩니다.</li>
+            <li><b>판매현황과의 관계</b>: 일보는 재고·매출(회계)에 반영되지만 개별 판매전표(POS 주문)는 만들지 않습니다. 매출 집계는 매출현황·회계에서 확인하세요.</li>
+            <li><b>목적</b>: 지점 일일 <b>마감 기록 + 승인 시 매출·재고 반영</b>용입니다. (실시간 POS 판매 입력과는 별개)</li>
+          </ul>
+        </div>
+      )}
 
       {/* 관리자 전용 탭 — [일보 입력] / [제출 현황]. 비관리자는 탭 미노출(기존 입력만). */}
       {isManager && (
