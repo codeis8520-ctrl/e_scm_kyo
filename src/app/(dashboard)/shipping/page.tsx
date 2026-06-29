@@ -412,6 +412,17 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
     setShowRecipientDrop(false);
   };
 
+  // #65: 출고처(재고 차감 지점) 표시 — shipment.branch_id 가 출고지점.
+  //   cafe24 행(branch_id=NULL)은 본사를 출고지점으로 간주(발송지 해결과 동일 규칙).
+  //   '동일' 등 상대표현 금지 → 항상 실제 지점/창고명 노출.
+  const resolveShipFromName = (s: Shipment): string => {
+    const branch = (s.branch_id && branchSenders.find(b => b.id === s.branch_id))
+      || branchSenders.find(b => b.is_headquarters)
+      || branchSenders[0]
+      || null;
+    return branch?.name || '-';
+  };
+
   // ── 행별 발송지(보내는분) 자동 해결 ──────────────────────────────────────
   // 정책 (Project Owner 확정):
   //  - 이름/전화: 저장된 shipment.sender_* 우선 → 출고지점 branch.sender_* → 기본 폴백.
@@ -1624,6 +1635,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                       <th className="px-3 py-2 text-left text-xs font-semibold text-violet-600 uppercase tracking-wide">포장/옵션</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">품목</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-24">매출처</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-indigo-600 uppercase tracking-wide w-24" title="재고 차감 기준 지점/창고">출고처</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-24">상태</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">송장번호</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-24">액션</th>
@@ -1674,6 +1686,10 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                           {s.sale_branch_name
                             ? <span className="text-xs font-medium text-slate-700">{s.sale_branch_name}</span>
                             : <span className="text-xs text-slate-400">{s.source === 'CAFE24' ? '자사몰' : '직접'}</span>}
+                        </td>
+                        <td className="px-3 py-3">
+                          {/* #65: 출고처 = 재고 차감 기준. 항상 실제 지점/창고명(자사몰 같은 채널명 아님). */}
+                          <span className="text-xs font-medium text-indigo-700">{resolveShipFromName(s)}</span>
                         </td>
                         <td className="px-3 py-3">
                           <span className={`${STATUS_BADGE[s.status]} text-xs`}>{STATUS_LABEL[s.status]}</span>

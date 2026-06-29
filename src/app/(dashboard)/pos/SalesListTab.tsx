@@ -887,13 +887,15 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
                             {recvIcon}
                           </span>
                         )}
+                        {/* #65: 출고처는 재고 차감 기준 → '동일' 상대표현 금지, 항상 실제 지점/창고명 노출.
+                            매출처와 다르면 🚚 배지로 강조, 같아도 이름 그대로 표시. */}
                         {shipFromName ? (
-                          shipFromId === o.branch?.id ? (
-                            <span className="text-slate-400">동일</span>
-                          ) : (
+                          shipFromId && shipFromId !== o.branch?.id ? (
                             <span className="inline-flex items-center px-1 text-[10px] rounded bg-indigo-50 text-indigo-700 border border-indigo-100">
                               🚚 {shipFromName}
                             </span>
+                          ) : (
+                            <span className="text-slate-600">{shipFromName}</span>
                           )
                         ) : <span className="text-slate-300">-</span>}
                       </span>
