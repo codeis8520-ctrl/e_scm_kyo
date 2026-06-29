@@ -302,8 +302,8 @@ sales_orders.receipt_status: 품목 receipt_status 집계. 품목 모두 RECEIVE
 - accounting_period_closes: 월 마감 후 해당 기간 수정 차단
 
 [지점별 매출(통합 조회)]
-- 지점별 매출 = legacy_orders(ordered_at<2026-05-19) + sales_orders(ordered_at>=2026-05-19, status NOT IN CANCELLED/REFUNDED/PARTIALLY_REFUNDED) 통합. 컷오프 경계로 이중집계 없음.
-- RPC branch_sales_summary(p_from date, p_to date, p_grain text 'day'|'month'|'year') → (period_date, branch_id, total). 판매현황 '지점비교'에서 호출. total=최종 결제금액 기준: sales는 (total_amount − COALESCE(discount_amount,0)), legacy는 total_amount(이미 net). 마이그 084(#18).
+- 지점별 매출 = legacy_orders(ordered_at<2026-05-19) + sales_orders(ordered_at>=2026-05-19, status NOT IN CANCELLED/REFUNDED/PARTIALLY_REFUNDED) + **승인 판매일보(daily_sales_reports status='APPROVED', report_date 기준, total=daily_total) (#76 마이그105)** 통합. 컷오프 경계로 legacy↔sales 이중집계 없음. **백화점 지점은 POS 건별 입력 없이 일보로만 기록(PO 결정) → sales_orders와 일보 중복 없음**(운영 규칙). 미승인/초안 일보는 제외.
+- RPC branch_sales_summary(p_from date, p_to date, p_grain text 'day'|'month'|'year') → (period_date, branch_id, total). 판매현황 '지점비교'에서 호출. total=최종 결제금액 기준: sales는 (total_amount − COALESCE(discount_amount,0)), legacy는 total_amount(이미 net), 일보는 daily_total. 마이그 084(#18)/105(#76).
 - legacy branch_id NULL = '미매칭' 그룹(제외 안 함). 날짜는 KST 일자 기준 grain 집계.
 - RPC legacy_sales_summary(p_start date, p_end date, p_search text) → (cnt bigint, total numeric). 레거시 판매현황 요약카드(건수·합계). 필터=ordered_at BETWEEN + 검색(콤마-AND: p_search를 ','로 분리한 각 토큰을 AND, 토큰별 recipient_name/recipient_phone/phone ILIKE). legacy_orders 단독(현행 sales 미포함). 마이그 099→100(콤마-AND).
 
