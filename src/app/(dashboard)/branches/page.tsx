@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { createBranch, updateBranch, deleteBranch } from '@/lib/actions';
+import { createBranch, updateBranch, deleteBranch, getBranchUsage, setBranchActive } from '@/lib/actions';
 import { setHeadquarters, unsetHeadquarters } from '@/lib/oem-actions';
 import { validators } from '@/lib/validators';
 import { generateQrDataUrl } from '@/lib/qr-actions';
@@ -48,6 +48,9 @@ export default function BranchesPage() {
   const [showModal, setShowModal] = useState(false);
   const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
   const [qrBranch, setQrBranch] = useState<Branch | null>(null);
+  // #69: 참조로 삭제 차단 시 사유/참조위치 표시 모달
+  const [refModal, setRefModal] = useState<{ branch: Branch; references: { label: string; count: number }[] } | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
   const [role] = useState<string | null>(() => getCookie('user_role'));
   const canConfigureHq = role === 'SUPER_ADMIN' || role === 'HQ_OPERATOR';
 
@@ -63,9 +66,35 @@ export default function BranchesPage() {
     setLoading(false);
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('정말 삭제하시겠습니까?')) return;
-    await deleteBranch(id);
+  const handleDelete = async (b: Branch) => {
+    if (!confirm(`"${b.name}" 지점을 삭제하시겠습니까?\n참조 데이터가 없는 지점만 삭제됩니다.`)) return;
+    setBusyId(b.id);
+    const res = await deleteBranch(b.id);
+    setBusyId(null);
+    if (res?.error) {
+      // 참조로 차단된 경우 → 참조 위치 모달. 그 외(본사 등)는 알림.
+      if (res.references && res.references.length > 0) setRefModal({ branch: b, references: res.references });
+      else alert(res.error);
+      return;
+    }
+    fetchBranches();
+  };
+
+  // 참조 위치 미리 확인(삭제 시도 없이) — '참조' 버튼.
+  const handleShowReferences = async (b: Branch) => {
+    setBusyId(b.id);
+    const { references } = await getBranchUsage(b.id);
+    setBusyId(null);
+    setRefModal({ branch: b, references });
+  };
+
+  // 활성/비활성 전환 — 비활성 지점은 매출처·출고처 선택 화면에서 숨겨짐(#69).
+  const handleToggleActive = async (b: Branch, fromModal = false) => {
+    setBusyId(b.id);
+    const res = await setBranchActive(b.id, !b.is_active);
+    setBusyId(null);
+    if (res?.error) { alert(res.error); return; }
+    if (fromModal) setRefModal(null);
     fetchBranches();
   };
 
@@ -118,7 +147,7 @@ export default function BranchesPage() {
           </thead>
           <tbody>
             {branches.map((branch) => (
-              <tr key={branch.id}>
+              <tr key={branch.id} className={branch.is_active ? '' : 'opacity-50'}>
                 <td className="font-mono">{branch.code}</td>
                 <td className="font-medium">
                   {branch.name}
@@ -168,8 +197,25 @@ export default function BranchesPage() {
                     수정
                   </button>
                   <button
-                    onClick={() => handleDelete(branch.id)}
-                    className="text-red-600 hover:underline"
+                    onClick={() => handleShowReferences(branch)}
+                    disabled={busyId === branch.id}
+                    className="text-slate-500 hover:underline mr-2 disabled:opacity-40"
+                    title="이 지점을 참조하는 데이터 위치/건수 확인"
+                  >
+                    참조
+                  </button>
+                  <button
+                    onClick={() => handleToggleActive(branch)}
+                    disabled={busyId === branch.id}
+                    className="text-amber-600 hover:underline mr-2 disabled:opacity-40"
+                    title={branch.is_active ? '비활성 처리(매출처·출고처 선택에서 숨김)' : '다시 활성화'}
+                  >
+                    {branch.is_active ? '비활성' : '활성'}
+                  </button>
+                  <button
+                    onClick={() => handleDelete(branch)}
+                    disabled={busyId === branch.id}
+                    className="text-red-600 hover:underline disabled:opacity-40"
                   >
                     삭제
                   </button>
@@ -201,6 +247,61 @@ export default function BranchesPage() {
           branch={qrBranch}
           onClose={() => setQrBranch(null)}
         />
+      )}
+
+      {refModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50">
+          <div className="bg-white w-full max-w-md mx-4 sm:mx-auto max-h-[90vh] overflow-y-auto rounded-t-xl sm:rounded-xl p-5 sm:p-6">
+            <div className="flex justify-between items-center mb-3">
+              <h2 className="text-lg font-bold">참조 데이터 확인</h2>
+              <button onClick={() => setRefModal(null)} className="text-gray-400 hover:text-gray-600">✕</button>
+            </div>
+            <p className="text-sm text-slate-600 mb-3">
+              <span className="font-semibold">{refModal.branch.name}</span> 지점
+            </p>
+            {refModal.references.length === 0 ? (
+              <div className="p-3 rounded-lg bg-emerald-50 text-emerald-700 text-sm">
+                참조 데이터가 없습니다. 바로 삭제할 수 있습니다.
+              </div>
+            ) : (
+              <>
+                <div className="p-3 rounded-lg bg-red-50 text-red-700 text-sm mb-3">
+                  아래 데이터에서 참조 중이라 삭제할 수 없습니다. 데이터를 정리하거나 <b>비활성</b>으로 숨겨주세요.
+                </div>
+                <ul className="divide-y divide-slate-100 border border-slate-200 rounded-lg mb-4">
+                  {refModal.references.map((r) => (
+                    <li key={r.label} className="flex justify-between items-center px-3 py-2 text-sm">
+                      <span className="text-slate-700">{r.label}</span>
+                      <span className="font-mono text-slate-500">{r.count.toLocaleString()}건</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            <div className="flex gap-2 pt-1">
+              {refModal.references.length === 0 ? (
+                <button
+                  onClick={async () => { const b = refModal.branch; setRefModal(null); await handleDelete(b); }}
+                  className="flex-1 px-4 py-2 rounded bg-red-600 text-white text-sm font-medium hover:bg-red-700"
+                >
+                  삭제
+                </button>
+              ) : refModal.branch.is_active ? (
+                <button
+                  onClick={() => handleToggleActive(refModal.branch, true)}
+                  disabled={busyId === refModal.branch.id}
+                  className="flex-1 px-4 py-2 rounded bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 disabled:opacity-40"
+                  title="매출처·출고처 선택 화면에서 숨겨집니다"
+                >
+                  비활성으로 숨기기
+                </button>
+              ) : (
+                <span className="flex-1 px-4 py-2 text-center text-sm text-slate-400">이미 비활성 지점입니다</span>
+              )}
+              <button onClick={() => setRefModal(null)} className="flex-1 btn-secondary">닫기</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

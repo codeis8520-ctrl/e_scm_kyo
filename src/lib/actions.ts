@@ -1706,17 +1706,99 @@ export async function updateBranch(id: string, formData: FormData) {
   return { success: true };
 }
 
+// 지점 참조 검사 테이블 — 삭제 차단 사유 표시용(#69). 사용자에게 의미있는 업무 데이터 위주.
+//   inventories(지점 생성 시 제품마다 qty=0 자동 생성되는 스캐폴딩)는 별도 처리 — 0수량은 참조 아님.
+//   ON DELETE CASCADE(branch_point_rates·sales_order_drafts)는 자동 정리되므로 제외.
+const BRANCH_REF_TABLES: { table: string; column: string; label: string }[] = [
+  { table: 'sales_orders', column: 'branch_id', label: '판매전표(매출처)' },
+  { table: 'sales_orders', column: 'ship_from_branch_id', label: '판매전표(출고처)' },
+  { table: 'inventory_movements', column: 'branch_id', label: '재고이력' },
+  { table: 'shipments', column: 'branch_id', label: '배송(출고지점)' },
+  { table: 'users', column: 'branch_id', label: '직원 연결' },
+  { table: 'purchase_orders', column: 'branch_id', label: '발주' },
+  { table: 'production_orders', column: 'branch_id', label: '생산지시' },
+  { table: 'return_orders', column: 'branch_id', label: '반품' },
+  { table: 'customers', column: 'primary_branch_id', label: '고객 기본지점' },
+  { table: 'daily_sales_reports', column: 'branch_id', label: '백화점 판매일보' },
+  { table: 'b2b_partners', column: 'branch_id', label: 'B2B 거래처' },
+  { table: 'legacy_orders', column: 'branch_id', label: '레거시 주문' },
+  { table: 'legacy_purchases', column: 'branch_id', label: '레거시 매입' },
+  { table: 'notification_campaigns', column: 'target_branch_id', label: '알림 캠페인' },
+];
+
+// 지점이 참조되는 위치/건수 집계(#69). 테이블·컬럼 부재(마이그 미적용 환경)는 무시(건너뜀).
+export async function getBranchUsage(id: string) {
+  const supabase = await createClient() as any;
+  const references: { label: string; count: number }[] = [];
+
+  for (const ref of BRANCH_REF_TABLES) {
+    try {
+      const { count, error } = await supabase
+        .from(ref.table)
+        .select('id', { count: 'exact', head: true })
+        .eq(ref.column, id);
+      // 테이블/컬럼 미존재(42P01/42703) → 해당 환경에 없음, 참조 0으로 간주
+      if (error) continue;
+      if ((count ?? 0) > 0) references.push({ label: ref.label, count: count as number });
+    } catch {
+      /* 개별 테이블 조회 실패는 전체 집계를 막지 않음 */
+    }
+  }
+
+  // 재고: 0수량 스캐폴딩은 참조 아님. 실제 보유(수량≠0)만 참조로 표시.
+  try {
+    const { count } = await supabase
+      .from('inventories')
+      .select('id', { count: 'exact', head: true })
+      .eq('branch_id', id)
+      .neq('quantity', 0);
+    if ((count ?? 0) > 0) references.push({ label: '재고 보유(수량≠0)', count: count as number });
+  } catch { /* noop */ }
+
+  const total = references.reduce((s, r) => s + r.count, 0);
+  return { references, total };
+}
+
 export async function deleteBranch(id: string) {
-  const supabase = await createClient();
+  const supabase = await createClient() as any;
 
+  // 본사 지점은 삭제 금지(생산 입고 기준 등 핵심 참조). 본사 해제 후 진행하도록 안내.
+  const { data: br } = await supabase.from('branches').select('is_headquarters, name').eq('id', id).maybeSingle();
+  if (br?.is_headquarters) {
+    return { error: '본사로 지정된 지점은 삭제할 수 없습니다. 먼저 본사 지정을 해제하세요.', references: [] as { label: string; count: number }[] };
+  }
+
+  // 참조 검사 — 업무 데이터가 하나라도 있으면 삭제 차단 + 사유/위치 반환(#69).
+  const { references, total } = await getBranchUsage(id);
+  if (total > 0) {
+    return {
+      error: '참조 데이터가 있어 삭제할 수 없습니다. 아래 데이터를 정리하거나, 지점을 "비활성"으로 변경해 숨겨주세요.',
+      references,
+    };
+  }
+
+  // 참조 없음 — 지점 생성 시 자동 생성된 0수량 재고행(스캐폴딩) 정리 후 삭제.
+  await supabase.from('inventories').delete().eq('branch_id', id);
   const { error } = await supabase.from('branches').delete().eq('id', id);
-
   if (error) {
-    return { error: error.message };
+    // 미검사 FK 등으로 실패 시 원문 반환(드묾).
+    return { error: error.message, references: [] as { label: string; count: number }[] };
   }
 
   revalidatePath('/branches');
   revalidatePath('/system-codes');
+  return { success: true };
+}
+
+// 지점 활성/비활성 전환(#69) — 삭제 불가 시 비활성으로 주요 화면(매출처·출고처 선택 등)에서 숨김.
+export async function setBranchActive(id: string, isActive: boolean) {
+  const supabase = await createClient() as any;
+  const { error } = await supabase.from('branches').update({ is_active: isActive }).eq('id', id);
+  if (error) return { error: error.message };
+  revalidatePath('/branches');
+  revalidatePath('/system-codes');
+  revalidatePath('/pos');
+  revalidatePath('/shipping');
   return { success: true };
 }
 
