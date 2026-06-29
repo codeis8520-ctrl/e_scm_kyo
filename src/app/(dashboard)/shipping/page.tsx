@@ -570,8 +570,10 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
       const dataRows = rows.slice(1).filter(r => r.some(c => String(c).trim()));
       setImportHeaders(headers);
       setImportRawRows(dataRows.map(r => r.map(String)));
-      // 자동 감지: 10자리 이상 숫자 컬럼 → 송장번호
-      const trackIdx = headers.findIndex((_, i) =>
+      // 송장번호 열 자동 감지(#66): 헤더 '운송장/송장' 우선(CJ export '운송장번호') →
+      //   없으면 데이터 패턴(10~13자리 숫자). 헤더 우선이라 마스킹 전화 등 다른 숫자열 오선택 방지.
+      const trackByHeader = headers.findIndex(h => /운송장|송장/.test(String(h)));
+      const trackIdx = trackByHeader >= 0 ? trackByHeader : headers.findIndex((_, i) =>
         dataRows.slice(0, 5).some(r => /^\d{10,13}$/.test(String(r[i] || '').replace(/\D/g, '')))
       );
       // 받는분 이름 열: 헤더에 받는/수령/수취/성명/이름/고객 포함 (CJ export 헤더 '받는분성명')
@@ -1589,14 +1591,15 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
               >
                 대한통운 엑셀 다운로드 ({selectedShipments.size})
               </button>
-              {/* 선택건 일괄 배송완료 — 판매현황 수령상태 동기화 */}
+              {/* 선택건 일괄 배송·수령완료 — 배송완료(DELIVERED) + 판매현황 수령완료 동기화(#64).
+                  발송완료는 수령으로 자동 전이하지 않음(발송≠수령, #43) → 실배송 후 이 버튼 1번으로 종결. */}
               <button
                 onClick={handleBulkDeliver}
                 disabled={selectedShipments.size === 0}
-                title="선택한 배송건을 배송완료(DELIVERED)로 처리 — 판매현황 수령상태도 함께 갱신"
+                title="선택한 배송건을 배송완료로 처리하고, 판매현황 수령상태도 '수령완료'로 함께 갱신합니다."
                 className="px-3 py-2 rounded text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40"
               >
-                선택건 배송완료 ({selectedShipments.size})
+                선택건 배송·수령완료 ({selectedShipments.size})
               </button>
               {/* 예외 진입점: 직접 배송 입력 — 보조 버튼(임베드 미노출) */}
               {!embedded && (
