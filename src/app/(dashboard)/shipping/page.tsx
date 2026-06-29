@@ -241,7 +241,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
   // 배송완료(종결) 숨기기 — 기본 ON. 전체/대기중/발송완료 뷰에서 배송완료 제외(배송완료 버킷 직접선택 시엔 무시).
   const [hideDelivered, setHideDelivered] = useState(true);
   // 택배관리 정렬 기준 — 사용자 선택(콤보)
-  const [shipSort, setShipSort] = useState<'receipt_desc' | 'latest' | 'oldest'>('receipt_desc');
+  const [shipSort, setShipSort] = useState<'receipt_desc' | 'oldest'>('receipt_desc');
   const [listSearch, setListSearch] = useState('');
   const [listStartDate, setListStartDate] = useState(fmt(oneWeekAgo));
   const [listEndDate, setListEndDate] = useState(fmt(today));
@@ -974,25 +974,23 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
     }
     return true;
   }).sort((a, b) => {
-    const ca = a.created_at || '', cb = b.created_at || '';
-    if (shipSort === 'latest') {
-      // 최신 등록순(등록일 내림차순)
-      return cb < ca ? -1 : cb > ca ? 1 : 0;
-    }
-    if (shipSort === 'oldest') {
-      // 오래된 등록순(등록일 오름차순)
-      return ca < cb ? -1 : ca > cb ? 1 : 0;
-    }
-    // receipt_desc(기본, #60): 수령일/택배예정일 내림차순(최신 우선),
-    //   값 없는 행은 맨 뒤(미정 건이 위로 튀지 않게). 동일하면 등록일 최신순.
+    // #74: 수령/택배예정일 기준 그룹 정렬. 날짜 그룹 방향만 shipSort로 제어, 그룹 내는 등록일 내림차순 고정.
     const ra = a.sale_receipt_date || '', rb = b.sale_receipt_date || '';
     if (ra !== rb) {
-      if (!ra) return 1;
+      if (!ra) return 1;   // 미지정(수령일 없음) 맨 뒤
       if (!rb) return -1;
-      return ra < rb ? 1 : -1;
+      return shipSort === 'oldest' ? (ra < rb ? -1 : 1) : (ra < rb ? 1 : -1);
     }
-    return cb < ca ? -1 : cb > ca ? 1 : 0;
+    const ca = a.created_at || '', cb = b.created_at || '';
+    return cb < ca ? -1 : cb > ca ? 1 : 0;  // 같은 날짜 → 등록일 내림차순
   });
+
+  // #74: 날짜 그룹별 건수(헤더 표시용)
+  const shipGroupCounts = filteredShipments.reduce((m, s) => {
+    const k = s.sale_receipt_date || '미지정';
+    m.set(k, (m.get(k) || 0) + 1);
+    return m;
+  }, new Map<string, number>());
 
   const toggleShipmentSelect = (id: string) => {
     setSelectedShipments(prev => {
@@ -1576,9 +1574,8 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                 className="input text-sm py-1.5 w-44"
                 title="정렬 기준"
               >
-                <option value="receipt_desc">수령일/택배예정일 최신순</option>
-                <option value="latest">최신 등록순</option>
-                <option value="oldest">오래된 등록순</option>
+                <option value="receipt_desc">수령/택배예정일 최신순</option>
+                <option value="oldest">수령/택배예정일 오래된순</option>
               </select>
             </div>
             <div className="flex gap-2 flex-wrap">
@@ -1653,8 +1650,21 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {filteredShipments.map(s => (
-                      <tr key={s.id} className={`hover:bg-slate-50 transition-colors ${selectedShipments.has(s.id) ? 'bg-blue-50' : ''}`}>
+                    {filteredShipments.map((s, idx) => {
+                      // #74: 수령/택배예정일별 그룹 헤더 — 직전 행과 날짜가 바뀌면 헤더 행 삽입(건수 표시).
+                      const grpKey = s.sale_receipt_date || '미지정';
+                      const prevKey = idx > 0 ? (filteredShipments[idx - 1].sale_receipt_date || '미지정') : null;
+                      const showGroupHeader = grpKey !== prevKey;
+                      return (
+                      <Fragment key={s.id}>
+                      {showGroupHeader && (
+                        <tr className="bg-slate-100/80 border-t-2 border-slate-200">
+                          <td colSpan={14} className="px-3 py-1.5 text-xs font-semibold text-slate-600">
+                            📅 {grpKey === '미지정' ? '수령일 미지정' : grpKey} · {shipGroupCounts.get(grpKey) || 0}건
+                          </td>
+                        </tr>
+                      )}
+                      <tr className={`hover:bg-slate-50 transition-colors ${selectedShipments.has(s.id) ? 'bg-blue-50' : ''}`}>
                         <td className="px-3 py-3">
                           <input type="checkbox" className="w-4 h-4"
                             checked={selectedShipments.has(s.id)}
@@ -1723,7 +1733,9 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                           </div>
                         </td>
                       </tr>
-                    ))}
+                      </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
