@@ -5,6 +5,7 @@ import { loadTokens, refreshAccessToken } from '@/lib/cafe24/token-store';
 import { normalizeOptionValue } from '@/lib/cafe24/types';
 import { syncCafe24PaidOrdersCore } from '@/lib/cafe24/sync-orders';
 import { deductOnlineOrderInventory } from '@/lib/cafe24/online-inventory';
+import { autoRegisterOnlineCustomer } from '@/lib/cafe24/webhook';
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 
@@ -73,45 +74,32 @@ export async function registerCafe24Customers(
     return '';
   };
 
-  let created = 0, linked = 0, skipped = 0;
+  let created = 0, linked = 0, skipped = 0, review = 0;
   const errors: string[] = [];
   for (const it of items) {
     const name = (it.name || '').trim();
     const phone = toDashed(it.phone);
     if (!name || !phone) { skipped++; continue; }
 
-    // 기존 여부 — customers.phone 은 UNIQUE 라 전화가 곧 강한 식별키.
-    // 전화 일치 시 이름이 달라도 기존 고객으로 "연결"한다(요청: 연락처 일치 = 기존 고객 연결).
-    // ⚠️ 기존 고객의 name 은 절대 덮어쓰지 않는다([[project_legacy_name_bug]] 재발 방지).
-    const { data: exist } = await sb.from('customers')
-      .select('id, name, address, email').eq('phone', phone).maybeSingle();
-    let customerId: string | null = null;
-    if (exist) {
-      customerId = exist.id;
-      // 빈 필드만 비파괴 보강(주소/이메일). 이름·source 는 손대지 않음.
-      const patch: Record<string, unknown> = {};
-      if (!exist.address && (it.address || '').trim()) patch.address = (it.address || '').trim();
-      if (!exist.email && (it.email || '').trim()) patch.email = (it.email || '').trim();
-      if (Object.keys(patch).length) {
-        const { error: upErr } = await sb.from('customers').update(patch).eq('id', exist.id);
-        if (upErr) errors.push(`${name}: 고객정보 보강 실패(${upErr.message})`);
-      }
-    } else {
-      const { data: ins, error: insErr } = await sb.from('customers').insert({
-        name, phone,
-        address: (it.address || '').trim() || null,
-        email: (it.email || '').trim() || null,
-        source: 'CAFE24', is_active: true,
-      }).select('id').maybeSingle();
-      if (insErr || !ins) {
-        errors.push(`${name}: 고객 생성 실패(${insErr?.message || '알 수 없음'})`);
-        skipped++;
-        continue;
-      }
-      customerId = ins.id; created++;
+    // 고객 dedup — 자동수집(webhook·스마트스토어)과 동일한 공용 헬퍼로 일원화(#67, drift 제거).
+    //   전화(UNIQUE) 단독 매칭: 이름이 달라도 기존 고객에 "연결", 기존 name 절대 비파괴
+    //   ([[project_legacy_name_bug]] 재발 방지). 전화 일치+이름 불일치/이상은 needs_review 플래그(확인 필요).
+    const reg = await autoRegisterOnlineCustomer({
+      name, phone,
+      address: (it.address || '').trim() || null,
+      email: (it.email || '').trim() || null,
+      source: 'CAFE24',
+    });
+    const customerId = reg.customerId;
+    if (!customerId) {
+      // 전화 없음/자릿수 비정상 등 → 연결 생략(확인 필요). 전표는 비회원 스냅샷 유지.
+      review++;
+      continue;
     }
+    if (reg.status === 'created') created++;
+    else if (reg.status === 'needs_review') review++;   // 전화일치·이름불일치: 연결은 진행하되 검수 대상
 
-    if (customerId) {
+    {
       // 미연결(customer_id=null) 전표만 연결 — 배송추가/전표생성이 끝난 주문도 동일 적용.
       // 이미 다른 고객에 연결된 전표는 덮어쓰지 않는다(오귀속 방지).
       const { data: upd, error: linkErr } = await sb.from('sales_orders')
@@ -160,10 +148,11 @@ export async function registerCafe24Customers(
   revalidatePath('/shipping');
   revalidatePath('/pos');
   const errSuffix = errors.length ? ` · 오류 ${errors.length}건: ${errors.slice(0, 3).join('; ')}` : '';
+  const reviewSuffix = review ? `, ${review}건 확인필요(전화일치·이름불일치 등)` : '';
   return {
     success: true,
-    message: `고객 ${created}명 등록, 주문 ${linked}건 연결${skipped ? `, ${skipped}건 스킵(정보부족)` : ''}${errSuffix}`,
-    created, linked, skipped, errors,
+    message: `고객 ${created}명 등록, 주문 ${linked}건 연결${skipped ? `, ${skipped}건 스킵(정보부족)` : ''}${reviewSuffix}${errSuffix}`,
+    created, linked, skipped, review, errors,
   };
 }
 

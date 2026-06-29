@@ -62,6 +62,7 @@ interface Cafe24OrderForShipping {
   already_added: boolean;
   cafe24_status: string;
   customer_match?: { id: string; name: string } | null;
+  customer_review?: boolean;   // #67: 휴대폰 일치·이름 불일치(또는 동일번호 다중) → 확인 필요
   is_dup?: boolean;
 }
 
@@ -1226,15 +1227,22 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                         <td className="text-sm"><div>{order.orderer_name}</div><div className="text-slate-400 text-xs">{order.orderer_phone}</div></td>
                         <td className="text-sm whitespace-nowrap">
                           {order.customer_match ? (
-                            <span className="inline-flex items-center gap-1 text-emerald-700 text-xs px-1.5 py-0.5 rounded bg-emerald-50" title="우리 고객DB에 등록됨(이름+전화 일치)">
+                            <span className="inline-flex items-center gap-1 text-emerald-700 text-xs px-1.5 py-0.5 rounded bg-emerald-50" title="우리 고객DB에 등록됨(휴대폰+이름 일치)">
                               ✓ 고객
                             </span>
                           ) : (order.orderer_name && order.orderer_phone) ? (
-                            <label className="inline-flex items-center gap-1 text-xs text-slate-500 cursor-pointer" title="체크 후 '주문자 고객 등록'으로 등록">
+                            // #67: 휴대폰 일치·이름 불일치(또는 동일번호 다중) → 확인 필요. 등록 시 기존 고객에 연결+검수플래그.
+                            <label
+                              className={`inline-flex items-center gap-1 text-xs cursor-pointer ${order.customer_review ? 'text-amber-700' : 'text-slate-500'}`}
+                              title={order.customer_review
+                                ? '휴대폰은 기존 고객과 일치하나 이름이 다릅니다. 체크 후 등록하면 기존 고객에 연결하고 검수 대상으로 표시합니다.'
+                                : "체크 후 '주문자 고객 등록'으로 등록"}>
                               <input type="checkbox" className="w-3.5 h-3.5"
                                 checked={custSelected.has(order.cafe24_order_id)}
                                 onChange={() => toggleCustSelect(order.cafe24_order_id)} />
-                              미등록
+                              {order.customer_review
+                                ? <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-50">🔶 확인 필요</span>
+                                : '미등록'}
                             </label>
                           ) : <span className="text-slate-300 text-xs">-</span>}
                         </td>

@@ -32,8 +32,11 @@ interface Cafe24OrderForShipping {
   total_price: number;
   already_added: boolean;
   cafe24_status: string;
-  // 우리 고객DB 매칭 (이름 AND 전화). 매칭되면 그 고객, 아니면 null(미등록)
+  // 우리 고객DB 매칭(#67 전화 기준). 휴대폰 일치+이름 일치 → 그 고객, 아니면 null(미등록/확인필요)
   customer_match: { id: string; name: string } | null;
+  // #67: 휴대폰은 일치하나 기존 고객명과 다름(또는 동일번호 다중) → 자동확정 금지, 확인 필요로 분리.
+  //   연결 자체는 가능(등록 시 기존 고객에 연결+needs_review 플래그). 미리보기는 ✓고객/미등록과 별도 표시.
+  customer_review?: boolean;
   // 조회 집합 내 중복발송 의심 (같은 받는분 이름+전화+품목 시그니처가 2건 이상)
   is_dup: boolean;
 }
@@ -431,14 +434,21 @@ ${optValue}`;
       for (const c of (cs ?? []) as any[]) custNameById.set(c.id, c.name);
     }
 
-    // 미확정 주문용 이름+전화 휴리스틱 맵
+    // 이름 정규화(공백 제거) — 매칭/중복판정 공용(#67)
+    const normName = (s: string) => (s || '').replace(/\s+/g, '');
+
+    // 미확정 주문용 전화(휴대폰) 기준 맵(#67) — digits → 동일번호 고객 목록.
+    //   customers.phone 은 UNIQUE 라 보통 1명이나, 포맷변형 등으로 다중일 수 있어 배열로 보관(다중=확인필요).
     const dashedPhones = [...new Set(orders.map(o => toDashed(o.orderer_phone)).filter(Boolean))];
-    const byKey = new Map<string, { id: string; name: string }>();
+    const byPhone = new Map<string, { id: string; name: string }[]>();
     if (dashedPhones.length > 0) {
       const { data: custs } = await supabase
         .from('customers').select('id, name, phone').in('phone', dashedPhones);
       for (const c of (custs ?? []) as any[]) {
-        byKey.set(`${digitsOf(c.phone)}|${c.name}`, { id: c.id, name: c.name });
+        const k = digitsOf(c.phone);
+        const arr = byPhone.get(k) ?? [];
+        arr.push({ id: c.id, name: c.name });
+        byPhone.set(k, arr);
       }
     }
 
@@ -450,16 +460,22 @@ ${optValue}`;
           ? { id: so.customer_id, name: custNameById.get(so.customer_id) ?? o.orderer_name }
           : null;
       } else {
-        // 미확정 주문 — 휴리스틱
-        o.customer_match = byKey.get(`${digitsOf(o.orderer_phone)}|${o.orderer_name}`) ?? null;
+        // 미확정 주문 — 휴대폰 기준 매칭(#67). 이름은 확정/확인필요 구분에만 사용(매칭 키 아님).
+        const matches = byPhone.get(digitsOf(o.orderer_phone)) ?? [];
+        if (matches.length === 1 && normName(matches[0].name) === normName(o.orderer_name)) {
+          o.customer_match = matches[0];          // 전화+이름 일치 → 확정 고객(✓)
+        } else if (matches.length >= 1) {
+          // 전화 일치·이름 불일치, 또는 동일번호 다중 → 자동확정 금지, 확인 필요로 분리.
+          o.customer_review = true;
+        }
+        // matches.length === 0 → 미등록(기존)
       }
     }
 
     // 주문 중복 여부 — 같은 받는분(이름+전화)이 같은 품목 시그니처를 조회 집합 내 2건 이상 주문.
     //  키 = normName(recipient_name) | digitsOf(recipient_phone) | itemSig
     //  itemSig = order_items 를 (normName(name) x quantity) 로 매핑 → 정렬 → join('|') (표시문자열 미사용)
-    //  받는분 이름/전화 결손 또는 품목 0건이면 후보 제외(오탐 방지).
-    const normName = (s: string) => (s || '').replace(/\s+/g, '');
+    //  받는분 이름/전화 결손 또는 품목 0건이면 후보 제외(오탐 방지). normName 은 위에서 정의(#67).
     const dupKeyOf = (o: Cafe24OrderForShipping): string | null => {
       const name = normName(o.recipient_name);
       const phone = digitsOf(o.recipient_phone);
