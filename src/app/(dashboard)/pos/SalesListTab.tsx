@@ -111,13 +111,8 @@ const RECEIPT_STATUS_BADGE: Record<string, string> = {
   QUICK_PLANNED: 'bg-purple-100 text-purple-700',   // 퀵예정 = 강조
   PARCEL_PLANNED: 'bg-blue-100 text-blue-700',      // 택배예정 = 강조
 };
-// 발송축(#55) — shipments.status 단일진실원천의 읽기전용 보조표시. 수령축(receipt_status)을 덮어쓰지 않는다(#57 규칙 유지).
-//   라벨은 shipping/page.tsx STATUS_LABEL 과 동일 문구(중복 정의, 출처 명시). 발송=중립 슬레이트 색으로 수령배지와 시각 구분.
-//   PRINTED/SHIPPED 만 보조배지 노출(필수). PENDING(대기중)·shipment 없음·방문/퀵은 미표시(노이즈 방지).
-//   DELIVERED 는 receipt 가 이미 RECEIVED 로 종결되므로 중복 회피 위해 보조배지 생략.
-const SHIP_STAGE_LABEL: Record<string, string> = {
-  PRINTED: '출력완료', SHIPPED: '발송완료',
-};
+// #72: 발송축(shipments.status) 세부 상태(출력완료·발송완료 등)는 판매현황에 노출하지 않는다.
+//   택배 출고 진행 상태는 [택배관리] 화면 전담 — 판매현황은 수령상태 4개만 표시.
 const APPROVAL_STATUS_LABEL: Record<string, string> = {
   COMPLETED: '결제완료', CARD_PENDING: '미승인(카드)', UNSETTLED: '미수금',
 };
@@ -875,18 +870,11 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
                       </div>
                     </td>
                     <td className="whitespace-nowrap align-top">
+                      {/* #72: 판매현황은 수령상태 4개(방문/퀵/택배 예정 + 수령완료)만 표시.
+                          택배 출고 세부 상태(출력완료·발송완료 등)는 [택배관리]에서만 확인 — 발송 보조배지 제거. */}
                       <span className={`badge text-[10px] ${RECEIPT_STATUS_BADGE[receiptKey] || 'bg-slate-100 text-slate-600'}`}>
                         {receiptStatusLabelFor(o.receipt_status)}
                       </span>
-                      {/* 발송단계 보조배지(#55) — 연결 shipment.status 읽기전용. 수령배지와 별개 표시(택배관리에서 처리 시 새로고침 반영). */}
-                      {firstShip?.status && SHIP_STAGE_LABEL[firstShip.status] && (
-                        <span
-                          className="badge text-[10px] mt-0.5 ml-1 bg-slate-100 text-slate-500 border border-slate-200"
-                          title="택배관리 발송 진행단계(읽기전용)"
-                        >
-                          🚚 {SHIP_STAGE_LABEL[firstShip.status]}
-                        </span>
-                      )}
                       {o.receipt_date && <p className="text-[10px] text-slate-500 mt-0.5">{o.receipt_date}</p>}
                     </td>
                     <td className="text-xs text-slate-700 whitespace-nowrap align-top">{o.branch?.name || '-'}</td>
@@ -3466,19 +3454,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
               const headerColor = isQuick
                 ? 'bg-indigo-50 border-indigo-200 text-indigo-700'
                 : 'bg-blue-50 border-blue-200 text-blue-700';
-              // 퀵은 송장·인쇄 단계가 없음 — 상태 라벨 맵 분기
-              const statusLabel = isQuick
-                ? (shipment.status === 'DELIVERED' ? '수령완료'
-                   : shipment.status === 'SHIPPED' ? '출발'
-                   : '대기')
-                : (shipment.status === 'DELIVERED' ? '배달완료'
-                   : shipment.status === 'SHIPPED' ? '발송완료'
-                   : shipment.status === 'PRINTED' ? '송장인쇄'
-                   : '발송대기');
-              const statusBadge =
-                shipment.status === 'DELIVERED' ? 'bg-green-100 text-green-700'
-                : shipment.status === 'SHIPPED' ? 'bg-blue-100 text-blue-700'
-                : 'bg-slate-100 text-slate-600';
+              // #72: 택배 진행 상태(발송완료·배송완료 등)는 [택배관리] 전담 → 판매 상세에선 미표시.
               return (
                 <div>
                   <div className="flex items-center gap-2 mb-2">
@@ -3544,7 +3520,8 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                       </p>
                     )}
                     <p className="text-xs pt-1 flex items-center gap-1.5">
-                      <span className={`badge text-[10px] ${statusBadge}`}>{statusLabel}</span>
+                      {/* #72: 발송 진행상태는 [택배관리] 전담 — 여기선 안내만 */}
+                      <span className="text-[10px] text-slate-400">발송 진행상태는 [택배관리]에서 확인</span>
                       {/* 송장번호는 택배만 */}
                       {!isQuick && shipment.tracking_number && (
                         <span className="font-mono text-slate-500">{shipment.tracking_number}</span>
