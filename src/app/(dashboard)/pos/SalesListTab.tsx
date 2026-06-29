@@ -2011,6 +2011,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editItemQty, setEditItemQty] = useState('');
   const [editItemPrice, setEditItemPrice] = useState('');
+  const [editItemOption, setEditItemOption] = useState(''); // #75 주문 옵션 인라인 수정
   // 방문↔택배 배송전환
   const [converting, setConverting] = useState(false);
   const [showConvertForm, setShowConvertForm] = useState(false);
@@ -2703,9 +2704,10 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
     setEditingItemId(it.id);
     setEditItemQty(String(it.quantity ?? ''));
     setEditItemPrice(String(Number(it.unit_price ?? 0)));
+    setEditItemOption(it.order_option ?? '');
   };
   const cancelEditItem = () => {
-    setEditingItemId(null); setEditItemQty(''); setEditItemPrice('');
+    setEditingItemId(null); setEditItemQty(''); setEditItemPrice(''); setEditItemOption('');
   };
   const handleSaveItemEdit = async (itemId: string) => {
     if (revising || !order) return;
@@ -2715,7 +2717,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
     if (!Number.isFinite(price) || price < 0) { alert('단가를 올바르게 입력해주세요.'); return; }
     setRevising(true);
     try {
-      const res = await updateSalesOrderItem({ orderId: order.id, itemId, quantity: qty, unitPrice: price });
+      const res = await updateSalesOrderItem({ orderId: order.id, itemId, quantity: qty, unitPrice: price, orderOption: editItemOption.trim() || null });
       if (res.error) { alert('품목 수정 실패: ' + res.error); return; }
       if (res.delta && res.delta !== 0) {
         alert(`결제 차액 ₩${Math.abs(res.delta).toLocaleString()} 가 ${res.delta > 0 ? '추가결제' : '부분환불'}로 기록되었습니다.\n카드/단말기 정산은 별도로 처리하세요.`);
@@ -3183,7 +3185,17 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                             <p className="text-[11px] text-slate-400 font-mono">{it.product?.code}</p>
                           </td>
                           <td className="px-3 py-1.5 text-xs text-indigo-700">
-                            {it.order_option ? (
+                            {/* #75: 수정 모드면 주문 옵션 입력(보자기/쇼핑백/선물구성 등) — 택배관리·송장에 파생 반영 */}
+                            {editingItemId === it.id && editable && itemRStatus !== 'RECEIVED' ? (
+                              <input
+                                type="text"
+                                list="sales-item-option-presets"
+                                value={editItemOption}
+                                onChange={e => setEditItemOption(e.target.value)}
+                                placeholder="보자기/쇼핑백/선물구성"
+                                className="input w-40 py-0.5 text-xs"
+                              />
+                            ) : it.order_option ? (
                               <span className="inline-block px-1.5 py-0.5 rounded bg-indigo-50 border border-indigo-100">
                                 🎀 {it.order_option}
                               </span>
@@ -3295,6 +3307,10 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                     })}
                   </tbody>
                 </table>
+                {/* #75 주문 옵션 프리셋 — 품목 옵션 인라인 수정 입력 자동완성 */}
+                <datalist id="sales-item-option-presets">
+                  {['보자기 포장', '쇼핑백 증정', '선물 구성', '배송비 포함', '리본 포장'].map(p => <option key={p} value={p} />)}
+                </datalist>
               </div>
 
               {/* 수령 전 전표: 품목 추가 */}

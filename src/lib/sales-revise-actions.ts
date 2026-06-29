@@ -807,6 +807,7 @@ export async function updateSalesOrderItem(params: {
   quantity?: number;   // 새 수량(정수). 미지정 시 기존 유지.
   unitPrice?: number;  // 새 단가. 미지정 시 기존 유지.
   discount?: number;   // 새 품목 할인. 미지정 시 기존 유지.
+  orderOption?: string | null;  // #75 주문 옵션(보자기/쇼핑백/선물구성 등). 미지정 시 기존 유지.
 }): Promise<{ success?: true; delta?: number; error?: string }> {
   let session;
   try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
@@ -831,13 +832,18 @@ export async function updateSalesOrderItem(params: {
   const newQty = params.quantity !== undefined ? Math.floor(params.quantity) : oldQty;
   const newUnit = params.unitPrice !== undefined ? Number(params.unitPrice) : oldUnit;
   const newDiscount = params.discount !== undefined ? Number(params.discount) : oldDiscount;
+  // #75 주문 옵션
+  const oldOption = (target.order_option ?? null) as string | null;
+  const newOption = params.orderOption !== undefined
+    ? (((params.orderOption ?? '').toString().trim()) || null)
+    : oldOption;
 
   if (!Number.isFinite(newQty) || newQty <= 0) return { error: '수량을 올바르게 입력해주세요.' };
   if (!Number.isFinite(newUnit) || newUnit < 0) return { error: '단가를 올바르게 입력해주세요.' };
   if (!Number.isFinite(newDiscount) || newDiscount < 0) return { error: '할인 금액을 올바르게 입력해주세요.' };
 
-  // 변경 없음 → no-op
-  if (newQty === oldQty && newUnit === oldUnit && newDiscount === oldDiscount) {
+  // 변경 없음 → no-op (옵션 포함)
+  if (newQty === oldQty && newUnit === oldUnit && newDiscount === oldDiscount && newOption === oldOption) {
     return { success: true, delta: 0 };
   }
 
@@ -877,6 +883,12 @@ export async function updateSalesOrderItem(params: {
   }
   if (upErr) return { error: '품목 수정에 실패했습니다.' };
 
+  // 2-b) #75 주문 옵션 변경 — 별도 update(컬럼 누락 환경 허용). 택배관리/송장 order_options는 이 값에서 파생.
+  if (newOption !== oldOption) {
+    const { error: optErr } = await db.from('sales_order_items').update({ order_option: newOption }).eq('id', params.itemId);
+    if (optErr && !isMissingColumnError(optErr)) return { error: '옵션 수정에 실패했습니다.' };
+  }
+
   // 3) 재계산 + 결제/분개 차액 (recalc 가 갱신된 품목을 재조회해 totals·포인트 갱신)
   const { deltaFinal, deltaTaxable } = await recalcSalesOrderTotals(db, order);
   const payRes = await recordPaymentDelta(db, order, deltaFinal, session.id);
@@ -888,7 +900,7 @@ export async function updateSalesOrderItem(params: {
     action: 'UPDATE',
     tableName: 'sales_orders',
     recordId: order.id,
-    description: `전표 품목 수정: ${order.order_number}, ${productName} 수량 ${oldQty}→${newQty}, 단가 ${oldUnit.toLocaleString()}→${newUnit.toLocaleString()}원, 차액 ${deltaFinal.toLocaleString()}원`,
+    description: `전표 품목 수정: ${order.order_number}, ${productName} 수량 ${oldQty}→${newQty}, 단가 ${oldUnit.toLocaleString()}→${newUnit.toLocaleString()}원${newOption !== oldOption ? `, 옵션 '${oldOption ?? '-'}'→'${newOption ?? '-'}'` : ''}, 차액 ${deltaFinal.toLocaleString()}원`,
   }).catch(() => {});
 
   revalidatePath('/pos');
