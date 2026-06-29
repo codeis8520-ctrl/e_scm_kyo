@@ -791,16 +791,27 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
     });
   const clearReceiptSel = () => setSelectedReceiptIds(new Set());
   const handleBulkReceipt = async () => {
-    const ids = [...selectedReceiptIds];
-    if (ids.length === 0) return;
-    const label = bulkTarget === 'RECEIVED' ? '배송완료(택배)·수령(방문)' : '발송완료';
-    if (!confirm(`선택한 ${ids.length}건을 최종 상태(${label})로 일괄 변경하시겠습니까?\n택배건은 연결 배송이 '배송완료'로 갱신되어 택배관리에도 반영됩니다.\n기존 수령일자는 유지됩니다(#47).`)) return;
+    const sel = orders.filter(o => selectedReceiptIds.has(o.id));
+    if (sel.length === 0) return;
+    // #71: 택배 대상 건의 발송·수령완료는 [택배관리]가 기준 화면 → 판매현황 일괄 수령완료에서 제외.
+    //   방문/퀵/현장 건만 여기서 수령완료. 택배 건은 택배관리에서 발송·배송완료로 처리(상태 단일 출처).
+    const parcelOnes = sel.filter(o => o.receipt_status === 'PARCEL_PLANNED');
+    const ids = sel.filter(o => o.receipt_status !== 'PARCEL_PLANNED').map(o => o.id);
+    if (ids.length === 0) {
+      alert(`선택한 ${sel.length}건이 모두 택배 대상입니다.\n택배 건의 발송·수령완료는 [택배관리] 화면에서 처리하세요.`);
+      return;
+    }
+    const parcelNote = parcelOnes.length
+      ? `\n\n※ 택배 ${parcelOnes.length}건은 제외됩니다 — [택배관리]에서 발송·수령완료로 처리하세요.`
+      : '';
+    if (!confirm(`선택한 방문·퀵 ${ids.length}건을 '수령완료'로 일괄 변경하시겠습니까?\n기존 수령일자는 유지됩니다(#47).${parcelNote}`)) return;
     setBulkSaving(true);
     try {
       const res = await bulkUpdateReceiptStatus(ids, bulkTarget);
       if (res.error) { alert('일괄 변경 실패: ' + res.error); return; }
-      const skipMsg = res.skipped ? `\n(${res.skipped}건은 대상 상태가 아니어서 제외됨)` : '';
-      alert(`✅ ${res.updated ?? 0}건을 '${label}'(으)로 변경했습니다.${skipMsg}`);
+      const skipMsg = res.skipped ? `\n(${res.skipped}건은 이미 수령완료라 제외됨)` : '';
+      const parcelMsg = parcelOnes.length ? `\n택배 ${parcelOnes.length}건은 [택배관리]에서 처리하세요.` : '';
+      alert(`✅ ${res.updated ?? 0}건을 '수령완료'로 변경했습니다.${skipMsg}${parcelMsg}`);
       clearReceiptSel();
       await loadOrders();
     } finally {
@@ -1425,14 +1436,14 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
               onChange={e => setBulkTarget(e.target.value as 'RECEIVED')}
               className="input py-1 text-sm w-auto"
             >
-              <option value="RECEIVED">배송완료(택배) · 수령(방문)</option>
+              <option value="RECEIVED">수령완료 (방문·퀵)</option>
             </select>
             <button
               onClick={handleBulkReceipt}
               disabled={bulkSaving}
               className="btn-primary text-sm px-3 py-1 disabled:opacity-50"
             >
-              {bulkSaving ? '변경 중...' : '일괄 변경'}
+              {bulkSaving ? '변경 중...' : '일괄 수령완료'}
             </button>
             <button
               onClick={clearReceiptSel}
@@ -1441,7 +1452,7 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
             >
               선택 해제
             </button>
-            <span className="text-xs text-slate-500">· 연결된 배송 상태도 함께 갱신됩니다</span>
+            <span className="text-xs text-slate-500">· 택배 건은 <b>[택배관리]</b>에서 발송·수령완료 처리(여기선 제외)</span>
           </div>
         )}
 
@@ -3481,26 +3492,25 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                         ⚠ 추론
                       </span>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => changeDeliveryType(isQuick ? 'PARCEL' : 'QUICK')}
-                      disabled={changingDeliveryType}
-                      className="ml-auto text-[11px] text-slate-400 hover:text-slate-700 underline disabled:opacity-50"
-                      title={`${isQuick ? '택배' : '퀵배송'}로 변경`}
-                    >
-                      {changingDeliveryType ? '변경 중...' : `${isQuick ? '📦 택배' : '🛵 퀵'}로 변경`}
-                    </button>
-                    {editable && (
-                      <button
-                        type="button"
-                        onClick={handleConvertToPickup}
-                        disabled={converting}
-                        className="text-[11px] text-amber-600 hover:text-amber-800 underline disabled:opacity-50"
-                        title="배송을 취소하고 방문 수령으로 전환합니다 (송장 미발행 건만 가능)"
+                    {/* #71: 배송방식 변경 단일 드롭다운 — 택배↔퀵 토글 + 방문 전환을 하나로 통합 */}
+                    <div className="ml-auto flex items-center gap-1.5">
+                      {(changingDeliveryType || converting) && <span className="text-[10px] text-slate-400">처리 중…</span>}
+                      <select
+                        value={isQuick ? 'QUICK' : 'PARCEL'}
+                        onChange={e => {
+                          const v = e.target.value;
+                          if (v === 'PICKUP') handleConvertToPickup();
+                          else if (v !== (isQuick ? 'QUICK' : 'PARCEL')) changeDeliveryType(v as 'PARCEL' | 'QUICK');
+                        }}
+                        disabled={changingDeliveryType || converting}
+                        className="text-[11px] border border-slate-200 rounded px-1.5 py-0.5 text-slate-600 disabled:opacity-50"
+                        title="배송방식 변경"
                       >
-                        {converting ? '전환 중...' : '🏠 방문 수령으로 전환'}
-                      </button>
-                    )}
+                        <option value="PARCEL">📦 택배</option>
+                        <option value="QUICK">🛵 퀵</option>
+                        {editable && <option value="PICKUP">🏠 방문 수령으로 전환</option>}
+                      </select>
+                    </div>
                   </div>
                   <div className={`p-3 rounded-md border text-sm space-y-1 ${isQuick ? 'border-indigo-200 bg-indigo-50/30' : 'border-slate-200'}`}>
                     {shipment.branch?.id && shipment.branch.id !== order.branch?.id && (

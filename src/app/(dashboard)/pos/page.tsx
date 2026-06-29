@@ -1652,12 +1652,15 @@ function POSPageInner() {
       {/* 판매관리 상단 탭 */}
       <PageTabs
         tabs={[
-          { key: 'checkout', label: '판매입력' },
-          { key: 'list', label: '판매현황' },
-          { key: 'online', label: '온라인몰' },
-          { key: 'parcel', label: '택배관리' },
+          { key: 'checkout', label: '판매입력', description: '신규 판매전표를 생성하는 화면입니다. 상품 선택 → 수령·배송·출고처·결제 입력 → 전표 생성.' },
+          { key: 'list', label: '판매현황', description: '생성된 판매전표를 조회·수정하고 상태를 확인하는 기준 화면입니다. 전표 수정은 여기서 합니다.' },
+          { key: 'online', label: '온라인몰', description: '카페24·스마트스토어 주문을 수집하고, 전표 생성 전 단계(고객 등록·배송 추가)를 관리합니다.' },
+          { key: 'parcel', label: '택배관리', description: '판매전표 중 택배 대상 건의 송장(출력·번호 입력·발송완료) 처리 화면입니다.' },
           // 지점별 매출·레거시는 본사/관리자 전용(지점직원 제외 — 레거시 branch 매핑 부분적·전 지점 PII)
-          ...(isBranchLocked ? [] : [{ key: 'sales', label: '지점별 매출' }, { key: 'legacy', label: '레거시 조회' }]),
+          ...(isBranchLocked ? [] : [
+            { key: 'sales', label: '지점별 매출', description: '확정 판매전표 기준 매출을 지점별로 조회하는 화면입니다. (보기 전용)' },
+            { key: 'legacy', label: '레거시 조회', description: '과거 이카운트 주문을 검색·참고하는 화면입니다. (보기 전용)' },
+          ]),
         ]}
         activeKey={mainTab}
         onChange={(k) => setMainTab(k as MainTab)}
