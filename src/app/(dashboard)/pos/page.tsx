@@ -2343,9 +2343,12 @@ function POSPageInner() {
           </div>
         </div>
 
-        {/* 주문 내용 단일 스크롤 영역(#70 재조정) — 장바구니+결제옵션을 한 스크롤로 통합,
-            결제 푸터만 하단 고정. 좁은 칼럼 내 이중 스크롤(압박) 해소. */}
-        <div className="flex-1 min-h-0 overflow-y-auto">
+        {/* #78b 2단 구성 — 좌:장바구니(품목, 자체 스크롤) / 우:수령·결제(자체 스크롤 + 결제버튼 고정).
+            가로 공간 활용 + 택배 배송정보 펼침 시 우측만 스크롤(품목·결제 항상 노출). 모바일은 단일 스크롤 유지. */}
+        <div className="flex-1 min-h-0 overflow-y-auto lg:overflow-visible lg:flex lg:flex-row lg:gap-3">
+        {/* ── 좌단: 장바구니(품목) ── */}
+        <div className="flex flex-col lg:flex-1 lg:min-w-0 lg:min-h-0 lg:border lg:border-slate-100 lg:rounded-lg lg:bg-slate-50/30">
+        <div className="lg:flex-1 lg:overflow-y-auto lg:min-h-0">
         {/* 장바구니 목록 */}
         <div className="p-3 space-y-2 min-h-[120px]">
           {cart.map(item => (
@@ -2551,7 +2554,11 @@ function POSPageInner() {
             </div>
           </div>
         )}
-
+        </div>{/* /좌단 스크롤 */}
+        </div>{/* /좌단(장바구니) */}
+        {/* ── 우단: 수령·결제(자체 스크롤 + 결제버튼 고정) ── */}
+        <div className="flex flex-col lg:flex-1 lg:min-w-0 lg:min-h-0">
+        <div className="lg:flex-1 lg:overflow-y-auto lg:min-h-0">
       {/* ── 4. 수령·배송·출고처 정보(#78): 장바구니 다음, 결제 앞에 배치(전표 흐름). 수령현황·수령일자·배송방식·출고처·담당자 + 배송정보 ── */}
       <div className="card p-3 space-y-3 mx-3 mt-2">
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 items-end">
@@ -3099,10 +3106,12 @@ function POSPageInner() {
             </div>
           )}
 
-        </div>
-        </div>
+        </div>{/* /결제옵션 */}
+        </div>{/* /우단 스크롤 */}
+        </div>{/* /우단(수령·결제) */}
+        </div>{/* /2단 행 */}
 
-        {/* 하단 고정 결제 푸터 — 결제 금액 한 줄 + 결제 버튼. 우측 칼럼 최하단에 항상 노출. */}
+        {/* 하단 고정 결제 푸터(전체폭) — 결제 금액 한 줄 + 결제 버튼. 카트 패널 최하단 고정(데스크탑=2단 아래 전체폭). */}
         <div className="border-t bg-white px-4 py-3 flex-shrink-0 space-y-2 lg:rounded-b-lg">
           <div className="flex justify-between items-baseline">
             <span className="text-xs text-slate-500">결제 금액</span>
