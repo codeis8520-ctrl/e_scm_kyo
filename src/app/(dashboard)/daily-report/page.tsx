@@ -286,27 +286,33 @@ export default function DailyReportPage() {
         </div>
 
         <div className="grid grid-cols-2 gap-2">
-          <NumField label="오픈재고" value={l.opening_stock} onChange={v => updateLine(i, 'opening_stock', v)} />
+          {/* #81: 오픈재고는 전산 재고(전일 마감/시작 재고) 자동 — 읽기 전용 */}
+          <div>
+            <label className="block text-[11px] text-slate-500 mb-1">오픈재고 <span className="text-slate-400">자동</span></label>
+            <div className="rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-sm text-slate-600 tabular-nums">{num(l.opening_stock).toLocaleString()}</div>
+          </div>
           <NumField label="입고/반품" value={l.in_return} onChange={v => updateLine(i, 'in_return', v)} />
           <NumField label="현장판매" value={l.onsite_sold} onChange={v => updateLine(i, 'onsite_sold', v)} />
           <NumField label="시음증정/파손" value={l.sample_damage} onChange={v => updateLine(i, 'sample_damage', v)} />
         </div>
 
-        {/* 마감재고 — 자동 또는 수동 */}
+        {/* 마감재고 — 판매·반품·소모 기준 자동 계산(읽기전용). 강제 수정은 권한자(#81)만 예외적으로. */}
         <div className="rounded-lg bg-slate-50 px-3 py-2">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-500">마감재고</span>
-            <button onClick={() => toggleManual(i)} className="text-[11px] text-blue-600 underline">
-              {isManual ? '자동으로' : '직접 수정'}
-            </button>
+            <span className="text-xs text-slate-500">마감재고 <span className="text-slate-400">자동 계산</span></span>
+            {isManager && (
+              <button onClick={() => toggleManual(i)} className="text-[11px] text-blue-600 underline">
+                {isManual ? '자동으로' : '⚠ 강제 수정'}
+              </button>
+            )}
           </div>
-          {isManual ? (
+          {isManager && isManual ? (
             <div className="flex items-center gap-2 mt-1">
               <input
                 type="number" inputMode="decimal" step="any"
                 value={l.closing_stock}
                 onChange={e => updateLine(i, 'closing_stock', e.target.value)}
-                className="input text-sm w-28 font-semibold"
+                className="input text-sm w-28 font-semibold border-amber-300"
               />
               {diff !== 0 && (
                 <span className={`badge text-[10px] ${diff > 0 ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}`}>
@@ -315,7 +321,7 @@ export default function DailyReportPage() {
               )}
             </div>
           ) : (
-            <p className="text-base font-semibold text-slate-800 mt-0.5">{auto}</p>
+            <p className="text-base font-semibold text-slate-800 mt-0.5">{num(l.closing_stock).toLocaleString()}</p>
           )}
         </div>
 
@@ -377,7 +383,8 @@ export default function DailyReportPage() {
                     {l.product_code && <p className="text-[10px] text-slate-400 font-mono">{l.product_code}</p>}
                   </td>
                   <td className="px-2 py-1 text-right text-slate-600 whitespace-nowrap tabular-nums">{num(l.unit_price).toLocaleString()}</td>
-                  <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.opening_stock} onChange={e => updateLine(i, 'opening_stock', e.target.value)} className={cellCls} /></td>
+                  {/* #81 오픈재고 읽기전용(전산 재고 자동) */}
+                  <td className="px-1 py-1 text-center whitespace-nowrap tabular-nums text-slate-600">{num(l.opening_stock).toLocaleString()}</td>
                   <td className="px-1 py-1 text-center whitespace-nowrap tabular-nums">
                     {sysStock == null ? (
                       <span className="text-slate-300">-</span>
@@ -390,13 +397,20 @@ export default function DailyReportPage() {
                   <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.in_return} onChange={e => updateLine(i, 'in_return', e.target.value)} className={cellCls} /></td>
                   <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.onsite_sold} onChange={e => updateLine(i, 'onsite_sold', e.target.value)} className={cellCls} /></td>
                   <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.sample_damage} onChange={e => updateLine(i, 'sample_damage', e.target.value)} className={cellCls} /></td>
+                  {/* #81 마감재고 자동(읽기전용). 강제수정은 권한자만 */}
                   <td className="px-1 py-1 text-center">
-                    <input type="number" inputMode="decimal" step="any" value={l.closing_stock}
-                      onChange={e => editClosingCell(i, e.target.value)}
-                      className={`${cellCls} font-semibold ${isManual ? 'border-amber-300' : ''}`} />
-                    {isManual && diff !== 0 && (
-                      <button onClick={() => toggleManual(i)} title={`자동 ${auto}로 되돌리기`}
-                        className="block mx-auto text-[10px] text-amber-600 mt-0.5">자동 {auto} ↺</button>
+                    {isManager ? (
+                      <>
+                        <input type="number" inputMode="decimal" step="any" value={l.closing_stock}
+                          onChange={e => editClosingCell(i, e.target.value)}
+                          className={`${cellCls} font-semibold ${isManual ? 'border-amber-300' : ''}`} />
+                        {isManual && diff !== 0 && (
+                          <button onClick={() => toggleManual(i)} title={`자동 ${auto}로 되돌리기`}
+                            className="block mx-auto text-[10px] text-amber-600 mt-0.5">자동 {auto} ↺</button>
+                        )}
+                      </>
+                    ) : (
+                      <span className="whitespace-nowrap tabular-nums font-semibold text-slate-700">{num(l.closing_stock).toLocaleString()}</span>
                     )}
                   </td>
                   <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.onsite_revenue} onChange={e => editRevenue(i, e.target.value)} className={`${cellCls} w-[88px]`} /></td>

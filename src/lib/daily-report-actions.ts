@@ -160,7 +160,9 @@ export async function getReportTemplate(branchId: string, reportDate: string) {
   }
 
   const lines: DailyReportLineInput[] = products.map((p: any, i: number) => {
-    const opening = carryByProduct.get(p.id) ?? 0;
+    // #81: 전일 마감 이월(연속) 우선 — 직전 일보가 있으면 그 마감재고. 없으면(첫 일보 등)
+    //   해당일 시작 기준 = 시스템재고(전산 inventories) 자동. 사용자가 0부터 직접 입력하지 않게.
+    const opening = carryByProduct.has(p.id) ? (carryByProduct.get(p.id) as number) : (stockByProduct.get(p.id) ?? 0);
     return {
       product_id: p.id,
       product_code: p.code ?? null,
