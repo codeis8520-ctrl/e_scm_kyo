@@ -1711,7 +1711,8 @@ function POSPageInner() {
           상단바 높이가 가변이어도 본문이 남는 높이를 정확히 채워 결제 푸터가 화면 밖으로 밀리지 않게 함. */}
       {mainTab === 'checkout' && (
       <div className="lg:h-[calc(100vh-7rem)] lg:flex lg:flex-col gap-3">
-      <div className="space-y-3 lg:flex-shrink-0">
+      {/* #83 헤더(기본정보·수령·고객) 최대높이 캡 + 자체 스크롤 — 택배 배송정보 펼쳐도 본문(장바구니)이 짜부라지지 않게 */}
+      <div className="space-y-3 lg:flex-shrink-0 lg:max-h-[56%] lg:overflow-y-auto lg:pr-1">
       <div className="card p-3 flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1">
           <label className="text-[11px] font-semibold text-slate-500 uppercase">일자</label>
