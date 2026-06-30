@@ -1756,7 +1756,7 @@ function POSPageInner() {
           )}
           {showBranchDropdown && !selectedBranchData && branchDropdownPos && (
             <div
-              className="fixed z-50 bg-white border border-slate-200 rounded-lg shadow-xl max-h-64 overflow-auto"
+              className="fixed z-[60] bg-white border border-slate-200 rounded-lg shadow-xl max-h-64 overflow-auto"
               style={{ top: branchDropdownPos.top, left: branchDropdownPos.left, width: branchDropdownPos.width }}
             >
               {filteredBranches.length === 0 && (
@@ -1872,7 +1872,7 @@ function POSPageInner() {
             {showCustomerDropdown && !selectedCustomer && dropdownPos && (
               <div
                 ref={customerDropdownRef}
-                className="fixed z-50 bg-white border border-slate-200 rounded-lg shadow-xl overflow-y-auto overscroll-contain"
+                className="fixed z-[60] bg-white border border-slate-200 rounded-lg shadow-xl overflow-y-auto overscroll-contain"
                 style={{
                   top: dropdownPos.top,
                   left: dropdownPos.left,
