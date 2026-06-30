@@ -3279,7 +3279,7 @@ function DraftListModal({ drafts, loading, currentDraftId, onLoad, onDelete, onC
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[80] p-4" onClick={onClose}>
       <div className="bg-white w-full max-w-2xl mx-auto max-h-[88vh] overflow-y-auto rounded-xl shadow-xl"
            onClick={e => e.stopPropagation()}>
         <div className="sticky top-0 bg-white border-b border-slate-200 px-5 py-3 flex items-center justify-between z-10">
@@ -3453,7 +3453,7 @@ function CustomerAddModal({ defaultBranchId, onClose, onCreated }: {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[80] p-4">
       <div className="bg-white rounded-lg w-full max-w-md max-h-[90vh] overflow-y-auto">
         <div className="flex justify-between items-center px-5 py-3 border-b">
           <div>
