@@ -2688,23 +2688,26 @@ function POSPageInner() {
                   </span>
                 )}
               </div>
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-2">
+              {/* #78: 좁은 칼럼 대응 — 이름·연락처 1줄(반반), 우편·주소·검색 1줄(우편 고정폭/주소 flex) */}
+              <div className="grid grid-cols-2 gap-2">
                 <input type="text" placeholder="이름 *" value={shipping.recipient_name}
                   onChange={e => setShipping(p => ({ ...p, recipient_name: e.target.value }))}
-                  className="input text-sm lg:col-span-2" />
+                  className="input text-sm" />
                 <input type="text" placeholder="연락처 *" value={shipping.recipient_phone}
                   onChange={e => setShipping(p => ({ ...p, recipient_phone: e.target.value }))}
-                  className="input text-sm lg:col-span-2" />
+                  className="input text-sm" />
+              </div>
+              <div className="flex gap-2">
                 <input type="text" value={shipping.recipient_zipcode}
                   onChange={e => setShipping(p => ({ ...p, recipient_zipcode: e.target.value }))}
-                  placeholder="우편번호" className="input text-sm lg:col-span-1" />
+                  placeholder="우편번호" className="input text-sm w-24 shrink-0" />
                 <input type="text" value={shipping.recipient_address}
                   onChange={e => setShipping(p => ({ ...p, recipient_address: e.target.value }))}
-                  placeholder="주소 직접 입력 또는 [주소 검색] *" className="input text-sm lg:col-span-5" />
+                  placeholder="주소 직접 입력 또는 [주소 검색] *" className="input text-sm flex-1 min-w-0" />
                 <button type="button" onClick={() => openPostcode('recipient')}
-                  className="btn-secondary text-sm whitespace-nowrap lg:col-span-2">주소 검색</button>
+                  className="btn-secondary text-sm whitespace-nowrap shrink-0">주소 검색</button>
               </div>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 gap-2">
                 <input type="text" placeholder="상세 주소 (동/호수 등)"
                   value={shipping.recipient_address_detail}
                   onChange={e => setShipping(p => ({ ...p, recipient_address_detail: e.target.value }))}
@@ -2735,25 +2738,29 @@ function POSPageInner() {
                   </label>
                 </div>
                 {!shipping.senderSameAsBuyer && (
-                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-2">
-                    <input type="text" placeholder="보내는 분 이름" value={shipping.sender_name}
-                      onChange={e => setShipping(p => ({ ...p, sender_name: e.target.value }))}
-                      className="input text-sm lg:col-span-2" />
-                    <input type="text" placeholder="연락처" value={shipping.sender_phone}
-                      onChange={e => setShipping(p => ({ ...p, sender_phone: e.target.value }))}
-                      className="input text-sm lg:col-span-2" />
-                    <input type="text" value={shipping.sender_zipcode}
-                      onChange={e => setShipping(p => ({ ...p, sender_zipcode: e.target.value }))}
-                      placeholder="우편번호" className="input text-sm lg:col-span-1" />
-                    <input type="text" value={shipping.sender_address}
-                      onChange={e => setShipping(p => ({ ...p, sender_address: e.target.value }))}
-                      placeholder="주소 직접 입력 또는 [주소 검색]" className="input text-sm lg:col-span-3" />
-                    <button type="button" onClick={() => openPostcode('sender')}
-                      className="btn-secondary text-sm whitespace-nowrap lg:col-span-2">주소 검색</button>
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <input type="text" placeholder="보내는 분 이름" value={shipping.sender_name}
+                        onChange={e => setShipping(p => ({ ...p, sender_name: e.target.value }))}
+                        className="input text-sm" />
+                      <input type="text" placeholder="연락처" value={shipping.sender_phone}
+                        onChange={e => setShipping(p => ({ ...p, sender_phone: e.target.value }))}
+                        className="input text-sm" />
+                    </div>
+                    <div className="flex gap-2">
+                      <input type="text" value={shipping.sender_zipcode}
+                        onChange={e => setShipping(p => ({ ...p, sender_zipcode: e.target.value }))}
+                        placeholder="우편번호" className="input text-sm w-24 shrink-0" />
+                      <input type="text" value={shipping.sender_address}
+                        onChange={e => setShipping(p => ({ ...p, sender_address: e.target.value }))}
+                        placeholder="주소 직접 입력 또는 [주소 검색]" className="input text-sm flex-1 min-w-0" />
+                      <button type="button" onClick={() => openPostcode('sender')}
+                        className="btn-secondary text-sm whitespace-nowrap shrink-0">주소 검색</button>
+                    </div>
                     <input type="text" placeholder="상세 주소 (동/호수 등)"
                       value={shipping.sender_address_detail}
                       onChange={e => setShipping(p => ({ ...p, sender_address_detail: e.target.value }))}
-                      className="input text-sm lg:col-span-12" />
+                      className="input text-sm" />
                   </div>
                 )}
               </div>
