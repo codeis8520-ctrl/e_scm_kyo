@@ -136,7 +136,8 @@ const ITEM_DELIVERY_LABEL: Record<ItemDeliveryType, string> = {
 interface CartItem {
   productId: string;
   name: string;
-  price: number;
+  price: number;          // 판매 단가 (편집 가능 #91 — 정가보다 높게/낮게 조정 가능)
+  basePrice?: number;     // 등록 정가 (단가 조정 여부·정가대비 표시용)
   quantity: number;
   discount: number;
   barcode?: string;
@@ -295,6 +296,8 @@ function POSPageInner() {
   const [editingDiscountId, setEditingDiscountId] = useState<string | null>(null);
   const [editingDiscountVal, setEditingDiscountVal] = useState('');
   const [editingDiscountType, setEditingDiscountType] = useState<'amount' | 'percent'>('amount');
+  const [editingPriceId, setEditingPriceId] = useState<string | null>(null);   // #91 단가 직접 수정
+  const [editingPriceVal, setEditingPriceVal] = useState('');
   const [discountType, setDiscountType] = useState<'amount' | 'percent'>('amount');
   const [discountInput, setDiscountInput] = useState('');
   const [showAddCustomerModal, setShowAddCustomerModal] = useState(false);
@@ -641,6 +644,7 @@ function POSPageInner() {
         productId: it.product_id,
         name: prod?.name || '(삭제된 품목)',
         price: Number(it.unit_price ?? prod?.price ?? 0),
+        basePrice: prod?.price != null ? Number(prod.price) : undefined,
         quantity: Number(it.quantity || 1),
         discount: Number(it.discount_amount || 0),
         barcode: prod?.barcode,
@@ -992,7 +996,7 @@ function POSPageInner() {
         : shipping.type === 'QUICK' ? 'QUICK'
         : 'PICKUP';
       return [...prev, {
-        productId: product.id, name: product.name, price: product.price,
+        productId: product.id, name: product.name, price: product.price, basePrice: product.price,
         quantity: 1, discount: 0, barcode: product.barcode,
         deliveryType: initialDeliveryType,
       }];
@@ -1223,6 +1227,26 @@ function POSPageInner() {
     setEditingDiscountId(null);
     setEditingDiscountVal('');
     setEditingDiscountType('amount');
+  };
+
+  // ── 품목 단가 직접 수정 (#91) — 할인과 별개. 정가보다 높게/낮게 모두 허용(음수만 차단). ──
+  const updatePrice = (productId: string, price: number) => {
+    setCart(prev => prev.map(item =>
+      item.productId === productId ? { ...item, price: Math.max(0, price) } : item
+    ));
+  };
+
+  const commitPriceEdit = (productId: string) => {
+    const raw = parseInt(editingPriceVal.replace(/,/g, ''));
+    if (Number.isFinite(raw)) updatePrice(productId, raw);
+    // 단가 변경 시 할인이 새 소합계를 초과하면 보정(할인은 소합계 이내)
+    const item = cart.find(i => i.productId === productId);
+    if (item && Number.isFinite(raw)) {
+      const newSub = Math.max(0, raw) * item.quantity;
+      if (item.discount > newSub) updateDiscount(productId, newSub);
+    }
+    setEditingPriceId(null);
+    setEditingPriceVal('');
   };
 
   // ── 금액 계산 ──────────────────────────────────────────────────────────────
@@ -2589,7 +2613,10 @@ function POSPageInner() {
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-sm truncate">{item.name}</p>
                   <p className="text-xs text-slate-500">
-                    {item.price.toLocaleString()}원 × {item.quantity}
+                    {item.basePrice != null && item.price !== item.basePrice && (
+                      <span className="text-[10px] line-through text-slate-400 mr-1">{item.basePrice.toLocaleString()}</span>
+                    )}
+                    <span className={item.basePrice != null && item.price !== item.basePrice ? 'text-blue-600 font-medium' : ''}>{item.price.toLocaleString()}원</span> × {item.quantity}
                     {item.discount > 0 && <span className="text-orange-500"> -할인 {item.discount.toLocaleString()}원</span>}
                     {' = '}<strong className={item.discount > 0 ? 'text-orange-600' : ''}>{(item.price * item.quantity - item.discount).toLocaleString()}원</strong>
                   </p>
@@ -2682,7 +2709,45 @@ function POSPageInner() {
                   <option value="QUICK">🛵 퀵</option>
                 </select>
               </div>
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {/* 단가 직접 수정 (#91) */}
+                {editingPriceId === item.productId ? (
+                  <div className="flex items-center gap-1 shrink-0">
+                    <span className="text-[11px] text-slate-500">단가</span>
+                    <input
+                      autoFocus
+                      type="text"
+                      inputMode="numeric"
+                      value={editingPriceVal}
+                      onChange={e => {
+                        const raw = e.target.value.replace(/[^0-9]/g, '');
+                        setEditingPriceVal(raw ? parseInt(raw).toLocaleString() : '');
+                      }}
+                      onBlur={() => commitPriceEdit(item.productId)}
+                      onKeyDown={e => { if (e.key === 'Enter') commitPriceEdit(item.productId); if (e.key === 'Escape') { setEditingPriceId(null); setEditingPriceVal(''); } }}
+                      placeholder="단가"
+                      className="w-20 border border-blue-400 rounded text-xs px-2 py-1 text-right"
+                    />
+                    <span className="text-[11px] text-slate-400">원</span>
+                    <button onMouseDown={e => { e.preventDefault(); setEditingPriceId(null); setEditingPriceVal(''); }} className="text-xs text-slate-400 hover:text-slate-600 shrink-0">취소</button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => {
+                      setEditingQtyId(null); setEditingDiscountId(null);
+                      setEditingPriceId(item.productId);
+                      setEditingPriceVal(item.price ? item.price.toLocaleString() : '');
+                    }}
+                    title="판매 단가 직접 수정 (정가보다 높게/낮게 가능)"
+                    className={`text-xs px-2 py-0.5 rounded border transition-colors ${
+                      item.basePrice != null && item.price !== item.basePrice
+                        ? 'border-blue-300 bg-blue-50 text-blue-600 hover:bg-blue-100'
+                        : 'border-slate-200 text-slate-400 hover:border-blue-300 hover:text-blue-500'
+                    }`}
+                  >
+                    {item.basePrice != null && item.price !== item.basePrice ? `단가 ${item.price.toLocaleString()}원 ✎` : '단가 수정'}
+                  </button>
+                )}
                 {editingDiscountId === item.productId ? (
                   <>
                     <div className="flex rounded overflow-hidden border border-orange-300 shrink-0">

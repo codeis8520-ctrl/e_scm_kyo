@@ -135,8 +135,9 @@ export default function DailyReportPage() {
       if (field !== 'closing_stock' && !manualClosing.has(i)) {
         line.closing_stock = autoClosing(line);   // 자동 추종
       }
-      // #76: 현장매출 자동계산 = 현장판매 × 판매가 (수동수정 안 한 라인만). 현장판매 입력 즉시 반영.
-      if (field === 'onsite_sold' && !revenueManual.has(i)) {
+      // #76/#91: 현장매출 자동계산 = 현장판매 × 판매가 (수동수정 안 한 라인만).
+      //   현장판매 또는 판매가(단가) 변경 시 즉시 반영. #91 단가 직접 수정 지원.
+      if ((field === 'onsite_sold' || field === 'unit_price') && !revenueManual.has(i)) {
         line.onsite_revenue = num(line.onsite_sold) * num(line.unit_price);
       }
       next[i] = line;
@@ -325,8 +326,12 @@ export default function DailyReportPage() {
           )}
         </div>
 
-        <div className="grid grid-cols-3 gap-2">
+        {/* #91 판매가(단가) 직접 수정 — 변경 시 현장매출(=현장판매×판매가) 자동 재계산. 정가보다 높게도 가능(채널별 판매가). */}
+        <div className="grid grid-cols-2 gap-2">
+          <NumField label="판매가(단가)" value={l.unit_price} onChange={v => updateLine(i, 'unit_price', v)} won />
           <NumField label="현장매출" value={l.onsite_revenue} onChange={v => editRevenue(i, v)} won />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
           <NumField label="본사택배" value={l.hq_parcel} onChange={v => updateLine(i, 'hq_parcel', v)} />
           <NumField label="택배매출" value={l.parcel_revenue} onChange={v => updateLine(i, 'parcel_revenue', v)} won />
         </div>
@@ -382,7 +387,8 @@ export default function DailyReportPage() {
                     </div>
                     {l.product_code && <p className="text-[10px] text-slate-400 font-mono">{l.product_code}</p>}
                   </td>
-                  <td className="px-2 py-1 text-right text-slate-600 whitespace-nowrap tabular-nums">{num(l.unit_price).toLocaleString()}</td>
+                  {/* #91 판매가(단가) 직접 수정 — 변경 시 현장매출 자동 재계산 */}
+                  <td className="px-1 py-1 text-center"><input type="number" inputMode="decimal" step="any" value={l.unit_price} onChange={e => updateLine(i, 'unit_price', e.target.value)} className={cellCls} /></td>
                   {/* #81 오픈재고 읽기전용(전산 재고 자동) */}
                   <td className="px-1 py-1 text-center whitespace-nowrap tabular-nums text-slate-600">{num(l.opening_stock).toLocaleString()}</td>
                   <td className="px-1 py-1 text-center whitespace-nowrap tabular-nums">
