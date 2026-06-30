@@ -2740,7 +2740,9 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     const r = await resolvePointRate(db, branchId, customerGrade);
     resolvedRate = r.rate;
   }
-  const pointsEarned = customerId
+  // #84: 환불/반품(음수 결제)은 신규 적립 없음(원전표 적립 회수는 별도). 양수 판매만 적립.
+  const isReturn = finalAmount < 0;
+  const pointsEarned = (customerId && !isReturn)
     ? Math.floor(finalAmount * (resolvedRate || 1.0) / 100)
     : 0;
 
@@ -2820,7 +2822,8 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     ordered_at: payload.saleDate || new Date().toISOString(),
     approval_no: approvalNo || firstCard?.approvalNo || null,
     card_info: cardInfo || firstCard?.cardInfo || null,
-    memo: payload.memo || null,
+    // #84: 음수 결제(환불/반품) 전표는 메모 머리에 [환불/반품] 표기 → 일반 판매와 구분.
+    memo: (isReturn ? `[환불/반품] ${payload.memo || ''}`.trim() : payload.memo) || null,
     customer_grade_at_order: customerId ? (payload as any).customerGrade || null : null,
     point_rate_applied: customerId ? (resolvedRate || 1.0) : null,
     credit_settled: hasCredit ? false : null,
@@ -3070,8 +3073,10 @@ export async function processPosCheckout(payload: CheckoutPayload) {
         movementRows.push({
           branch_id: stockBranchId,
           product_id: productId,
-          movement_type: 'OUT',
-          quantity: qty,
+          // #84: 음수 수량(환불/반품)은 재고 복원 = IN, 양수는 판매 = OUT. quantity는 절대값으로 기록.
+          //   재고 산술(after = before − qty)은 음수 qty면 자동 복원(+)이라 그대로 유지.
+          movement_type: qty >= 0 ? 'OUT' : 'IN',
+          quantity: Math.abs(qty),
           reference_id: saleOrderId,
           reference_type: refType,
           memo,

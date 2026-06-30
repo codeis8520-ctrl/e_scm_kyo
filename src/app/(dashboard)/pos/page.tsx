@@ -1006,8 +1006,8 @@ function POSPageInner() {
   const removeFromCart = (productId: string) => setCart(prev => prev.filter(i => i.productId !== productId));
 
   const updateQuantity = (productId: string, quantity: number) => {
-    if (quantity <= 0) { removeFromCart(productId); return; }
-    // 재고 부족/음수여도 판매 허용 (음수 재고 정책)
+    // #84: 0/빈값 = 제거. 음수(-1,-2) = 환불/반품 허용(금액·재고 복원 방향). 재고부족 음수도 판매 허용.
+    if (quantity === 0 || Number.isNaN(quantity)) { removeFromCart(productId); return; }
     setCart(prev => prev.map(item => item.productId === productId ? { ...item, quantity } : item));
   };
 
@@ -1264,6 +1264,14 @@ function POSPageInner() {
     if (paymentMethod === 'cash' && cashReceivedNum > 0 && cashReceivedNum < finalAmount) {
       alert(`받은 금액(${cashReceivedNum.toLocaleString()}원)이 결제 금액(${finalAmount.toLocaleString()}원)보다 적습니다.`);
       return;
+    }
+    // #84: 마이너스 수량(환불/반품) 포함 시 확인 — 매출 차감 + 재고 복원(IN)으로 처리됨.
+    if (cart.some(i => i.quantity < 0)) {
+      if (!confirm(
+        `⚠ 마이너스 수량(환불/반품)이 포함된 전표입니다.\n\n` +
+        `· 결제금액: ${finalAmount.toLocaleString()}원${finalAmount < 0 ? ' (환불/매출 차감)' : ''}\n` +
+        `· 해당 품목 재고는 복원(입고)됩니다.\n· 전표는 [환불/반품]으로 표시됩니다.\n\n계속 진행할까요?`
+      )) { return; }
     }
 
     setProcessing(true);
@@ -2596,14 +2604,13 @@ function POSPageInner() {
                       onChange={e => setEditingQtyVal(e.target.value)}
                       onBlur={() => commitQtyEdit(item.productId)}
                       onKeyDown={e => { if (e.key === 'Enter') commitQtyEdit(item.productId); if (e.key === 'Escape') { setEditingQtyId(null); setEditingQtyVal(''); } }}
-                      className="w-12 text-center border border-blue-400 rounded text-sm px-1 py-0.5"
-                      min="1"
+                      className="w-14 text-center border border-blue-400 rounded text-sm px-1 py-0.5"
                     />
                   ) : (
                     <button
                       onClick={() => { setEditingQtyId(item.productId); setEditingQtyVal(String(item.quantity)); }}
-                      title="클릭하여 수량 직접 입력"
-                      className="w-8 text-center font-semibold text-sm hover:bg-blue-50 rounded py-0.5"
+                      title="클릭하여 수량 직접 입력 (환불/반품은 음수: -1, -2)"
+                      className={`w-10 text-center font-semibold text-sm hover:bg-blue-50 rounded py-0.5 ${item.quantity < 0 ? 'text-red-600' : ''}`}
                     >
                       {item.quantity}
                     </button>
