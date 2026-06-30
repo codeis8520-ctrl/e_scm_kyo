@@ -3,12 +3,9 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
-import InventoryModal from './InventoryModal';
-import TransferModal from './TransferModal';
-import StockUsageModal from './StockUsageModal';
 import MovementHistoryModal from './MovementHistoryModal';
 import PackUnpackModal from './PackUnpackModal';
-import TransferBatchPanel from './TransferBatchPanel';
+import StockMovementPanel from './StockMovementPanel';   // #79 재고변동전표 통합(창고이동·자가사용·강제조정)
 import { getInventoryUsageTypes } from '@/lib/actions';
 import { updateSafetyStock } from '@/lib/inventory-actions';
 import { backfillMissingInventories } from '@/lib/inventory-backfill-actions';
@@ -85,13 +82,9 @@ export default function InventoryPage() {
   const [typeFilter, setTypeFilter] = useState<'' | ProductType>('');
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
-  const [showModal, setShowModal] = useState(false);
-  const [showTransferModal, setShowTransferModal] = useState(false);
-  const [showUsageModal, setShowUsageModal] = useState(false);
-  const [usagePreselect, setUsagePreselect] = useState<{ productId: string; branchId: string } | null>(null);
+  // #79 재고변동전표 — 그리드 클릭으로 변동유형/품목을 preset 해 '재고변동전표' 서브뷰를 연다.
+  const [movementPreset, setMovementPreset] = useState<{ type: 'TRANSFER' | 'USAGE' | 'ADJUST'; productId?: string; branchId?: string } | null>(null);
   const [usageTypes, setUsageTypes] = useState<{ id: string; code: string; name: string }[]>([]);
-  const [editInventory, setEditInventory] = useState<Inventory | null>(null);
-  const [transferInventory, setTransferInventory] = useState<Inventory | null>(null);
   const [viewMode, setViewMode] = useState<'pivot' | 'flat'>('pivot');
   const [sortMode, setSortMode] = useState<'category' | 'name' | 'stockDesc' | 'stockAsc'>('category');
   const [subView, setSubView] = useState<'stock' | 'transfer'>('stock');
@@ -285,26 +278,17 @@ export default function InventoryPage() {
   };
 
   // 강제 조정(ADJUST) — 상단 '⚠ 강제 조정' 버튼 전용. 셀 클릭에서는 호출하지 않음.
-  const handleAdjust = (item: Inventory) => {
-    setEditInventory(item);
-    setShowModal(true);
+  // #79 재고변동전표 — 그리드 클릭을 통합 패널(재고변동전표 서브뷰)로 라우팅.
+  const openMovement = (type: 'TRANSFER' | 'USAGE' | 'ADJUST', item?: Inventory) => {
+    setMovementPreset({
+      type,
+      productId: item?.product_id,
+      branchId: item?.branch_id ?? (isBranchUser && userBranchId ? userBranchId : undefined),
+    });
+    setSubView('transfer');
   };
-
-  // 셀(숫자) 클릭 → 자가 사용(USAGE) 모달을 해당 제품·지점 preselect로 열기.
-  const handleUsageClick = (item: Inventory) => {
-    setUsagePreselect({ productId: item.product_id, branchId: item.branch_id });
-    setShowUsageModal(true);
-  };
-
-  const handleClose = () => {
-    setShowModal(false);
-    setEditInventory(null);
-  };
-
-  const handleSuccess = () => {
-    handleClose();
-    fetchInventory();
-  };
+  const handleAdjust = (item: Inventory) => openMovement('ADJUST', item);
+  const handleUsageClick = (item: Inventory) => openMovement('USAGE', item);
 
   // ── 카테고리 트리 정보 (path 코드/정렬키/조상) ────────────────────────
   const categoryInfo = (() => buildCategoryInfo(categories))();
@@ -507,7 +491,7 @@ export default function InventoryPage() {
     <div className="card">
       {/* 서브뷰 토글 — 재고현황 ↔ 지점이동 (지점고정 사용자도 노출, 출발지 자기지점 잠금) */}
       <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1 w-fit mb-4">
-        {([['stock', '재고현황'], ['transfer', '지점이동']] as ['stock' | 'transfer', string][]).map(([k, label]) => (
+        {([['stock', '재고현황'], ['transfer', '재고변동전표']] as ['stock' | 'transfer', string][]).map(([k, label]) => (
           <button
             key={k}
             onClick={() => setSubView(k)}
@@ -521,10 +505,13 @@ export default function InventoryPage() {
       </div>
 
       {subView === 'transfer' && (
-        <TransferBatchPanel
+        <StockMovementPanel
           branches={branches}
-          defaultFromBranchId={isBranchUser && userBranchId ? userBranchId : ''}
-          fromBranchLocked={isBranchUser && !!userBranchId}
+          usageTypes={usageTypes}
+          isHQUser={isHQUser}
+          defaultBranchId={isBranchUser && userBranchId ? userBranchId : ''}
+          branchLocked={isBranchUser && !!userBranchId}
+          preset={movementPreset}
           onSuccess={fetchInventory}
         />
       )}
@@ -541,26 +528,13 @@ export default function InventoryPage() {
         </div>
         <div className="flex flex-wrap gap-2">
           <Link href="/inventory/count" className="btn-secondary py-2 px-4 text-sm">재고 실사</Link>
+          {/* #79: 자가사용·강제조정 별도 버튼 제거 → 재고변동전표 통합 전표에서 변동유형 선택 */}
           <button
-            onClick={() => { setUsagePreselect(null); setShowUsageModal(true); }}
+            onClick={() => { setMovementPreset(null); setSubView('transfer'); }}
             className="btn-primary text-sm"
+            title="창고이동·자가사용·강제조정을 하나의 전표에서 입력"
           >
-            + 자가 사용
-          </button>
-          {/* #53: 비HQ에게도 버튼을 보이되 비활성+안내(권한 없음 명확화). 클릭 시 alert로 사유 표시. */}
-          <button
-            onClick={() => {
-              if (!isHQUser) { alert('강제 조정은 본사 권한(본부대표·HQ)만 가능합니다.\n일상 소모·오류 보정은 "자가 사용"을 이용하세요.'); return; }
-              setEditInventory(null); setShowModal(true);
-            }}
-            title={isHQUser ? '재고를 강제로 맞춥니다(실사·오류 보정 전용)' : '강제 조정은 본사 권한만 가능합니다'}
-            className={`text-sm rounded-lg px-4 py-2 font-medium ${
-              isHQUser
-                ? 'bg-red-600 text-white hover:bg-red-700'
-                : 'bg-slate-100 text-slate-400'
-            }`}
-          >
-            {isHQUser ? '⚠ 강제 조정' : '🔒 강제 조정 (본사 권한)'}
+            + 재고변동전표
           </button>
         </div>
       </div>
@@ -973,7 +947,7 @@ export default function InventoryPage() {
                       </button>
                     )}
                     <button
-                      onClick={() => { setTransferInventory(item); setShowTransferModal(true); }}
+                      onClick={() => openMovement('TRANSFER', item)}
                       className="text-green-600 hover:underline mr-2"
                     >
                       이동
@@ -1002,37 +976,7 @@ export default function InventoryPage() {
       )}
       </>)}
 
-      {showModal && (
-        <InventoryModal
-          inventory={editInventory}
-          onClose={handleClose}
-          onSuccess={handleSuccess}
-        />
-      )}
-
-      {showTransferModal && transferInventory && (
-        <TransferModal
-          inventory={transferInventory}
-          branches={branches}
-          onClose={() => { setShowTransferModal(false); setTransferInventory(null); }}
-          onSuccess={() => { setShowTransferModal(false); setTransferInventory(null); fetchInventory(); }}
-        />
-      )}
-
-      {showUsageModal && (
-        <StockUsageModal
-          branches={isBranchUser && userBranchId ? branches.filter(b => b.id === userBranchId) : branches}
-          inventories={inventories}
-          usageTypes={usageTypes}
-          defaultProductId={usagePreselect?.productId}
-          defaultBranchId={
-            usagePreselect?.branchId
-            ?? (isBranchUser && userBranchId ? userBranchId : '')
-          }
-          onClose={() => { setShowUsageModal(false); setUsagePreselect(null); }}
-          onSuccess={() => { setShowUsageModal(false); setUsagePreselect(null); fetchInventory(); }}
-        />
-      )}
+      {/* #79: 자가사용·강제조정·단건이동 모달 제거 → '재고변동전표' 통합 패널로 일원화 */}
 
       {historyProduct && (
         <MovementHistoryModal

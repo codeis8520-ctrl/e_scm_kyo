@@ -1125,6 +1125,64 @@ export async function adjustInventory(formData: FormData) {
   return { success: true };
 }
 
+// 강제조정 다건(#79 재고변동전표) — 각 품목 재고를 target 값으로 SET(맞춤). 본사 권한 전용.
+//   기존 안전재고 보존. 이력은 델타(target−현재고) 부호로 IN/OUT, reference_type='MANUAL'.
+//   RAW/SUB는 본사 지점에서만. 음수 target 허용(가차감/마이너스 재고 반영).
+export async function adjustInventoryBatch(input: {
+  branch_id: string;
+  memo?: string;
+  items: { product_id: string; target_quantity: number }[];
+}): Promise<{ success?: true; count?: number; error?: string }> {
+  const session = await requireSession();
+  if (session.role !== 'SUPER_ADMIN' && session.role !== 'HQ_OPERATOR') {
+    return { error: '강제 조정은 본사 권한(본부대표·HQ)만 가능합니다.' };
+  }
+  const supabase = await createClient();
+  const db = supabase as any;
+  const branchId = input.branch_id;
+  const items = input.items || [];
+  if (!branchId) return { error: '창고(지점)를 선택하세요.' };
+  if (items.length === 0) return { error: '조정 품목을 1개 이상 추가하세요.' };
+
+  // 검증 — 수량 유효성 + RAW/SUB 본사 제한(전수 통과 후 시작)
+  let hqId: string | null = null;
+  try { const r = await db.from('branches').select('id').eq('is_headquarters', true).maybeSingle(); hqId = r?.data?.id ?? null; } catch { /* 폴백 */ }
+  for (const it of items) {
+    if (!it.product_id) return { error: '품목 정보가 올바르지 않습니다.' };
+    if (!Number.isFinite(it.target_quantity)) return { error: '조정(목표) 수량을 올바르게 입력하세요.' };
+    if (hqId && branchId !== hqId) {
+      const pr = await db.from('products').select('name, product_type').eq('id', it.product_id).maybeSingle();
+      const pt: string | null = pr?.data?.product_type ?? null;
+      if (pt === 'RAW' || pt === 'SUB') {
+        return { error: `'${pr?.data?.name ?? it.product_id}' 원자재·부자재는 본사에서만 조정할 수 있습니다.` };
+      }
+    }
+  }
+
+  for (const it of items) {
+    const target = it.target_quantity;
+    const { data: curArr } = await db.from('inventories').select('id, quantity').eq('branch_id', branchId).eq('product_id', it.product_id);
+    const cur = curArr?.[0];
+    const before = cur ? toNum(cur.quantity) : 0;
+    const delta = target - before;
+    if (cur) {
+      await db.from('inventories').update({ quantity: target }).eq('id', cur.id);  // 안전재고는 보존(미터치)
+    } else {
+      await db.from('inventories').insert({ branch_id: branchId, product_id: it.product_id, quantity: target, safety_stock: 0 });
+    }
+    if (delta !== 0) {
+      await db.from('inventory_movements').insert({
+        branch_id: branchId, product_id: it.product_id,
+        movement_type: delta > 0 ? 'IN' : 'OUT', quantity: Math.abs(delta),
+        reference_type: 'MANUAL', memo: input.memo || '강제 조정(맞춤)', created_by: session.id,
+      });
+    }
+  }
+
+  revalidatePath('/inventory');
+  return { success: true, count: items.length };
+}
+
 // 재고 소모(사용유형) 다건 일괄 OUT 차감 — 판매 아님.
 // inventory_movements 에 reference_type='USAGE' + usage_type_id 로 기록. 음수 재고 허용.
 // 2-pass: 1) 검증+RAW/SUB 본사제한 전수 통과해야 시작, 2) 라인별 실제 차감.
