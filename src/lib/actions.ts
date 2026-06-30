@@ -2938,6 +2938,10 @@ export async function processPosCheckout(payload: CheckoutPayload) {
         : (paymentMethod === 'credit' || hasCredit) ? 'UNSETTLED'
         : 'COMPLETED');
 
+  // #92 전표 기준일자 = 판매일자(saleDate). 재고변동 이력(movements.created_at)도 이 값으로
+  //   기록해 '일시'가 전표 생성시각이 아닌 판매일자를 따르게 한다(과거일자 소급입력 정합성).
+  const orderedAt = payload.saleDate || new Date().toISOString();
+
   const salePayload: any = {
     order_number: orderNumber,
     channel: branchChannel || 'STORE',
@@ -2950,7 +2954,7 @@ export async function processPosCheckout(payload: CheckoutPayload) {
     payment_method: topMethod,
     points_earned: pointsEarned,
     points_used: usePoints ? pointsToUse : 0,
-    ordered_at: payload.saleDate || new Date().toISOString(),
+    ordered_at: orderedAt,
     approval_no: approvalNo || firstCard?.approvalNo || null,
     card_info: cardInfo || firstCard?.cardInfo || null,
     // #84: 음수 결제(환불/반품) 전표는 메모 머리에 [환불/반품] 표기 → 일반 판매와 구분.
@@ -3211,6 +3215,7 @@ export async function processPosCheckout(payload: CheckoutPayload) {
           reference_id: saleOrderId,
           reference_type: refType,
           memo,
+          created_at: orderedAt,  // #92 이력 일시 = 판매일자(전표 생성시각 아님)
         });
       }
       // (3) UPDATE/INSERT 병렬, movements 배열 1회 INSERT — 함께 대기

@@ -82,6 +82,8 @@ export async function deductOnlineOrderInventory(
       reference_id: it.id,            // 품목 단위 멱등키
       reference_type: 'ONLINE_SALE',
       memo: `자사몰 판매 차감: ${order.order_number ?? ''}`.trim(),
+      // #92 이력 일시 = 자사몰 판매일자(ordered_at). 동기화 시각 아님. 없으면 DB 기본 now().
+      ...(order.ordered_at ? { created_at: order.ordered_at } : {}),
     });
     deducted++;
   }
