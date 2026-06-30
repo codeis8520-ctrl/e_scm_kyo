@@ -24,6 +24,7 @@ interface Shipment {
   source: 'CAFE24' | 'STORE';
   sale_branch_name?: string | null;   // 매출처(연결 sales_order의 지점) — #21
   sale_receipt_date?: string | null;   // 수령일/택배예정일(연결 sales_order) — #26
+  shipped_at?: string | null;          // 발송일(SHIPPED 전환 시점, 마이그112) — 발송완료 건 날짜열
   order_options?: string | null;   // 주문 옵션(연결 sales_order_items.order_option 도출) — #40
   cafe24_order_id: string | null;
   branch_id: string | null;
@@ -120,6 +121,16 @@ const receiptFromShip = (st: string): { label: string; cls: string } =>
   st === 'PENDING'
     ? { label: '택배예정', cls: 'badge badge-info' }
     : { label: '수령완료', cls: 'badge badge-success' };
+
+// 택배관리 기준 날짜 — 발송완료/배송완료=발송일(shipped_at), 그 외(대기/출력)=택배예정일(sale_receipt_date).
+//   택배예정일은 실제 2~3일 후로 잡는 전표가 많아, 발송 후엔 발송일을 보여야 정합(미래 예정일 잔존 방지).
+function shipPrimaryDate(s: { status?: string; shipped_at?: string | null; sale_receipt_date?: string | null }): string {
+  const done = s.status === 'SHIPPED' || s.status === 'DELIVERED';
+  if (done && s.shipped_at) return String(s.shipped_at).slice(0, 10);
+  return s.sale_receipt_date || '';
+}
+const shipDateKind = (s: { status?: string; shipped_at?: string | null }): '발송' | '예정' =>
+  (s.status === 'SHIPPED' || s.status === 'DELIVERED') && s.shipped_at ? '발송' : '예정';
 const SOURCE_BADGE: Record<string, string> = {
   CAFE24: 'badge badge-info', STORE: 'badge badge-success',
 };
@@ -979,10 +990,10 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
     }
     return true;
   }).sort((a, b) => {
-    // #74: 수령/택배예정일 기준 그룹 정렬. 날짜 그룹 방향만 shipSort로 제어, 그룹 내는 등록일 내림차순 고정.
-    const ra = a.sale_receipt_date || '', rb = b.sale_receipt_date || '';
+    // #74: 기준 날짜(발송완료=발송일/그 외=택배예정일) 기준 그룹 정렬. 그룹 내는 등록일 내림차순 고정.
+    const ra = shipPrimaryDate(a), rb = shipPrimaryDate(b);
     if (ra !== rb) {
-      if (!ra) return 1;   // 미지정(수령일 없음) 맨 뒤
+      if (!ra) return 1;   // 미지정(날짜 없음) 맨 뒤
       if (!rb) return -1;
       return shipSort === 'oldest' ? (ra < rb ? -1 : 1) : (ra < rb ? 1 : -1);
     }
@@ -992,7 +1003,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
 
   // #74: 날짜 그룹별 건수(헤더 표시용)
   const shipGroupCounts = filteredShipments.reduce((m, s) => {
-    const k = s.sale_receipt_date || '미지정';
+    const k = shipPrimaryDate(s) || '미지정';
     m.set(k, (m.get(k) || 0) + 1);
     return m;
   }, new Map<string, number>());
@@ -1582,8 +1593,8 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                 className="input text-sm py-1.5 w-44"
                 title="정렬 기준"
               >
-                <option value="receipt_desc">수령/택배예정일 최신순</option>
-                <option value="oldest">수령/택배예정일 오래된순</option>
+                <option value="receipt_desc">발송일/택배예정일 최신순</option>
+                <option value="oldest">발송일/택배예정일 오래된순</option>
               </select>
             </div>
             <div className="flex gap-2 flex-wrap">
@@ -1643,7 +1654,7 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                         />
                       </th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-24">등록일</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-blue-600 uppercase tracking-wide w-24">수령/택배예정일</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-blue-600 uppercase tracking-wide w-24">발송일 / 택배예정일</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">수령자</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">발송자</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">배송지 주소</th>
@@ -1659,16 +1670,16 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {filteredShipments.map((s, idx) => {
-                      // #74: 수령/택배예정일별 그룹 헤더 — 직전 행과 날짜가 바뀌면 헤더 행 삽입(건수 표시).
-                      const grpKey = s.sale_receipt_date || '미지정';
-                      const prevKey = idx > 0 ? (filteredShipments[idx - 1].sale_receipt_date || '미지정') : null;
+                      // #74: 기준 날짜(발송일/택배예정일)별 그룹 헤더 — 직전 행과 날짜가 바뀌면 헤더 삽입(건수).
+                      const grpKey = shipPrimaryDate(s) || '미지정';
+                      const prevKey = idx > 0 ? (shipPrimaryDate(filteredShipments[idx - 1]) || '미지정') : null;
                       const showGroupHeader = grpKey !== prevKey;
                       return (
                       <Fragment key={s.id}>
                       {showGroupHeader && (
                         <tr className="bg-slate-100/80 border-t-2 border-slate-200">
                           <td colSpan={14} className="px-3 py-1.5 text-xs font-semibold text-slate-600">
-                            📅 {grpKey === '미지정' ? '수령일 미지정' : grpKey} · {shipGroupCounts.get(grpKey) || 0}건
+                            📅 {grpKey === '미지정' ? '날짜 미지정' : grpKey} · {shipGroupCounts.get(grpKey) || 0}건
                           </td>
                         </tr>
                       )}
@@ -1681,9 +1692,9 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                         </td>
                         <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{s.created_at?.slice(0, 10)}</td>
                         <td className="px-3 py-3 text-xs whitespace-nowrap">
-                          {s.sale_receipt_date
-                            ? <span className="font-semibold text-blue-700">{s.sale_receipt_date}</span>
-                            : <span className="text-slate-300">미지정</span>}
+                          {(() => { const d = shipPrimaryDate(s); const kind = shipDateKind(s); return d
+                            ? <span className="font-semibold text-blue-700">{d}<span className={`block text-[10px] font-normal ${kind === '발송' ? 'text-green-600' : 'text-slate-400'}`}>{kind === '발송' ? '발송일' : '택배예정'}</span></span>
+                            : <span className="text-slate-300">미지정</span>; })()}
                         </td>
                         <td className="px-3 py-3">
                           <div className="font-medium text-sm text-slate-800">{s.recipient_name}</div>

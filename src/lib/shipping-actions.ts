@@ -265,10 +265,21 @@ export async function updateShipment(
     if (UPDATABLE.has(k)) clean[k] = v;
   }
 
-  const { error } = await supabase
+  // 발송일(shipped_at) 캡처 — 상태가 SHIPPED로 새로 전환될 때 발송 시점 기록(택배관리 발송일 열).
+  const _prevStatus = (prev as any)?.status || null;
+  const _newStatus = (data.status as string | undefined) ?? _prevStatus;
+  const becameShippedNow = _prevStatus !== 'SHIPPED' && _newStatus === 'SHIPPED';
+  if (becameShippedNow) clean.shipped_at = new Date().toISOString();
+
+  let { error } = await supabase
     .from('shipments')
     .update({ ...clean, updated_at: new Date().toISOString() })
     .eq('id', id);
+  // 마이그112 미적용(shipped_at 컬럼 부재) 폴백 — 발송일 제외하고 재시도.
+  if (error && /shipped_at/i.test(String(error.message))) {
+    delete clean.shipped_at;
+    ({ error } = await supabase.from('shipments').update({ ...clean, updated_at: new Date().toISOString() }).eq('id', id));
+  }
 
   if (error) {
     console.error('updateShipment error:', error);

@@ -132,7 +132,8 @@ journal_entry_lines: id, journal_entry_id, account_id, debit, credit, memo
 accounting_period_closes: id, period(YYYY-MM), closed_at, closed_by, memo
 
 --- 배송 ---
-shipments: id, source(CAFE24/STORE/SMARTSTORE·마이그098), delivery_type(PARCEL/QUICK), cafe24_order_id, sales_order_id, sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail, recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail, tracking_number, status(PENDING/PRINTED/SHIPPED/DELIVERED), branch_id, created_at
+shipments: id, source(CAFE24/STORE/SMARTSTORE·마이그098), delivery_type(PARCEL/QUICK), cafe24_order_id, sales_order_id, sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail, recipient_name, recipient_phone, recipient_zipcode, recipient_address, recipient_address_detail, tracking_number, status(PENDING/PRINTED/SHIPPED/DELIVERED), branch_id, created_at, shipped_at(발송일=SHIPPED 전환시점, 마이그112)
+  ※ 택배관리 날짜열: 발송완료/배송완료=shipped_at(발송일), 대기/택배예정=연결 주문 receipt_date(택배예정일, 실제 2~3일 후로 잡는 전표 많음). 발송 후 미래 예정일 잔존 방지(상태별 날짜 분리). #90 송장처리=수령완료와 별개 정보(언제 발송했나).
   ※ sender_*: 배송 행 생성 시점 스냅샷. CAFE24 출처는 /admin/shippingorigins(폴백 /admin/store)에서 자동 채움.
   ※ 대한통운 엑셀 다운로드 시 발송지는 별도 모달에서 지점 선택(본사/한남점 등) — branches.sender_* 우선, 없으면 branches.address/phone 폴백. 모든 행에 통일 적용.
   ※ branch_id = 출고 지점 (재고가 차감된 지점). POS에서 배송 활성 시 판매 지점과 다를 수 있음. 판매 지점은 sales_orders.branch_id 참조.
