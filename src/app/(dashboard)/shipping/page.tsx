@@ -114,6 +114,12 @@ const STATUS_BADGE: Record<string, string> = {
   PENDING: 'badge', PRINTED: 'badge badge-info',
   SHIPPED: 'badge badge-warning', DELIVERED: 'badge badge-success',
 };
+// #90 송장 처리(출력/발송/배송)=수령완료. 택배관리 주 상태를 판매현황 수령상태와 통일.
+//   PENDING(송장 미처리)=택배예정, 그 외=수령완료. 발송 세부(출력완료/발송완료/배송완료)는 보조 표기.
+const receiptFromShip = (st: string): { label: string; cls: string } =>
+  st === 'PENDING'
+    ? { label: '택배예정', cls: 'badge badge-info' }
+    : { label: '수령완료', cls: 'badge badge-success' };
 const SOURCE_BADGE: Record<string, string> = {
   CAFE24: 'badge badge-info', STORE: 'badge badge-success',
 };
@@ -1709,7 +1715,13 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
                           <span className="text-xs font-medium text-indigo-700">{resolveShipFromName(s)}</span>
                         </td>
                         <td className="px-3 py-3">
-                          <span className={`${STATUS_BADGE[s.status]} text-xs`}>{STATUS_LABEL[s.status]}</span>
+                          {/* #90 주 상태 = 수령상태(판매현황과 통일). 발송 세부는 보조 표기. */}
+                          {(() => { const r = receiptFromShip(s.status); return (
+                            <>
+                              <span className={`${r.cls} text-xs`}>{r.label}</span>
+                              {s.status !== 'PENDING' && <span className="block text-[10px] text-slate-400 mt-0.5">{STATUS_LABEL[s.status]}</span>}
+                            </>
+                          ); })()}
                         </td>
                         <td className="px-3 py-3">
                           {s.tracking_number ? (
