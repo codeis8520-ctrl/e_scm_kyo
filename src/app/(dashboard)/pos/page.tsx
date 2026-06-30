@@ -1653,7 +1653,7 @@ function POSPageInner() {
       {/* 판매관리 상단 탭 */}
       <PageTabs
         tabs={[
-          { key: 'checkout', label: '판매입력', description: '신규 판매전표를 작성하는 화면입니다. 판매정보·고객 → 품목 선택 → 수령·배송·출고처 → 결제 순으로 입력해 전표를 생성합니다.' },
+          { key: 'checkout', label: '판매입력' },
           { key: 'list', label: '판매현황', description: '생성된 판매전표를 조회·수정하고 상태를 확인하는 기준 화면입니다. 전표 수정은 여기서 합니다.' },
           { key: 'online', label: '온라인몰', description: '카페24·스마트스토어 주문을 수집하고, 전표 생성 전 단계(고객 등록·배송 추가)를 관리합니다.' },
           { key: 'parcel', label: '택배관리', description: '판매전표 중 택배 대상 건의 송장(출력·번호 입력·발송완료) 처리 화면입니다.' },
@@ -1898,129 +1898,9 @@ function POSPageInner() {
           <p className="text-[11px] text-amber-600">⚠ 출고처가 매출처와 다릅니다 — 재고는 {branches.find((b: any) => b.id === shipFromBranchId)?.name || '출고처'}에서 차감됩니다.</p>
         )}
 
-        {/* ── 배송 정보(택배/퀵) — 받는분·주소·메모를 전체폭으로 한눈에 ── */}
-        {shipping.type !== 'NONE' && (() => {
-          const pickupCnt = cart.filter(c => (c.deliveryType || 'PICKUP') === 'PICKUP').length;
-          const parcelCnt = cart.filter(c => c.deliveryType === 'PARCEL').length;
-          const quickCnt = cart.filter(c => c.deliveryType === 'QUICK').length;
-          const isMixed = pickupCnt > 0 && (parcelCnt > 0 || quickCnt > 0);
-          return (
-            <div className="border-t border-slate-100 pt-3 space-y-3">
-              {isMixed && (
-                <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
-                  ⚠ 혼합: 🏠 현장 {pickupCnt}품목 · {shipping.type === 'QUICK' ? '🛵 퀵' : '📦 택배'} {shipping.type === 'QUICK' ? quickCnt : parcelCnt}품목
-                  <span className="block mt-0.5 text-[10px] text-amber-600">현장 품목은 즉시 수령, 배송 품목만 아래 주소로 발송됩니다.</span>
-                </p>
-              )}
-              {shipping.type === 'QUICK' && (
-                <p className="text-[11px] text-indigo-600 bg-indigo-50 border border-indigo-100 rounded px-2 py-1">
-                  🛵 퀵배송: 당일 인편. 송장/알림톡 없이 인수자 확인 후 상태 업데이트 권장.
-                </p>
-              )}
-              {/* 수령인(받는 분) — 헤더 + 접기/펼치기(#83) */}
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-[11px] font-semibold text-slate-500 uppercase">수령인 (받는 분)</p>
-                <div className="flex items-center gap-2">
-                  {addressFromRegistry && selectedCustomer && (
-                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200"
-                      title="고객 등록 정보의 주소를 자동으로 채웠습니다. 발송 전에 반드시 고객에게 확인하세요.">
-                      📍 고객 등록 주소 — 발송 전 확인 필요
-                    </span>
-                  )}
-                  <button type="button" onClick={() => setShowDelivery(v => !v)}
-                    className="text-[11px] text-slate-500 hover:text-slate-700 underline whitespace-nowrap">
-                    {showDelivery ? '▲ 접기' : '▼ 펼치기'}
-                  </button>
-                </div>
-              </div>
-              {showDelivery ? (
-              <>
-              {/* #83: 전체폭 가로 압축 — 받는분 한 줄(이름·연락처·우편·주소·검색), 상세·메시지 한 줄 */}
-              <div className="flex flex-wrap lg:flex-nowrap gap-2">
-                <input type="text" placeholder="이름 *" value={shipping.recipient_name}
-                  onChange={e => setShipping(p => ({ ...p, recipient_name: e.target.value }))}
-                  className="input text-sm flex-1 min-w-[120px]" />
-                <input type="text" placeholder="연락처 *" value={shipping.recipient_phone}
-                  onChange={e => setShipping(p => ({ ...p, recipient_phone: e.target.value }))}
-                  className="input text-sm flex-1 min-w-[120px]" />
-                <input type="text" value={shipping.recipient_zipcode}
-                  onChange={e => setShipping(p => ({ ...p, recipient_zipcode: e.target.value }))}
-                  placeholder="우편번호" className="input text-sm w-24 shrink-0" />
-                <input type="text" value={shipping.recipient_address}
-                  onChange={e => setShipping(p => ({ ...p, recipient_address: e.target.value }))}
-                  placeholder="주소 직접 입력 또는 [주소 검색] *" className="input text-sm flex-[2] min-w-[180px]" />
-                <button type="button" onClick={() => openPostcode('recipient')}
-                  className="btn-secondary text-sm whitespace-nowrap shrink-0">주소 검색</button>
-              </div>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
-                <input type="text" placeholder="상세 주소 (동/호수 등)"
-                  value={shipping.recipient_address_detail}
-                  onChange={e => setShipping(p => ({ ...p, recipient_address_detail: e.target.value }))}
-                  className="input text-sm" />
-                <input type="text"
-                  placeholder={shipping.type === 'QUICK' ? '퀵 기사 전달 메시지 (선택)' : '배송 메시지 (선택)'}
-                  value={shipping.delivery_message}
-                  onChange={e => setShipping(p => ({ ...p, delivery_message: e.target.value }))}
-                  className="input text-sm" />
-              </div>
-              {/* 발신인 */}
-              <div className="pt-2 border-t border-slate-100">
-                <div className="flex items-center gap-2 mb-2">
-                  <input type="checkbox" id="sender-same"
-                    checked={shipping.senderSameAsBuyer}
-                    onChange={e => {
-                      const same = e.target.checked;
-                      setShipping(prev => ({
-                        ...prev,
-                        senderSameAsBuyer: same,
-                        sender_name: same ? (selectedCustomer?.name || '') : prev.sender_name,
-                        sender_phone: same ? (selectedCustomer?.phone || '') : prev.sender_phone,
-                      }));
-                    }}
-                    className="w-4 h-4" />
-                  <label htmlFor="sender-same" className="text-sm text-slate-700 cursor-pointer">
-                    보내는 분 = 구매자와 동일
-                  </label>
-                </div>
-                {!shipping.senderSameAsBuyer && (
-                  <div className="space-y-2">
-                    <div className="flex flex-wrap lg:flex-nowrap gap-2">
-                      <input type="text" placeholder="보내는 분 이름" value={shipping.sender_name}
-                        onChange={e => setShipping(p => ({ ...p, sender_name: e.target.value }))}
-                        className="input text-sm flex-1 min-w-[120px]" />
-                      <input type="text" placeholder="연락처" value={shipping.sender_phone}
-                        onChange={e => setShipping(p => ({ ...p, sender_phone: e.target.value }))}
-                        className="input text-sm flex-1 min-w-[120px]" />
-                      <input type="text" value={shipping.sender_zipcode}
-                        onChange={e => setShipping(p => ({ ...p, sender_zipcode: e.target.value }))}
-                        placeholder="우편번호" className="input text-sm w-24 shrink-0" />
-                      <input type="text" value={shipping.sender_address}
-                        onChange={e => setShipping(p => ({ ...p, sender_address: e.target.value }))}
-                        placeholder="주소 직접 입력 또는 [주소 검색]" className="input text-sm flex-[2] min-w-[180px]" />
-                      <button type="button" onClick={() => openPostcode('sender')}
-                        className="btn-secondary text-sm whitespace-nowrap shrink-0">주소 검색</button>
-                    </div>
-                    <input type="text" placeholder="상세 주소 (동/호수 등)"
-                      value={shipping.sender_address_detail}
-                      onChange={e => setShipping(p => ({ ...p, sender_address_detail: e.target.value }))}
-                      className="input text-sm" />
-                  </div>
-                )}
-              </div>
-              </>
-              ) : (
-                <p className="text-xs text-slate-500 truncate">
-                  {(shipping.recipient_name || shipping.recipient_phone || shipping.recipient_address)
-                    ? `받는분: ${shipping.recipient_name || '-'} · ${shipping.recipient_phone || '-'} · ${shipping.recipient_address || '주소 미입력'}${shipping.recipient_address_detail ? ' ' + shipping.recipient_address_detail : ''}`
-                    : '받는분 정보 미입력 — [펼치기]로 입력하세요'}
-                </p>
-              )}
-            </div>
-          );
-        })()}
       </div>
         {/* 2. 고객 정보(#78) — 판매정보 다음, 전체폭 상단. 검색·선택 + 이력/상담(고객 선택 시만 확장, 컴팩트). */}
-        <div className="card p-3 flex flex-col gap-3 lg:max-h-[28vh] lg:flex-shrink-0 overflow-hidden">
+        <div className="card p-3 flex flex-col gap-3 lg:max-h-[22vh] lg:flex-shrink-0 overflow-hidden">
           {/* 고객 검색/선택 */}
           <div className="relative">
             {selectedCustomer ? (
@@ -2408,6 +2288,126 @@ function POSPageInner() {
           )}
         </div>
 
+        {/* ── 배송 정보(택배/퀵) — 고객 검색 아래 배치(#83). 받는분·주소·메모 ── */}
+        {shipping.type !== 'NONE' && (() => {
+          const pickupCnt = cart.filter(c => (c.deliveryType || 'PICKUP') === 'PICKUP').length;
+          const parcelCnt = cart.filter(c => c.deliveryType === 'PARCEL').length;
+          const quickCnt = cart.filter(c => c.deliveryType === 'QUICK').length;
+          const isMixed = pickupCnt > 0 && (parcelCnt > 0 || quickCnt > 0);
+          return (
+            <div className="card p-3 space-y-2">
+              {isMixed && (
+                <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                  ⚠ 혼합: 🏠 현장 {pickupCnt}품목 · {shipping.type === 'QUICK' ? '🛵 퀵' : '📦 택배'} {shipping.type === 'QUICK' ? quickCnt : parcelCnt}품목
+                  <span className="block mt-0.5 text-[10px] text-amber-600">현장 품목은 즉시 수령, 배송 품목만 아래 주소로 발송됩니다.</span>
+                </p>
+              )}
+              {shipping.type === 'QUICK' && (
+                <p className="text-[11px] text-indigo-600 bg-indigo-50 border border-indigo-100 rounded px-2 py-1">
+                  🛵 퀵배송: 당일 인편. 송장/알림톡 없이 인수자 확인 후 상태 업데이트 권장.
+                </p>
+              )}
+              {/* 수령인(받는 분) — 헤더 + 접기/펼치기(#83) */}
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[11px] font-semibold text-slate-500 uppercase">수령인 (받는 분)</p>
+                <div className="flex items-center gap-2">
+                  {addressFromRegistry && selectedCustomer && (
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200"
+                      title="고객 등록 정보의 주소를 자동으로 채웠습니다. 발송 전에 반드시 고객에게 확인하세요.">
+                      📍 고객 등록 주소 — 발송 전 확인 필요
+                    </span>
+                  )}
+                  <button type="button" onClick={() => setShowDelivery(v => !v)}
+                    className="text-[11px] text-slate-500 hover:text-slate-700 underline whitespace-nowrap">
+                    {showDelivery ? '▲ 접기' : '▼ 펼치기'}
+                  </button>
+                </div>
+              </div>
+              {showDelivery ? (
+              <>
+              {/* #83: 전체폭 가로 압축 — 받는분 한 줄(이름·연락처·우편·주소·검색), 상세·메시지 한 줄 */}
+              <div className="flex flex-wrap lg:flex-nowrap gap-2">
+                <input type="text" placeholder="이름 *" value={shipping.recipient_name}
+                  onChange={e => setShipping(p => ({ ...p, recipient_name: e.target.value }))}
+                  className="input text-sm flex-1 min-w-[120px]" />
+                <input type="text" placeholder="연락처 *" value={shipping.recipient_phone}
+                  onChange={e => setShipping(p => ({ ...p, recipient_phone: e.target.value }))}
+                  className="input text-sm flex-1 min-w-[120px]" />
+                <input type="text" value={shipping.recipient_zipcode}
+                  onChange={e => setShipping(p => ({ ...p, recipient_zipcode: e.target.value }))}
+                  placeholder="우편번호" className="input text-sm w-24 shrink-0" />
+                <input type="text" value={shipping.recipient_address}
+                  onChange={e => setShipping(p => ({ ...p, recipient_address: e.target.value }))}
+                  placeholder="주소 직접 입력 또는 [주소 검색] *" className="input text-sm flex-[2] min-w-[180px]" />
+                <button type="button" onClick={() => openPostcode('recipient')}
+                  className="btn-secondary text-sm whitespace-nowrap shrink-0">주소 검색</button>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
+                <input type="text" placeholder="상세 주소 (동/호수 등)"
+                  value={shipping.recipient_address_detail}
+                  onChange={e => setShipping(p => ({ ...p, recipient_address_detail: e.target.value }))}
+                  className="input text-sm" />
+                <input type="text"
+                  placeholder={shipping.type === 'QUICK' ? '퀵 기사 전달 메시지 (선택)' : '배송 메시지 (선택)'}
+                  value={shipping.delivery_message}
+                  onChange={e => setShipping(p => ({ ...p, delivery_message: e.target.value }))}
+                  className="input text-sm" />
+              </div>
+              {/* 발신인 */}
+              <div className="pt-2 border-t border-slate-100">
+                <div className="flex items-center gap-2 mb-2">
+                  <input type="checkbox" id="sender-same"
+                    checked={shipping.senderSameAsBuyer}
+                    onChange={e => {
+                      const same = e.target.checked;
+                      setShipping(prev => ({
+                        ...prev,
+                        senderSameAsBuyer: same,
+                        sender_name: same ? (selectedCustomer?.name || '') : prev.sender_name,
+                        sender_phone: same ? (selectedCustomer?.phone || '') : prev.sender_phone,
+                      }));
+                    }}
+                    className="w-4 h-4" />
+                  <label htmlFor="sender-same" className="text-sm text-slate-700 cursor-pointer">
+                    보내는 분 = 구매자와 동일
+                  </label>
+                </div>
+                {!shipping.senderSameAsBuyer && (
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap lg:flex-nowrap gap-2">
+                      <input type="text" placeholder="보내는 분 이름" value={shipping.sender_name}
+                        onChange={e => setShipping(p => ({ ...p, sender_name: e.target.value }))}
+                        className="input text-sm flex-1 min-w-[120px]" />
+                      <input type="text" placeholder="연락처" value={shipping.sender_phone}
+                        onChange={e => setShipping(p => ({ ...p, sender_phone: e.target.value }))}
+                        className="input text-sm flex-1 min-w-[120px]" />
+                      <input type="text" value={shipping.sender_zipcode}
+                        onChange={e => setShipping(p => ({ ...p, sender_zipcode: e.target.value }))}
+                        placeholder="우편번호" className="input text-sm w-24 shrink-0" />
+                      <input type="text" value={shipping.sender_address}
+                        onChange={e => setShipping(p => ({ ...p, sender_address: e.target.value }))}
+                        placeholder="주소 직접 입력 또는 [주소 검색]" className="input text-sm flex-[2] min-w-[180px]" />
+                      <button type="button" onClick={() => openPostcode('sender')}
+                        className="btn-secondary text-sm whitespace-nowrap shrink-0">주소 검색</button>
+                    </div>
+                    <input type="text" placeholder="상세 주소 (동/호수 등)"
+                      value={shipping.sender_address_detail}
+                      onChange={e => setShipping(p => ({ ...p, sender_address_detail: e.target.value }))}
+                      className="input text-sm" />
+                  </div>
+                )}
+              </div>
+              </>
+              ) : (
+                <p className="text-xs text-slate-500 truncate">
+                  {(shipping.recipient_name || shipping.recipient_phone || shipping.recipient_address)
+                    ? `받는분: ${shipping.recipient_name || '-'} · ${shipping.recipient_phone || '-'} · ${shipping.recipient_address || '주소 미입력'}${shipping.recipient_address_detail ? ' ' + shipping.recipient_address_detail : ''}`
+                    : '받는분 정보 미입력 — [펼치기]로 입력하세요'}
+                </p>
+              )}
+            </div>
+          );
+        })()}
       </div>
     <div className="flex flex-col lg:flex-row gap-4 lg:flex-1 lg:min-h-0">
       {/* 3-입력. 제품 검색·카테고리·빠른추가 — 좁은 보조 사이드바(우측 order-2)(#78) */}
@@ -2556,7 +2556,8 @@ function POSPageInner() {
         ${cartOpen ? 'translate-y-0' : 'translate-y-full lg:translate-y-0'}
         max-h-[90vh] lg:max-h-none lg:h-full
       `}>
-        <div className="px-4 py-3 border-b flex items-center justify-between">
+        {/* #83 장바구니 헤더 — 데스크탑은 숨겨 세로 공간 확보. 모바일은 바텀시트 제목/닫기 유지 */}
+        <div className="px-4 py-3 border-b flex items-center justify-between lg:hidden">
           <h3 className="font-semibold">장바구니 {cart.length > 0 && <span className="text-sm font-normal text-slate-500">({cart.length}종)</span>}</h3>
           <div className="flex items-center gap-3">
             {cart.length > 0 && (
