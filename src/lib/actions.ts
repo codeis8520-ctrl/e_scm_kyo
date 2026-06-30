@@ -1128,11 +1128,59 @@ export async function adjustInventory(formData: FormData) {
 // 강제조정 다건(#79 재고변동전표) — 각 품목 재고를 target 값으로 SET(맞춤). 본사 권한 전용.
 //   기존 안전재고 보존. 이력은 델타(target−현재고) 부호로 IN/OUT, reference_type='MANUAL'.
 //   RAW/SUB는 본사 지점에서만. 음수 target 허용(가차감/마이너스 재고 반영).
+// #86 재고변동전표(통합) 헤더+품목 생성 — 창고이동/자가사용/강제조정 공용.
+//   inventory_movements(실제 재고효과)와 별개로 전표 1건을 남겨 전표번호·유형별 조회를 가능케 함.
+//   테이블 부재(마이그106 미적용) 또는 어떤 실패에도 throw하지 않고 null 반환 → 본 처리는 계속.
+async function createStockMovementDoc(
+  db: any,
+  params: {
+    moveType: 'TRANSFER' | 'USAGE' | 'ADJUST';
+    fromBranchId: string;
+    toBranchId?: string | null;     // 이동만; 그 외 미지정 → from과 동일
+    usageTypeId?: string | null;
+    shipDate?: string | null;
+    arrivalDate?: string | null;
+    memo?: string | null;
+    createdBy: string | null;
+    items: { product_id: string; quantity: number }[];   // quantity: 이동/사용=수량, 강제조정=목표값
+  },
+): Promise<string | null> {
+  try {
+    const prefix = params.moveType === 'TRANSFER' ? 'TR' : params.moveType === 'USAGE' ? 'US' : 'AJ';
+    const today = kstTodayString().replace(/-/g, '');
+    const rand = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const docNo = `${prefix}-${today}-${rand}`;
+    const totalQty = params.items.reduce((s, it) => s + Math.abs(toNum(it.quantity)), 0);
+    const { data: hdr, error } = await db.from('stock_movement_docs').insert({
+      doc_no: docNo, move_type: params.moveType,
+      from_branch_id: params.fromBranchId,
+      to_branch_id: params.toBranchId ?? params.fromBranchId,
+      usage_type_id: params.usageTypeId ?? null,
+      ship_date: params.shipDate || null, arrival_date: params.arrivalDate || null,
+      memo: params.memo || null, item_count: params.items.length, total_qty: totalQty,
+      created_by: params.createdBy,
+    }).select('id').maybeSingle();
+    if (error || !hdr?.id) return null;
+    const prodIds = params.items.map((it) => it.product_id);
+    const { data: prods } = await db.from('products').select('id, name, code').in('id', prodIds);
+    const pById = new Map<string, any>(((prods as any[]) || []).map((p: any) => [p.id, p]));
+    await db.from('stock_movement_doc_items').insert(params.items.map((it) => ({
+      doc_id: hdr.id, product_id: it.product_id,
+      product_name: pById.get(it.product_id)?.name ?? null,
+      product_code: pById.get(it.product_id)?.code ?? null,
+      quantity: it.quantity,
+    })));
+    return docNo;
+  } catch {
+    return null;
+  }
+}
+
 export async function adjustInventoryBatch(input: {
   branch_id: string;
   memo?: string;
   items: { product_id: string; target_quantity: number }[];
-}): Promise<{ success?: true; count?: number; error?: string }> {
+}): Promise<{ success?: true; count?: number; docNo?: string | null; error?: string }> {
   const session = await requireSession();
   if (session.role !== 'SUPER_ADMIN' && session.role !== 'HQ_OPERATOR') {
     return { error: '강제 조정은 본사 권한(본부대표·HQ)만 가능합니다.' };
@@ -1179,8 +1227,15 @@ export async function adjustInventoryBatch(input: {
     }
   }
 
+  // #86 재고변동전표(강제조정) — 목표값을 품목 quantity로 기록.
+  const docNo = await createStockMovementDoc(db, {
+    moveType: 'ADJUST', fromBranchId: branchId, memo: input.memo || '강제 조정(맞춤)',
+    createdBy: session.id,
+    items: items.map((it) => ({ product_id: it.product_id, quantity: it.target_quantity })),
+  });
+
   revalidatePath('/inventory');
-  return { success: true, count: items.length };
+  return { success: true, count: items.length, docNo };
 }
 
 // 재고 소모(사용유형) 다건 일괄 OUT 차감 — 판매 아님.
@@ -1306,8 +1361,15 @@ export async function recordStockUsage(input: {
     await deductOne(item.product_id, item.quantity, memo || null);
   }
 
+  // #86 재고변동전표(자가사용) — 입력 품목(선택 단품) 스냅샷. 팬텀 분해는 무브먼트에만 반영.
+  const docNo = await createStockMovementDoc(db, {
+    moveType: 'USAGE', fromBranchId: branchId, usageTypeId, memo: memo || null,
+    createdBy: session.id,
+    items: items.map((it) => ({ product_id: it.product_id, quantity: it.quantity })),
+  });
+
   revalidatePath('/inventory');
-  return { success: true, count: items.length };
+  return { success: true, count: items.length, docNo };
 }
 
 // 재고이동 출발지(from_branch) 소유 검증 — 단건/다건이 공유(로직 드리프트 방지).
@@ -1480,31 +1542,13 @@ export async function transferInventoryBatch(input: {
     }
   }
 
-  // #85: 지점이동 전표 헤더 생성(전표번호 부여) + 품목 스냅샷. 무브먼트는 reference_id로 연결.
-  //   테이블 부재(마이그106 미적용) 환경에선 헤더 없이 이동만 진행(폴백).
-  let transferId: string | null = null;
-  let transferNo: string | null = null;
-  try {
-    const today = kstTodayString().replace(/-/g, '');
-    const rand = Math.random().toString(36).substring(2, 8).toUpperCase();
-    transferNo = `TR-${today}-${rand}`;
-    const totalQty = items.reduce((s, it) => s + it.quantity, 0);
-    const { data: hdr, error: hdrErr } = await db.from('stock_transfers').insert({
-      transfer_no: transferNo, from_branch_id: fromBranchId, to_branch_id: toBranchId,
-      ship_date: input.ship_date || null, arrival_date: input.arrival_date || null,
-      memo: memo || null, item_count: items.length, total_qty: totalQty, created_by: session.id,
-    }).select('id').maybeSingle();
-    if (!hdrErr && hdr?.id) {
-      transferId = hdr.id;
-      const { data: prods } = await db.from('products').select('id, name, code').in('id', items.map(it => it.product_id));
-      const pById = new Map<string, any>(((prods as any[]) || []).map((p: any) => [p.id, p]));
-      await db.from('stock_transfer_items').insert(items.map(it => ({
-        transfer_id: transferId, product_id: it.product_id,
-        product_name: pById.get(it.product_id)?.name ?? null, product_code: pById.get(it.product_id)?.code ?? null,
-        quantity: it.quantity,
-      })));
-    } else { transferNo = null; }
-  } catch { transferId = null; transferNo = null; }
+  // #86 재고변동전표(창고이동) — 전표번호 부여 + 품목 스냅샷. 테이블 부재 시 null(폴백, 이동은 진행).
+  const transferNo = await createStockMovementDoc(db, {
+    moveType: 'TRANSFER', fromBranchId, toBranchId,
+    shipDate: input.ship_date, arrivalDate: input.arrival_date, memo: memo || null,
+    createdBy: session.id,
+    items: items.map((it) => ({ product_id: it.product_id, quantity: it.quantity })),
+  });
 
   // ── pass 2: 라인 루프(비트랜잭션 — 기존 코드 일관). 단건 transferInventory 의 OUT/IN 반복 ──
   for (const item of items) {
@@ -1550,7 +1594,6 @@ export async function transferInventoryBatch(input: {
       movement_type: 'OUT',
       quantity: q,
       reference_type: 'TRANSFER',
-      ...(transferId ? { reference_id: transferId } : {}),
       memo: `지점 이동${transferNo ? `(${transferNo})` : ''}: ${memo || '출고'}`,
       ...(shipAt ? { created_at: shipAt } : {}),
     });
@@ -1560,7 +1603,6 @@ export async function transferInventoryBatch(input: {
       movement_type: 'IN',
       quantity: q,
       reference_type: 'TRANSFER',
-      ...(transferId ? { reference_id: transferId } : {}),
       memo: `지점 이동${transferNo ? `(${transferNo})` : ''}: ${memo || '입고'}`,
       ...(arriveAt ? { created_at: arriveAt } : {}),
     });
@@ -1570,42 +1612,64 @@ export async function transferInventoryBatch(input: {
   return { success: true, count: items.length, transferNo };
 }
 
-// #85 지점이동 전표 조회 — 일자(ship_date)/출발/도착 지점 필터. 헤더 + 지점명 조인.
-export async function getStockTransfers(filters?: {
-  from?: string; to?: string;            // ship_date 범위(YYYY-MM-DD)
+// #86 재고변동전표 통합 조회 — 유형(이동/사용/조정)·일자(생성)·기준/대상 지점 필터. 헤더 + 지점·담당자 조인.
+//   날짜 기준은 created_at(전 유형 공통). 이동만 ship_date가 따로 있으나 조회는 생성일 기준으로 통일.
+export async function getStockMovementDocs(filters?: {
+  moveType?: 'TRANSFER' | 'USAGE' | 'ADJUST';
+  from?: string; to?: string;            // created_at 날짜 범위(YYYY-MM-DD)
   fromBranchId?: string; toBranchId?: string;
 }): Promise<{ data?: any[]; error?: string }> {
   try { await requireSession(); } catch (e: any) { return { error: e.message }; }
   const supabase = await createClient() as any;
   let q = supabase
-    .from('stock_transfers')
-    .select('*, from_branch:branches!stock_transfers_from_branch_id_fkey(name), to_branch:branches!stock_transfers_to_branch_id_fkey(name), creator:users(name)')
+    .from('stock_movement_docs')
+    .select('*, from_branch:branches!stock_movement_docs_from_branch_id_fkey(name), to_branch:branches!stock_movement_docs_to_branch_id_fkey(name), creator:users(name), usage_type:inventory_usage_types(name)')
     .order('created_at', { ascending: false })
     .limit(500);
-  if (filters?.from) q = q.gte('ship_date', filters.from);
-  if (filters?.to) q = q.lte('ship_date', filters.to);
+  if (filters?.moveType) q = q.eq('move_type', filters.moveType);
+  if (filters?.from) q = q.gte('created_at', `${filters.from}T00:00:00+09:00`);
+  if (filters?.to) q = q.lte('created_at', `${filters.to}T23:59:59+09:00`);
   if (filters?.fromBranchId) q = q.eq('from_branch_id', filters.fromBranchId);
   if (filters?.toBranchId) q = q.eq('to_branch_id', filters.toBranchId);
-  const { data, error } = await q;
+  let { data, error } = await q;
+  // usage_type 조인 미지원(테이블명 상이) 폴백 — 조인 없이 재시도
+  if (error && /inventory_usage_types/i.test(String(error.message))) {
+    let q2 = supabase
+      .from('stock_movement_docs')
+      .select('*, from_branch:branches!stock_movement_docs_from_branch_id_fkey(name), to_branch:branches!stock_movement_docs_to_branch_id_fkey(name), creator:users(name)')
+      .order('created_at', { ascending: false }).limit(500);
+    if (filters?.moveType) q2 = q2.eq('move_type', filters.moveType);
+    if (filters?.from) q2 = q2.gte('created_at', `${filters.from}T00:00:00+09:00`);
+    if (filters?.to) q2 = q2.lte('created_at', `${filters.to}T23:59:59+09:00`);
+    if (filters?.fromBranchId) q2 = q2.eq('from_branch_id', filters.fromBranchId);
+    if (filters?.toBranchId) q2 = q2.eq('to_branch_id', filters.toBranchId);
+    ({ data, error } = await q2);
+  }
   if (error) {
     // 테이블 부재(마이그106 미적용) → 빈 목록(에러 아님)
-    if (/stock_transfers/i.test(String(error.message)) && /exist/i.test(String(error.message))) return { data: [] };
+    if (/stock_movement_docs/i.test(String(error.message)) && /exist/i.test(String(error.message))) return { data: [] };
     return { error: error.message };
   }
   return { data: data || [] };
 }
 
-export async function getStockTransferDetail(id: string): Promise<{ header?: any; items?: any[]; error?: string }> {
+export async function getStockMovementDocDetail(id: string): Promise<{ header?: any; items?: any[]; error?: string }> {
   try { await requireSession(); } catch (e: any) { return { error: e.message }; }
   const supabase = await createClient() as any;
-  const { data: header, error: hErr } = await supabase
-    .from('stock_transfers')
-    .select('*, from_branch:branches!stock_transfers_from_branch_id_fkey(name, code), to_branch:branches!stock_transfers_to_branch_id_fkey(name, code), creator:users(name)')
+  let { data: header, error: hErr } = await supabase
+    .from('stock_movement_docs')
+    .select('*, from_branch:branches!stock_movement_docs_from_branch_id_fkey(name, code), to_branch:branches!stock_movement_docs_to_branch_id_fkey(name, code), creator:users(name), usage_type:inventory_usage_types(name)')
     .eq('id', id).maybeSingle();
+  if (hErr && /inventory_usage_types/i.test(String(hErr.message))) {
+    ({ data: header, error: hErr } = await supabase
+      .from('stock_movement_docs')
+      .select('*, from_branch:branches!stock_movement_docs_from_branch_id_fkey(name, code), to_branch:branches!stock_movement_docs_to_branch_id_fkey(name, code), creator:users(name)')
+      .eq('id', id).maybeSingle());
+  }
   if (hErr) return { error: hErr.message };
   if (!header) return { error: '전표를 찾을 수 없습니다.' };
   const { data: items } = await supabase
-    .from('stock_transfer_items').select('*').eq('transfer_id', id).order('product_name');
+    .from('stock_movement_doc_items').select('*').eq('doc_id', id).order('product_name');
   return { header, items: items || [] };
 }
 

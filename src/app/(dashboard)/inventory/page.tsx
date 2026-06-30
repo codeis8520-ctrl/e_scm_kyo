@@ -6,7 +6,7 @@ import { createClient } from '@/lib/supabase/client';
 import MovementHistoryModal from './MovementHistoryModal';
 import PackUnpackModal from './PackUnpackModal';
 import StockMovementPanel from './StockMovementPanel';   // #79 재고변동전표 통합(창고이동·자가사용·강제조정)
-import StockTransferList from './StockTransferList';     // #85 지점이동 전표 조회
+import StockTransferList from './StockTransferList';     // #86 재고변동전표 통합 조회
 import { getInventoryUsageTypes } from '@/lib/actions';
 import { updateSafetyStock } from '@/lib/inventory-actions';
 import { backfillMissingInventories } from '@/lib/inventory-backfill-actions';
@@ -490,9 +490,9 @@ export default function InventoryPage() {
 
   return (
     <div className="card">
-      {/* 서브뷰 토글 — 재고현황 ↔ 지점이동 (지점고정 사용자도 노출, 출발지 자기지점 잠금) */}
+      {/* 서브뷰 토글 — 재고현황 / 재고변동전표 입력·조회 (지점고정 사용자도 노출, 출발지 자기지점 잠금) */}
       <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1 w-fit mb-4">
-        {([['stock', '재고현황'], ['transfer', '재고변동전표'], ['transferList', '지점이동 조회']] as ['stock' | 'transfer' | 'transferList', string][]).map(([k, label]) => (
+        {([['stock', '재고현황'], ['transfer', '재고변동전표 입력'], ['transferList', '재고변동전표 조회']] as ['stock' | 'transfer' | 'transferList', string][]).map(([k, label]) => (
           <button
             key={k}
             onClick={() => setSubView(k)}
