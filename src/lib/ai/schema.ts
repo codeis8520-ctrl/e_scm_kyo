@@ -111,7 +111,8 @@ product_bom: id, product_id(완제품), material_id(부자재), quantity, loss_r
 oem_factories: id, code, name, business_number, representative, contact_name, phone, email, address, memo, is_active
   ※ OEM 위탁 공장 마스터. production_orders.oem_factory_id 참조.
 branches.is_headquarters (bool): 본사 지점 여부. 생산 지시 기본 입고처이자 권한 체크 기준.
-production_orders: id, order_number(WO-...), product_id(완제품), oem_factory_id(위탁 공장), branch_id(완제품 입고 지점), quantity, status(PENDING/IN_PROGRESS/COMPLETED/CANCELLED), started_at, completed_at, memo
+production_orders: id, order_number(WO-...), product_id(완제품), oem_factory_id(위탁 공장), branch_id(완제품 입고 지점), quantity(지시수량), produced_quantity(실제 산출수량, 마이그107·#89·완료시 입력·NULL=과거/미완), lot_no(제조번호 'LOT-YYYYMMDD-rand', 마이그107·완료시 자동부여), status(PENDING/IN_PROGRESS/COMPLETED/CANCELLED), started_at, completed_at, memo
+  ※ **수율(#89)** = produced_quantity / quantity (저장 안 함, 조회 시 계산). 완제품 입고=produced_quantity, 부자재 차감=BOM 이론치(지시수량 기준). completeProductionOrder(id, producedQuantity?) — 미지정 시 지시수량 폴백. 생산 로스/수율 분석의 base.
 
 --- B2B 거래 ---
 b2b_partners: id, name, code, business_no, contact_name, phone, settlement_cycle, commission_rate, memo, is_active

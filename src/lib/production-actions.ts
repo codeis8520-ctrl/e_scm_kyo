@@ -463,7 +463,10 @@ export async function startProductionOrder(id: string) {
 //     - 완제품은 생산 지시의 "입고 지점(branch_id)"에 증가
 //   원재료는 BOM에 등록하지 않음(OEM 자체 조달).
 
-export async function completeProductionOrder(id: string) {
+// #89 생산전표 LOT·수율 base — 완료 시 실제 산출수량(producedQuantity)을 받아 입고.
+//   미지정(또는 음수)이면 지시수량으로 폴백(과거 동작 호환). 수율=산출/지시(조회 시 계산).
+//   원재료 차감은 BOM 이론치(지시수량 기준) 유지. LOT는 완료 시 자동 부여.
+export async function completeProductionOrder(id: string, producedQuantity?: number) {
   const supabase = await createClient();
   const db = supabase as any;
 
@@ -476,6 +479,14 @@ export async function completeProductionOrder(id: string) {
   if (!order || order.status !== 'IN_PROGRESS') {
     return { error: '진행중 상태의 생산 지시만 완료 처리할 수 있습니다.' };
   }
+
+  // 산출수량 — 유효한 값(0 이상)이면 사용, 아니면 지시수량 폴백. 완제품 입고는 이 값으로.
+  const produced = (typeof producedQuantity === 'number' && Number.isFinite(producedQuantity) && producedQuantity >= 0)
+    ? producedQuantity
+    : Number(order.quantity);
+  // LOT 자동부여 — 제조번호 LOT-YYYYMMDD-rand.
+  const lotNo = `LOT-${kstTodayString().replace(/-/g, '')}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+  const yieldPct = Number(order.quantity) > 0 ? Math.round((produced / Number(order.quantity)) * 1000) / 10 : null;
 
   const receivingBranchId = order.branch_id;
   if (!receivingBranchId) return { error: '입고 지점 정보가 없습니다.' };
@@ -558,31 +569,41 @@ export async function completeProductionOrder(id: string) {
 
     if (productInv) {
       await db.from('inventories')
-        .update({ quantity: productInv.quantity + order.quantity })
+        .update({ quantity: productInv.quantity + produced })
         .eq('id', productInv.id);
     } else {
       await db.from('inventories').insert({
         branch_id: receivingBranchId,
         product_id: order.product_id,
-        quantity: order.quantity,
+        quantity: produced,
         safety_stock: 0,
       });
     }
 
+    const yieldNote = yieldPct !== null && produced !== Number(order.quantity)
+      ? ` · 산출 ${produced}/${order.quantity} (수율 ${yieldPct}%)` : '';
     await db.from('inventory_movements').insert({
       branch_id: receivingBranchId,
       product_id: order.product_id,
       movement_type: 'IN',
-      quantity: order.quantity,
+      quantity: produced,
       reference_id: id,
       reference_type: 'PRODUCTION_ORDER',
-      memo: `OEM 입고: ${order.order_number}`,
+      memo: `OEM 입고: ${order.order_number} [${lotNo}]${yieldNote}`,
     });
 
-    await db.from('production_orders').update({
+    // production_orders에 lot_no/produced_quantity 기록(마이그107). 컬럼 부재 시 폴백(기존 필드만).
+    const upd = await db.from('production_orders').update({
       status: 'COMPLETED',
       produced_at: new Date().toISOString(),
+      lot_no: lotNo,
+      produced_quantity: produced,
     }).eq('id', id);
+    if (upd.error && /lot_no|produced_quantity/i.test(String(upd.error.message))) {
+      await db.from('production_orders').update({
+        status: 'COMPLETED', produced_at: new Date().toISOString(),
+      }).eq('id', id);
+    }
 
   } catch (err: any) {
     return { error: `생산 완료 처리 실패: ${err.message}` };

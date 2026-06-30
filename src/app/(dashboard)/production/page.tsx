@@ -159,6 +159,7 @@ export default function ProductionPage() {
 
   const [tab, setTab] = useState<'orders' | 'bom' | 'factories'>('orders');
   const [showNewOrderModal, setShowNewOrderModal] = useState(false);
+  const [completingOrder, setCompletingOrder] = useState<any | null>(null); // #89 산출수량 입력 대상
   const [selectedFinishedId, setSelectedFinishedId] = useState<string>('');
   const hqBranch = branches.find((b: any) => b.is_headquarters) || null;
 
@@ -303,9 +304,10 @@ export default function ProductionPage() {
   };
 
   const handleStart = (id: string) => runWithGuard(id, () => startProductionOrder(id));
-  const handleComplete = (id: string) => {
-    if (!confirm('생산 완료 처리하시겠습니까? 완제품이 입고 지점 재고로 반영됩니다.')) return;
-    runWithGuard(id, () => completeProductionOrder(id));
+  // #89 완료 시 실제 산출수량 입력 모달 → 수율·LOT 기록.
+  const handleCompleteSubmit = (id: string, produced: number) => {
+    setCompletingOrder(null);
+    runWithGuard(id, () => completeProductionOrder(id, produced));
   };
   const handleCancel = (id: string) => {
     if (!confirm('생산을 취소하시겠습니까?')) return;
@@ -481,11 +483,31 @@ export default function ProductionPage() {
                   <tr><td colSpan={9} className="text-center py-8 text-slate-400">생산 지시 내역이 없습니다</td></tr>
                 ) : orders.map((order: any) => (
                   <tr key={order.id}>
-                    <td className="font-mono text-sm">{order.order_number}</td>
+                    <td className="font-mono text-sm">
+                      {order.order_number}
+                      {order.lot_no && <span className="block text-[10px] text-purple-600">{order.lot_no}</span>}
+                    </td>
                     <td>{order.product?.name}</td>
                     <td className="text-sm text-slate-600">{order.factory?.name || <span className="text-slate-300">-</span>}</td>
                     <td className="text-sm text-slate-500">{order.branch?.name || '-'}</td>
-                    <td>{order.quantity.toLocaleString()}</td>
+                    <td>
+                      {(() => {
+                        const ordered = Number(order.quantity);
+                        const produced = order.produced_quantity != null ? Number(order.produced_quantity) : null;
+                        if (produced == null || produced === ordered) return ordered.toLocaleString();
+                        const yieldPct = ordered > 0 ? Math.round((produced / ordered) * 1000) / 10 : null;
+                        const short = produced < ordered;
+                        return (
+                          <>
+                            <span className="font-medium">{produced.toLocaleString()}</span>
+                            <span className="text-slate-400"> / {ordered.toLocaleString()}</span>
+                            {yieldPct != null && (
+                              <span className={`block text-[10px] ${short ? 'text-red-500' : 'text-green-600'}`}>수율 {yieldPct}%</span>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </td>
                     <td>
                       <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${STATUS_BADGE[order.status] || ''}`}>
                         {STATUS_LABEL[order.status] || order.status}
@@ -523,7 +545,7 @@ export default function ProductionPage() {
                             {order.status === 'IN_PROGRESS' && (
                               <>
                                 <button
-                                  onClick={() => handleComplete(order.id)}
+                                  onClick={() => setCompletingOrder(order)}
                                   disabled={isRowBusy || otherBusy}
                                   className={`text-xs px-2 py-1 bg-green-50 text-green-700 rounded hover:bg-green-100 ${(isRowBusy || otherBusy) ? disabledCls : ''}`}
                                 >
@@ -599,6 +621,78 @@ export default function ProductionPage() {
           onSuccess={() => { setShowNewOrderModal(false); loadData(); }}
         />
       )}
+
+      {completingOrder && (
+        <CompleteOrderModal
+          order={completingOrder}
+          busy={processingId === completingOrder.id}
+          onClose={() => setCompletingOrder(null)}
+          onSubmit={(produced) => handleCompleteSubmit(completingOrder.id, produced)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── 생산 완료 모달 (#89 산출수량·수율·LOT) ──────────────────────────────────────
+//   완료 시 실제 산출수량을 입력 → 수율(산출/지시) 자동계산, LOT 자동부여, 완제품 입고.
+//   미달(부족)은 빨강·초과는 초록으로 미리보기. 부자재는 BOM 이론치(지시수량) 차감(안내).
+function CompleteOrderModal({ order, busy, onClose, onSubmit }: {
+  order: any;
+  busy: boolean;
+  onClose: () => void;
+  onSubmit: (produced: number) => void;
+}) {
+  const ordered = Number(order.quantity);
+  const [produced, setProduced] = useState<string>(String(ordered));
+  const producedNum = parseInt(produced);
+  const valid = Number.isFinite(producedNum) && producedNum >= 0;
+  const yieldPct = valid && ordered > 0 ? Math.round((producedNum / ordered) * 1000) / 10 : null;
+  const short = valid && producedNum < ordered;
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50">
+      <div className="bg-white w-full max-w-md mx-4 sm:mx-auto rounded-t-xl sm:rounded-xl shadow-xl">
+        <div className="flex justify-between items-center px-6 py-4 border-b">
+          <h2 className="font-bold text-slate-800">생산 완료 — 산출수량 입력</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl">✕</button>
+        </div>
+        <div className="p-6 space-y-4">
+          <div className="text-sm text-slate-600">
+            <p><span className="text-slate-400">지시</span> {order.order_number} · {order.product?.name}</p>
+            <p><span className="text-slate-400">입고 지점</span> {order.branch?.name || '-'} · <span className="text-slate-400">지시수량</span> {ordered.toLocaleString()}</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">실제 산출수량 *</label>
+            <input
+              type="number" min="0" value={produced}
+              onChange={e => setProduced(e.target.value)}
+              onFocus={e => e.target.select()}
+              className="input"
+            />
+            <p className="text-xs text-slate-400 mt-1">완제품은 이 수량으로 입고됩니다. 부자재는 지시수량 기준(BOM 이론치)으로 차감됩니다.</p>
+          </div>
+          {valid && (
+            <div className={`rounded-lg p-3 text-sm ${short ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'}`}>
+              수율 <b>{yieldPct}%</b>
+              <span className="text-xs ml-2">
+                {producedNum === ordered ? '(지시수량과 동일)' : short ? `(부족 ${(ordered - producedNum).toLocaleString()})` : `(초과 ${(producedNum - ordered).toLocaleString()})`}
+              </span>
+              <span className="block text-[11px] mt-1 opacity-80">LOT 번호는 완료 시 자동 부여됩니다.</span>
+            </div>
+          )}
+        </div>
+        <div className="flex gap-2 px-6 py-4 border-t">
+          <button
+            onClick={() => valid && onSubmit(producedNum)}
+            disabled={!valid || busy}
+            className="flex-1 btn-primary disabled:opacity-50"
+          >
+            {busy ? '처리 중...' : '완료 처리'}
+          </button>
+          <button onClick={onClose} className="flex-1 btn-secondary">취소</button>
+        </div>
+      </div>
     </div>
   );
 }
