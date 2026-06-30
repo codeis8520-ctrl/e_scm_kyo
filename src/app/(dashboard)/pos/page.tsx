@@ -1998,12 +1998,8 @@ function POSPageInner() {
           );
         })()}
       </div>
-      </div>
-    <div className="flex flex-col lg:flex-row gap-4 lg:flex-1 lg:min-h-0">
-      {/* 왼쪽: 고객·이력·상담 + 제품 */}
-      <div className="flex-1 flex flex-col min-w-0 gap-3">
-        {/* 상단 — 고객·이력·상담 패널 */}
-        <div className="card p-3 flex flex-col gap-3 lg:max-h-[46%] lg:flex-shrink-0 overflow-hidden">
+        {/* 2. 고객 정보(#78) — 판매정보 다음, 전체폭 상단. 검색·선택 + 이력/상담 패널. */}
+        <div className="card p-3 flex flex-col gap-3 lg:max-h-[34vh] lg:flex-shrink-0 overflow-hidden">
           {/* 고객 검색/선택 */}
           <div className="relative">
             {selectedCustomer ? (
@@ -2391,7 +2387,11 @@ function POSPageInner() {
           )}
         </div>
 
-        {/* 하단 — 제품 검색/그리드 (축소) */}
+      </div>
+    <div className="flex flex-col lg:flex-row gap-4 lg:flex-1 lg:min-h-0">
+      {/* 3-입력. 제품 검색·카테고리·빠른추가 — 좁은 보조 사이드바(우측 order-2)(#78) */}
+      <div className="lg:w-[40%] lg:max-w-[560px] lg:order-2 flex flex-col min-w-0 gap-3">
+        {/* 제품 검색/그리드 — 장바구니에 담는 입력 패널(축소) */}
         <div className="flex flex-col min-h-0 flex-1">
           <div className="mb-2">
             <div className="flex gap-2">
@@ -2526,9 +2526,9 @@ function POSPageInner() {
         />
       )}
 
-      {/* 오른쪽: 장바구니 + 결제 */}
+      {/* 3·4·5. 장바구니(품목)+수령+결제 — 넓은 중심 영역(좌측 order-1)(#78) */}
       <div className={`
-        lg:w-[42%] lg:min-w-[480px] lg:max-w-[680px] lg:static lg:flex lg:flex-col lg:shrink-0
+        lg:flex-1 lg:order-1 lg:static lg:flex lg:flex-col lg:shrink
         fixed bottom-0 left-0 right-0 z-50 flex flex-col
         bg-white rounded-t-2xl lg:rounded-lg shadow
         transition-transform duration-300 ease-in-out
