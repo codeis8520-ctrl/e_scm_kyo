@@ -2346,8 +2346,8 @@ function POSPageInner() {
         {/* #78b 2단 구성 — 좌:장바구니(품목, 자체 스크롤) / 우:수령·결제(자체 스크롤 + 결제버튼 고정).
             가로 공간 활용 + 택배 배송정보 펼침 시 우측만 스크롤(품목·결제 항상 노출). 모바일은 단일 스크롤 유지. */}
         <div className="flex-1 min-h-0 overflow-y-auto lg:overflow-visible lg:flex lg:flex-row lg:gap-3">
-        {/* ── 좌단: 장바구니(품목) ── */}
-        <div className="flex flex-col lg:flex-1 lg:min-w-0 lg:min-h-0 lg:border lg:border-slate-100 lg:rounded-lg lg:bg-slate-50/30">
+        {/* ── 장바구니(품목) — 반전(#78): 제품검색 사이드바와 인접하도록 우측(order-2) ── */}
+        <div className="flex flex-col lg:flex-1 lg:order-2 lg:min-w-0 lg:min-h-0 lg:border lg:border-slate-100 lg:rounded-lg lg:bg-slate-50/30">
         <div className="lg:flex-1 lg:overflow-y-auto lg:min-h-0">
         {/* 장바구니 목록 */}
         <div className="p-3 space-y-2 min-h-[120px]">
@@ -2556,12 +2556,12 @@ function POSPageInner() {
         )}
         </div>{/* /좌단 스크롤 */}
         </div>{/* /좌단(장바구니) */}
-        {/* ── 우단: 수령·결제(자체 스크롤 + 결제버튼 고정) ── */}
-        <div className="flex flex-col lg:flex-1 lg:min-w-0 lg:min-h-0">
+        {/* ── 수령·결제 — 반전(#78): 좌측(order-1) 배치, 비율 약간 넓게(flex-[1.3])해 입력칸 여유 ── */}
+        <div className="flex flex-col lg:flex-[1.3] lg:order-1 lg:min-w-0 lg:min-h-0">
         <div className="lg:flex-1 lg:overflow-y-auto lg:min-h-0">
       {/* ── 4. 수령·배송·출고처 정보(#78): 장바구니 다음, 결제 앞에 배치(전표 흐름). 수령현황·수령일자·배송방식·출고처·담당자 + 배송정보 ── */}
       <div className="card p-3 space-y-3 mx-3 mt-2">
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 items-end">
+        <div className="grid grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-3 items-end">
           {/* 수령 현황 */}
           <div>
             <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">수령 현황</label>
