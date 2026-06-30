@@ -10,6 +10,7 @@ import {
   type DailyReportLineInput,
 } from '@/lib/daily-report-actions';
 import { kstTodayString } from '@/lib/date';
+import DailyReportBrowse from './DailyReportBrowse';
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -51,8 +52,8 @@ export default function DailyReportPage() {
   const [comboSearch, setComboSearch] = useState('');
   const [editedIdx, setEditedIdx] = useState<Set<number>>(new Set());
   const [showAll, setShowAll] = useState(false);   // [전체 보기] 토글(비관리자도 전 품목 그리드)
-  // Phase1.2 관리자 탭: 'input'(일보 입력) | 'status'(제출 현황). 비관리자는 항상 input.
-  const [mgrTab, setMgrTab] = useState<'input' | 'status'>('input');
+  // Phase1.2 관리자 탭: 'input'(일보 입력) | 'status'(제출 현황) | 'browse'(조회 #93). 비관리자는 항상 input.
+  const [mgrTab, setMgrTab] = useState<'input' | 'status' | 'browse'>('input');
   // #76: 진입 시 화면 기능·연동 기준 안내(접을 수 있음). 실사용 전 최종 검토 단계임을 명시.
   const [showInfo, setShowInfo] = useState(true);
   const [statusRows, setStatusRows] = useState<Awaited<ReturnType<typeof listDailyReports>>['rows']>([]);
@@ -473,7 +474,7 @@ export default function DailyReportPage() {
       {/* 관리자 전용 탭 — [일보 입력] / [제출 현황]. 비관리자는 탭 미노출(기존 입력만). */}
       {isManager && (
         <div className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit">
-          {([['input', '일보 입력'], ['status', '제출 현황']] as ['input' | 'status', string][]).map(([k, label]) => (
+          {([['input', '일보 입력'], ['status', '제출 현황'], ['browse', '조회']] as ['input' | 'status' | 'browse', string][]).map(([k, label]) => (
             <button
               key={k}
               onClick={() => setMgrTab(k)}
@@ -485,6 +486,14 @@ export default function DailyReportPage() {
             </button>
           ))}
         </div>
+      )}
+
+      {/* ── 조회 탭(관리자, #93) — 날짜·지점 브라우징 + 변경 이력 ── */}
+      {isManager && mgrTab === 'browse' && (
+        <DailyReportBrowse
+          branches={branches}
+          onOpen={(bId, date) => { setBranchId(bId); setReportDate(date); setMgrTab('input'); }}
+        />
       )}
 
       {/* ── 제출 현황 탭(관리자) ── */}

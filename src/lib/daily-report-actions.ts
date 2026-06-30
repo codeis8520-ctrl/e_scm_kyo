@@ -199,6 +199,7 @@ export async function saveDailyReport(input: {
   report_date: string;
   status: 'DRAFT' | 'SUBMITTED';
   note?: string | null;
+  change_note?: string | null;   // #93 수정 사유(제출분 재수정 시 변경이력에 기록)
   lines: DailyReportLineInput[];
 }) {
   const session = await requireSession();
@@ -213,12 +214,28 @@ export async function saveDailyReport(input: {
   //   수정하려면 승인취소(unpostDailyReport) 선행. (UNIQUE branch_id,report_date 로 기존 1건 조회.)
   const { data: existing } = await sb
     .from('daily_sales_reports')
-    .select('status, posted')
+    .select('id, status, posted, daily_total, note, author_name')
     .eq('branch_id', branchId)
     .eq('report_date', input.report_date)
     .maybeSingle();
   if (existing && (existing.status === 'APPROVED' || existing.posted === true)) {
     return { error: '승인된 일보는 수정할 수 없습니다. 승인취소 후 수정하세요.' };
+  }
+
+  // #93 변경 이력 — 이미 제출(SUBMITTED)된 일보를 재수정하는 경우에만 직전 상태를 스냅샷 보존.
+  //   (DRAFT 자동저장·최초 제출은 직전 확정값이 없어 이력 불필요.)
+  if (existing && existing.status === 'SUBMITTED') {
+    try {
+      const { data: prevLines } = await sb
+        .from('daily_sales_report_lines').select('*').eq('report_id', existing.id).order('sort_order');
+      await sb.from('daily_sales_report_revisions').insert({
+        report_id: existing.id, branch_id: branchId, report_date: input.report_date,
+        snapshot: { header: { status: existing.status, daily_total: existing.daily_total, note: existing.note, author_name: existing.author_name }, lines: prevLines || [] },
+        daily_total: existing.daily_total,
+        edited_by: session.id, edited_by_name: session.name || null,
+        change_note: (input.change_note ?? '').trim() || null,
+      });
+    } catch (e) { console.error('[daily-report] revision snapshot skip:', e); /* 이력 실패가 저장을 막지 않음 */ }
   }
 
   // 당일매출 = Σ(현장매출 + 택배매출) 서버 재계산(클라값 무시).
@@ -338,6 +355,59 @@ export async function listDailyReports(reportDate: string) {
     missing: rows.filter(r => r.status === 'MISSING').length,
   };
   return { rows, summary };
+}
+
+// #93 판매일보 조회 — 날짜 범위·지점·상태 필터로 과거 일보 브라우징(관리자 전용).
+export async function listDailyReportsRange(filters: {
+  from: string; to: string; branchId?: string; status?: string;
+}) {
+  const session = await requireSession();
+  if (!MANAGER_ROLES.has(session.role)) {
+    return { error: '판매일보 조회는 본사 관리자만 가능합니다.', rows: [] };
+  }
+  if (!isValidDate(filters.from) || !isValidDate(filters.to)) {
+    return { error: '날짜 형식이 올바르지 않습니다.', rows: [] };
+  }
+  const sb = (await createClient()) as any;
+  let q = sb
+    .from('daily_sales_reports')
+    .select('id, branch_id, report_date, author_name, status, daily_total, created_at, updated_at, branch:branches(name)')
+    .gte('report_date', filters.from)
+    .lte('report_date', filters.to)
+    .order('report_date', { ascending: false })
+    .limit(500);
+  if (filters.branchId) q = q.eq('branch_id', filters.branchId);
+  if (filters.status) q = q.eq('status', filters.status);
+  const { data, error } = await q;
+  if (error) { console.error('[daily-report] listDailyReportsRange error:', error); return { error: error.message, rows: [] }; }
+  const rows = ((data as any[]) || []).map(r => ({
+    report_id: r.id, branch_id: r.branch_id, branch_name: r.branch?.name || '-',
+    report_date: r.report_date, author_name: r.author_name,
+    status: r.status, daily_total: num(r.daily_total),
+    updated_at: r.updated_at || r.created_at || null,
+  }));
+  return { rows };
+}
+
+// #93 특정 일보의 변경 이력 — 직전 상태 스냅샷 목록(최신순).
+export async function getDailyReportRevisions(reportId: string) {
+  const session = await requireSession();
+  if (!MANAGER_ROLES.has(session.role)) {
+    return { error: '변경 이력은 본사 관리자만 조회할 수 있습니다.', rows: [] };
+  }
+  const sb = (await createClient()) as any;
+  const { data, error } = await sb
+    .from('daily_sales_report_revisions')
+    .select('id, snapshot, daily_total, edited_by_name, change_note, created_at')
+    .eq('report_id', reportId)
+    .order('created_at', { ascending: false })
+    .limit(100);
+  if (error) {
+    // 테이블 부재(마이그108 미적용) → 빈 목록
+    if (/daily_sales_report_revisions/i.test(String(error.message)) && /exist/i.test(String(error.message))) return { rows: [] };
+    return { error: error.message, rows: [] };
+  }
+  return { rows: (data as any[]) || [] };
 }
 
 // 관리자 매장 드롭다운용 — 활성 지점 목록.
