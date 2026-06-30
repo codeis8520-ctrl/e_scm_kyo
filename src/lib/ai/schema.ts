@@ -220,7 +220,7 @@ sales_orders.approval_status: 결제 승인 라이프사이클 (status와 직교
 sales_orders.receipt_status: 제품 수령 흐름 (현장판매는 대부분 RECEIVED).
   - RECEIVED=수령완료 · PICKUP_PLANNED=방문예정 · QUICK_PLANNED=퀵예정 · PARCEL_PLANNED=택배예정
   ※ 배송(shipments) 생성 시 delivery_type에 맞춰 receipt_status 자동 추론.
-  ※ 배송→수령 자동연동(#43): 배송목록/AI/카페24웹훅에서 shipment SHIPPED는 수령상태 불변(발송은 shipment.status로만 추적), DELIVERED 시 택배품목→RECEIVED. receipt_date는 기존 수령(예정)일 보존, 비어있을 때만 오늘로 fill(#47). 방문/퀵/이미수령 품목 무손상. 공용 헬퍼 syncReceiptStatusFromShipment(receipt-sync.ts).
+  ※ 배송→수령 자동연동(#43→**#90 개정**): shipment **PRINTED(송장출력)·SHIPPED(송장번호입력)·DELIVERED** 모두 택배품목→RECEIVED(수령완료). #90: 판매현황=내부 to-do 화면이라 송장 처리=수령완료(택배예정에서 빠짐). 이전 "SHIPPED 불변" 동작은 폐기. receipt_date는 기존 수령(예정)일 보존, 비어있을 때만 오늘로 fill(#47). 방문/퀵/이미수령 품목 무손상. 공용 헬퍼 syncReceiptStatusFromShipment(receipt-sync.ts). 경로: updateShipment(SHIPPED/번호입력·PRINTED)·bulkMarkShipmentsPrinted(CJ출력)·AI·카페24웹훅.
   ※ receipt_date: 수령(예정) 날짜. 방문예정·택배예정 조회 시 핵심 축.
 sales_order_items.order_option: 품목별 주문 부가 옵션(보자기/쇼핑백/색상/서비스 등). 배송 방식 기록용 아님. #61: cafe24 매핑성공 품목은 미저장(NULL, 옵션은 매핑 키로만), 미매핑 cafe24·POS 직접입력만 옵션 유지.
 sales_order_items.delivery_type + receipt_status: 같은 전표 내 품목별 배송·수령 추적. 3품목 중 1품목만 택배 같은 혼합 시나리오 정식 지원(수령지는 1곳만 가정).

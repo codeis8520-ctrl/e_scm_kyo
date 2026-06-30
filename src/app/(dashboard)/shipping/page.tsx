@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, Fragment } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { getShipments, createShipment, updateShipment, deleteShipment, bulkUpdateShipmentStatus, getShipmentWritebackFailures } from '@/lib/shipping-actions';
+import { getShipments, createShipment, updateShipment, deleteShipment, bulkUpdateShipmentStatus, bulkMarkShipmentsPrinted, getShipmentWritebackFailures } from '@/lib/shipping-actions';
 import { refreshCafe24Token, registerCafe24Customers, createCafe24ProductMap, deleteCafe24ProductMap } from '@/lib/cafe24-actions';
 import { getProducts } from '@/lib/actions';
 import * as XLSX from 'xlsx';
@@ -529,25 +529,21 @@ export default function ShippingPage({ embedded }: { embedded?: 'online' | 'parc
     XLSX.utils.book_append_sheet(wb, ws, 'sheet1');
     XLSX.writeFile(wb, `CJ대한통운_${kstTodayString().replace(/-/g, '')}.xlsx`);
 
-    // ─── 상태 자동 전환: PENDING → PRINTED ──────────────────────────────
+    // ─── 상태 자동 전환: PENDING → PRINTED + 판매현황 수령완료 연동(#90) ──────────
     // CJ 엑셀 다운로드 = "출력 명단 확정" 의미. PENDING 만 PRINTED 로 전환.
     // (이미 PRINTED/SHIPPED/DELIVERED 인 건은 그대로 — 운영 중에 재다운로드 케이스 보호)
+    // #90: 송장 출력 = 수령완료 → 서버액션이 PRINTED 전환과 동시에 연결 전표를 RECEIVED로 동기화.
     const pendingIds = targets.filter(s => s.status === 'PENDING').map(s => s.id);
     if (pendingIds.length > 0) {
       try {
-        const sb = createClient() as any;
-        const { error } = await sb
-          .from('shipments')
-          .update({ status: 'PRINTED', updated_at: new Date().toISOString() })
-          .in('id', pendingIds)
-          .eq('status', 'PENDING');  // race condition 가드
-        if (error) {
-          console.error('[shipping] PENDING → PRINTED 전환 실패:', error);
+        const res = await bulkMarkShipmentsPrinted(pendingIds);
+        if (res.error) {
+          console.error('[shipping] PENDING → PRINTED 전환 실패:', res.error);
         } else {
           await fetchShipments();
           // 사용자에게 피드백 — 별도 alert 으로 다운로드와 분리해 인지하게
           setTimeout(() => {
-            alert(`${pendingIds.length}건의 배송 상태가 "출력완료(PRINTED)" 로 전환되었습니다.\n실제로 CJ 임포트를 진행하지 않았다면 각 행에서 상태를 되돌릴 수 있습니다.`);
+            alert(`${res.updated}건의 배송 상태가 "출력완료(PRINTED)" 로 전환되고,\n판매현황 수령상태가 "수령완료"로 자동 처리되었습니다.`);
           }, 100);
         }
       } catch (e) {

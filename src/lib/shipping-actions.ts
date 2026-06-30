@@ -280,11 +280,12 @@ export async function updateShipment(
   const newTracking = (data.tracking_number as string | null | undefined) ?? prevTracking;
   const newStatus = (data.status as string | undefined) ?? prevStatus;
 
-  // 배송 상태 → 판매현황 수령상태 자동 연동 (#19) — 상태 전환 시에만
+  // 배송 상태 → 판매현황 수령상태 자동 연동 (#19, #90) — 상태 전환 시에만.
+  //   #90: 송장 출력(PRINTED)·번호입력(SHIPPED)·배송완료(DELIVERED) 모두 수령완료로 연동.
   try {
     const salesOrderId = (prev as any)?.sales_order_id;
     if (salesOrderId && newStatus && newStatus !== prevStatus &&
-        (newStatus === 'SHIPPED' || newStatus === 'DELIVERED')) {
+        (newStatus === 'PRINTED' || newStatus === 'SHIPPED' || newStatus === 'DELIVERED')) {
       await syncReceiptStatusFromShipment(supabase, salesOrderId, newStatus);
       revalidatePath('/pos');
     }
@@ -331,6 +332,31 @@ export async function updateShipment(
 
   revalidatePath('/shipping');
   return { success: true };
+}
+
+// #90 CJ 송장 출력(엑셀 다운로드) = 출력완료 확정 + 판매현황 수령완료 연동.
+//   PENDING → PRINTED 전환(race 가드)하고, 전환된 건의 연결 전표 수령상태를 RECEIVED로 동기화.
+//   기존 클라이언트 직접 update를 대체 — 송장출력이 곧 수령완료가 되도록 서버에서 일괄 처리.
+export async function bulkMarkShipmentsPrinted(ids: string[]): Promise<{ updated: number; error?: string }> {
+  if (!ids || ids.length === 0) return { updated: 0 };
+  const supabase = await createClient() as any;
+  const { data: rows, error } = await supabase
+    .from('shipments')
+    .update({ status: 'PRINTED', updated_at: new Date().toISOString() })
+    .in('id', ids)
+    .eq('status', 'PENDING')          // 이미 PRINTED/SHIPPED/DELIVERED는 보존(재출력 보호)
+    .select('id, sales_order_id');
+  if (error) { console.error('bulkMarkShipmentsPrinted error:', error); return { updated: 0, error: error.message }; }
+
+  // 전환된 건만 수령완료 연동(#90). 연결 전표 없는 과거 카페24분은 자동 skip.
+  for (const r of (rows as any[] ?? [])) {
+    if (r.sales_order_id) {
+      try { await syncReceiptStatusFromShipment(supabase, r.sales_order_id, 'PRINTED'); } catch { /* 연동 실패가 출력 처리를 막지 않음 */ }
+    }
+  }
+  revalidatePath('/shipping');
+  revalidatePath('/pos');
+  return { updated: (rows as any[] ?? []).length };
 }
 
 // #62 Phase2: 카페24 송장 역연동 실패건 조회(본사 전용) — 배송화면 실패목록/배지용.
