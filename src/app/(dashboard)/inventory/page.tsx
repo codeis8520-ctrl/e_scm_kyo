@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client';
 import MovementHistoryModal from './MovementHistoryModal';
 import PackUnpackModal from './PackUnpackModal';
 import StockMovementPanel from './StockMovementPanel';   // #79 재고변동전표 통합(창고이동·자가사용·강제조정)
+import StockTransferList from './StockTransferList';     // #85 지점이동 전표 조회
 import { getInventoryUsageTypes } from '@/lib/actions';
 import { updateSafetyStock } from '@/lib/inventory-actions';
 import { backfillMissingInventories } from '@/lib/inventory-backfill-actions';
@@ -87,7 +88,7 @@ export default function InventoryPage() {
   const [usageTypes, setUsageTypes] = useState<{ id: string; code: string; name: string }[]>([]);
   const [viewMode, setViewMode] = useState<'pivot' | 'flat'>('pivot');
   const [sortMode, setSortMode] = useState<'category' | 'name' | 'stockDesc' | 'stockAsc'>('category');
-  const [subView, setSubView] = useState<'stock' | 'transfer'>('stock');
+  const [subView, setSubView] = useState<'stock' | 'transfer' | 'transferList'>('stock');
   const [flatBranchFilter, setFlatBranchFilter] = useState('');
   // 재고 변동 이력 모달
   const [historyProduct, setHistoryProduct] = useState<{ id: string; name: string; code: string } | null>(null);
@@ -491,7 +492,7 @@ export default function InventoryPage() {
     <div className="card">
       {/* 서브뷰 토글 — 재고현황 ↔ 지점이동 (지점고정 사용자도 노출, 출발지 자기지점 잠금) */}
       <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1 w-fit mb-4">
-        {([['stock', '재고현황'], ['transfer', '재고변동전표']] as ['stock' | 'transfer', string][]).map(([k, label]) => (
+        {([['stock', '재고현황'], ['transfer', '재고변동전표'], ['transferList', '지점이동 조회']] as ['stock' | 'transfer' | 'transferList', string][]).map(([k, label]) => (
           <button
             key={k}
             onClick={() => setSubView(k)}
@@ -514,6 +515,10 @@ export default function InventoryPage() {
           preset={movementPreset}
           onSuccess={fetchInventory}
         />
+      )}
+
+      {subView === 'transferList' && (
+        <StockTransferList branches={branches} />
       )}
 
       {subView === 'stock' && (<>

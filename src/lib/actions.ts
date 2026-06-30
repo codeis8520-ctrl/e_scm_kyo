@@ -1480,6 +1480,32 @@ export async function transferInventoryBatch(input: {
     }
   }
 
+  // #85: 지점이동 전표 헤더 생성(전표번호 부여) + 품목 스냅샷. 무브먼트는 reference_id로 연결.
+  //   테이블 부재(마이그106 미적용) 환경에선 헤더 없이 이동만 진행(폴백).
+  let transferId: string | null = null;
+  let transferNo: string | null = null;
+  try {
+    const today = kstTodayString().replace(/-/g, '');
+    const rand = Math.random().toString(36).substring(2, 8).toUpperCase();
+    transferNo = `TR-${today}-${rand}`;
+    const totalQty = items.reduce((s, it) => s + it.quantity, 0);
+    const { data: hdr, error: hdrErr } = await db.from('stock_transfers').insert({
+      transfer_no: transferNo, from_branch_id: fromBranchId, to_branch_id: toBranchId,
+      ship_date: input.ship_date || null, arrival_date: input.arrival_date || null,
+      memo: memo || null, item_count: items.length, total_qty: totalQty, created_by: session.id,
+    }).select('id').maybeSingle();
+    if (!hdrErr && hdr?.id) {
+      transferId = hdr.id;
+      const { data: prods } = await db.from('products').select('id, name, code').in('id', items.map(it => it.product_id));
+      const pById = new Map<string, any>(((prods as any[]) || []).map((p: any) => [p.id, p]));
+      await db.from('stock_transfer_items').insert(items.map(it => ({
+        transfer_id: transferId, product_id: it.product_id,
+        product_name: pById.get(it.product_id)?.name ?? null, product_code: pById.get(it.product_id)?.code ?? null,
+        quantity: it.quantity,
+      })));
+    } else { transferNo = null; }
+  } catch { transferId = null; transferNo = null; }
+
   // ── pass 2: 라인 루프(비트랜잭션 — 기존 코드 일관). 단건 transferInventory 의 OUT/IN 반복 ──
   for (const item of items) {
     const q = item.quantity;
@@ -1524,7 +1550,8 @@ export async function transferInventoryBatch(input: {
       movement_type: 'OUT',
       quantity: q,
       reference_type: 'TRANSFER',
-      memo: `지점 이동: ${memo || '출고'}`,
+      ...(transferId ? { reference_id: transferId } : {}),
+      memo: `지점 이동${transferNo ? `(${transferNo})` : ''}: ${memo || '출고'}`,
       ...(shipAt ? { created_at: shipAt } : {}),
     });
     await db.from('inventory_movements').insert({
@@ -1533,13 +1560,53 @@ export async function transferInventoryBatch(input: {
       movement_type: 'IN',
       quantity: q,
       reference_type: 'TRANSFER',
-      memo: `지점 이동: ${memo || '입고'}`,
+      ...(transferId ? { reference_id: transferId } : {}),
+      memo: `지점 이동${transferNo ? `(${transferNo})` : ''}: ${memo || '입고'}`,
       ...(arriveAt ? { created_at: arriveAt } : {}),
     });
   }
 
   revalidatePath('/inventory');
-  return { success: true, count: items.length };
+  return { success: true, count: items.length, transferNo };
+}
+
+// #85 지점이동 전표 조회 — 일자(ship_date)/출발/도착 지점 필터. 헤더 + 지점명 조인.
+export async function getStockTransfers(filters?: {
+  from?: string; to?: string;            // ship_date 범위(YYYY-MM-DD)
+  fromBranchId?: string; toBranchId?: string;
+}): Promise<{ data?: any[]; error?: string }> {
+  try { await requireSession(); } catch (e: any) { return { error: e.message }; }
+  const supabase = await createClient() as any;
+  let q = supabase
+    .from('stock_transfers')
+    .select('*, from_branch:branches!stock_transfers_from_branch_id_fkey(name), to_branch:branches!stock_transfers_to_branch_id_fkey(name), creator:users(name)')
+    .order('created_at', { ascending: false })
+    .limit(500);
+  if (filters?.from) q = q.gte('ship_date', filters.from);
+  if (filters?.to) q = q.lte('ship_date', filters.to);
+  if (filters?.fromBranchId) q = q.eq('from_branch_id', filters.fromBranchId);
+  if (filters?.toBranchId) q = q.eq('to_branch_id', filters.toBranchId);
+  const { data, error } = await q;
+  if (error) {
+    // 테이블 부재(마이그106 미적용) → 빈 목록(에러 아님)
+    if (/stock_transfers/i.test(String(error.message)) && /exist/i.test(String(error.message))) return { data: [] };
+    return { error: error.message };
+  }
+  return { data: data || [] };
+}
+
+export async function getStockTransferDetail(id: string): Promise<{ header?: any; items?: any[]; error?: string }> {
+  try { await requireSession(); } catch (e: any) { return { error: e.message }; }
+  const supabase = await createClient() as any;
+  const { data: header, error: hErr } = await supabase
+    .from('stock_transfers')
+    .select('*, from_branch:branches!stock_transfers_from_branch_id_fkey(name, code), to_branch:branches!stock_transfers_to_branch_id_fkey(name, code), creator:users(name)')
+    .eq('id', id).maybeSingle();
+  if (hErr) return { error: hErr.message };
+  if (!header) return { error: '전표를 찾을 수 없습니다.' };
+  const { data: items } = await supabase
+    .from('stock_transfer_items').select('*').eq('transfer_id', id).order('product_name');
+  return { header, items: items || [] };
 }
 
 // ============ Categories ============
