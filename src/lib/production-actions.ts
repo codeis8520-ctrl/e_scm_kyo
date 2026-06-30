@@ -398,6 +398,9 @@ export async function createProductionOrder(formData: FormData) {
   const factoryId = (formData.get('oem_factory_id') as string) || null;
   const quantity  = parseInt(formData.get('quantity') as string);
   const memo      = (formData.get('memo') as string) || null;
+  // #95 생산(예정)일자 — 완료 시 기본값으로 사용. YYYY-MM-DD.
+  const pdRaw     = (formData.get('production_date') as string) || '';
+  const productionDate = /^\d{4}-\d{2}-\d{2}$/.test(pdRaw) ? pdRaw : null;
 
   if (!productId || !branchId || !quantity || quantity < 1) {
     return { error: '필수 항목을 입력해주세요.' };
@@ -415,11 +418,19 @@ export async function createProductionOrder(formData: FormData) {
     memo,
   };
   if (factoryId) row.oem_factory_id = factoryId;
+  if (productionDate) row.production_date = productionDate;
 
   let { error } = await db.from('production_orders').insert(row);
+  // 마이그 110 미적용 시 폴백(생산일자 컬럼 없이 등록)
+  if (error && isMissingColumnError(error) && row.production_date) {
+    delete row.production_date;
+    const retry = await db.from('production_orders').insert(row);
+    error = retry.error;
+  }
   // 마이그 047 미적용 시 폴백(공장 없이 등록)
   if (error && isMissingColumnError(error) && factoryId) {
     delete row.oem_factory_id;
+    delete row.production_date;
     const retry = await db.from('production_orders').insert(row);
     error = retry.error;
   }
@@ -466,13 +477,13 @@ export async function startProductionOrder(id: string) {
 // #89 생산전표 LOT·수율 base — 완료 시 실제 산출수량(producedQuantity)을 받아 입고.
 //   미지정(또는 음수)이면 지시수량으로 폴백(과거 동작 호환). 수율=산출/지시(조회 시 계산).
 //   원재료 차감은 BOM 이론치(지시수량 기준) 유지. LOT는 완료 시 자동 부여.
-export async function completeProductionOrder(id: string, producedQuantity?: number) {
+export async function completeProductionOrder(id: string, producedQuantity?: number, productionDate?: string) {
   const supabase = await createClient();
   const db = supabase as any;
 
   const { data: order } = await db
     .from('production_orders')
-    .select('*, branch_id, product_id, quantity, order_number, produced_by, branch:branches!branch_id(id, name)')
+    .select('*, branch_id, product_id, quantity, order_number, produced_by, production_date, branch:branches!branch_id(id, name)')
     .eq('id', id)
     .single();
 
@@ -484,8 +495,13 @@ export async function completeProductionOrder(id: string, producedQuantity?: num
   const produced = (typeof producedQuantity === 'number' && Number.isFinite(producedQuantity) && producedQuantity >= 0)
     ? producedQuantity
     : Number(order.quantity);
-  // LOT 자동부여 — 제조번호 LOT-YYYYMMDD-rand.
-  const lotNo = `LOT-${kstTodayString().replace(/-/g, '')}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+  // #95 생산입고일자 — 인자 > 지시 production_date > 오늘. 완제품입고·부자재차감·이력 모두 이 일자 기준.
+  const prodDate = (/^\d{4}-\d{2}-\d{2}$/.test(productionDate || '') ? productionDate
+    : (/^\d{4}-\d{2}-\d{2}$/.test(String(order.production_date || '')) ? String(order.production_date)
+    : kstTodayString())) as string;
+  const prodDateTs = `${prodDate}T12:00:00+09:00`;   // 정오 KST 고정(날짜질의 정합)
+  // LOT 자동부여 — 제조번호는 생산입고일자 기준.
+  const lotNo = `LOT-${prodDate.replace(/-/g, '')}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
   const yieldPct = Number(order.quantity) > 0 ? Math.round((produced / Number(order.quantity)) * 1000) / 10 : null;
 
   const receivingBranchId = order.branch_id;
@@ -556,6 +572,7 @@ export async function completeProductionOrder(id: string, producedQuantity?: num
         reference_id: id,
         reference_type: 'PRODUCTION_ORDER',
         memo: `부자재 소진: ${order.order_number} (${order.quantity}개 생산 · 입고 ${receivingBranchName})`,
+        created_at: prodDateTs,   // #95 이력 일시 = 생산입고일자
       });
     }
 
@@ -590,18 +607,22 @@ export async function completeProductionOrder(id: string, producedQuantity?: num
       reference_id: id,
       reference_type: 'PRODUCTION_ORDER',
       memo: `OEM 입고: ${order.order_number} [${lotNo}]${yieldNote}`,
+      created_at: prodDateTs,   // #95 이력 일시 = 생산입고일자
     });
 
     // production_orders에 lot_no/produced_quantity 기록(마이그107). 컬럼 부재 시 폴백(기존 필드만).
+    // #95 produced_at·production_date = 생산입고일자(전표 생성시각 아님).
     const upd = await db.from('production_orders').update({
       status: 'COMPLETED',
-      produced_at: new Date().toISOString(),
+      produced_at: prodDateTs,
+      production_date: prodDate,
       lot_no: lotNo,
       produced_quantity: produced,
     }).eq('id', id);
-    if (upd.error && /lot_no|produced_quantity/i.test(String(upd.error.message))) {
+    if (upd.error && /lot_no|produced_quantity|production_date/i.test(String(upd.error.message))) {
+      // 마이그107/110 미적용 폴백 — 신규 컬럼 제외, produced_at은 생산입고일자 유지.
       await db.from('production_orders').update({
-        status: 'COMPLETED', produced_at: new Date().toISOString(),
+        status: 'COMPLETED', produced_at: prodDateTs,
       }).eq('id', id);
     }
 

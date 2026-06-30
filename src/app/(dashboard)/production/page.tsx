@@ -13,7 +13,7 @@ import {
   type OemFactoryInput,
 } from '@/lib/oem-actions';
 import { createClient } from '@/lib/supabase/client';
-import { fmtDateKST } from '@/lib/date';
+import { fmtDateKST, kstTodayString } from '@/lib/date';
 import PageTabs from '@/components/PageTabs';
 import { buildCategoryInfo as buildCategoryInfoForOrders, sortedCategoryOptions as sortedCategoryOptionsForOrders, categoryOptionLabel, type CategoryRow as _CategoryRowOrders } from '@/lib/category-tree';
 
@@ -304,10 +304,10 @@ export default function ProductionPage() {
   };
 
   const handleStart = (id: string) => runWithGuard(id, () => startProductionOrder(id));
-  // #89 완료 시 실제 산출수량 입력 모달 → 수율·LOT 기록.
-  const handleCompleteSubmit = (id: string, produced: number) => {
+  // #89 완료 시 실제 산출수량 + #95 생산입고일자 입력 모달 → 수율·LOT·기준일자 기록.
+  const handleCompleteSubmit = (id: string, produced: number, productionDate: string) => {
     setCompletingOrder(null);
-    runWithGuard(id, () => completeProductionOrder(id, produced));
+    runWithGuard(id, () => completeProductionOrder(id, produced, productionDate));
   };
   const handleCancel = (id: string) => {
     if (!confirm('생산을 취소하시겠습니까?')) return;
@@ -471,7 +471,7 @@ export default function ProductionPage() {
                   <th>입고 지점</th>
                   <th>수량</th>
                   <th>상태</th>
-                  <th>생성일</th>
+                  <th>생산일자</th>
                   <th>완료일</th>
                   <th>작업</th>
                 </tr>
@@ -513,7 +513,8 @@ export default function ProductionPage() {
                         {STATUS_LABEL[order.status] || order.status}
                       </span>
                     </td>
-                    <td className="text-sm text-slate-500">{fmtDateKST(order.created_at)}</td>
+                    {/* #95 생산일자(production_date) 표시 — 전표 생성시각(created_at) 아님. 폴백: 완료분은 produced_at. */}
+                    <td className="text-sm text-slate-500">{order.production_date || (order.produced_at ? fmtDateKST(order.produced_at) : <span className="text-slate-300">-</span>)}</td>
                     <td className="text-sm text-slate-500">
                       {fmtDateKST(order.produced_at)}
                     </td>
@@ -627,28 +628,34 @@ export default function ProductionPage() {
           order={completingOrder}
           busy={processingId === completingOrder.id}
           onClose={() => setCompletingOrder(null)}
-          onSubmit={(produced) => handleCompleteSubmit(completingOrder.id, produced)}
+          onSubmit={(produced, prodDate) => handleCompleteSubmit(completingOrder.id, produced, prodDate)}
         />
       )}
     </div>
   );
 }
 
-// ─── 생산 완료 모달 (#89 산출수량·수율·LOT) ──────────────────────────────────────
-//   완료 시 실제 산출수량을 입력 → 수율(산출/지시) 자동계산, LOT 자동부여, 완제품 입고.
-//   미달(부족)은 빨강·초과는 초록으로 미리보기. 부자재는 BOM 이론치(지시수량) 차감(안내).
+// ─── 생산 완료 모달 (#89 산출수량·수율·LOT · #95 생산입고일자) ────────────────────
+//   완료 시 실제 산출수량·생산입고일자 입력 → 수율 자동계산, LOT 자동부여, 완제품 입고.
+//   생산입고일자가 완제품입고·부자재차감·재고이력의 기준일자(전표 생성시각 아님).
 function CompleteOrderModal({ order, busy, onClose, onSubmit }: {
   order: any;
   busy: boolean;
   onClose: () => void;
-  onSubmit: (produced: number) => void;
+  onSubmit: (produced: number, productionDate: string) => void;
 }) {
   const ordered = Number(order.quantity);
   const [produced, setProduced] = useState<string>(String(ordered));
+  // #95 생산입고일자 — 지시의 production_date 있으면 기본값, 없으면 오늘.
+  const [prodDate, setProdDate] = useState<string>(
+    (order.production_date && /^\d{4}-\d{2}-\d{2}$/.test(String(order.production_date)))
+      ? String(order.production_date) : kstTodayString()
+  );
   const producedNum = parseInt(produced);
-  const valid = Number.isFinite(producedNum) && producedNum >= 0;
-  const yieldPct = valid && ordered > 0 ? Math.round((producedNum / ordered) * 1000) / 10 : null;
-  const short = valid && producedNum < ordered;
+  const dateValid = /^\d{4}-\d{2}-\d{2}$/.test(prodDate);
+  const valid = Number.isFinite(producedNum) && producedNum >= 0 && dateValid;
+  const yieldPct = Number.isFinite(producedNum) && producedNum >= 0 && ordered > 0 ? Math.round((producedNum / ordered) * 1000) / 10 : null;
+  const short = Number.isFinite(producedNum) && producedNum < ordered;
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50">
@@ -661,6 +668,15 @@ function CompleteOrderModal({ order, busy, onClose, onSubmit }: {
           <div className="text-sm text-slate-600">
             <p><span className="text-slate-400">지시</span> {order.order_number} · {order.product?.name}</p>
             <p><span className="text-slate-400">입고 지점</span> {order.branch?.name || '-'} · <span className="text-slate-400">지시수량</span> {ordered.toLocaleString()}</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">생산입고일자 *</label>
+            <input
+              type="date" value={prodDate}
+              onChange={e => setProdDate(e.target.value)}
+              className="input"
+            />
+            <p className="text-xs text-slate-400 mt-1">완제품 입고·부자재 차감·재고이력이 이 날짜 기준으로 반영됩니다. (전표 생성시각과 별개)</p>
           </div>
           <div>
             <label className="block text-sm font-medium mb-1">실제 산출수량 *</label>
@@ -684,7 +700,7 @@ function CompleteOrderModal({ order, busy, onClose, onSubmit }: {
         </div>
         <div className="flex gap-2 px-6 py-4 border-t">
           <button
-            onClick={() => valid && onSubmit(producedNum)}
+            onClick={() => valid && onSubmit(producedNum, prodDate)}
             disabled={!valid || busy}
             className="flex-1 btn-primary disabled:opacity-50"
           >
@@ -941,6 +957,7 @@ function NewOrderModal({ products, branches, defaultBranchId, factories, onClose
   const [factoryId, setFactoryId] = useState('');
   const [quantity, setQuantity]   = useState(1);
   const [memo, setMemo]           = useState('');
+  const [productionDate, setProductionDate] = useState(() => kstTodayString());  // #95 생산(예정)일자
   const [preview, setPreview]     = useState<any[]>([]);
   const [hqInfo, setHqInfo]       = useState<{ id: string; name: string } | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
@@ -967,6 +984,7 @@ function NewOrderModal({ products, branches, defaultBranchId, factories, onClose
     fd.set('branch_id', branchId);
     if (factoryId) fd.set('oem_factory_id', factoryId);
     fd.set('quantity', String(quantity));
+    if (productionDate) fd.set('production_date', productionDate);
     fd.set('memo', memo);
     const r = await createProductionOrder(fd);
     setSubmitting(false);
@@ -1012,14 +1030,21 @@ function NewOrderModal({ products, branches, defaultBranchId, factories, onClose
             </div>
           </div>
 
-          <div>
-            <label className="block text-sm font-medium mb-1">생산 수량 *</label>
-            <input
-              type="number" min="1" value={quantity}
-              onChange={e => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
-              onFocus={e => e.target.select()}
-              className="input"
-            />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium mb-1">생산 수량 *</label>
+              <input
+                type="number" min="1" value={quantity}
+                onChange={e => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+                onFocus={e => e.target.select()}
+                className="input"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">생산(예정)일자</label>
+              <input type="date" value={productionDate} onChange={e => setProductionDate(e.target.value)} className="input" />
+              <p className="text-[11px] text-slate-400 mt-1">완료 시 기본값. 실제 입고일은 완료 화면에서 확정.</p>
+            </div>
           </div>
 
           <div>
