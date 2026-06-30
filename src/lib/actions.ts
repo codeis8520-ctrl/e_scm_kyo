@@ -1618,9 +1618,21 @@ export async function getStockMovementDocs(filters?: {
   moveType?: 'TRANSFER' | 'USAGE' | 'ADJUST';
   from?: string; to?: string;            // created_at 날짜 범위(YYYY-MM-DD)
   fromBranchId?: string; toBranchId?: string;
+  productName?: string;                  // #94 품목명 검색(전표 품목 스냅샷 기준)
 }): Promise<{ data?: any[]; error?: string }> {
   try { await requireSession(); } catch (e: any) { return { error: e.message }; }
   const supabase = await createClient() as any;
+
+  // #94 품목명 검색 — 먼저 일치 품목을 가진 전표 id 목록을 구해 헤더를 좁힌다.
+  let docIdFilter: string[] | null = null;
+  const pname = (filters?.productName || '').trim();
+  if (pname) {
+    const { data: matchItems } = await supabase
+      .from('stock_movement_doc_items').select('doc_id').ilike('product_name', `%${pname}%`).limit(2000);
+    docIdFilter = Array.from(new Set(((matchItems as any[]) || []).map((r: any) => r.doc_id)));
+    if (docIdFilter.length === 0) return { data: [] };
+  }
+
   let q = supabase
     .from('stock_movement_docs')
     .select('*, from_branch:branches!stock_movement_docs_from_branch_id_fkey(name), to_branch:branches!stock_movement_docs_to_branch_id_fkey(name), creator:users(name), usage_type:inventory_usage_types(name)')
@@ -1631,6 +1643,7 @@ export async function getStockMovementDocs(filters?: {
   if (filters?.to) q = q.lte('created_at', `${filters.to}T23:59:59+09:00`);
   if (filters?.fromBranchId) q = q.eq('from_branch_id', filters.fromBranchId);
   if (filters?.toBranchId) q = q.eq('to_branch_id', filters.toBranchId);
+  if (docIdFilter) q = q.in('id', docIdFilter);
   let { data, error } = await q;
   // usage_type 조인 미지원(테이블명 상이) 폴백 — 조인 없이 재시도
   if (error && /inventory_usage_types/i.test(String(error.message))) {
@@ -1643,6 +1656,7 @@ export async function getStockMovementDocs(filters?: {
     if (filters?.to) q2 = q2.lte('created_at', `${filters.to}T23:59:59+09:00`);
     if (filters?.fromBranchId) q2 = q2.eq('from_branch_id', filters.fromBranchId);
     if (filters?.toBranchId) q2 = q2.eq('to_branch_id', filters.toBranchId);
+    if (docIdFilter) q2 = q2.in('id', docIdFilter);
     ({ data, error } = await q2);
   }
   if (error) {
@@ -1670,7 +1684,69 @@ export async function getStockMovementDocDetail(id: string): Promise<{ header?: 
   if (!header) return { error: '전표를 찾을 수 없습니다.' };
   const { data: items } = await supabase
     .from('stock_movement_doc_items').select('*').eq('doc_id', id).order('product_name');
-  return { header, items: items || [] };
+  // #94 반대전표 ↔ 원전표 연결 표시용 — 연결 전표 번호 동봉(있으면).
+  let linkedDocNo: string | null = null;
+  try {
+    if (header.reversal_of) {
+      const { data: orig } = await supabase.from('stock_movement_docs').select('doc_no').eq('id', header.reversal_of).maybeSingle();
+      linkedDocNo = orig?.doc_no ?? null;
+    } else if (header.status === 'REVERSED') {
+      const { data: rev } = await supabase.from('stock_movement_docs').select('doc_no').eq('reversal_of', id).maybeSingle();
+      linkedDocNo = rev?.doc_no ?? null;
+    }
+  } catch { /* 컬럼 부재(마이그109 미적용) 폴백 */ }
+  return { header: { ...header, linked_doc_no: linkedDocNo }, items: items || [] };
+}
+
+// #94 창고이동 전표 취소 = 반대전표 자동 생성(도착→출발 역이동). 본사 권한만.
+//   재고 정합 위해 직접 수정 대신 반대전표로 되돌림. 원전표 status=REVERSED + 사유·처리자 기록,
+//   반대전표 status=REVERSAL + reversal_of=원전표. 재고 반영 이력은 반대전표의 inventory_movements.
+export async function reverseStockTransfer(docId: string, reason?: string): Promise<{ success?: true; reverseDocNo?: string; error?: string }> {
+  let session;
+  try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
+  if (session.role !== 'SUPER_ADMIN' && session.role !== 'HQ_OPERATOR') {
+    return { error: '전표 취소(반대전표)는 본사 권한(본부대표·HQ)만 가능합니다.' };
+  }
+  const supabase = await createClient() as any;
+
+  const { data: doc, error: dErr } = await supabase.from('stock_movement_docs').select('*').eq('id', docId).maybeSingle();
+  if (dErr) return { error: dErr.message };
+  if (!doc) return { error: '전표를 찾을 수 없습니다.' };
+  if (doc.move_type !== 'TRANSFER') return { error: '창고이동 전표만 반대전표로 되돌릴 수 있습니다.' };
+  if (doc.status === 'REVERSED') return { error: '이미 취소(반대전표 처리)된 전표입니다.' };
+  if (doc.status === 'REVERSAL') return { error: '반대전표는 다시 취소할 수 없습니다.' };
+
+  const { data: items } = await supabase.from('stock_movement_doc_items').select('product_id, quantity').eq('doc_id', docId);
+  const itemList = ((items as any[]) || [])
+    .filter(it => it.product_id && Number(it.quantity) > 0)
+    .map(it => ({ product_id: it.product_id, quantity: Math.round(Number(it.quantity)) }));
+  if (itemList.length === 0) return { error: '되돌릴 품목이 없습니다.' };
+
+  // 반대 이동: 도착창고 → 출발창고(방향 반전). transferInventoryBatch 재사용(검증·재고·전표·이력).
+  const memo = `취소/반대전표 (원전표 ${doc.doc_no})${reason ? `: ${reason}` : ''}`;
+  const res: any = await transferInventoryBatch({
+    from_branch_id: doc.to_branch_id,
+    to_branch_id: doc.from_branch_id,
+    memo,
+    items: itemList,
+  });
+  if (res?.error) return { error: `반대전표 처리 실패: ${res.error}` };
+  const reverseDocNo: string | null = res?.transferNo ?? null;
+
+  // 연결 + 원전표 취소 표시(컬럼 부재 시 폴백).
+  try {
+    if (reverseDocNo) {
+      const { data: rd } = await supabase.from('stock_movement_docs').select('id').eq('doc_no', reverseDocNo).maybeSingle();
+      if (rd?.id) await supabase.from('stock_movement_docs').update({ status: 'REVERSAL', reversal_of: docId }).eq('id', rd.id);
+    }
+    await supabase.from('stock_movement_docs').update({
+      status: 'REVERSED', cancel_reason: (reason || '').trim() || null,
+      cancelled_by: session.id, cancelled_at: new Date().toISOString(),
+    }).eq('id', docId);
+  } catch (e) { console.error('[reverseStockTransfer] 연결/취소표시 실패(마이그109?):', e); }
+
+  revalidatePath('/inventory');
+  return { success: true, reverseDocNo: reverseDocNo || undefined };
 }
 
 // ============ Categories ============

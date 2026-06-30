@@ -518,7 +518,7 @@ export default function InventoryPage() {
       )}
 
       {subView === 'transferList' && (
-        <StockTransferList branches={branches} />
+        <StockTransferList branches={branches} canReverse={isHQUser} />
       )}
 
       {subView === 'stock' && (<>

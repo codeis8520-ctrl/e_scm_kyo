@@ -1,13 +1,14 @@
 'use client';
 
-// 재고변동전표 통합 조회(#86) — 창고이동·자가사용·강제조정을 전표 1건으로.
-//   유형/일자/기준·대상 지점 필터 + 전표 상세(품목·수량·창고·담당자·사유) + 출력.
+// 재고변동전표 통합 조회(#86) + 창고이동 취소·반대전표(#94).
+//   유형/일자/기준·대상 지점/품목명 필터 + 전표 상세 + 출력 + 창고이동 반대전표 되돌리기.
 import { useState, useEffect, useCallback } from 'react';
-import { getStockMovementDocs, getStockMovementDocDetail } from '@/lib/actions';
+import { getStockMovementDocs, getStockMovementDocDetail, reverseStockTransfer } from '@/lib/actions';
 import { fmtStock } from '@/lib/validators';
 
 interface Props {
   branches: { id: string; name: string }[];
+  canReverse?: boolean;   // #94 본사 권한만 취소(반대전표)
 }
 
 type MoveType = 'TRANSFER' | 'USAGE' | 'ADJUST';
@@ -19,16 +20,24 @@ const TYPE_META: Record<MoveType, { label: string; badge: string }> = {
 };
 const typeMeta = (t: string) => TYPE_META[t as MoveType] ?? { label: t || '-', badge: 'bg-slate-50 text-slate-600 border-slate-200' };
 
-export default function StockTransferList({ branches }: Props) {
+// #94 전표 상태 배지 — 정상/취소됨(원전표)/반대전표.
+const statusMeta = (s: string) =>
+  s === 'REVERSED' ? { label: '취소됨', cls: 'bg-red-50 text-red-600 border-red-200' }
+  : s === 'REVERSAL' ? { label: '반대전표', cls: 'bg-violet-50 text-violet-700 border-violet-200' }
+  : null;
+
+export default function StockTransferList({ branches, canReverse }: Props) {
   const [moveType, setMoveType] = useState<'' | MoveType>('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [fromBranchId, setFromBranchId] = useState('');
   const [toBranchId, setToBranchId] = useState('');
+  const [productName, setProductName] = useState('');
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState<{ header: any; items: any[] } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [reversing, setReversing] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -36,12 +45,13 @@ export default function StockTransferList({ branches }: Props) {
       moveType: moveType || undefined,
       from: from || undefined, to: to || undefined,
       fromBranchId: fromBranchId || undefined, toBranchId: toBranchId || undefined,
+      productName: productName.trim() || undefined,
     });
     setRows(res.data || []);
     setLoading(false);
-  }, [moveType, from, to, fromBranchId, toBranchId]);
+  }, [moveType, from, to, fromBranchId, toBranchId, productName]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { const t = setTimeout(load, productName ? 300 : 0); return () => clearTimeout(t); }, [load, productName]);
 
   const openDetail = async (id: string) => {
     setDetailLoading(true);
@@ -49,6 +59,20 @@ export default function StockTransferList({ branches }: Props) {
     setDetailLoading(false);
     if (res.error) { alert(res.error); return; }
     setDetail({ header: res.header, items: res.items || [] });
+  };
+
+  // #94 창고이동 취소 = 반대전표(도착→출발 역이동) 자동 생성.
+  const handleReverse = async (h: any) => {
+    const label = `${h.from_branch?.name || '?'} → ${h.to_branch?.name || '?'}`;
+    const reason = window.prompt(`이 창고이동(${label})을 취소하고 반대전표를 생성합니다.\n반대 방향(${h.to_branch?.name || '?'} → ${h.from_branch?.name || '?'})으로 재고가 되돌아갑니다.\n\n수정/취소 사유를 입력하세요:`, '');
+    if (reason === null) return;   // 취소(Esc)
+    setReversing(true);
+    const res = await reverseStockTransfer(h.id, reason.trim());
+    setReversing(false);
+    if (res.error) { alert(res.error); return; }
+    alert(`반대전표가 생성되었습니다.${res.reverseDocNo ? `\n전표번호: ${res.reverseDocNo}` : ''}`);
+    setDetail(null);
+    load();
   };
 
   // 이동만 출발→도착 분리 표기. 그 외(사용/조정)는 기준창고 단일.
@@ -94,7 +118,7 @@ export default function StockTransferList({ branches }: Props) {
     w.document.close();
   };
 
-  const hasFilter = moveType || from || to || fromBranchId || toBranchId;
+  const hasFilter = moveType || from || to || fromBranchId || toBranchId || productName;
 
   return (
     <div className="space-y-4">
@@ -133,8 +157,12 @@ export default function StockTransferList({ branches }: Props) {
             {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
           </select>
         </div>
+        <div>
+          <label className="block text-xs text-slate-500 mb-1">품목명</label>
+          <input type="text" value={productName} onChange={e => setProductName(e.target.value)} placeholder="품목 검색" className="input text-sm py-1.5 w-32" />
+        </div>
         {hasFilter && (
-          <button onClick={() => { setMoveType(''); setFrom(''); setTo(''); setFromBranchId(''); setToBranchId(''); }}
+          <button onClick={() => { setMoveType(''); setFrom(''); setTo(''); setFromBranchId(''); setToBranchId(''); setProductName(''); }}
             className="text-xs text-slate-500 hover:text-slate-700 underline pb-2">필터 초기화</button>
         )}
       </div>
@@ -168,6 +196,9 @@ export default function StockTransferList({ branches }: Props) {
                     <td className="px-3 py-2 whitespace-nowrap">{r.created_at?.slice(0, 10) || '-'}</td>
                     <td className="px-3 py-2 whitespace-nowrap">
                       <span className={`inline-block px-1.5 py-0.5 rounded border text-[11px] font-medium ${tm.badge}`}>{tm.label}</span>
+                      {statusMeta(r.status) && (
+                        <span className={`ml-1 inline-block px-1.5 py-0.5 rounded border text-[11px] font-medium ${statusMeta(r.status)!.cls}`}>{statusMeta(r.status)!.label}</span>
+                      )}
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap">{branchLabel(r)}</td>
                     <td className="px-3 py-2 text-right">{r.item_count ?? '-'}</td>
@@ -214,6 +245,16 @@ export default function StockTransferList({ branches }: Props) {
                   {detail.header.usage_type?.name && <p><span className="text-slate-500 text-xs mr-2">사용유형</span>{detail.header.usage_type.name}</p>}
                   <p><span className="text-slate-500 text-xs mr-2">처리일/담당자</span>{detail.header.created_at?.slice(0, 10) || '-'} / {detail.header.creator?.name || '-'}</p>
                   {detail.header.memo && <p><span className="text-slate-500 text-xs mr-2">메모</span>{detail.header.memo}</p>}
+                  {/* #94 취소/반대전표 상태·연결·사유 */}
+                  {statusMeta(detail.header.status) && (
+                    <p className="pt-1">
+                      <span className={`inline-block px-1.5 py-0.5 rounded border text-[11px] font-medium ${statusMeta(detail.header.status)!.cls}`}>{statusMeta(detail.header.status)!.label}</span>
+                      {detail.header.linked_doc_no && (
+                        <span className="ml-2 text-xs text-slate-500">{detail.header.status === 'REVERSED' ? '반대전표' : '원전표'} <span className="font-mono text-blue-700">{detail.header.linked_doc_no}</span></span>
+                      )}
+                    </p>
+                  )}
+                  {detail.header.cancel_reason && <p><span className="text-slate-500 text-xs mr-2">취소사유</span>{detail.header.cancel_reason}</p>}
                 </div>
                 <div className="p-5">
                   <table className="table text-sm w-full">
@@ -229,6 +270,13 @@ export default function StockTransferList({ branches }: Props) {
                   </table>
                 </div>
                 <div className="px-5 py-3 border-t flex justify-end gap-2">
+                  {/* #94 창고이동 + ACTIVE + 권한자 → 취소(반대전표) */}
+                  {canReverse && detail.header.move_type === 'TRANSFER' && (!detail.header.status || detail.header.status === 'ACTIVE') && (
+                    <button onClick={() => handleReverse(detail.header)} disabled={reversing}
+                      className="btn-secondary text-sm text-red-600 border-red-200 hover:bg-red-50 mr-auto disabled:opacity-50">
+                      {reversing ? '처리 중…' : '취소 (반대전표)'}
+                    </button>
+                  )}
                   <button onClick={printDetail} className="btn-secondary text-sm">🖨️ 출력</button>
                   <button onClick={() => setDetail(null)} className="btn-primary text-sm">닫기</button>
                 </div>
