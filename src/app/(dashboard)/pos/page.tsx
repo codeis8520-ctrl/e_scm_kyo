@@ -339,6 +339,7 @@ function POSPageInner() {
   const [editingOptionVal, setEditingOptionVal] = useState<string>('');
 
   // 배송 (택배/퀵)
+  const [showDelivery, setShowDelivery] = useState(true);   // #83 배송정보 상세 접기/펼치기
   const [shipping, setShipping] = useState<ShippingForm>({
     type: 'NONE',
     recipient_name: '', recipient_phone: '',
@@ -1916,36 +1917,42 @@ function POSPageInner() {
                   🛵 퀵배송: 당일 인편. 송장/알림톡 없이 인수자 확인 후 상태 업데이트 권장.
                 </p>
               )}
-              {/* 수령인(받는 분) — 전체폭 그리드 */}
-              <div className="flex items-center justify-between">
+              {/* 수령인(받는 분) — 헤더 + 접기/펼치기(#83) */}
+              <div className="flex items-center justify-between gap-2">
                 <p className="text-[11px] font-semibold text-slate-500 uppercase">수령인 (받는 분)</p>
-                {addressFromRegistry && selectedCustomer && (
-                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200"
-                    title="고객 등록 정보의 주소를 자동으로 채웠습니다. 발송 전에 반드시 고객에게 확인하세요.">
-                    📍 고객 등록 주소 — 발송 전 확인 필요
-                  </span>
-                )}
+                <div className="flex items-center gap-2">
+                  {addressFromRegistry && selectedCustomer && (
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200"
+                      title="고객 등록 정보의 주소를 자동으로 채웠습니다. 발송 전에 반드시 고객에게 확인하세요.">
+                      📍 고객 등록 주소 — 발송 전 확인 필요
+                    </span>
+                  )}
+                  <button type="button" onClick={() => setShowDelivery(v => !v)}
+                    className="text-[11px] text-slate-500 hover:text-slate-700 underline whitespace-nowrap">
+                    {showDelivery ? '▲ 접기' : '▼ 펼치기'}
+                  </button>
+                </div>
               </div>
-              {/* #78: 좁은 칼럼 대응 — 이름·연락처 1줄(반반), 우편·주소·검색 1줄(우편 고정폭/주소 flex) */}
-              <div className="grid grid-cols-2 gap-2">
+              {showDelivery ? (
+              <>
+              {/* #83: 전체폭 가로 압축 — 받는분 한 줄(이름·연락처·우편·주소·검색), 상세·메시지 한 줄 */}
+              <div className="flex flex-wrap lg:flex-nowrap gap-2">
                 <input type="text" placeholder="이름 *" value={shipping.recipient_name}
                   onChange={e => setShipping(p => ({ ...p, recipient_name: e.target.value }))}
-                  className="input text-sm" />
+                  className="input text-sm flex-1 min-w-[120px]" />
                 <input type="text" placeholder="연락처 *" value={shipping.recipient_phone}
                   onChange={e => setShipping(p => ({ ...p, recipient_phone: e.target.value }))}
-                  className="input text-sm" />
-              </div>
-              <div className="flex gap-2">
+                  className="input text-sm flex-1 min-w-[120px]" />
                 <input type="text" value={shipping.recipient_zipcode}
                   onChange={e => setShipping(p => ({ ...p, recipient_zipcode: e.target.value }))}
                   placeholder="우편번호" className="input text-sm w-24 shrink-0" />
                 <input type="text" value={shipping.recipient_address}
                   onChange={e => setShipping(p => ({ ...p, recipient_address: e.target.value }))}
-                  placeholder="주소 직접 입력 또는 [주소 검색] *" className="input text-sm flex-1 min-w-0" />
+                  placeholder="주소 직접 입력 또는 [주소 검색] *" className="input text-sm flex-[2] min-w-[180px]" />
                 <button type="button" onClick={() => openPostcode('recipient')}
                   className="btn-secondary text-sm whitespace-nowrap shrink-0">주소 검색</button>
               </div>
-              <div className="grid grid-cols-1 gap-2">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
                 <input type="text" placeholder="상세 주소 (동/호수 등)"
                   value={shipping.recipient_address_detail}
                   onChange={e => setShipping(p => ({ ...p, recipient_address_detail: e.target.value }))}
@@ -1977,21 +1984,19 @@ function POSPageInner() {
                 </div>
                 {!shipping.senderSameAsBuyer && (
                   <div className="space-y-2">
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="flex flex-wrap lg:flex-nowrap gap-2">
                       <input type="text" placeholder="보내는 분 이름" value={shipping.sender_name}
                         onChange={e => setShipping(p => ({ ...p, sender_name: e.target.value }))}
-                        className="input text-sm" />
+                        className="input text-sm flex-1 min-w-[120px]" />
                       <input type="text" placeholder="연락처" value={shipping.sender_phone}
                         onChange={e => setShipping(p => ({ ...p, sender_phone: e.target.value }))}
-                        className="input text-sm" />
-                    </div>
-                    <div className="flex gap-2">
+                        className="input text-sm flex-1 min-w-[120px]" />
                       <input type="text" value={shipping.sender_zipcode}
                         onChange={e => setShipping(p => ({ ...p, sender_zipcode: e.target.value }))}
                         placeholder="우편번호" className="input text-sm w-24 shrink-0" />
                       <input type="text" value={shipping.sender_address}
                         onChange={e => setShipping(p => ({ ...p, sender_address: e.target.value }))}
-                        placeholder="주소 직접 입력 또는 [주소 검색]" className="input text-sm flex-1 min-w-0" />
+                        placeholder="주소 직접 입력 또는 [주소 검색]" className="input text-sm flex-[2] min-w-[180px]" />
                       <button type="button" onClick={() => openPostcode('sender')}
                         className="btn-secondary text-sm whitespace-nowrap shrink-0">주소 검색</button>
                     </div>
@@ -2002,6 +2007,14 @@ function POSPageInner() {
                   </div>
                 )}
               </div>
+              </>
+              ) : (
+                <p className="text-xs text-slate-500 truncate">
+                  {(shipping.recipient_name || shipping.recipient_phone || shipping.recipient_address)
+                    ? `받는분: ${shipping.recipient_name || '-'} · ${shipping.recipient_phone || '-'} · ${shipping.recipient_address || '주소 미입력'}${shipping.recipient_address_detail ? ' ' + shipping.recipient_address_detail : ''}`
+                    : '받는분 정보 미입력 — [펼치기]로 입력하세요'}
+                </p>
+              )}
             </div>
           );
         })()}
