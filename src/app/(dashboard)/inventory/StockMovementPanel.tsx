@@ -23,7 +23,7 @@ const TYPE_GUIDE: Record<MoveType, string> = {
 
 interface Inventory {
   id: string; branch_id: string; product_id: string; quantity: number;
-  product?: { id: string; name: string; code: string; allow_decimal_stock?: boolean };
+  product?: { id: string; name: string; code: string; allow_decimal_stock?: boolean; is_phantom?: boolean; track_inventory?: boolean };
 }
 interface Row { product_id: string; name: string; code: string; quantity: number; }
 
@@ -100,6 +100,9 @@ export default function StockMovementPanel({
     for (const inv of srcInventories) {
       const p = inv.product;
       if (!p || inv.branch_id !== fromBranchId || seen.has(inv.product_id)) continue;
+      // #82: 옵션 포함 세트(팬텀)·재고 비관리 품목 제외 — 실제 재고 차감 대상(단품/기본)만 노출.
+      //   재고변동전표는 실재고가 줄어드는 품목을 고르는 화면(판매용 옵션상품 선택 화면 아님).
+      if (p.is_phantom === true || p.track_inventory === false) continue;
       seen.add(inv.product_id);
       out.push({ product_id: inv.product_id, name: p.name, code: p.code });
     }

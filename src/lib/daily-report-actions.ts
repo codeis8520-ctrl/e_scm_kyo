@@ -118,15 +118,24 @@ export async function getReportTemplate(branchId: string, reportDate: string) {
 
   // 1) 취급 완제품 = 해당 branch inventories 행 존재 + products.is_active + product_type='FINISHED'.
   //    (제품생성 시 전 지점 inventories 행이 깔리므로 이게 매장 취급목록 역할 — 별도 테이블 불요.)
-  const { data: inv, error: invErr } = await sb
+  // #82: is_phantom 포함 조회(옵션 세트 제외용). 컬럼 부재 환경은 폴백(전부 표시).
+  let invRes: any = await sb
     .from('inventories')
-    .select('product_id, quantity, product:products(id, code, name, price, is_active, product_type)')
+    .select('product_id, quantity, product:products(id, code, name, price, is_active, product_type, is_phantom)')
     .eq('branch_id', resolved);
+  if (invRes.error && /is_phantom/i.test(String(invRes.error.message))) {
+    invRes = await sb
+      .from('inventories')
+      .select('product_id, quantity, product:products(id, code, name, price, is_active, product_type)')
+      .eq('branch_id', resolved);
+  }
+  const { data: inv, error: invErr } = invRes;
   if (invErr) { console.error('[daily-report] template inventories error:', invErr); return { error: invErr.message }; }
 
   const products = ((inv as any[]) || [])
     .map(r => r.product)
-    .filter((p: any) => p && p.is_active && p.product_type === 'FINISHED')
+    // #82: 옵션 포함 세트(팬텀)는 판매용 — 일보(재고 마감)에선 실제 재고 단품/기본만. (컬럼 부재 시 미필터)
+    .filter((p: any) => p && p.is_active && p.product_type === 'FINISHED' && p.is_phantom !== true)
     .sort((a: any, b: any) => String(a.code || '').localeCompare(String(b.code || '')));
 
   // 2) 시스템 재고 맵(현재 inventories.quantity) — 표시/대조용. 승인 시 movements 로 갱신됨.
