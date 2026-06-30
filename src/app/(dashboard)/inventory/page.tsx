@@ -173,12 +173,17 @@ export default function InventoryPage() {
 
   const fetchBranches = async () => {
     const supabase = createClient();
-    // is_headquarters 포함 시도 → 마이그 047 미적용 DB 폴백
+    // #96 재고현황·이동·출고처 = 창고(is_warehouse=true)만. 온라인 채널(자사몰 등) 제외.
+    //   is_headquarters/is_warehouse 미적용 DB는 단계적 폴백.
     let res: any = await supabase
       .from('branches')
       .select('id, name, is_headquarters')
       .eq('is_active', true)
+      .eq('is_warehouse', true)
       .order('name');
+    if (res.error && /is_warehouse/i.test(String(res.error.message))) {
+      res = await supabase.from('branches').select('id, name, is_headquarters').eq('is_active', true).order('name');
+    }
     if (res.error) {
       res = await supabase.from('branches').select('id, name').eq('is_active', true).order('name');
     }

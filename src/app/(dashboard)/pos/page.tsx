@@ -1903,7 +1903,8 @@ function POSPageInner() {
               className="input text-sm py-1.5 w-full"
               title="재고가 차감되는 지점/창고. 매출처와 다를 수 있습니다(A점 구매·B점 출고)."
             >
-              {branches.map((b: any) => (
+              {/* #96 출고처 = 창고만(is_warehouse). 온라인 채널(자사몰 등)은 출고처로 선택 불가. */}
+              {branches.filter((b: any) => b.is_warehouse !== false).map((b: any) => (
                 <option key={b.id} value={b.id}>
                   {b.name}{b.id === selectedBranch ? ' (매출처)' : ''}{b.is_headquarters ? ' · 본사' : ''}
                 </option>

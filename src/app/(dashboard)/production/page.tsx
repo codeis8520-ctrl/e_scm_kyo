@@ -177,12 +177,16 @@ export default function ProductionPage() {
   useEffect(() => {
     const supabase = createClient();
     (async () => {
-      // is_headquarters 포함 조회, 없는 DB(마이그 047 미적용) 폴백
+      // #96 입고 지점 = 창고(is_warehouse)만. 온라인 채널 제외. is_warehouse/is_headquarters 단계 폴백.
       let res: any = await supabase
         .from('branches')
         .select('id, name, is_headquarters')
         .eq('is_active', true)
+        .eq('is_warehouse', true)
         .order('name');
+      if (res.error && /is_warehouse/i.test(String(res.error.message))) {
+        res = await supabase.from('branches').select('id, name, is_headquarters').eq('is_active', true).order('name');
+      }
       if (res.error) {
         res = await supabase.from('branches').select('id, name').eq('is_active', true).order('name');
       }

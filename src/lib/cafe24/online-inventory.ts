@@ -35,6 +35,14 @@ export async function deductOnlineOrderInventory(
   // 시행일 이전 주문은 소급 차감하지 않음(과거 재고 왜곡 방지)
   if (order.ordered_at && new Date(order.ordered_at) < new Date(`${ONLINE_DEDUCT_CUTOFF}T00:00:00+09:00`)) return 0;
 
+  // #96 출고처 = 본사. 온라인 채널(매출처)은 창고가 아니므로 재고는 실제 출고지(본사)에서 차감.
+  //   매출처(order.branch_id=자사몰 등)는 보존, 출고처(ship_from_branch_id)만 본사로.
+  const { data: hq } = await sb.from('branches').select('id').eq('is_headquarters', true).maybeSingle();
+  const shipBranchId: string = hq?.id || order.branch_id;
+  if (shipBranchId !== order.branch_id) {
+    try { await sb.from('sales_orders').update({ ship_from_branch_id: shipBranchId }).eq('id', order.id); } catch { /* 컬럼 부재 폴백 */ }
+  }
+
   const { data: items } = await sb
     .from('sales_order_items')
     .select('id, product_id, quantity, product:products(track_inventory)')
@@ -56,18 +64,18 @@ export async function deductOnlineOrderInventory(
       .limit(1);
     if (existing?.length) continue;
 
-    // inventories 차감(없으면 음수 신규 — 추후 입고 복원)
+    // inventories 차감(출고처=본사. 없으면 음수 신규 — 추후 입고 복원)
     const { data: inv } = await sb
       .from('inventories')
       .select('id, quantity')
-      .eq('branch_id', order.branch_id)
+      .eq('branch_id', shipBranchId)
       .eq('product_id', it.product_id)
       .maybeSingle();
     if (inv) {
       await sb.from('inventories').update({ quantity: (Number(inv.quantity) || 0) - qty }).eq('id', inv.id);
     } else {
       await sb.from('inventories').insert({
-        branch_id: order.branch_id,
+        branch_id: shipBranchId,
         product_id: it.product_id,
         quantity: -qty,
         safety_stock: 0,
@@ -75,7 +83,7 @@ export async function deductOnlineOrderInventory(
     }
 
     await sb.from('inventory_movements').insert({
-      branch_id: order.branch_id,
+      branch_id: shipBranchId,          // #96 출고처(본사)에서 차감
       product_id: it.product_id,
       movement_type: 'OUT',
       quantity: qty,
@@ -127,13 +135,15 @@ export async function restoreOnlineOrderInventory(
     if (qty <= 0) continue;
 
     // 차감 가드 — 이 품목이 ONLINE_SALE로 차감된 적 없으면 복원 대상 아님(컷오프·미매핑 자동 필터)
+    //   #96 복원 지점 = 원 차감 movement의 branch_id(본사 또는 과거 자사몰). 대칭 보장.
     const { data: deducted } = await sb
       .from('inventory_movements')
-      .select('id')
+      .select('id, branch_id')
       .eq('reference_type', 'ONLINE_SALE')
       .eq('reference_id', it.id)
       .limit(1);
     if (!deducted?.length) continue;
+    const restoreBranchId: string = deducted[0].branch_id || order.branch_id;
 
     // 복원 멱등 가드 — 이미 복원됐으면 skip
     const { data: alreadyRestored } = await sb
@@ -148,14 +158,14 @@ export async function restoreOnlineOrderInventory(
     const { data: inv } = await sb
       .from('inventories')
       .select('id, quantity')
-      .eq('branch_id', order.branch_id)
+      .eq('branch_id', restoreBranchId)
       .eq('product_id', it.product_id)
       .maybeSingle();
     if (inv) {
       await sb.from('inventories').update({ quantity: (Number(inv.quantity) || 0) + qty }).eq('id', inv.id);
     } else {
       await sb.from('inventories').insert({
-        branch_id: order.branch_id,
+        branch_id: restoreBranchId,
         product_id: it.product_id,
         quantity: qty,
         safety_stock: 0,
@@ -163,7 +173,7 @@ export async function restoreOnlineOrderInventory(
     }
 
     await sb.from('inventory_movements').insert({
-      branch_id: order.branch_id,
+      branch_id: restoreBranchId,
       product_id: it.product_id,
       movement_type: 'IN',
       quantity: qty,

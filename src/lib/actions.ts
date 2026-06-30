@@ -153,13 +153,20 @@ export async function createProduct(formData: FormData) {
     return { error: error.message };
   }
 
-  // 제품 생성 시 활성 지점에 재고 레코드 자동 생성 — 본인 재고 추적 대상일 때만
+  // 제품 생성 시 활성 '창고' 지점에만 재고 레코드 자동 생성 — 본인 재고 추적 대상일 때만
   // (phantom=true이면 finalTrackInventory=false → inventories 행 안 만듦)
+  // #96 온라인 채널(is_warehouse=false)은 창고가 아니므로 재고행 생성 제외. 컬럼 부재 시 폴백(전 지점).
   if (finalTrackInventory) {
-    const { data: branches } = await supabase
-      .from('branches')
-      .select('id')
-      .eq('is_active', true);
+    let branches: any[] | null = null;
+    {
+      const r = await supabase.from('branches').select('id').eq('is_active', true).eq('is_warehouse', true);
+      if (r.error && /is_warehouse/i.test(String(r.error.message))) {
+        const r2 = await supabase.from('branches').select('id').eq('is_active', true);
+        branches = (r2.data as any[]) || [];
+      } else {
+        branches = (r.data as any[]) || [];
+      }
+    }
 
     if (branches && branches.length > 0) {
       const inventoryRecords = branches.map((branch: any) => ({
