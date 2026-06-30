@@ -7,25 +7,36 @@ import { signOut } from '@/app/login/actions';
 import { createClient } from '@/lib/supabase/client';
 import AgentFloatingIcon from '@/components/AgentFloatingIcon';
 
-// 사이드바 2섹션 구조(확정 IA): 핵심 업무 7개(상단) + 관리/기타(구분선 아래).
+// 사이드바 IA — 핵심 업무는 경옥채 실제 운영 흐름(#88) 순서로 그룹핑.
+//   판매(출발점) → 재고·유통 → 생산 → 구매 = 제조업 표준의 역순. 판매전표 중심 설계.
+//   group 키로 묶고, 그 아래 관리/기타(admin) 구분선.
 const ALL_NAV_ITEMS = [
-  // ── 핵심 업무 ──
-  { href: '/pos', label: '판매', icon: '💰', section: 'core' },
-  { href: '/daily-report', label: '판매일보', icon: '📝', section: 'core' },
-  { href: '/customers', label: '고객', icon: '👥', section: 'core' },
-  { href: '/inventory', label: '재고', icon: '🏪', section: 'core' },
-  { href: '/production', label: '생산', icon: '🏭', section: 'core' },
-  { href: '/purchases', label: '구매', icon: '🚚', section: 'core' },
-  { href: '/products', label: '제품', icon: '📦', section: 'core' },
-  { href: '/accounting', label: '회계', icon: '📒', section: 'core' },
+  // ── 핵심 업무 (판매 → 재고·유통 → 생산 → 구매 → 기준정보) ──
+  { href: '/pos', label: '판매', icon: '💰', section: 'core', group: 'sales' },
+  { href: '/daily-report', label: '판매일보', icon: '📝', section: 'core', group: 'sales' },
+  { href: '/customers', label: '고객', icon: '👥', section: 'core', group: 'sales' },
+  { href: '/inventory', label: '재고', icon: '🏪', section: 'core', group: 'stock' },
+  { href: '/production', label: '생산', icon: '🏭', section: 'core', group: 'production' },
+  { href: '/purchases', label: '구매', icon: '🚚', section: 'core', group: 'purchase' },
+  { href: '/products', label: '제품', icon: '📦', section: 'core', group: 'master' },
+  { href: '/accounting', label: '회계', icon: '📒', section: 'core', group: 'master' },
   // ── 관리/기타 ──
-  { href: '/', label: '대시보드', icon: '📊', section: 'admin' },
-  { href: '/trade', label: '거래 관리', icon: '🤝', section: 'admin' },
-  { href: '/notifications', label: '알림', icon: '📱', section: 'admin' },
-  { href: '/system-codes', label: '코드', icon: '⚙️', section: 'admin' },
-  { href: '/reports', label: '보고서', icon: '📈', section: 'admin' },
-  { href: '/agent-memory', label: 'AI 메모리', icon: '🧠', section: 'admin' },
-  { href: '/agent-conversations', label: 'AI 대화 기록', icon: '💬', section: 'admin' },
+  { href: '/', label: '대시보드', icon: '📊', section: 'admin', group: 'admin' },
+  { href: '/trade', label: '거래 관리', icon: '🤝', section: 'admin', group: 'admin' },
+  { href: '/notifications', label: '알림', icon: '📱', section: 'admin', group: 'admin' },
+  { href: '/system-codes', label: '코드', icon: '⚙️', section: 'admin', group: 'admin' },
+  { href: '/reports', label: '보고서', icon: '📈', section: 'admin', group: 'admin' },
+  { href: '/agent-memory', label: 'AI 메모리', icon: '🧠', section: 'admin', group: 'admin' },
+  { href: '/agent-conversations', label: 'AI 대화 기록', icon: '💬', section: 'admin', group: 'admin' },
+];
+
+// 핵심 업무 그룹 — 운영 흐름 순서대로 라벨 표시(#88).
+const CORE_GROUPS: { key: string; label: string }[] = [
+  { key: 'sales', label: '판매' },
+  { key: 'stock', label: '재고 · 유통' },
+  { key: 'production', label: '생산' },
+  { key: 'purchase', label: '구매' },
+  { key: 'master', label: '기준정보 · 회계' },
 ];
 
 const ROLE_LABELS: Record<string, string> = {
@@ -112,7 +123,17 @@ export default function DashboardLayout({
     );
     return (
       <>
-        {core.map(renderItem)}
+        {/* 핵심 업무 — 운영 흐름(판매→재고·유통→생산→구매→기준정보) 순 그룹 라벨 (#88) */}
+        {CORE_GROUPS.map(g => {
+          const items = core.filter(i => i.group === g.key);
+          if (items.length === 0) return null;
+          return (
+            <div key={g.key} className="space-y-1">
+              <p className="px-3 pt-2 pb-0.5 text-[10px] uppercase tracking-wider text-slate-500">{g.label}</p>
+              {items.map(renderItem)}
+            </div>
+          );
+        })}
         {admin.length > 0 && (
           <div className="pt-3 mt-2 border-t border-slate-700/70 space-y-1">
             <p className="px-3 pb-1 text-[10px] uppercase tracking-wider text-slate-500">관리 / 기타</p>
