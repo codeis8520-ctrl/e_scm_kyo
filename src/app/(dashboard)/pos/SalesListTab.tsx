@@ -2640,7 +2640,8 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
     }
   };
   // 삭제 가능한(아직 미수령) 품목 수 — 마지막 1개 비활성 판단용
-  const deletableCount = items.filter(it => (it.receipt_status || 'RECEIVED') !== 'RECEIVED').length;
+  // #102 마지막 품목만 삭제 방지(판매취소 사용). 수령완료 품목도 삭제 대상에 포함(총 품목 수 기준).
+  const deletableCount = items.length;
 
   // 활성 제품 목록 지연 로드 — '+ 품목 추가' 폼을 처음 열 때만
   const openAddForm = async () => {
@@ -3189,7 +3190,8 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                           </td>
                           <td className="px-3 py-1.5 text-xs text-indigo-700">
                             {/* #75: 수정 모드면 주문 옵션 입력(보자기/쇼핑백/선물구성 등) — 택배관리·송장에 파생 반영 */}
-                            {editingItemId === it.id && editable && itemRStatus !== 'RECEIVED' ? (
+                            {/* #102 수령완료 품목도 편집 허용(품목별 게이트 제거) */}
+                            {editingItemId === it.id && editable ? (
                               <input
                                 type="text"
                                 list="sales-item-option-presets"
@@ -3235,7 +3237,8 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                                 </button>
                               )}
                             </div>
-                            {editable && itemRStatus !== 'RECEIVED' && (
+                            {/* #102 수령완료 품목도 수정/삭제 허용(품목별 게이트 제거) */}
+                            {editable && (
                               <div className="flex flex-wrap gap-1 mt-1">
                                 {editingItemId === it.id ? (
                                   <>
