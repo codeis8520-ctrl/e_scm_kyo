@@ -3153,8 +3153,9 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
             {/* 품목 */}
             <div>
               <p className="text-sm font-semibold text-slate-700 mb-2">품목 ({items.length}종)</p>
-              <div className="border rounded-md overflow-hidden">
-                <table className="w-full text-sm">
+              {/* 수정 모드에서 단가/금액 열이 잘리지 않도록 가로 스크롤 + 최소폭 */}
+              <div className="border rounded-md overflow-x-auto">
+                <table className="w-full text-sm min-w-[620px]">
                   <thead className="bg-slate-50">
                     <tr className="text-xs text-slate-500">
                       <th className="text-left px-3 py-1.5">품목</th>
