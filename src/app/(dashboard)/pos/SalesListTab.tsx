@@ -2006,6 +2006,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
   const [productOptions, setProductOptions] = useState<{ id: string; name: string; code?: string; price?: number; product_type?: string | null }[]>([]);
   const [addFilter, setAddFilter] = useState<'SELL' | 'PACK' | 'ALL'>('SELL');   // #104 기본=일반 판매 품목
   const [addProductId, setAddProductId] = useState('');
+  const [addSearch, setAddSearch] = useState('');   // 품목 추가 라이브 검색어(판매입력과 동일 UX)
   const [addQty, setAddQty] = useState('1');
   const [addPrice, setAddPrice] = useState('');
   const [addOption, setAddOption] = useState('');
@@ -2680,7 +2681,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
         alert(`결제 차액 ₩${Math.abs(res.delta).toLocaleString()} 가 ${res.delta > 0 ? '추가결제' : '부분환불'}로 기록되었습니다.\n카드/단말기 정산은 별도로 처리하세요.`);
       }
       // 폼 초기화 + 재조회
-      setAddProductId(''); setAddQty('1'); setAddPrice(''); setAddOption(''); setAddDeliveryType('PICKUP');
+      setAddProductId(''); setAddSearch(''); setAddQty('1'); setAddPrice(''); setAddOption(''); setAddDeliveryType('PICKUP');
       setShowAddForm(false);
       await loadDetail(false);
       onChanged();
@@ -3343,7 +3344,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                       {/* #104 품목 분류 필터 — 기본 '일반 판매'(FINISHED). 포장·옵션(SUB/SERVICE)·전체는 별도 탭. */}
                       <div className="flex gap-1 text-[11px]">
                         {([['SELL', '일반 판매'], ['PACK', '포장·옵션'], ['ALL', '전체']] as ['SELL' | 'PACK' | 'ALL', string][]).map(([v, l]) => (
-                          <button key={v} onClick={() => { setAddFilter(v); setAddProductId(''); }}
+                          <button key={v} onClick={() => { setAddFilter(v); setAddProductId(''); setAddSearch(''); }}
                             className={`px-2 py-0.5 rounded border transition-colors ${addFilter === v ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}>
                             {l}
                           </button>
@@ -3352,24 +3353,50 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                       {(() => {
                         const sellable = (p: any) => p.product_type === 'FINISHED' || p.product_type == null;
                         const packOpt = (p: any) => p.product_type === 'SUB' || p.product_type === 'SERVICE';
-                        const list = productOptions.filter(p => addFilter === 'ALL' ? true : addFilter === 'PACK' ? packOpt(p) : sellable(p));
+                        const base = productOptions.filter(p => addFilter === 'ALL' ? true : addFilter === 'PACK' ? packOpt(p) : sellable(p));
+                        // 판매입력 제품검색과 동일 — 검색어(name/code) 라이브 필터 후 클릭 선택.
+                        const q = addSearch.trim().toLowerCase();
+                        const matches = (q
+                          ? base.filter(p => (p.name || '').toLowerCase().includes(q) || (p.code || '').toLowerCase().includes(q))
+                          : base
+                        ).slice(0, 30);
+                        const selected = productOptions.find(p => p.id === addProductId);
                         return (
-                          <select
-                            value={addProductId}
-                            onChange={e => {
-                              setAddProductId(e.target.value);
-                              const p = productOptions.find(o => o.id === e.target.value);
-                              if (p && p.price != null && addPrice === '') setAddPrice(String(p.price));
-                            }}
-                            className="w-full text-sm border border-slate-300 rounded px-2 py-1.5"
-                          >
-                            <option value="">제품 선택... ({list.length})</option>
-                            {list.map(p => (
-                              <option key={p.id} value={p.id}>
-                                {p.name}{p.code ? ` (${p.code})` : ''}
-                              </option>
-                            ))}
-                          </select>
+                          <div className="relative">
+                            <input
+                              type="text"
+                              value={addSearch}
+                              onChange={e => { setAddSearch(e.target.value); if (addProductId) setAddProductId(''); }}
+                              placeholder={`제품명·코드 검색... (${base.length})`}
+                              className="w-full text-sm border border-slate-300 rounded px-2 py-1.5"
+                            />
+                            {!addProductId && q && (
+                              <div className="mt-1 max-h-52 overflow-y-auto border border-slate-200 rounded bg-white shadow-sm">
+                                {matches.length === 0 ? (
+                                  <p className="px-2 py-2 text-xs text-slate-400">검색 결과 없음</p>
+                                ) : matches.map(p => (
+                                  <button
+                                    key={p.id}
+                                    type="button"
+                                    onClick={() => {
+                                      setAddProductId(p.id);
+                                      setAddSearch(`${p.name}${p.code ? ` (${p.code})` : ''}`);
+                                      if (p.price != null && addPrice === '') setAddPrice(String(p.price));
+                                    }}
+                                    className="w-full text-left px-2 py-1.5 text-sm hover:bg-blue-50 border-b border-slate-100 last:border-0"
+                                  >
+                                    {p.name}{p.code ? <span className="text-slate-400"> ({p.code})</span> : null}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                            {addProductId && selected && (
+                              <div className="mt-1 flex items-center justify-between text-xs text-green-700 bg-green-50 border border-green-200 rounded px-2 py-1">
+                                <span>선택됨: {selected.name}{selected.code ? ` (${selected.code})` : ''}</span>
+                                <button type="button" onClick={() => { setAddProductId(''); setAddSearch(''); }} className="text-slate-500 hover:text-slate-700">✕ 변경</button>
+                              </div>
+                            )}
+                          </div>
                         );
                       })()}
                       <div className="grid grid-cols-3 gap-2">
