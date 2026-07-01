@@ -39,7 +39,10 @@ export default function LoginPage() {
       )}
       
       <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
-        <h1 className="text-2xl font-bold mb-6 text-center">경옥채 사내 통합시스템</h1>
+        <div className="flex flex-col items-center mb-6">
+          <img src="/CI.jpg" alt="경옥채" className="h-24 w-24 object-contain" />
+          <p className="mt-2 text-sm font-medium tracking-wide text-slate-500">사내 통합시스템</p>
+        </div>
         
         {error && (
           <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-lg text-sm">

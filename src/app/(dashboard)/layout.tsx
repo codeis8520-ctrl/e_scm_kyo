@@ -163,6 +163,7 @@ export default function DashboardLayout({
                 )}
               </svg>
             </button>
+            <img src="/CI.jpg" alt="경옥채" className="h-8 w-8 object-contain rounded" />
             <h1 className="text-lg font-bold text-slate-800">경옥채</h1>
           </div>
           <div className="flex items-center gap-2">
@@ -201,8 +202,10 @@ export default function DashboardLayout({
       >
         <div className="flex flex-col h-full">
           <div className="p-4 border-b border-slate-700">
-            <h1 className="text-xl font-bold">경옥채</h1>
-            <p className="text-xs text-slate-400">사내 통합시스템</p>
+            <div className="bg-white rounded-lg px-3 py-2 flex items-center justify-center shadow-sm">
+              <img src="/CI.jpg" alt="경옥채" className="h-10 w-auto object-contain" />
+            </div>
+            <p className="text-xs text-slate-400 text-center mt-2 tracking-wide">사내 통합시스템</p>
           </div>
 
           <nav className="flex-1 overflow-y-auto p-3 space-y-1">
@@ -234,8 +237,10 @@ export default function DashboardLayout({
       {/* Desktop sidebar (fixed for larger screens) */}
       <aside className="hidden lg:flex fixed top-0 left-0 z-30 h-full w-64 bg-slate-800 text-white flex-col">
         <div className="p-4 border-b border-slate-700">
-          <h1 className="text-xl font-bold">경옥채</h1>
-          <p className="text-xs text-slate-400">사내 통합시스템</p>
+          <div className="bg-white rounded-lg px-3 py-2 flex items-center justify-center shadow-sm">
+            <img src="/CI.jpg" alt="경옥채" className="h-10 w-auto object-contain" />
+          </div>
+          <p className="text-xs text-slate-400 text-center mt-2 tracking-wide">사내 통합시스템</p>
         </div>
 
         <nav className="flex-1 overflow-y-auto p-3 space-y-1">

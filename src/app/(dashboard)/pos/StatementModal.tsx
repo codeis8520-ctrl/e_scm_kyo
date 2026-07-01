@@ -62,7 +62,7 @@ function numToKorean(n: number): string {
   return out;
 }
 
-function buildStatementHtml(p: Props, COMPANY: Company): { html: string; grandTotal: number } {
+function buildStatementHtml(p: Props, COMPANY: Company, logoUrl: string): { html: string; grandTotal: number } {
   const dt = new Date(p.orderedAt);
   const y = dt.getFullYear(), m = String(dt.getMonth() + 1).padStart(2, '0'), d = String(dt.getDate()).padStart(2, '0');
   const dateFull = `${y}/${m}/${d}`;
@@ -124,8 +124,13 @@ function buildStatementHtml(p: Props, COMPANY: Company): { html: string; grandTo
   </style></head><body><div class="sheet">
     <div class="top">
       <div class="brand">
-        <h1>거래명세서</h1>
-        <div style="font-size:11px;color:#555;margin-top:4px;">${COMPANY.brand} · 전표번호 ${p.orderNumber}</div>
+        <div style="display:flex;align-items:center;gap:14px;">
+          <img src="${logoUrl}" alt="경옥채" style="height:60px;width:60px;object-fit:contain;flex-shrink:0;" onerror="this.style.display='none'" />
+          <div>
+            <h1>거래명세서</h1>
+            <div style="font-size:11px;color:#555;margin-top:4px;letter-spacing:0;">${COMPANY.brand} · 전표번호 ${p.orderNumber}</div>
+          </div>
+        </div>
         <div class="client">${p.clientName} 貴中</div>
       </div>
       <table class="supplier">
@@ -196,7 +201,9 @@ export default function StatementModal(props: Props) {
     })();
   }, [supplierBranchId]);
 
-  const { html } = useMemo(() => buildStatementHtml(props, company), [props, company]);
+  // 로고는 절대 URL(iframe srcDoc·인쇄에서 안정적으로 로드).
+  const logoUrl = (typeof window !== 'undefined' ? window.location.origin : '') + '/CI.jpg';
+  const { html } = useMemo(() => buildStatementHtml(props, company, logoUrl), [props, company, logoUrl]);
 
   const doPrint = () => {
     const w = iframeRef.current?.contentWindow;
