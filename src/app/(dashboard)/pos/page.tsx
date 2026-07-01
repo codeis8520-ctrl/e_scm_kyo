@@ -312,6 +312,7 @@ function POSPageInner() {
     totalLtv: number;
   }>({ loading: false, consultations: [], orders: [], legacyOrders: [], totalLtv: 0 });
   const [historyTab, setHistoryTab] = useState<'consult' | 'orders' | 'legacy'>('consult');
+  const [historyOpen, setHistoryOpen] = useState(true);   // 구매·상담 이력 패널 펼침/접힘
   const [expandedLegacy, setExpandedLegacy] = useState<Set<string>>(new Set());
   const toggleLegacy = (id: string) =>
     setExpandedLegacy(prev => {
@@ -1933,7 +1934,7 @@ function POSPageInner() {
 
       </div>
         {/* 2. 고객 정보(#78) — 판매정보 다음, 전체폭 상단. 검색·선택 + 이력/상담(고객 선택 시만 확장, 컴팩트). */}
-        <div className="card p-3 flex flex-col gap-3 lg:max-h-[22vh] lg:flex-shrink-0 overflow-hidden">
+        <div className="card p-3 flex flex-col gap-3 lg:flex-shrink-0 overflow-hidden">
           {/* 고객 검색/선택 */}
           <div className="relative">
             {selectedCustomer ? (
@@ -2088,9 +2089,25 @@ function POSPageInner() {
             )}
           </div>
 
-          {/* 이력(탭) + 상담 작성 — 고객 선택 시에만 노출 */}
-          {selectedCustomer ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 flex-1 min-h-[160px] overflow-hidden">
+          {/* 이력 펼침/접힘 토글 — 고객 선택 시. 접으면 장바구니 공간 확보, 펼치면 이력 넉넉히 표시 */}
+          {selectedCustomer && (
+            <button
+              type="button"
+              onClick={() => setHistoryOpen(v => !v)}
+              className="flex items-center justify-between w-full px-3 py-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-600 transition-colors"
+              title={historyOpen ? '구매·상담 이력 접기' : '구매·상담 이력 펼치기'}
+            >
+              <span>구매·상담 이력 <span className="text-slate-400">(구매 {history.orders.length} · 상담 {history.consultations.length})</span></span>
+              <span className="flex items-center gap-1 text-blue-600">
+                {historyOpen ? '접기' : '펼치기'}
+                <svg className={`w-3.5 h-3.5 transition-transform ${historyOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+              </span>
+            </button>
+          )}
+
+          {/* 이력(탭) + 상담 작성 — 고객 선택 + 펼침 시에만 노출 */}
+          {selectedCustomer && historyOpen ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 lg:h-[38vh] min-h-[220px] overflow-hidden">
               {/* 이력 탭 */}
               <div className="flex flex-col border border-slate-200 rounded-lg overflow-hidden">
                 <div className="flex border-b border-slate-200 bg-slate-50 text-xs">
@@ -2314,11 +2331,11 @@ function POSPageInner() {
                 </div>
               </div>
             </div>
-          ) : (
+          ) : !selectedCustomer ? (
             <div className="flex-1 flex items-center justify-center text-xs text-slate-400 border border-dashed border-slate-200 rounded-lg py-6">
               고객을 선택하면 이력과 상담 작성 영역이 표시됩니다.
             </div>
-          )}
+          ) : null}
         </div>
 
         {/* ── 배송 정보(택배/퀵) — 고객 검색 아래 배치(#83). 받는분·주소·메모 ── */}
