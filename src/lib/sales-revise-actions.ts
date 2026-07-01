@@ -213,8 +213,10 @@ async function recalcSalesOrderTotals(
 
   const discount = Number(order.discount_amount || 0);
   const pointsUsed = Number(order.points_used || 0);
-  const newFinal = Math.max(0, newTotal - discount - pointsUsed);
-  const oldFinal = Math.max(0, Number(order.total_amount || 0) - discount - pointsUsed);
+  // #105 음수(환불·반품) 총액은 clamp 금지 — 금액·매출·결제차액이 마이너스로 일관 반영돼야 함.
+  //   (기존 Math.max(0,...)이 -35,000을 0으로 눌러 결제/매출 반영이 0원이 되던 버그.)
+  const newFinal = newTotal - discount - pointsUsed;
+  const oldFinal = Number(order.total_amount || 0) - discount - pointsUsed;
 
   // 3) 과세/면세/VAT 스냅샷 — item별 is_taxable 비례배분 (processPosCheckout L2078~ 동일)
   let taxableAmount = 0;
