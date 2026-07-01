@@ -129,11 +129,17 @@ function buildStatementHtml(p: Props, COMPANY: Company): { html: string; grandTo
         <div class="client">${p.clientName} 貴中</div>
       </div>
       <table class="supplier">
-        <tr><td class="hd" rowspan="5">공<br>급<br>자</td><td class="hd" style="width:70px">일련번호</td><td colspan="2">${dateFull} -${totalQty}</td></tr>
-        <tr><td class="hd">등록번호</td><td colspan="2">${COMPANY.bizNo}</td></tr>
-        <tr><td class="hd">상호</td><td>${COMPANY.name}</td><td class="hd" style="width:40px">성명</td></tr>
-        <tr><td class="hd">주소</td><td colspan="2">${COMPANY.address}</td></tr>
-        <tr><td class="hd">TEL</td><td colspan="2">${COMPANY.tel} · 대표 ${COMPANY.ceo}</td></tr>
+        <tr>
+          <td class="hd" rowspan="4">공<br>급<br>자</td>
+          <td class="hd" style="width:64px">일련번호</td><td>${dateFull} -${totalQty}</td>
+          <td class="hd" style="width:40px">TEL</td><td>${COMPANY.tel}</td>
+        </tr>
+        <tr>
+          <td class="hd">등록번호</td><td>${COMPANY.bizNo}</td>
+          <td class="hd">성명</td><td>${COMPANY.ceo}</td>
+        </tr>
+        <tr><td class="hd">상호</td><td colspan="3">${COMPANY.name}</td></tr>
+        <tr><td class="hd">주소</td><td colspan="3">${COMPANY.address}</td></tr>
       </table>
     </div>
     <div class="amount"><span>금 액 : ${numToKorean(grandTotal)}원 정</span><span>(₩${won(grandTotal)})</span></div>
