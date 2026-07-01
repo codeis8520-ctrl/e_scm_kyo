@@ -1747,9 +1747,11 @@ function POSPageInner() {
       <div className="lg:h-[calc(100vh-7rem)] lg:flex lg:flex-col gap-3">
       {/* #83 헤더(기본정보·수령·고객) 최대높이 캡 + 자체 스크롤 — 택배 배송정보 펼쳐도 본문(장바구니)이 짜부라지지 않게 */}
       <div className="space-y-3 lg:flex-shrink-0 lg:max-h-[56%] lg:overflow-y-auto lg:pr-1">
-      <div className="card p-3 flex flex-wrap items-end gap-3">
+      {/* #98 기본정보 통합 카드: 판매일자·매출처·담당자·출고처·수령현황·수령일자. 배송방식은 수령현황과 중복이라 제거. */}
+      <div className="card p-3 space-y-2">
+        <div className="flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1">
-          <label className="text-[11px] font-semibold text-slate-500 uppercase">일자</label>
+          <label className="text-[11px] font-semibold text-slate-500 uppercase">판매일자</label>
           <input
             type="date"
             value={saleDate}
@@ -1757,7 +1759,7 @@ function POSPageInner() {
             className="input text-sm py-1.5 w-40"
           />
         </div>
-        <div className="flex flex-col gap-1 flex-1 min-w-[220px] relative">
+        <div className="flex flex-col gap-1 w-60 min-w-[200px] relative">
           <label className="text-[11px] font-semibold text-slate-500 uppercase">매출처</label>
           {selectedBranchData ? (
             <div className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-sm ${
@@ -1829,109 +1831,70 @@ function POSPageInner() {
             </div>
           )}
         </div>
-      </div>
-
-      {/* ── 기본정보: 수령현황·수령일자·배송방식·출고처·담당자(#83 상단 이동) + 배송정보. 장바구니에서 분리해 일자·매출처 근처 배치 ── */}
-      <div className="card p-3 space-y-3">
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 items-end">
-          {/* 수령 현황 */}
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">수령 현황</label>
-            <select
-              value={receiptStatus}
-              onChange={e => {
-                const newStatus = e.target.value as ReceiptStatus;
-                setReceiptStatus(newStatus);
-                const newDType: ItemDeliveryType =
-                  newStatus === 'QUICK_PLANNED' ? 'QUICK'
-                  : newStatus === 'PARCEL_PLANNED' ? 'PARCEL'
-                  : 'PICKUP';
-                setCart(prev => prev.map(it => it.deliveryType === newDType ? it : { ...it, deliveryType: newDType }));
-                const newShipType: DeliveryType =
-                  newDType === 'PARCEL' ? 'PARCEL' : newDType === 'QUICK' ? 'QUICK' : 'NONE';
-                setShipping(prev => prev.type === newShipType ? prev : { ...prev, type: newShipType });
-              }}
-              className="input text-sm py-1.5 w-full"
-            >
-              {(['RECEIVED', 'PICKUP_PLANNED', 'QUICK_PLANNED', 'PARCEL_PLANNED'] as ReceiptStatus[]).map(s => (
-                <option key={s} value={s}>{RECEIPT_STATUS_LABEL[s]}</option>
-              ))}
-            </select>
-          </div>
-          {/* 수령(예정) 일자 */}
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">수령(예정) 일자</label>
-            <input type="date" value={receiptDate} onChange={e => setReceiptDate(e.target.value)} className="input text-sm py-1.5 w-full" />
-          </div>
-          {/* 배송 방식 */}
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">배송 방식</label>
-            <div className="flex rounded-md border border-slate-200 overflow-hidden text-xs">
-              {([
-                { v: 'NONE' as DeliveryType, label: '🏠 현장' },
-                { v: 'PARCEL' as DeliveryType, label: '📦 택배' },
-                { v: 'QUICK' as DeliveryType, label: '🛵 퀵' },
-              ]).map(opt => (
-                <button
-                  key={opt.v}
-                  type="button"
-                  onClick={() => {
-                    setShipping(prev => ({ ...prev, type: opt.v }));
-                    const newDType: ItemDeliveryType =
-                      opt.v === 'PARCEL' ? 'PARCEL' : opt.v === 'QUICK' ? 'QUICK' : 'PICKUP';
-                    setCart(prev => prev.map(it => it.deliveryType === newDType ? it : { ...it, deliveryType: newDType }));
-                    setReceiptStatus(
-                      opt.v === 'PARCEL' ? 'PARCEL_PLANNED'
-                      : opt.v === 'QUICK' ? 'QUICK_PLANNED'
-                      : 'RECEIVED'
-                    );
-                  }}
-                  className={`flex-1 py-1.5 font-medium transition-colors ${shipping.type === opt.v
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white text-slate-500 hover:bg-slate-50'}`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          {/* 출고처 (재고 차감 기준) — 현장/배송 공통 단일 선택 */}
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">출고처 <span className="normal-case font-normal text-slate-400">(재고 차감)</span></label>
-            <select
-              value={shipFromBranchId}
-              onChange={e => setShipFromBranchId(e.target.value)}
-              className="input text-sm py-1.5 w-full"
-              title="재고가 차감되는 지점/창고. 매출처와 다를 수 있습니다(A점 구매·B점 출고)."
-            >
-              {/* #96 출고처 = 창고만(is_warehouse). 온라인 채널(자사몰 등)은 출고처로 선택 불가. */}
-              {branches.filter((b: any) => b.is_warehouse !== false).map((b: any) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}{b.id === selectedBranch ? ' (매출처)' : ''}{b.is_headquarters ? ' · 본사' : ''}
-                </option>
-              ))}
-            </select>
-          </div>
-          {/* 담당자 */}
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">담당자</label>
-            <select value={handlerId} onChange={e => setHandlerId(e.target.value)} className="input text-sm py-1.5 w-full">
-              {!orderedStaff.some(s => s.id === handlerId) && handlerId && (
-                <option value={handlerId}>{initialUserName || '현재 로그인'}</option>
-              )}
-              {orderedStaff.map(u => (
-                <option key={u.id} value={u.id}>
-                  {u.name}{u.branch_id === selectedBranch ? '' : ' (타 지점)'}
-                </option>
-              ))}
-            </select>
-          </div>
+        {/* 담당자 (#98 기본정보로 이동 — 수령정보가 아니라 전표 기본정보) */}
+        <div className="flex flex-col gap-1 min-w-[150px]">
+          <label className="text-[11px] font-semibold text-slate-500 uppercase">담당자</label>
+          <select value={handlerId} onChange={e => setHandlerId(e.target.value)} className="input text-sm py-1.5 w-full">
+            {!orderedStaff.some(s => s.id === handlerId) && handlerId && (
+              <option value={handlerId}>{initialUserName || '현재 로그인'}</option>
+            )}
+            {orderedStaff.map(u => (
+              <option key={u.id} value={u.id}>
+                {u.name}{u.branch_id === selectedBranch ? '' : ' (타 지점)'}
+              </option>
+            ))}
+          </select>
         </div>
-
+        {/* 출고처 (재고 차감 기준) */}
+        <div className="flex flex-col gap-1 min-w-[160px]">
+          <label className="text-[11px] font-semibold text-slate-500 uppercase">출고처 <span className="normal-case font-normal text-slate-400">(재고 차감)</span></label>
+          <select
+            value={shipFromBranchId}
+            onChange={e => setShipFromBranchId(e.target.value)}
+            className="input text-sm py-1.5 w-full"
+            title="재고가 차감되는 지점/창고. 매출처와 다를 수 있습니다(A점 구매·B점 출고)."
+          >
+            {/* #96 출고처 = 창고만(is_warehouse). 온라인 채널(자사몰 등)은 출고처로 선택 불가. */}
+            {branches.filter((b: any) => b.is_warehouse !== false).map((b: any) => (
+              <option key={b.id} value={b.id}>
+                {b.name}{b.id === selectedBranch ? ' (매출처)' : ''}{b.is_headquarters ? ' · 본사' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+        {/* 수령 현황 — 방문/택배/퀵 여부는 이 항목 하나로만 관리(#98, 배송방식 제거) */}
+        <div className="flex flex-col gap-1 min-w-[130px]">
+          <label className="text-[11px] font-semibold text-slate-500 uppercase">수령 현황</label>
+          <select
+            value={receiptStatus}
+            onChange={e => {
+              const newStatus = e.target.value as ReceiptStatus;
+              setReceiptStatus(newStatus);
+              const newDType: ItemDeliveryType =
+                newStatus === 'QUICK_PLANNED' ? 'QUICK'
+                : newStatus === 'PARCEL_PLANNED' ? 'PARCEL'
+                : 'PICKUP';
+              setCart(prev => prev.map(it => it.deliveryType === newDType ? it : { ...it, deliveryType: newDType }));
+              const newShipType: DeliveryType =
+                newDType === 'PARCEL' ? 'PARCEL' : newDType === 'QUICK' ? 'QUICK' : 'NONE';
+              setShipping(prev => prev.type === newShipType ? prev : { ...prev, type: newShipType });
+            }}
+            className="input text-sm py-1.5 w-full"
+          >
+            {(['RECEIVED', 'PICKUP_PLANNED', 'QUICK_PLANNED', 'PARCEL_PLANNED'] as ReceiptStatus[]).map(s => (
+              <option key={s} value={s}>{RECEIPT_STATUS_LABEL[s]}</option>
+            ))}
+          </select>
+        </div>
+        {/* 수령(예정) 일자 */}
+        <div className="flex flex-col gap-1">
+          <label className="text-[11px] font-semibold text-slate-500 uppercase">수령(예정) 일자</label>
+          <input type="date" value={receiptDate} onChange={e => setReceiptDate(e.target.value)} className="input text-sm py-1.5 w-40" />
+        </div>
+        </div>
         {shipFromBranchId && shipFromBranchId !== selectedBranch && (
           <p className="text-[11px] text-amber-600">⚠ 출고처가 매출처와 다릅니다 — 재고는 {branches.find((b: any) => b.id === shipFromBranchId)?.name || '출고처'}에서 차감됩니다.</p>
         )}
-
       </div>
         {/* 2. 고객 정보(#78) — 판매정보 다음, 전체폭 상단. 검색·선택 + 이력/상담(고객 선택 시만 확장, 컴팩트). */}
         <div className="card p-3 flex flex-col gap-3 lg:flex-shrink-0 overflow-hidden">
