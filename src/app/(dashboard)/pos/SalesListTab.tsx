@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import ReceiptModal from './ReceiptModal';
+import StatementModal from './StatementModal';
 import RefundModal from './RefundModal';
 import { fmtDateKST, fmtTimeKST, fmtDateTimeKST, kstTodayString, kstDayStart, kstDayEnd } from '@/lib/date';
 import { cancelSalesOrder } from '@/lib/sales-cancel-actions';
@@ -1993,6 +1994,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
   const [shipment, setShipment] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
+  const [showStatement, setShowStatement] = useState(false);   // #99 거래명세서 출력
   const [markingReceipt, setMarkingReceipt] = useState(false);
   // 미수금 수금 처리 (#39)
   const [showSettleForm, setShowSettleForm] = useState(false);
@@ -3645,6 +3647,12 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
               )}
               <button onClick={handleReprint}
                 className="flex-1 min-w-[120px] btn-secondary py-2 text-sm">영수증 재발행</button>
+              {/* #99 거래명세서 출력(PDF/인쇄) — 거래처 전달·출고 확인·증빙용 */}
+              <button onClick={() => setShowStatement(true)}
+                className="flex-1 min-w-[120px] py-2 text-sm rounded-md border border-slate-300 text-slate-700 hover:bg-slate-50"
+                title="거래명세서를 미리보고 인쇄하거나 PDF로 저장합니다">
+                📄 거래명세서
+              </button>
               <button
                 onClick={() => {
                   // 전표 복사 → POS 페이지로 이동 (copy_from 쿼리)
@@ -3703,6 +3711,23 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
               </div>
             )}
           </div>
+        )}
+
+        {/* #99 거래명세서 출력 모달 */}
+        {showStatement && order && (
+          <StatementModal
+            orderNumber={order.order_number}
+            orderedAt={order.ordered_at}
+            clientName={order.customer?.name || order.buyer_name || order.recipient_name || '고객'}
+            handlerName={order.handler?.name}
+            items={items.map((it: any) => ({
+              name: it.product?.name || it.item_text || '품목',
+              quantity: Number(it.quantity) || 0,
+              unit_price: Number(it.unit_price) || 0,
+              discount_amount: Number(it.discount_amount) || 0,
+            }))}
+            onClose={() => setShowStatement(false)}
+          />
         )}
       </div>
     </div>
