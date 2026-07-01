@@ -3456,15 +3456,30 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                       </tr>
                     </thead>
                     <tbody>
-                      {payments.map((p: any) => (
-                        <tr key={p.id} className="border-t border-slate-100">
-                          <td className="px-3 py-1.5">{PAY_LABEL[p.payment_method] || p.payment_method}</td>
-                          <td className="px-3 py-1.5 text-right font-medium">{Number(p.amount).toLocaleString()}원</td>
-                          <td className="px-3 py-1.5 text-slate-500">
-                            {p.approval_no || ''}{p.approval_no && p.card_info ? ' · ' : ''}{p.card_info || ''}
-                          </td>
-                        </tr>
-                      ))}
+                      {/* 방식별 순액 합산 표시 — 수정 조정(원결제+조정) 여러 행을 한 줄로. 최종 결제금액과 일치. */}
+                      {(() => {
+                        const byMethod = payments.reduce((acc: any, p: any) => {
+                          const m = p.payment_method;
+                          if (!acc[m]) { acc[m] = { method: m, amount: 0, approval_no: '', card_info: '', count: 0 }; }
+                          acc[m].amount += Number(p.amount || 0);
+                          acc[m].count += 1;
+                          if (!acc[m].approval_no && p.approval_no) acc[m].approval_no = p.approval_no;
+                          if (!acc[m].card_info && p.card_info) acc[m].card_info = p.card_info;
+                          return acc;
+                        }, {} as Record<string, any>);
+                        return Object.values(byMethod).map((p: any) => (
+                          <tr key={p.method} className="border-t border-slate-100">
+                            <td className="px-3 py-1.5">
+                              {PAY_LABEL[p.method] || p.method}
+                              {p.count > 1 && <span className="text-[10px] text-slate-400 ml-1">(원결제+조정 {p.count}건 합산)</span>}
+                            </td>
+                            <td className={`px-3 py-1.5 text-right font-medium ${p.amount < 0 ? 'text-red-600' : ''}`}>{Number(p.amount).toLocaleString()}원</td>
+                            <td className="px-3 py-1.5 text-slate-500">
+                              {p.approval_no || ''}{p.approval_no && p.card_info ? ' · ' : ''}{p.card_info || ''}
+                            </td>
+                          </tr>
+                        ));
+                      })()}
                     </tbody>
                   </table>
                   {remaining > 0 && (
