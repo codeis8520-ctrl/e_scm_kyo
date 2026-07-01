@@ -1761,75 +1761,30 @@ function POSPageInner() {
         </div>
         <div className="flex flex-col gap-1 w-60 min-w-[200px] relative">
           <label className="text-[11px] font-semibold text-slate-500 uppercase">매출처</label>
-          {selectedBranchData ? (
-            <div className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-sm ${
-              isBranchLocked ? 'bg-slate-100 border-slate-200 text-slate-600'
-                             : 'bg-blue-50 border-blue-200 text-blue-800'
-            }`}>
-              <span className="font-medium">{selectedBranchData.name}</span>
-              {selectedBranchData.code && (
-                <span className="text-[10px] text-slate-400 font-mono">[{selectedBranchData.code}]</span>
-              )}
-              {isDeptStore && <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 text-[10px]">백화점</span>}
-              {!isBranchLocked && (
-                <button
-                  type="button"
-                  onClick={() => { setSelectedBranch(''); setBranchSearch(''); setShowBranchDropdown(true); }}
-                  className="ml-auto text-slate-400 hover:text-slate-600 text-xs"
-                >변경</button>
-              )}
-            </div>
-          ) : (
-            <input
-              ref={branchInputRef}
-              type="text"
-              value={branchSearch}
-              onChange={e => { setBranchSearch(e.target.value); setShowBranchDropdown(true); }}
-              onFocus={() => setShowBranchDropdown(true)}
-              onBlur={() => setTimeout(() => setShowBranchDropdown(false), 200)}
-              placeholder="매출처 검색 (지점명 / 코드)"
-              className="input text-sm py-1.5"
-            />
-          )}
-          {showBranchDropdown && !selectedBranchData && branchDropdownPos && (
-            <div
-              className="fixed z-[60] bg-white border border-slate-200 rounded-lg shadow-xl max-h-64 overflow-auto"
-              style={{ top: branchDropdownPos.top, left: branchDropdownPos.left, width: branchDropdownPos.width }}
-            >
-              {filteredBranches.length === 0 && (
-                <div className="p-3 text-center text-xs text-slate-400">결과 없음</div>
-              )}
-              {filteredBranches.map((b: any) => (
-                <button
-                  key={b.id}
-                  onMouseDown={() => {
-                    setSelectedBranch(b.id);
-                    setBranchSearch('');
-                    setShowBranchDropdown(false);
-                    setShipFromBranchId(b.id);
-                  }}
-                  className="w-full text-left px-3 py-2 hover:bg-blue-50 border-b border-slate-100 last:border-b-0"
-                >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-slate-800">{b.name}</p>
-                      {b.code && <p className="text-[10px] text-slate-400 font-mono">{b.code}</p>}
-                    </div>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                      b.channel === 'DEPT_STORE' ? 'bg-purple-100 text-purple-700'
-                      : b.is_headquarters ? 'bg-indigo-100 text-indigo-700'
-                      : 'bg-slate-100 text-slate-600'
-                    }`}>
-                      {b.channel === 'DEPT_STORE' ? '백화점'
-                        : b.is_headquarters ? '본사'
-                        : b.channel === 'ONLINE' ? '온라인'
-                        : '한약국'}
-                    </span>
-                  </div>
-                </button>
+          {/* #98 매출처 드롭다운(가나다순). 활성 지점 ~10개라 검색 콤보 대신 단순 선택. */}
+          <select
+            value={selectedBranch}
+            onChange={e => {
+              const id = e.target.value;
+              setSelectedBranch(id);
+              // 출고처 기본값 동기화 — 창고면 자기 자신, 아니면(온라인 등) 본사.
+              const b = branches.find((x: any) => x.id === id);
+              if (b && b.is_warehouse !== false) setShipFromBranchId(id);
+              else { const hq = branches.find((x: any) => x.is_headquarters); if (hq) setShipFromBranchId(hq.id); }
+            }}
+            disabled={isBranchLocked}
+            className="input text-sm py-1.5 w-full disabled:bg-slate-100 disabled:text-slate-500"
+            title={isBranchLocked ? '지점 고정 사용자입니다.' : '매출처(판매 발생 채널)'}
+          >
+            {!selectedBranch && <option value="">매출처 선택</option>}
+            {[...branches]
+              .sort((a: any, b: any) => String(a.name).localeCompare(String(b.name), 'ko'))
+              .map((b: any) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}{b.code ? ` [${b.code}]` : ''}{b.channel === 'DEPT_STORE' ? ' · 백화점' : b.is_headquarters ? ' · 본사' : b.channel === 'ONLINE' ? ' · 온라인' : ''}
+                </option>
               ))}
-            </div>
-          )}
+          </select>
         </div>
         {/* 담당자 (#98 기본정보로 이동 — 수령정보가 아니라 전표 기본정보) */}
         <div className="flex flex-col gap-1 min-w-[150px]">
@@ -1854,12 +1809,15 @@ function POSPageInner() {
             className="input text-sm py-1.5 w-full"
             title="재고가 차감되는 지점/창고. 매출처와 다를 수 있습니다(A점 구매·B점 출고)."
           >
-            {/* #96 출고처 = 창고만(is_warehouse). 온라인 채널(자사몰 등)은 출고처로 선택 불가. */}
-            {branches.filter((b: any) => b.is_warehouse !== false).map((b: any) => (
-              <option key={b.id} value={b.id}>
-                {b.name}{b.id === selectedBranch ? ' (매출처)' : ''}{b.is_headquarters ? ' · 본사' : ''}
-              </option>
-            ))}
+            {/* #96 출고처 = 창고만(is_warehouse). 온라인 채널 제외. #98 매출처와 동일 기준(가나다순). */}
+            {branches
+              .filter((b: any) => b.is_warehouse !== false)
+              .sort((a: any, b: any) => String(a.name).localeCompare(String(b.name), 'ko'))
+              .map((b: any) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}{b.id === selectedBranch ? ' (매출처)' : ''}{b.is_headquarters ? ' · 본사' : ''}
+                </option>
+              ))}
           </select>
         </div>
         {/* 수령 현황 — 방문/택배/퀵 여부는 이 항목 하나로만 관리(#98, 배송방식 제거) */}
