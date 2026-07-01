@@ -95,6 +95,13 @@ export default function ProductsPage() {
   const [showImportModal, setShowImportModal] = useState(false);
   const [editProduct, setEditProduct] = useState<Product | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  // 이미지뷰 모달 ESC 닫기
+  useEffect(() => {
+    if (!previewUrl) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPreviewUrl(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [previewUrl]);
   // 일괄 선택 (체크박스)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
