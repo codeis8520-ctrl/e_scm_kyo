@@ -1255,11 +1255,15 @@ function POSPageInner() {
   const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const subtotal = total - itemDiscountTotal;
   const discountRaw = parseInt(discountInput.replace(/,/g, '')) || 0;
-  const discountAmount = discountType === 'percent'
+  // #105 음수 장바구니(환불/반품)는 할인 미적용 + 음수 그대로 반영(clamp 금지).
+  //   기존 Math.min(discountRaw, subtotal)이 음수 subtotal에서 음수 할인을 만들어
+  //   결제/매출이 0으로 상쇄되던 버그. subtotal<0이면 discount=0, finalAmount=음수.
+  const isRefundCart = subtotal < 0;
+  const discountAmount = isRefundCart ? 0 : (discountType === 'percent'
     ? Math.round(subtotal * Math.min(discountRaw, 100) / 100)
-    : Math.min(discountRaw, subtotal);
-  const afterDiscount = Math.max(0, subtotal - discountAmount);
-  const finalAmount = usePoints && selectedCustomer
+    : Math.min(discountRaw, subtotal));
+  const afterDiscount = subtotal - discountAmount;   // 음수(환불) 허용
+  const finalAmount = (usePoints && selectedCustomer && afterDiscount > 0)
     ? Math.max(0, afterDiscount - pointsToUse)
     : afterDiscount;
   const cashReceivedNum = parseInt(cashReceived.replace(/,/g, '')) || 0;

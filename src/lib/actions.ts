@@ -2838,10 +2838,12 @@ export async function processPosCheckout(payload: CheckoutPayload) {
 
   const {
     branchId, branchCode, branchChannel, customerId, gradePointRate,
-    cart, totalAmount, discountAmount, finalAmount, paymentMethod,
+    cart, totalAmount, finalAmount, paymentMethod,
     usePoints, pointsToUse, userId, approvalNo, cardInfo,
     paymentSplits, shipping, shipFromBranchId,
   } = payload;
+  // #105 방어: 할인은 음수 불가(환불 장바구니의 음수 할인이 결제/매출을 0으로 상쇄하던 버그 차단).
+  const discountAmount = Math.max(0, Number(payload.discountAmount) || 0);
 
   // 재고 차감/출고 지점: 택배 출고처가 판매 지점과 다르면 출고처에서 차감.
   const stockBranchId = (shipping && shipFromBranchId) ? shipFromBranchId : branchId;
