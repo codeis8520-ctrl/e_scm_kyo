@@ -34,7 +34,9 @@ function isMissingColumnError(err: any): boolean {
 }
 
 // ── 공통 가드: 주문 조회 + 수정 가능 여부 검증 ──
-async function loadEditableOrder(db: any, orderId: string) {
+//   #101 opts.allowReceived: 품목 수정(수량·단가·추가·삭제·옵션)은 수령완료 전표도 허용
+//   (재고·금액 재계산이 함께 따라감). 배송전환(convert)은 기본값(수령완료 차단) 유지.
+async function loadEditableOrder(db: any, orderId: string, opts?: { allowReceived?: boolean }) {
   const { data: order, error } = await db
     .from('sales_orders')
     .select(`
@@ -46,11 +48,15 @@ async function loadEditableOrder(db: any, orderId: string) {
     .single();
 
   if (error || !order) return { error: '주문을 찾을 수 없습니다.' as string };
+  // 취소/환불 전표는 별도 흐름 → 수정 차단(품목 수정도 동일).
+  if (['CANCELLED', 'REFUNDED', 'PARTIALLY_REFUNDED'].includes(order.status)) {
+    return { error: '취소/환불된 전표는 수정할 수 없습니다.' as string };
+  }
   if (order.status !== 'COMPLETED') {
     return { error: '완료 상태의 전표만 수정할 수 있습니다.' as string };
   }
-  // null/미적용도 RECEIVED로 간주 → 수정 불가
-  if (!order.receipt_status || order.receipt_status === 'RECEIVED') {
+  // 수령완료(RECEIVED)·null: 품목 수정은 허용(allowReceived), 배송전환 등은 차단.
+  if (!opts?.allowReceived && (!order.receipt_status || order.receipt_status === 'RECEIVED')) {
     return { error: '수령 완료된 전표는 수정할 수 없습니다.' as string };
   }
   return { order };
@@ -374,13 +380,14 @@ export async function addSalesOrderItem(params: {
   try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
 
   if (!params.productId) return { error: '제품을 선택해주세요.' };
-  if (!Number.isFinite(params.quantity) || params.quantity <= 0) return { error: '수량을 올바르게 입력해주세요.' };
+  // #101 음수 수량 허용(반품/환불 마이너스 품목) — 0만 차단.
+  if (!Number.isFinite(params.quantity) || Math.trunc(params.quantity) === 0) return { error: '수량은 0이 아닌 정수여야 합니다. (음수=반품/환불)' };
   if (!Number.isFinite(params.unitPrice) || params.unitPrice < 0) return { error: '단가를 올바르게 입력해주세요.' };
 
   const supabase = await createClient();
   const db = supabase as any;
 
-  const guard = await loadEditableOrder(db, params.orderId);
+  const guard = await loadEditableOrder(db, params.orderId, { allowReceived: true });
   if ('error' in guard) return { error: guard.error };
   const order = guard.order;
 
@@ -397,7 +404,7 @@ export async function addSalesOrderItem(params: {
 
   const stockBranchId = await resolveStockBranchId(db, order);
 
-  const qty = Math.floor(params.quantity);
+  const qty = Math.trunc(params.quantity);   // #101 음수 허용
   const discount = Number(params.discount || 0);
   const dtype = params.deliveryType || 'PICKUP';
   const itemReceiptStatus = dtype === 'PARCEL' ? 'PARCEL_PLANNED'
@@ -424,16 +431,16 @@ export async function addSalesOrderItem(params: {
   }
   if (insErr) return { error: '품목 추가에 실패했습니다.' };
 
-  // 2) 재고 차감
+  // 2) 재고 반영 — #101 음수 품목(반품)은 IN(복원), 양수는 OUT(차감). quantity는 절대값.
   try {
     await applyStockForItem(
       db, stockBranchId, meta, params.productId,
-      meta.name, qty, 'OUT',
+      meta.name, Math.abs(qty), qty >= 0 ? 'OUT' : 'IN',
       'SALE_REVISE_ADD', 'PHANTOM_DECOMPOSE', order.id,
       `전표 수정 품목 추가 (${order.order_number})`,
     );
   } catch (e: any) {
-    console.error('[addSalesOrderItem] stock decrement failed:', e?.message);
+    console.error('[addSalesOrderItem] stock adjust failed:', e?.message);
   }
 
   // 3) 재계산 + 결제/분개 차액
@@ -730,7 +737,8 @@ export async function removeSalesOrderItem(params: {
   const supabase = await createClient();
   const db = supabase as any;
 
-  const guard = await loadEditableOrder(db, params.orderId);
+  // #101 품목 삭제도 수령완료 전표 허용(재고 복원 동반).
+  const guard = await loadEditableOrder(db, params.orderId, { allowReceived: true });
   if ('error' in guard) return { error: guard.error };
   const order = guard.order;
 
@@ -815,21 +823,19 @@ export async function updateSalesOrderItem(params: {
   const supabase = await createClient();
   const db = supabase as any;
 
-  const guard = await loadEditableOrder(db, params.orderId);
+  // #101 품목 수정은 수령완료 전표도 허용(재고·금액 재계산 동반).
+  const guard = await loadEditableOrder(db, params.orderId, { allowReceived: true });
   if ('error' in guard) return { error: guard.error };
   const order = guard.order;
 
   const items = (order.order_items || []) as any[];
   const target = items.find(it => it.id === params.itemId);
   if (!target) return { error: '해당 품목을 찾을 수 없습니다.' };
-  if (target.receipt_status === 'RECEIVED') {
-    return { error: '이미 수령된 품목은 수정할 수 없습니다.' };
-  }
 
   const oldQty = Number(target.quantity);
   const oldUnit = Number(target.unit_price);
   const oldDiscount = Number(target.discount_amount || 0);
-  const newQty = params.quantity !== undefined ? Math.floor(params.quantity) : oldQty;
+  const newQty = params.quantity !== undefined ? Math.trunc(params.quantity) : oldQty;
   const newUnit = params.unitPrice !== undefined ? Number(params.unitPrice) : oldUnit;
   const newDiscount = params.discount !== undefined ? Number(params.discount) : oldDiscount;
   // #75 주문 옵션
@@ -838,7 +844,8 @@ export async function updateSalesOrderItem(params: {
     ? (((params.orderOption ?? '').toString().trim()) || null)
     : oldOption;
 
-  if (!Number.isFinite(newQty) || newQty <= 0) return { error: '수량을 올바르게 입력해주세요.' };
+  // #101 음수 수량 허용(반품/정정) — 0만 차단. 재고·금액이 부호대로 재반영.
+  if (!Number.isFinite(newQty) || newQty === 0) return { error: '수량은 0이 아닌 정수여야 합니다. (음수=반품/정정)' };
   if (!Number.isFinite(newUnit) || newUnit < 0) return { error: '단가를 올바르게 입력해주세요.' };
   if (!Number.isFinite(newDiscount) || newDiscount < 0) return { error: '할인 금액을 올바르게 입력해주세요.' };
 

@@ -2541,8 +2541,9 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
     ?? (order?.ship_from_branch_id ? branchNameById.get(order.ship_from_branch_id) : undefined)
     ?? order?.branch?.name ?? '-';
 
-  // 수령 전 전표만 품목 추가/삭제 가능 (status=COMPLETED + receipt_status 존재 + ≠RECEIVED)
-  const editable = order?.status === 'COMPLETED' && !!order?.receipt_status && order.receipt_status !== 'RECEIVED';
+  // #101 품목 수정/추가/삭제 — 완료 전표면 수령완료 여부 무관 허용(재고·금액 재계산 동반).
+  //   취소/환불 전표만 제외. (수정이 불가능해 우회입력 하는 게 더 큰 문제라는 정책.)
+  const editable = order?.status === 'COMPLETED';
   // 전표 상세 직접 수정 가능 여부 (취소·환불 전표 제외)
   const detailEditable = !!order && !['CANCELLED', 'REFUNDED', 'PARTIALLY_REFUNDED'].includes(order.status);
 
@@ -2655,10 +2656,10 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
 
   const handleAddItem = async () => {
     if (revising || !order) return;
-    const qty = Number(addQty);
+    const qty = Number(addQty);   // #101 음수 허용(반품/환불 마이너스 품목)
     const price = Number(addPrice);
     if (!addProductId) { alert('제품을 선택해주세요.'); return; }
-    if (!Number.isFinite(qty) || qty <= 0) { alert('수량을 올바르게 입력해주세요.'); return; }
+    if (!Number.isFinite(qty) || Math.trunc(qty) === 0) { alert('수량은 0이 아닌 정수여야 합니다. (음수=반품/환불)'); return; }
     if (!Number.isFinite(price) || price < 0) { alert('단가를 올바르게 입력해주세요.'); return; }
     setRevising(true);
     try {
@@ -2715,7 +2716,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
     if (revising || !order) return;
     const qty = Number(editItemQty);
     const price = Number(editItemPrice);
-    if (!Number.isInteger(qty) || qty <= 0) { alert('수량은 1개 이상의 정수여야 합니다.'); return; }
+    if (!Number.isInteger(qty) || qty === 0) { alert('수량은 0이 아닌 정수여야 합니다. (음수=반품/정정)'); return; }
     if (!Number.isFinite(price) || price < 0) { alert('단가를 올바르게 입력해주세요.'); return; }
     setRevising(true);
     try {
@@ -3282,10 +3283,11 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                           <td className="px-3 py-1.5 text-right">
                             {editingItemId === it.id ? (
                               <input
-                                type="number" min="1" step="1"
+                                type="number" step="1"
                                 value={editItemQty}
                                 onChange={e => setEditItemQty(e.target.value)}
-                                className="input w-16 text-right py-0.5 text-xs"
+                                title="음수 입력 시 반품/정정(재고 복원·매출 차감)"
+                                className={`input w-16 text-right py-0.5 text-xs ${Number(editItemQty) < 0 ? 'text-red-600' : ''}`}
                               />
                             ) : it.quantity}
                           </td>
@@ -3301,7 +3303,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                           </td>
                           <td className="px-3 py-1.5 text-right font-medium">
                             {editingItemId === it.id
-                              ? (Math.max(0, Number(editItemPrice || 0) * Number(editItemQty || 0))).toLocaleString()
+                              ? (Number(editItemPrice || 0) * Number(editItemQty || 0)).toLocaleString()
                               : Number(it.total_price).toLocaleString()}
                           </td>
                         </tr>
@@ -3349,9 +3351,9 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                       </select>
                       <div className="grid grid-cols-3 gap-2">
                         <div>
-                          <label className="text-[10px] text-slate-500">수량</label>
-                          <input type="number" min={1} value={addQty} onChange={e => setAddQty(e.target.value)}
-                            className="w-full text-sm border border-slate-300 rounded px-2 py-1" />
+                          <label className="text-[10px] text-slate-500">수량 <span className="text-slate-400">(음수=반품)</span></label>
+                          <input type="number" value={addQty} onChange={e => setAddQty(e.target.value)}
+                            className={`w-full text-sm border border-slate-300 rounded px-2 py-1 ${Number(addQty) < 0 ? 'text-red-600' : ''}`} />
                         </div>
                         <div>
                           <label className="text-[10px] text-slate-500">단가</label>
