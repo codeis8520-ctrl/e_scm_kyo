@@ -2,11 +2,12 @@
 
 // 거래명세서 출력(#99) — 판매전표를 정식 명세서 문서로 미리보기 + 인쇄/PDF(브라우저 저장).
 //   부가세 포함가 기준: 공급가액=합계/1.1(반올림), 부가세=합계−공급가액. VAT 규약(CLAUDE.md).
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useEscClose } from '@/hooks/useEscClose';
+import { createClient } from '@/lib/supabase/client';
 
-// 공급자(경옥채) 법인 정보 — 별도 저장처가 없어 상수 관리(변경 시 여기 수정).
-const COMPANY = {
+// 공급자 기본값(지점에 정보가 없을 때 폴백). 실제 값은 판매 담당자 소속 지점(#99)에서 채움.
+const COMPANY_DEFAULT = {
   brand: '경옥채',
   name: '주식회사 더경옥',
   bizNo: '380-87-00872',
@@ -14,6 +15,7 @@ const COMPANY = {
   tel: '02-3013-1075',
   address: '서울시 강남구 청담동 11-1, 1층 경옥채한약국',
 };
+type Company = typeof COMPANY_DEFAULT;
 
 interface StmtItem {
   name: string;
@@ -27,6 +29,7 @@ interface Props {
   clientName: string;        // 거래처/고객명
   handlerName?: string;
   items: StmtItem[];
+  supplierBranchId?: string; // #99 공급자 = 이 지점(판매 담당자 소속) 정보로 채움
   onClose: () => void;
 }
 
@@ -59,7 +62,7 @@ function numToKorean(n: number): string {
   return out;
 }
 
-function buildStatementHtml(p: Props): { html: string; grandTotal: number } {
+function buildStatementHtml(p: Props, COMPANY: Company): { html: string; grandTotal: number } {
   const dt = new Date(p.orderedAt);
   const y = dt.getFullYear(), m = String(dt.getMonth() + 1).padStart(2, '0'), d = String(dt.getDate()).padStart(2, '0');
   const dateFull = `${y}/${m}/${d}`;
@@ -160,10 +163,34 @@ function buildStatementHtml(p: Props): { html: string; grandTotal: number } {
 }
 
 export default function StatementModal(props: Props) {
-  const { onClose } = props;
+  const { onClose, supplierBranchId } = props;
   const iframeRef = useRef<HTMLIFrameElement>(null);
   useEscClose(onClose);
-  const { html } = useMemo(() => buildStatementHtml(props), [props]);
+
+  // #99 공급자 정보 = 판매 담당자 소속 지점(supplierBranchId)에서 조회, 빈 값은 기본값 폴백.
+  const [company, setCompany] = useState<Company>(COMPANY_DEFAULT);
+  useEffect(() => {
+    if (!supplierBranchId) return;
+    (async () => {
+      try {
+        const sb = createClient() as any;
+        const { data } = await sb.from('branches')
+          .select('name, company_name, business_number, ceo_name, address, phone')
+          .eq('id', supplierBranchId).maybeSingle();
+        if (!data) return;
+        setCompany({
+          brand: data.name || COMPANY_DEFAULT.brand,
+          name: data.company_name || COMPANY_DEFAULT.name,
+          bizNo: data.business_number || COMPANY_DEFAULT.bizNo,
+          ceo: data.ceo_name || COMPANY_DEFAULT.ceo,
+          tel: data.phone || COMPANY_DEFAULT.tel,
+          address: data.address || COMPANY_DEFAULT.address,
+        });
+      } catch { /* 폴백 유지 */ }
+    })();
+  }, [supplierBranchId]);
+
+  const { html } = useMemo(() => buildStatementHtml(props, company), [props, company]);
 
   const doPrint = () => {
     const w = iframeRef.current?.contentWindow;

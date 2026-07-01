@@ -1867,6 +1867,10 @@ export async function createBranch(formData: FormData) {
     sender_zipcode: (formData.get('sender_zipcode') as string) || null,
     sender_address: (formData.get('sender_address') as string) || null,
     sender_address_detail: (formData.get('sender_address_detail') as string) || null,
+    // 마이그 113 — 공급자(거래명세서) 정보
+    business_number: (formData.get('business_number') as string) || null,
+    company_name: (formData.get('company_name') as string) || null,
+    ceo_name: (formData.get('ceo_name') as string) || null,
   };
 
   // 채널 행이 누락된 환경에서 FK 위반이 나는 경우 자동 복구
@@ -1879,11 +1883,12 @@ export async function createBranch(formData: FormData) {
   // @ts-ignore
   let { data: newBranch, error } = await supabase.from('branches').insert(branchData).select().single() as any;
 
-  // 마이그 063 미적용 환경 폴백 — sender_* 컬럼 제거 후 재시도
-  if (error && /sender_/i.test(String(error.message))) {
+  // 마이그 063/113 미적용 환경 폴백 — sender_*·공급자 컬럼 제거 후 재시도
+  if (error && /sender_|business_number|company_name|ceo_name/i.test(String(error.message))) {
     delete branchData.sender_name; delete branchData.sender_phone;
     delete branchData.sender_zipcode; delete branchData.sender_address;
     delete branchData.sender_address_detail;
+    delete branchData.business_number; delete branchData.company_name; delete branchData.ceo_name;
     // @ts-ignore
     const retry = await supabase.from('branches').insert(branchData).select().single() as any;
     newBranch = retry.data; error = retry.error;
@@ -1939,6 +1944,10 @@ export async function updateBranch(id: string, formData: FormData) {
     sender_zipcode: (formData.get('sender_zipcode') as string) || null,
     sender_address: (formData.get('sender_address') as string) || null,
     sender_address_detail: (formData.get('sender_address_detail') as string) || null,
+    // 마이그 113 — 공급자(거래명세서) 정보
+    business_number: (formData.get('business_number') as string) || null,
+    company_name: (formData.get('company_name') as string) || null,
+    ceo_name: (formData.get('ceo_name') as string) || null,
   };
 
   // createBranch와 동일하게 채널 시드 폴백
@@ -1951,11 +1960,12 @@ export async function updateBranch(id: string, formData: FormData) {
   // @ts-ignore
   let { error } = await supabase.from('branches').update(branchData).eq('id', id);
 
-  // 마이그 063 미적용 환경 폴백
-  if (error && /sender_/i.test(String(error.message))) {
+  // 마이그 063/113 미적용 환경 폴백
+  if (error && /sender_|business_number|company_name|ceo_name/i.test(String(error.message))) {
     delete branchData.sender_name; delete branchData.sender_phone;
     delete branchData.sender_zipcode; delete branchData.sender_address;
     delete branchData.sender_address_detail;
+    delete branchData.business_number; delete branchData.company_name; delete branchData.ceo_name;
     // @ts-ignore
     const retry = await supabase.from('branches').update(branchData).eq('id', id);
     error = retry.error;

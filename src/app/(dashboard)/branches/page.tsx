@@ -314,6 +314,10 @@ function BranchModal({ branch, onClose, onSuccess }: { branch: Branch | null; on
     address: branch?.address || '',
     phone: branch?.phone || '',
     is_active: branch?.is_active ?? true,
+    // #99 공급자(거래명세서) 정보
+    company_name: (branch as any)?.company_name || '',
+    business_number: (branch as any)?.business_number || '',
+    ceo_name: (branch as any)?.ceo_name || '',
   });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -426,6 +430,32 @@ function BranchModal({ branch, onClose, onSuccess }: { branch: Branch | null; on
               onChange={(e) => setFormData({ ...formData, address: e.target.value })}
               className="mt-1 input"
             />
+          </div>
+
+          {/* #99 공급자(거래명세서) 정보 — 이 지점 소속 사용자의 판매 명세서 공급자로 사용 */}
+          <div className="pt-2 border-t border-slate-100">
+            <p className="text-xs font-semibold text-slate-500 mb-2">공급자 정보 <span className="font-normal text-slate-400">(거래명세서 출력용)</span></p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700">상호(법인명)</label>
+                <input type="text" value={formData.company_name}
+                  onChange={(e) => setFormData({ ...formData, company_name: e.target.value })}
+                  placeholder="예: 주식회사 더경옥" className="mt-1 input" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">대표자명</label>
+                <input type="text" value={formData.ceo_name}
+                  onChange={(e) => setFormData({ ...formData, ceo_name: e.target.value })}
+                  placeholder="예: 송근영" className="mt-1 input" />
+              </div>
+              <div className="col-span-2">
+                <label className="block text-sm font-medium text-gray-700">사업자등록번호</label>
+                <input type="text" value={formData.business_number}
+                  onChange={(e) => setFormData({ ...formData, business_number: e.target.value })}
+                  placeholder="예: 380-87-00872" className="mt-1 input" />
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1.5">연락처·주소는 위 항목을 사용합니다. 명세서 공급자는 판매 담당자의 소속 지점 정보로 채워집니다.</p>
           </div>
 
           {branch && (

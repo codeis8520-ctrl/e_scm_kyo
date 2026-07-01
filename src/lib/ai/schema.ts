@@ -2,7 +2,7 @@ export const DB_SCHEMA = `
 == 핵심 테이블 스키마 ==
 
 --- 지점·제품·재고 ---
-branches: id, name, code, channel(channels FK·기본 STORE/DEPT_STORE/ONLINE/EVENT, 코드관리에서 커스텀 채널 추가 가능), is_warehouse(마이그111·#96, 출고처/창고 가능 여부; 온라인 채널=false), address, phone, is_active, is_headquarters, sort_order(정렬값, 기본999·작을수록 앞), sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail
+branches: id, name, code, channel(channels FK·기본 STORE/DEPT_STORE/ONLINE/EVENT, 코드관리에서 커스텀 채널 추가 가능), is_warehouse(마이그111·#96, 출고처/창고 가능 여부; 온라인 채널=false), address, phone, is_active, is_headquarters, sort_order(정렬값, 기본999·작을수록 앞), sender_name, sender_phone, sender_zipcode, sender_address, sender_address_detail, company_name·business_number·ceo_name(마이그113·#99 공급자 정보=거래명세서용, 지점관리서 편집)
   ※ **매출처 ↔ 출고처 분리(#96)**: 매출처=결제발생 채널(sales_orders.branch_id, 온라인 가능), 출고처=실물 재고차감 창고(ship_from_branch_id, **is_warehouse=true만**). 온라인 채널(자사몰·네이버스토어·신세계몰·롯데몰, channel='ONLINE', is_warehouse=false)은 창고 아님 → 출고처/재고현황/제품 재고행 생성/이동 셀렉터에서 제외. 자사몰(cafe24) 주문 재고차감은 **본사(is_headquarters)에서** OUT(deductOnlineOrderInventory, ship_from_branch_id=본사 자동세팅). 스마트스토어 임포트도 본사 출고. 즉 온라인 매출처엔 재고 안 쌓임.
   ※ channel 은 channels 테이블 FK(확장 가능). sales_orders.channel 도 마이그093에서 동일 channels FK 로 통일(이전 고정 CHECK 4값 제거) — 커스텀 채널 지점 판매 시 채널CHECK 위반 버그 해소.
   ※ sender_*: 택배 보내는분 정보 (대한통운 엑셀 임포트용). 미입력 시 sender_name←"경옥채 "+name, sender_phone←phone, sender_address←address 로 폴백.

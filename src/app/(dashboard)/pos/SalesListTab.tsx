@@ -3720,6 +3720,7 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
             orderedAt={order.ordered_at}
             clientName={order.customer?.name || order.buyer_name || order.recipient_name || '고객'}
             handlerName={order.handler?.name}
+            supplierBranchId={getCookie('user_branch_id') || order.branch_id}
             items={items.map((it: any) => ({
               name: it.product?.name || it.item_text || '품목',
               quantity: Number(it.quantity) || 0,
