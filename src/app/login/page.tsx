@@ -40,8 +40,8 @@ export default function LoginPage() {
       
       <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
         <div className="flex flex-col items-center mb-6">
-          <img src="/CI.jpg" alt="경옥채" className="h-24 w-24 object-contain" />
-          <p className="mt-2 text-sm font-medium tracking-wide text-slate-500">사내 통합시스템</p>
+          <img src="/CI.jpg" alt="경옥채" className="w-64 max-w-full h-auto object-contain" />
+          <p className="mt-1 text-sm font-medium tracking-wide text-slate-500">사내 통합시스템</p>
         </div>
         
         {error && (

@@ -202,8 +202,8 @@ export default function DashboardLayout({
       >
         <div className="flex flex-col h-full">
           <div className="p-4 border-b border-slate-700">
-            <div className="bg-white rounded-lg px-3 py-2 flex items-center justify-center shadow-sm">
-              <img src="/CI.jpg" alt="경옥채" className="h-10 w-auto object-contain" />
+            <div className="bg-white rounded-lg p-1.5 flex items-center justify-center shadow-sm">
+              <img src="/CI.jpg" alt="경옥채" className="w-full h-auto object-contain" />
             </div>
             <p className="text-xs text-slate-400 text-center mt-2 tracking-wide">사내 통합시스템</p>
           </div>
@@ -237,8 +237,8 @@ export default function DashboardLayout({
       {/* Desktop sidebar (fixed for larger screens) */}
       <aside className="hidden lg:flex fixed top-0 left-0 z-30 h-full w-64 bg-slate-800 text-white flex-col">
         <div className="p-4 border-b border-slate-700">
-          <div className="bg-white rounded-lg px-3 py-2 flex items-center justify-center shadow-sm">
-            <img src="/CI.jpg" alt="경옥채" className="h-10 w-auto object-contain" />
+          <div className="bg-white rounded-lg p-1.5 flex items-center justify-center shadow-sm">
+            <img src="/CI.jpg" alt="경옥채" className="w-full h-auto object-contain" />
           </div>
           <p className="text-xs text-slate-400 text-center mt-2 tracking-wide">사내 통합시스템</p>
         </div>

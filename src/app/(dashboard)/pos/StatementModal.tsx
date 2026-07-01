@@ -125,7 +125,7 @@ function buildStatementHtml(p: Props, COMPANY: Company, logoUrl: string): { html
     <div class="top">
       <div class="brand">
         <div style="display:flex;align-items:center;gap:14px;">
-          <img src="${logoUrl}" alt="경옥채" style="height:60px;width:60px;object-fit:contain;flex-shrink:0;" onerror="this.style.display='none'" />
+          <img src="${logoUrl}" alt="경옥채" style="height:96px;width:96px;object-fit:contain;flex-shrink:0;" onerror="this.style.display='none'" />
           <div>
             <h1>거래명세서</h1>
             <div style="font-size:11px;color:#555;margin-top:4px;letter-spacing:0;">${COMPANY.brand} · 전표번호 ${p.orderNumber}</div>
