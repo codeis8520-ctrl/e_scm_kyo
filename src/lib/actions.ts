@@ -1274,8 +1274,9 @@ export async function recordStockUsage(input: {
   if (items.length === 0) return { error: '소모 품목을 1개 이상 추가하세요.' };
   for (const item of items) {
     if (!item.product_id) return { error: '품목 정보가 올바르지 않습니다.' };
-    if (!Number.isInteger(item.quantity) || item.quantity < 1) {
-      return { error: '소모 수량은 1개 이상의 정수여야 합니다.' };
+    // #100 음수 허용 — 반품·정정·재고 복원(반대 처리). 0만 차단.
+    if (!Number.isInteger(item.quantity) || item.quantity === 0) {
+      return { error: '수량은 0이 아닌 정수여야 합니다. (음수 = 재고 복원/반대 처리)' };
     }
   }
 
@@ -1330,9 +1331,12 @@ export async function recordStockUsage(input: {
       await db.from('inventories').update({ quantity: toNum(cur.quantity) - qty }) // 음수 허용
         .eq('branch_id', branchId).eq('product_id', productId);
     }
+    // #100 음수 수량 = 재고 복원(반대). movement 부호로 IN/OUT 구분, quantity는 절대값.
+    //   재고 산술(before − qty)은 음수 qty면 자동 복원(+), 신규행 quantity:-qty도 부호 자동.
     await db.from('inventory_movements').insert({
-      branch_id: branchId, product_id: productId, movement_type: 'OUT',
-      quantity: qty, reference_type: 'USAGE', usage_type_id: usageTypeId, memo: lineMemo,
+      branch_id: branchId, product_id: productId,
+      movement_type: qty >= 0 ? 'OUT' : 'IN', quantity: Math.abs(qty),
+      reference_type: 'USAGE', usage_type_id: usageTypeId, memo: lineMemo,
       created_by: session.id, // 처리자(자가사용·시음·로스 등록자) — 변동 이력 표시용
     });
   };
@@ -1354,11 +1358,12 @@ export async function recordStockUsage(input: {
       }
       const decById = new Map<string, boolean>(decRows.map((m: any) => [m.id, m.allow_decimal_stock === true]));
       const phantomMemo = [memo, `세트분해: ${meta.name || ''} ×${item.quantity}`].filter(Boolean).join(' · ');
+      const sign = item.quantity < 0 ? -1 : 1;   // #100 음수 소모 = 복원(반대 방향)
       for (const c of bom) {
-        const raw = toNum(c.quantity) * item.quantity;
-        const qty = decById.get(c.material_id) ? Math.round(raw * 10000) / 10000 : Math.ceil(raw);
-        if (qty <= 0) continue;
-        await deductOne(c.material_id, qty, phantomMemo);
+        const rawMag = Math.abs(toNum(c.quantity) * item.quantity);
+        const mag = decById.get(c.material_id) ? Math.round(rawMag * 10000) / 10000 : Math.ceil(rawMag);
+        if (mag <= 0) continue;
+        await deductOne(c.material_id, mag * sign, phantomMemo);
       }
       continue;
     }

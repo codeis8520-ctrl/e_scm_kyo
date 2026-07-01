@@ -17,7 +17,7 @@ const TYPE_LABEL: Record<MoveType, string> = {
 // 유형별 안내 — 기준/대상창고 해석 + 재고 반영 방식.
 const TYPE_GUIDE: Record<MoveType, string> = {
   TRANSFER: '기준창고(보내는 창고)에서 차감하고 대상창고(받는 창고)로 증가합니다. 두 창고 재고가 함께 움직입니다.',
-  USAGE: '기준창고의 재고를 차감합니다(판매 아님 · 시음/파손/내부사용 등). 사용유형을 선택하세요. 대상창고는 기준창고와 동일합니다.',
+  USAGE: '기준창고의 재고를 차감합니다(판매 아님 · 시음/파손/내부사용 등). 사용유형을 선택하세요. 음수 입력 시 재고가 복원(반대 처리)됩니다.',
   ADJUST: '⚠ 재고를 입력한 목표 수량으로 강제로 맞춥니다(실사·오류 보정 전용). 재고를 임의로 맞추는 마지막 보루이므로 신중히 사용하세요. 본사 권한자만 가능합니다.',
 };
 
@@ -130,7 +130,11 @@ export default function StockMovementPanel({
   const sameBranch = isTransfer && !!fromBranchId && !!toBranchId && fromBranchId === toBranchId;
   // 이동/사용: 현재고 초과 경고(이동은 차감 음수 허용). 강제조정: 목표값이라 초과 개념 없음.
   const hasOver = !isAdjust && rows.some(r => { const s = stockOf(r.product_id); return s !== null && r.quantity > s; });
-  const hasInvalidQty = rows.some(r => isAdjust ? !Number.isFinite(r.quantity) : r.quantity < 1);
+  // #100 자가사용은 음수 허용(반품·복원·반대 처리) — 0만 차단. 이동은 양수만(반대는 반대전표 #94).
+  const hasInvalidQty = rows.some(r =>
+    isAdjust ? !Number.isFinite(r.quantity)
+    : isUsage ? (!Number.isInteger(r.quantity) || r.quantity === 0)
+    : r.quantity < 1);
 
   const submitDisabled =
     loading || adjustBlocked || hasInvalidQty || rows.length === 0 || !fromBranchId ||
@@ -151,6 +155,7 @@ export default function StockMovementPanel({
     if (isUsage && !usageTypeId) { setError('사용유형을 선택하세요.'); return; }
     for (const r of rows) {
       if (isAdjust) { if (!Number.isFinite(r.quantity)) { setError(`'${r.name}' 목표 수량을 올바르게 입력하세요.`); return; } }
+      else if (isUsage) { if (!Number.isInteger(r.quantity) || r.quantity === 0) { setError(`'${r.name}' 수량은 0이 아닌 정수여야 합니다. (음수=복원)`); return; } }
       else if (!Number.isInteger(r.quantity) || r.quantity < 1) { setError(`'${r.name}' 수량은 1개 이상의 정수여야 합니다.`); return; }
     }
 
@@ -358,10 +363,11 @@ export default function StockMovementPanel({
                   <input
                     type="number"
                     value={r.quantity}
-                    min={isAdjust ? undefined : '1'}
+                    min={(isAdjust || isUsage) ? undefined : '1'}
                     step={dec ? 'any' : '1'}
                     onChange={e => updateQty(r.product_id, dec ? (parseFloat(e.target.value) || 0) : (parseInt(e.target.value) || 0))}
-                    className={`input w-24 text-right ${over ? 'border-red-400' : ''}`}
+                    title={isUsage ? '음수 입력 시 재고 복원(반대 처리)됩니다.' : undefined}
+                    className={`input w-24 text-right ${over ? 'border-red-400' : ''} ${isUsage && r.quantity < 0 ? 'text-red-600' : ''}`}
                   />
                   <span className={`w-24 text-right text-sm font-semibold ${after < 0 ? 'text-red-600' : 'text-slate-700'}`}>
                     {fmtStock(after, dec)}
