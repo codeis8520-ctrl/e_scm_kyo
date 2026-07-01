@@ -2003,7 +2003,8 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
   // 수령 전 전표 품목 추가/삭제
   const [revising, setRevising] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
-  const [productOptions, setProductOptions] = useState<{ id: string; name: string; code?: string; price?: number }[]>([]);
+  const [productOptions, setProductOptions] = useState<{ id: string; name: string; code?: string; price?: number; product_type?: string | null }[]>([]);
+  const [addFilter, setAddFilter] = useState<'SELL' | 'PACK' | 'ALL'>('SELL');   // #104 기본=일반 판매 품목
   const [addProductId, setAddProductId] = useState('');
   const [addQty, setAddQty] = useState('1');
   const [addPrice, setAddPrice] = useState('');
@@ -2648,7 +2649,9 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
     setShowAddForm(true);
     if (productOptions.length === 0) {
       const sb = createClient() as any;
-      let res = await sb.from('products').select('id, name, code, price').eq('is_active', true).order('name');
+      // #104 product_type 포함 — 일반 판매(FINISHED)/포장·옵션(SUB·SERVICE) 구분용. 폴백 단계적.
+      let res = await sb.from('products').select('id, name, code, price, product_type').eq('is_active', true).order('name');
+      if (res.error) res = await sb.from('products').select('id, name, code, price').eq('is_active', true).order('name');
       if (res.error) res = await sb.from('products').select('id, name, code').eq('is_active', true).order('name');
       if (res.error) res = await sb.from('products').select('id, name, code').order('name');
       setProductOptions((res.data as any[]) || []);
@@ -3336,22 +3339,38 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                         <p className="text-xs font-semibold text-blue-700">품목 추가</p>
                         <button onClick={() => setShowAddForm(false)} className="text-slate-400 hover:text-slate-600 text-sm">✕</button>
                       </div>
-                      <select
-                        value={addProductId}
-                        onChange={e => {
-                          setAddProductId(e.target.value);
-                          const p = productOptions.find(o => o.id === e.target.value);
-                          if (p && p.price != null && addPrice === '') setAddPrice(String(p.price));
-                        }}
-                        className="w-full text-sm border border-slate-300 rounded px-2 py-1.5"
-                      >
-                        <option value="">제품 선택...</option>
-                        {productOptions.map(p => (
-                          <option key={p.id} value={p.id}>
-                            {p.name}{p.code ? ` (${p.code})` : ''}
-                          </option>
+                      {/* #104 품목 분류 필터 — 기본 '일반 판매'(FINISHED). 포장·옵션(SUB/SERVICE)·전체는 별도 탭. */}
+                      <div className="flex gap-1 text-[11px]">
+                        {([['SELL', '일반 판매'], ['PACK', '포장·옵션'], ['ALL', '전체']] as ['SELL' | 'PACK' | 'ALL', string][]).map(([v, l]) => (
+                          <button key={v} onClick={() => { setAddFilter(v); setAddProductId(''); }}
+                            className={`px-2 py-0.5 rounded border transition-colors ${addFilter === v ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}>
+                            {l}
+                          </button>
                         ))}
-                      </select>
+                      </div>
+                      {(() => {
+                        const sellable = (p: any) => p.product_type === 'FINISHED' || p.product_type == null;
+                        const packOpt = (p: any) => p.product_type === 'SUB' || p.product_type === 'SERVICE';
+                        const list = productOptions.filter(p => addFilter === 'ALL' ? true : addFilter === 'PACK' ? packOpt(p) : sellable(p));
+                        return (
+                          <select
+                            value={addProductId}
+                            onChange={e => {
+                              setAddProductId(e.target.value);
+                              const p = productOptions.find(o => o.id === e.target.value);
+                              if (p && p.price != null && addPrice === '') setAddPrice(String(p.price));
+                            }}
+                            className="w-full text-sm border border-slate-300 rounded px-2 py-1.5"
+                          >
+                            <option value="">제품 선택... ({list.length})</option>
+                            {list.map(p => (
+                              <option key={p.id} value={p.id}>
+                                {p.name}{p.code ? ` (${p.code})` : ''}
+                              </option>
+                            ))}
+                          </select>
+                        );
+                      })()}
                       <div className="grid grid-cols-3 gap-2">
                         <div>
                           <label className="text-[10px] text-slate-500">수량 <span className="text-slate-400">(음수=반품)</span></label>
