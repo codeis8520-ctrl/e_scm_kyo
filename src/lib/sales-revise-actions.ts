@@ -937,6 +937,62 @@ const RECIPIENT_FIELDS = [
   'recipient_address', 'recipient_address_detail',
 ] as const;
 
+// #97 비택배 → 택배 전환 시 PENDING shipment 생성(택배관리 등록).
+//   받는분=updatePayload 우선→주문 recipient→구매자, 출고처=ship_from→매출지점, 품목요약 자동.
+async function createPendingShipmentForOrder(
+  db: any, orderId: string, order: any, updatePayload: Record<string, any>, userId: string,
+): Promise<void> {
+  try {
+    const pick = (f: string, alt?: any) => {
+      const v = f in updatePayload ? updatePayload[f] : (order[f] ?? null);
+      return (v ?? alt ?? null);
+    };
+    const name = pick('recipient_name', order.buyer_name);
+    const phone = pick('recipient_phone', order.buyer_phone);
+
+    // 출고처(sender) + 품목요약 — 최신 주문 재조회.
+    const { data: full } = await db
+      .from('sales_orders')
+      .select('branch_id, ship_from_branch_id, order_items:sales_order_items(product_id, quantity, receipt_status)')
+      .eq('id', orderId).maybeSingle();
+    const sendBranchId = full?.ship_from_branch_id || full?.branch_id || order.branch_id || null;
+    let senderName = '', senderPhone = '';
+    if (sendBranchId) {
+      const { data: b } = await db.from('branches').select('name, phone').eq('id', sendBranchId).maybeSingle();
+      senderName = b?.name || ''; senderPhone = b?.phone || '';
+    }
+    const items = (full?.order_items || []) as any[];
+    const shipItems = items.filter(it => (it.receipt_status || 'RECEIVED') !== 'RECEIVED');
+    const src = shipItems.length ? shipItems : items;
+    const pids = Array.from(new Set(src.map(it => it.product_id).filter(Boolean)));
+    const nameMap = new Map<string, string>();
+    if (pids.length) {
+      const { data: prods } = await db.from('products').select('id, name').in('id', pids);
+      for (const p of (prods || []) as any[]) nameMap.set(p.id, p.name);
+    }
+    const itemsSummary = src
+      .map(it => { const l = nameMap.get(it.product_id) || String(it.product_id); return Number(it.quantity) > 1 ? `${l} x${it.quantity}` : l; })
+      .join(', ');
+
+    const payload: any = {
+      source: 'STORE', sales_order_id: orderId, branch_id: sendBranchId,
+      sender_name: senderName, sender_phone: senderPhone,
+      recipient_name: name, recipient_phone: phone,
+      recipient_zipcode: pick('recipient_zipcode'), recipient_address: pick('recipient_address'),
+      recipient_address_detail: pick('recipient_address_detail'),
+      items_summary: itemsSummary || null, status: 'PENDING', created_by: userId, delivery_type: 'PARCEL',
+    };
+    let { error } = await db.from('shipments').insert(payload);
+    if (error && isMissingColumnError(error)) {
+      const { delivery_type, ...rest } = payload;
+      ({ error } = await db.from('shipments').insert(rest));
+    }
+    if (error) console.error('[createPendingShipmentForOrder] insert failed:', error);
+  } catch (e) {
+    console.error('[createPendingShipmentForOrder] error:', e);
+  }
+}
+
 export async function updateSalesOrderDetails(input: {
   orderId: string;
   customer_id?: string | null;
@@ -1022,6 +1078,28 @@ async function finishUpdateSalesOrderDetails(
     const changedKeys = Object.keys(updatePayload);
     if (changedKeys.length === 0) return { success: true };
 
+    // #97 수령방식(receipt_status) 변경 → 택배관리(shipments) 실시간 연동 준비.
+    //   택배예정(PARCEL_PLANNED) ↔ 그 외(방문/퀵/수령완료) 경계를 넘을 때만 동작.
+    //   택배→비택배: 대기(PENDING) shipment 삭제(택배관리서 제외). 이미 발송(PRINTED+)이면 차단(경고).
+    //   비택배→택배: PENDING shipment 생성(택배관리에 등록).
+    let shipSyncAction: 'delete' | 'create' | null = null;
+    let shipToDeleteId: string | null = null;
+    if ('receipt_status' in updatePayload) {
+      const wasParcel = (order.receipt_status ?? null) === 'PARCEL_PLANNED';
+      const isParcel = updatePayload.receipt_status === 'PARCEL_PLANNED';
+      if (wasParcel !== isParcel) {
+        const { data: ship } = await db.from('shipments').select('id, status').eq('sales_order_id', input.orderId).maybeSingle();
+        if (!isParcel && ship?.id) {
+          if (ship.status !== 'PENDING') {
+            return { error: '이미 송장이 발행/발송된 건입니다. 택배관리에서 발송을 먼저 취소/회수한 뒤 수령방식을 변경하세요.' };
+          }
+          shipSyncAction = 'delete'; shipToDeleteId = ship.id;
+        } else if (isParcel && !ship?.id) {
+          shipSyncAction = 'create';
+        }
+      }
+    }
+
     // sales_orders update (083 미적용 방어: recipient_* 누락 시 5필드 빼고 재시도)
     let { error: updErr } = await db
       .from('sales_orders')
@@ -1063,6 +1141,16 @@ async function finishUpdateSalesOrderDetails(
           return { error: '받는분 정보의 배송 동기화에 실패했습니다.' };
         }
       }
+    }
+
+    // #97 shipment 연동 실행 (sales_orders 반영 후) — 택배관리 실시간 반영.
+    if (shipSyncAction === 'delete' && shipToDeleteId) {
+      const { error: delErr } = await db.from('shipments').delete().eq('id', shipToDeleteId);
+      if (delErr) console.error('[updateSalesOrderDetails] #97 shipment delete failed:', delErr);
+      revalidatePath('/shipping');
+    } else if (shipSyncAction === 'create') {
+      await createPendingShipmentForOrder(db, input.orderId, order, updatePayload, userId);
+      revalidatePath('/shipping');
     }
 
     // audit 1건
