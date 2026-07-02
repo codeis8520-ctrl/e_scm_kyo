@@ -920,6 +920,142 @@ export async function updateSalesOrderItem(params: {
   return { success: true, delta: deltaFinal };
 }
 
+// ── 과세/면세/VAT 스냅샷 — item별 is_taxable 비례배분으로 finalAmount 배분 ──
+//   (recalcSalesOrderTotals ③과 동일 로직 — 할인 수정 등 total 불변·final만 바뀔 때 재사용)
+async function computeTaxSnapshot(
+  db: any, orderId: string, finalAmount: number,
+): Promise<{ taxableAmount: number; exemptAmount: number; vatAmount: number }> {
+  const { data: items } = await db
+    .from('sales_order_items')
+    .select('product_id, quantity, unit_price')
+    .eq('sales_order_id', orderId);
+  const rows = (items || []) as any[];
+  if (rows.length === 0) return { taxableAmount: 0, exemptAmount: 0, vatAmount: 0 };
+
+  const productIds = Array.from(new Set(rows.map(r => r.product_id)));
+  let taxRes: any = await db.from('products').select('id, is_taxable').in('id', productIds);
+  if (taxRes.error && /is_taxable/i.test(String(taxRes.error.message))) {
+    taxRes = await db.from('products').select('id').in('id', productIds);
+  }
+  const isTaxable = new Map<string, boolean>();
+  for (const r of (taxRes.data as any[]) || []) isTaxable.set(r.id, r.is_taxable !== false);
+
+  let taxableNet = 0, exemptNet = 0;
+  for (const r of rows) {
+    const lineNet = Number(r.unit_price) * Number(r.quantity);
+    if (isTaxable.get(r.product_id) === false) exemptNet += lineNet;
+    else taxableNet += lineNet;
+  }
+  const net = taxableNet + exemptNet;
+  if (net > 0) {
+    const taxableAmount = Math.round((finalAmount * taxableNet) / net);
+    return { taxableAmount, exemptAmount: finalAmount - taxableAmount, vatAmount: Math.round((taxableAmount * 10) / 110) };
+  }
+  return { taxableAmount: finalAmount, exemptAmount: 0, vatAmount: Math.round((finalAmount * 10) / 110) };
+}
+
+/**
+ * 주문 할인(discount_amount) 수정 (#106)
+ *
+ * 판매입력처럼 판매상세에서 할인을 정정. 품목합계(total_amount)는 불변이고 할인만 바뀌어
+ * 결제금액(=총액−할인−포인트)·과세·VAT·적립포인트를 재계산하고 결제/분개 차액을 기록한다.
+ * 할인 음수 불가(#105 — 음수 할인이 결제/매출을 0으로 상쇄하던 버그 차단), 총액 초과 불가.
+ * 대상: COMPLETED 전표(수령완료 포함). 판매번호 불변.
+ */
+export async function updateSalesOrderDiscount(params: {
+  orderId: string;
+  discount: number;
+  reason?: string;
+}): Promise<{ success?: true; delta?: number; error?: string }> {
+  let session;
+  try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
+
+  const supabase = await createClient();
+  const db = supabase as any;
+
+  const guard = await loadEditableOrder(db, params.orderId, { allowReceived: true });
+  if ('error' in guard) return { error: guard.error };
+  const order = guard.order;
+
+  const total = Number(order.total_amount || 0);
+  const pointsUsed = Number(order.points_used || 0);
+  const oldDiscount = Number(order.discount_amount || 0);
+  // #105 할인은 음수·소수 불가. 총액 초과 불가(양수 전표 한정 — 환불은 마이너스 수량으로).
+  const newDiscount = Math.max(0, Math.round(Number(params.discount) || 0));
+  if (!Number.isFinite(newDiscount)) return { error: '할인 금액을 올바르게 입력해주세요.' };
+  if (total >= 0 && newDiscount > total) return { error: '할인은 총액을 초과할 수 없습니다.' };
+  if (newDiscount === oldDiscount) return { success: true, delta: 0 };
+
+  const newFinal = total - newDiscount - pointsUsed;
+  const oldFinal = total - oldDiscount - pointsUsed;
+  const deltaFinal = newFinal - oldFinal;   // = oldDiscount − newDiscount
+
+  // 과세 스냅샷 재계산
+  const { taxableAmount, exemptAmount, vatAmount } = await computeTaxSnapshot(db, order.id, newFinal);
+  const oldTaxable = Number(order.taxable_amount ?? oldFinal);
+
+  // 적립 포인트 재계산 — 차액만 adjust 기록 (recalcSalesOrderTotals ④와 동일)
+  let newEarned = Number(order.points_earned || 0);
+  if (order.customer_id) {
+    const rate = Number(order.point_rate_applied ?? 1.0) || 1.0;
+    newEarned = Math.floor(newFinal * rate / 100);
+    const diff = newEarned - Number(order.points_earned || 0);
+    if (diff !== 0) {
+      const { data: lastHist } = await db
+        .from('point_history')
+        .select('balance')
+        .eq('customer_id', order.customer_id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const currentBalance = Number(lastHist?.balance || 0);
+      await db.from('point_history').insert({
+        customer_id: order.customer_id,
+        sales_order_id: order.id,
+        type: 'adjust',
+        points: diff,
+        balance: Math.max(0, currentBalance + diff),
+        description: `할인 수정 적립 조정 (${order.order_number})`,
+      });
+    }
+  }
+
+  // sales_orders update (optional 컬럼 방어)
+  const updatePayload: any = {
+    discount_amount: newDiscount,
+    taxable_amount: taxableAmount,
+    exempt_amount: exemptAmount,
+    vat_amount: vatAmount,
+    points_earned: newEarned,
+  };
+  let upErr = (await db.from('sales_orders').update(updatePayload).eq('id', order.id)).error;
+  if (upErr && isMissingColumnError(upErr)) {
+    for (const k of ['taxable_amount', 'exempt_amount', 'vat_amount']) delete updatePayload[k];
+    upErr = (await db.from('sales_orders').update(updatePayload).eq('id', order.id)).error;
+  }
+  if (upErr) return { error: `할인 수정 실패: ${upErr.message ?? upErr}` };
+
+  // 결제·분개 차액 (recordPaymentDelta 실패는 전파 — 재고 무관, 장부만 조정)
+  const payRes = await recordPaymentDelta(db, order, deltaFinal, session.id);
+  if (payRes.error) return { error: payRes.error };
+  await recordJournalDelta(db, order, deltaFinal, taxableAmount - oldTaxable, session.id);
+
+  writeAuditLog({
+    userId: session.id,
+    action: 'UPDATE',
+    tableName: 'sales_orders',
+    recordId: order.id,
+    description: `전표 할인 수정: ${order.order_number}, 할인 ${oldDiscount.toLocaleString()}→${newDiscount.toLocaleString()}원, 차액 ${deltaFinal.toLocaleString()}원, 사유: ${params.reason?.trim() || '-'}`,
+    oldData: { discount_amount: oldDiscount },
+    newData: { discount_amount: newDiscount },
+  }).catch(() => {});
+
+  revalidatePath('/pos');
+  revalidatePath('/reports');
+  revalidatePath('/accounting');
+  return { success: true, delta: deltaFinal };
+}
+
 // ── 전표 상세 직접 수정 (고객 재연결 / 표시명 / 수령일 / 받는분) ─────────────────
 //
 // 판매번호(order_number)는 절대 불변. 취소·환불 전표는 수정 불가.

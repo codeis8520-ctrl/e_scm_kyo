@@ -9,7 +9,7 @@ import StatementModal from './StatementModal';
 import RefundModal from './RefundModal';
 import { fmtDateKST, fmtTimeKST, fmtDateTimeKST, kstTodayString, kstDayStart, kstDayEnd } from '@/lib/date';
 import { cancelSalesOrder } from '@/lib/sales-cancel-actions';
-import { addSalesOrderItem, removeSalesOrderItem, updateSalesOrderItem, convertOrderToParcel, convertOrderToPickup, updateSalesOrderDetails, changeSalesOrderShipFromBranch } from '@/lib/sales-revise-actions';
+import { addSalesOrderItem, removeSalesOrderItem, updateSalesOrderItem, updateSalesOrderDiscount, convertOrderToParcel, convertOrderToPickup, updateSalesOrderDetails, changeSalesOrderShipFromBranch } from '@/lib/sales-revise-actions';
 import { bulkUpdateReceiptStatus } from '@/lib/shipping-actions';
 import { settleSalesOrderReceivable } from '@/lib/accounting-actions';
 import { useEscClose } from '@/hooks/useEscClose';
@@ -238,6 +238,12 @@ export default function SalesListTab({ forcedView }: { forcedView?: 'list' | 'co
   const [offlineOnly, setOfflineOnly] = useState(() => saved.offlineOnly ?? false);
 
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  // #107 딥링크 — 재고 이력 등에서 ?order=<id> 로 진입하면 해당 판매전표 상세를 바로 연다.
+  //   (useSearchParams는 Suspense 경계를 요구 → 마운트 시 location.search 직접 파싱으로 회피)
+  useEffect(() => {
+    const oid = new URLSearchParams(window.location.search).get('order');
+    if (oid) setSelectedOrderId(oid);
+  }, []);
   const [showRefundModal, setShowRefundModal] = useState(false);
   const [refundOrderNumber, setRefundOrderNumber] = useState<string | null>(null);
   const [reprintReceipt, setReprintReceipt] = useState<any>(null);
@@ -2016,6 +2022,11 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
   const [editItemQty, setEditItemQty] = useState('');
   const [editItemPrice, setEditItemPrice] = useState('');
   const [editItemOption, setEditItemOption] = useState(''); // #75 주문 옵션 인라인 수정
+  // #106 주문 할인 인라인 수정 (판매입력처럼 할인 정정 → 결제금액·매출·적립 자동 재계산)
+  const [editingDiscount, setEditingDiscount] = useState(false);
+  const [discountInput, setDiscountInput] = useState('');
+  const [discountReason, setDiscountReason] = useState('');
+  const [savingDiscount, setSavingDiscount] = useState(false);
   // 방문↔택배 배송전환
   const [converting, setConverting] = useState(false);
   const [showConvertForm, setShowConvertForm] = useState(false);
@@ -2738,6 +2749,32 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
     }
   };
 
+  // #106 주문 할인 수정 — 결제금액·과세·매출·적립을 서버에서 재계산.
+  const startEditDiscount = () => {
+    if (!order) return;
+    setDiscountInput(String(Number(order.discount_amount || 0)));
+    setDiscountReason('');
+    setEditingDiscount(true);
+  };
+  const handleSaveDiscount = async () => {
+    if (savingDiscount || !order) return;
+    const val = Number(discountInput);
+    if (!Number.isFinite(val) || val < 0) { alert('할인 금액은 0 이상의 숫자여야 합니다.'); return; }
+    setSavingDiscount(true);
+    try {
+      const res = await updateSalesOrderDiscount({ orderId: order.id, discount: Math.round(val), reason: discountReason.trim() || undefined });
+      if (res.error) { alert('할인 수정 실패: ' + res.error); return; }
+      if (res.delta && res.delta !== 0) {
+        alert(`결제 차액 ₩${Math.abs(res.delta).toLocaleString()} 가 ${res.delta > 0 ? '추가결제' : '부분환불'}로 기록되었습니다.\n카드/단말기 정산은 별도로 처리하세요.`);
+      }
+      setEditingDiscount(false);
+      await loadDetail(false);
+      onChanged();
+    } finally {
+      setSavingDiscount(false);
+    }
+  };
+
   const handleSettleReceivable = async () => {
     if (!order || settling) return;
     setSettling(true);
@@ -3450,11 +3487,68 @@ function SalesDetailDrawer({ orderId, onClose, reprintOpen, onReprint, onRefundI
                   <span className="text-slate-500">총액</span>
                   <span>{Number(order.total_amount || 0).toLocaleString()}원</span>
                 </div>
-                {order.discount_amount > 0 && (
-                  <div className="flex justify-between text-orange-600">
-                    <span>할인</span>
-                    <span>-{Number(order.discount_amount).toLocaleString()}원</span>
-                  </div>
+                {/* #106 할인 인라인 수정 — 판매입력처럼 할인 정정(결제금액·매출·적립 자동 재계산) */}
+                {editable ? (
+                  editingDiscount ? (
+                    <div className="rounded-md border border-orange-200 bg-orange-50/50 p-2 space-y-1.5">
+                      <div className="flex justify-between items-center gap-2">
+                        <span className="text-orange-700 text-xs font-medium">할인 금액</span>
+                        <input
+                          type="number" min="0"
+                          value={discountInput}
+                          onChange={e => setDiscountInput(e.target.value)}
+                          className="input w-28 text-right py-0.5 text-xs"
+                          placeholder="0"
+                        />
+                      </div>
+                      <input
+                        type="text"
+                        value={discountReason}
+                        onChange={e => setDiscountReason(e.target.value)}
+                        placeholder="수정 사유 (선택)"
+                        className="input w-full py-0.5 text-xs"
+                      />
+                      <div className="flex justify-end gap-1">
+                        <button
+                          onClick={handleSaveDiscount}
+                          disabled={savingDiscount}
+                          className="text-[11px] px-2 py-0.5 rounded bg-orange-600 text-white hover:bg-orange-700 disabled:opacity-50"
+                        >
+                          {savingDiscount ? '저장 중...' : '저장'}
+                        </button>
+                        <button
+                          onClick={() => setEditingDiscount(false)}
+                          disabled={savingDiscount}
+                          className="text-[11px] px-2 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                        >
+                          취소
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex justify-between items-center text-orange-600">
+                      <span>할인</span>
+                      <span className="flex items-center gap-1.5">
+                        {Number(order.discount_amount || 0) > 0
+                          ? `-${Number(order.discount_amount).toLocaleString()}원`
+                          : <span className="text-slate-400">없음</span>}
+                        <button
+                          onClick={startEditDiscount}
+                          className="text-[10px] px-1.5 py-0.5 rounded border border-orange-300 text-orange-700 hover:bg-orange-100"
+                          title="할인을 정정하면 결제금액·매출·적립이 자동 재계산됩니다"
+                        >
+                          ✏ 수정
+                        </button>
+                      </span>
+                    </div>
+                  )
+                ) : (
+                  order.discount_amount > 0 && (
+                    <div className="flex justify-between text-orange-600">
+                      <span>할인</span>
+                      <span>-{Number(order.discount_amount).toLocaleString()}원</span>
+                    </div>
+                  )
                 )}
                 {order.points_used > 0 && (
                   <div className="flex justify-between text-green-600">
