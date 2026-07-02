@@ -6,7 +6,7 @@ import { redirect } from 'next/navigation';
 import { fireNotificationTrigger } from '@/lib/notification-triggers';
 import { computeBomCost } from '@/lib/production-actions';
 import { kstTodayString } from '@/lib/date';
-import { requireSession, type SessionUser } from '@/lib/session';
+import { requireSession, writeAuditLog, type SessionUser } from '@/lib/session';
 import { toNum, parseStockInput } from '@/lib/validators';
 import { createSaleJournal } from '@/lib/accounting-actions';
 
@@ -1148,36 +1148,55 @@ async function createStockMovementDoc(
     shipDate?: string | null;
     arrivalDate?: string | null;
     memo?: string | null;
+    movementDate?: string | null;   // #107 업무 기준일자(USAGE/ADJUST). TRANSFER 는 ship/arrival 사용.
     createdBy: string | null;
-    items: { product_id: string; quantity: number }[];   // quantity: 이동/사용=수량, 강제조정=목표값
+    // quantity: 이동/사용=수량, 강제조정=목표값. #107 usage_type_id/reason: 자가소모 품목별 사유.
+    items: { product_id: string; quantity: number; usage_type_id?: string | null; reason?: string | null }[];
   },
-): Promise<string | null> {
+): Promise<{ docNo: string; id: string } | null> {   // #107 id 반환 → movements.reference_id 연결용
   try {
     const prefix = params.moveType === 'TRANSFER' ? 'TR' : params.moveType === 'USAGE' ? 'US' : 'AJ';
     const today = kstTodayString().replace(/-/g, '');
     const rand = Math.random().toString(36).substring(2, 8).toUpperCase();
     const docNo = `${prefix}-${today}-${rand}`;
     const totalQty = params.items.reduce((s, it) => s + Math.abs(toNum(it.quantity)), 0);
-    const { data: hdr, error } = await db.from('stock_movement_docs').insert({
+    // #107 movement_date/라인별 사유 컬럼은 마이그 115 이전 환경에선 없을 수 있어 폴백 재시도.
+    const hdrPayload: any = {
       doc_no: docNo, move_type: params.moveType,
       from_branch_id: params.fromBranchId,
       to_branch_id: params.toBranchId ?? params.fromBranchId,
       usage_type_id: params.usageTypeId ?? null,
       ship_date: params.shipDate || null, arrival_date: params.arrivalDate || null,
+      movement_date: params.movementDate || null,
       memo: params.memo || null, item_count: params.items.length, total_qty: totalQty,
       created_by: params.createdBy,
-    }).select('id').maybeSingle();
-    if (error || !hdr?.id) return null;
+    };
+    let hdrRes = await db.from('stock_movement_docs').insert(hdrPayload).select('id').maybeSingle();
+    if (hdrRes.error && /movement_date/i.test(String(hdrRes.error?.message))) {
+      delete hdrPayload.movement_date;
+      hdrRes = await db.from('stock_movement_docs').insert(hdrPayload).select('id').maybeSingle();
+    }
+    const hdr = hdrRes.data;
+    if (hdrRes.error || !hdr?.id) return null;
     const prodIds = params.items.map((it) => it.product_id);
     const { data: prods } = await db.from('products').select('id, name, code').in('id', prodIds);
     const pById = new Map<string, any>(((prods as any[]) || []).map((p: any) => [p.id, p]));
-    await db.from('stock_movement_doc_items').insert(params.items.map((it) => ({
+    const itemRows = params.items.map((it) => ({
       doc_id: hdr.id, product_id: it.product_id,
       product_name: pById.get(it.product_id)?.name ?? null,
       product_code: pById.get(it.product_id)?.code ?? null,
       quantity: it.quantity,
-    })));
-    return docNo;
+      usage_type_id: it.usage_type_id ?? null,
+      reason: it.reason ?? null,
+    }));
+    let itemErr = (await db.from('stock_movement_doc_items').insert(itemRows)).error;
+    if (itemErr && /(usage_type_id|reason)/i.test(String(itemErr?.message))) {
+      // 마이그 115 이전 — 라인별 사유 컬럼 없이 재시도
+      itemErr = (await db.from('stock_movement_doc_items').insert(
+        itemRows.map(({ usage_type_id, reason, ...rest }) => rest),
+      )).error;
+    }
+    return { docNo, id: hdr.id };
   } catch {
     return null;
   }
@@ -1186,6 +1205,7 @@ async function createStockMovementDoc(
 export async function adjustInventoryBatch(input: {
   branch_id: string;
   memo?: string;
+  movement_date?: string;   // #107 업무 기준일자(YYYY-MM-DD). 미지정 시 오늘.
   items: { product_id: string; target_quantity: number }[];
 }): Promise<{ success?: true; count?: number; docNo?: string | null; error?: string }> {
   const session = await requireSession();
@@ -1196,6 +1216,9 @@ export async function adjustInventoryBatch(input: {
   const db = supabase as any;
   const branchId = input.branch_id;
   const items = input.items || [];
+  // #107 업무 기준일자 → 이력 일시(정오 KST 고정).
+  const adjMovementDate = (input.movement_date || '').trim() || null;
+  const adjCreatedAt = adjMovementDate ? `${adjMovementDate}T12:00:00+09:00` : null;
   if (!branchId) return { error: '창고(지점)를 선택하세요.' };
   if (items.length === 0) return { error: '조정 품목을 1개 이상 추가하세요.' };
 
@@ -1214,6 +1237,16 @@ export async function adjustInventoryBatch(input: {
     }
   }
 
+  // #86/#107 재고변동전표(강제조정) — 차감 전 먼저 생성해 movements.reference_id 로 연결.
+  //   목표값을 품목 quantity로 스냅샷 + 업무 기준일자.
+  const adjDoc = await createStockMovementDoc(db, {
+    moveType: 'ADJUST', fromBranchId: branchId, memo: input.memo || '강제 조정(맞춤)',
+    movementDate: adjMovementDate,
+    createdBy: session.id,
+    items: items.map((it) => ({ product_id: it.product_id, quantity: it.target_quantity })),
+  });
+  const adjDocId = adjDoc?.id ?? null;   // #107 movements.reference_id 연결
+
   for (const it of items) {
     const target = it.target_quantity;
     const { data: curArr } = await db.from('inventories').select('id, quantity').eq('branch_id', branchId).eq('product_id', it.product_id);
@@ -1226,23 +1259,19 @@ export async function adjustInventoryBatch(input: {
       await db.from('inventories').insert({ branch_id: branchId, product_id: it.product_id, quantity: target, safety_stock: 0 });
     }
     if (delta !== 0) {
-      await db.from('inventory_movements').insert({
+      const movPayload: any = {
         branch_id: branchId, product_id: it.product_id,
         movement_type: delta > 0 ? 'IN' : 'OUT', quantity: Math.abs(delta),
         reference_type: 'MANUAL', memo: input.memo || '강제 조정(맞춤)', created_by: session.id,
-      });
+      };
+      if (adjDocId) movPayload.reference_id = adjDocId;         // #107 전표 연결
+      if (adjCreatedAt) movPayload.created_at = adjCreatedAt;   // #107 업무 기준일자
+      await db.from('inventory_movements').insert(movPayload);
     }
   }
 
-  // #86 재고변동전표(강제조정) — 목표값을 품목 quantity로 기록.
-  const docNo = await createStockMovementDoc(db, {
-    moveType: 'ADJUST', fromBranchId: branchId, memo: input.memo || '강제 조정(맞춤)',
-    createdBy: session.id,
-    items: items.map((it) => ({ product_id: it.product_id, quantity: it.target_quantity })),
-  });
-
   revalidatePath('/inventory');
-  return { success: true, count: items.length, docNo };
+  return { success: true, count: items.length, docNo: adjDoc?.docNo ?? null };
 }
 
 // 재고 소모(사용유형) 다건 일괄 OUT 차감 — 판매 아님.
@@ -1250,9 +1279,11 @@ export async function adjustInventoryBatch(input: {
 // 2-pass: 1) 검증+RAW/SUB 본사제한 전수 통과해야 시작, 2) 라인별 실제 차감.
 export async function recordStockUsage(input: {
   branch_id: string;
-  usage_type_id: string;
+  usage_type_id?: string;   // #107 헤더 기본 사유(선택). 라인별 usage_type_id 가 우선.
   memo?: string;
-  items: { product_id: string; quantity: number }[];
+  movement_date?: string;   // #107 업무 기준일자(YYYY-MM-DD). 미지정 시 오늘.
+  // #107 라인별 사유: usage_type_id(구조화 사유) + reason(자유 메모). 미지정 시 헤더값 사용.
+  items: { product_id: string; quantity: number; usage_type_id?: string | null; reason?: string | null }[];
 }) {
   // #51 서버측 지점 권한검증 — UI(자기 지점만)와 동일하게 강제(직접 호출 우회 차단).
   //   HQ급은 전 지점, 지점고정 직원은 본인 지점 재고만 소모 가능. assertFromBranchOwnership 재사용.
@@ -1264,16 +1295,20 @@ export async function recordStockUsage(input: {
   const db = supabase as any;
 
   const branchId = input.branch_id;
-  const usageTypeId = input.usage_type_id;
+  const headerUsageTypeId = input.usage_type_id || null;   // #107 라인 미지정 시 폴백
   const memo = input.memo;
+  const movementDate = (input.movement_date || '').trim() || null;   // #107 업무 기준일자
   const items = input.items || [];
+  // #107 라인별 사유 확정 헬퍼 — 라인 usage_type_id 우선, 없으면 헤더값.
+  const lineUsageType = (item: { usage_type_id?: string | null }) => item.usage_type_id || headerUsageTypeId;
 
   // ── pass 1: 검증 (전체 거부, 처리 전) ──
   if (!branchId) return { error: '지점을 선택하세요.' };
-  if (!usageTypeId) return { error: '사용유형을 선택하세요.' };
   if (items.length === 0) return { error: '소모 품목을 1개 이상 추가하세요.' };
   for (const item of items) {
     if (!item.product_id) return { error: '품목 정보가 올바르지 않습니다.' };
+    // #107 품목별 사유 필수 — 라인 또는 헤더 중 하나는 있어야 함.
+    if (!lineUsageType(item)) return { error: '품목별 사용유형(사유)을 선택하세요.' };
     // #100 음수 허용 — 반품·정정·재고 복원(반대 처리). 0만 차단.
     if (!Number.isInteger(item.quantity) || item.quantity === 0) {
       return { error: '수량은 0이 아닌 정수여야 합니다. (음수 = 재고 복원/반대 처리)' };
@@ -1318,8 +1353,25 @@ export async function recordStockUsage(input: {
   }
   const metaById = new Map<string, any>(metaRows.map((p: any) => [p.id, p]));
 
+  // #107 업무 기준일자 → 이력 일시(정오 KST 고정, TRANSFER 규칙과 일치). 미지정 시 now().
+  const movementCreatedAt = movementDate ? `${movementDate}T12:00:00+09:00` : null;
+
+  // #86/#107 재고변동전표(자가사용) — 차감 전 먼저 생성해 movements.reference_id 로 연결.
+  //   입력 품목(선택 단품) 스냅샷 + 라인별 사유(usage_type_id/reason) + 업무 기준일자.
+  const usageDoc = await createStockMovementDoc(db, {
+    moveType: 'USAGE', fromBranchId: branchId, usageTypeId: headerUsageTypeId,
+    memo: memo || null, movementDate,
+    createdBy: session.id,
+    items: items.map((it) => ({
+      product_id: it.product_id, quantity: it.quantity,
+      usage_type_id: lineUsageType(it), reason: (it.reason || '').trim() || null,
+    })),
+  });
+  const usageDocId = usageDoc?.id ?? null;   // #107 movements.reference_id 연결
+
   // 단일 품목 OUT 차감 + 이력 1건 (음수 재고 허용). 순차 호출이라 동일 자재 중복도 안전(매번 재읽기).
-  const deductOne = async (productId: string, qty: number, lineMemo: string | null) => {
+  //   #107 lineUsageTypeId: 품목별 사유. created_at: 업무 기준일자. reference_id: 전표 연결.
+  const deductOne = async (productId: string, qty: number, lineMemo: string | null, lineUsageTypeId: string | null) => {
     const { data: curArr } = await db
       .from('inventories').select('quantity')
       .eq('branch_id', branchId).eq('product_id', productId);
@@ -1333,17 +1385,23 @@ export async function recordStockUsage(input: {
     }
     // #100 음수 수량 = 재고 복원(반대). movement 부호로 IN/OUT 구분, quantity는 절대값.
     //   재고 산술(before − qty)은 음수 qty면 자동 복원(+), 신규행 quantity:-qty도 부호 자동.
-    await db.from('inventory_movements').insert({
+    const movPayload: any = {
       branch_id: branchId, product_id: productId,
       movement_type: qty >= 0 ? 'OUT' : 'IN', quantity: Math.abs(qty),
-      reference_type: 'USAGE', usage_type_id: usageTypeId, memo: lineMemo,
+      reference_type: 'USAGE', usage_type_id: lineUsageTypeId, memo: lineMemo,
       created_by: session.id, // 처리자(자가사용·시음·로스 등록자) — 변동 이력 표시용
-    });
+    };
+    if (usageDocId) movPayload.reference_id = usageDocId;   // #107 전표 연결
+    if (movementCreatedAt) movPayload.created_at = movementCreatedAt;
+    await db.from('inventory_movements').insert(movPayload);
   };
 
   // ── pass 2: 실제 차감 (라인 루프, 비트랜잭션 — 기존 코드 일관) ──
   for (const item of items) {
     const meta = metaById.get(item.product_id);
+    const itemUsageTypeId = lineUsageType(item);   // #107 품목별 사유
+    // #107 라인 메모 = 품목별 자유 사유(reason) 우선, 없으면 헤더 memo.
+    const itemReason = (item.reason || '').trim() || memo || null;
     // 팬텀: BOM 분해 → base 자재에서 분수 차감 (예: 침향 10환 1개 → 침향 30환 0.333)
     if (meta?.is_phantom === true) {
       const { data: bomRows } = await db.from('product_bom')
@@ -1357,31 +1415,24 @@ export async function recordStockUsage(input: {
         decRows = r.error ? [] : (r.data || []); // 087 미적용 폴백 → 전부 올림
       }
       const decById = new Map<string, boolean>(decRows.map((m: any) => [m.id, m.allow_decimal_stock === true]));
-      const phantomMemo = [memo, `세트분해: ${meta.name || ''} ×${item.quantity}`].filter(Boolean).join(' · ');
+      const phantomMemo = [itemReason, `세트분해: ${meta.name || ''} ×${item.quantity}`].filter(Boolean).join(' · ');
       const sign = item.quantity < 0 ? -1 : 1;   // #100 음수 소모 = 복원(반대 방향)
       for (const c of bom) {
         const rawMag = Math.abs(toNum(c.quantity) * item.quantity);
         const mag = decById.get(c.material_id) ? Math.round(rawMag * 10000) / 10000 : Math.ceil(rawMag);
         if (mag <= 0) continue;
-        await deductOne(c.material_id, mag * sign, phantomMemo);
+        await deductOne(c.material_id, mag * sign, phantomMemo, itemUsageTypeId);
       }
       continue;
     }
     // 재고 비관리(SERVICE 등): skip
     if (meta && meta.track_inventory === false) continue;
     // 일반 제품: 직접 차감
-    await deductOne(item.product_id, item.quantity, memo || null);
+    await deductOne(item.product_id, item.quantity, itemReason, itemUsageTypeId);
   }
 
-  // #86 재고변동전표(자가사용) — 입력 품목(선택 단품) 스냅샷. 팬텀 분해는 무브먼트에만 반영.
-  const docNo = await createStockMovementDoc(db, {
-    moveType: 'USAGE', fromBranchId: branchId, usageTypeId, memo: memo || null,
-    createdBy: session.id,
-    items: items.map((it) => ({ product_id: it.product_id, quantity: it.quantity })),
-  });
-
   revalidatePath('/inventory');
-  return { success: true, count: items.length, docNo };
+  return { success: true, count: items.length, docNo: usageDoc?.docNo ?? null };
 }
 
 // 재고이동 출발지(from_branch) 소유 검증 — 단건/다건이 공유(로직 드리프트 방지).
@@ -1555,12 +1606,14 @@ export async function transferInventoryBatch(input: {
   }
 
   // #86 재고변동전표(창고이동) — 전표번호 부여 + 품목 스냅샷. 테이블 부재 시 null(폴백, 이동은 진행).
-  const transferNo = await createStockMovementDoc(db, {
+  const transferDoc = await createStockMovementDoc(db, {
     moveType: 'TRANSFER', fromBranchId, toBranchId,
     shipDate: input.ship_date, arrivalDate: input.arrival_date, memo: memo || null,
     createdBy: session.id,
     items: items.map((it) => ({ product_id: it.product_id, quantity: it.quantity })),
   });
+  const transferNo = transferDoc?.docNo ?? null;
+  const transferDocId = transferDoc?.id ?? null;   // #107 movements.reference_id 연결
 
   // ── pass 2: 라인 루프(비트랜잭션 — 기존 코드 일관). 단건 transferInventory 의 OUT/IN 반복 ──
   for (const item of items) {
@@ -1606,6 +1659,7 @@ export async function transferInventoryBatch(input: {
       movement_type: 'OUT',
       quantity: q,
       reference_type: 'TRANSFER',
+      ...(transferDocId ? { reference_id: transferDocId } : {}),
       memo: `지점 이동${transferNo ? `(${transferNo})` : ''}: ${memo || '출고'}`,
       ...(shipAt ? { created_at: shipAt } : {}),
     });
@@ -1615,6 +1669,7 @@ export async function transferInventoryBatch(input: {
       movement_type: 'IN',
       quantity: q,
       reference_type: 'TRANSFER',
+      ...(transferDocId ? { reference_id: transferDocId } : {}),
       memo: `지점 이동${transferNo ? `(${transferNo})` : ''}: ${memo || '입고'}`,
       ...(arriveAt ? { created_at: arriveAt } : {}),
     });
@@ -1760,6 +1815,183 @@ export async function reverseStockTransfer(docId: string, reason?: string): Prom
   revalidatePath('/inventory');
   return { success: true, reverseDocNo: reverseDocNo || undefined };
 }
+
+// #107 마스터 권한 = 마스터(SUPER_ADMIN)·본부대표(EXECUTIVE)·HQ(HQ_OPERATOR).
+//   과거·완료 전표도 취소(반대전표)/일자·사유 정정 가능. 일반 사용자 제한은 추후 계정별 정책.
+const STOCK_DOC_MASTER_ROLES = ['SUPER_ADMIN', 'EXECUTIVE', 'HQ_OPERATOR'];
+
+// #107 재고변동전표 취소(반대전표) — 유형 무관(창고이동·자가사용·강제조정) 일반화.
+//   원전표의 실제 재고이동(reference_id=docId)을 그대로 반전 → 팬텀 분해·양지점 이동까지 정확.
+//   연결이 없는 과거 전표(마이그115 이전)는 유형별 폴백(TRANSFER=역이동, USAGE=음수 재소모).
+//   원전표 status=REVERSED + 사유·처리자, 반대전표 status=REVERSAL + reversal_of.
+export async function reverseStockMovementDoc(docId: string, reason?: string): Promise<{ success?: true; reverseDocNo?: string; error?: string }> {
+  let session;
+  try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
+  if (!STOCK_DOC_MASTER_ROLES.includes(session.role)) {
+    return { error: '전표 취소(반대전표)는 마스터·본부대표·HQ 권한만 가능합니다.' };
+  }
+  const supabase = await createClient() as any;
+  const db = supabase;
+
+  const { data: doc, error: dErr } = await db.from('stock_movement_docs').select('*').eq('id', docId).maybeSingle();
+  if (dErr) return { error: dErr.message };
+  if (!doc) return { error: '전표를 찾을 수 없습니다.' };
+  if (doc.status === 'REVERSED') return { error: '이미 취소(반대전표 처리)된 전표입니다.' };
+  if (doc.status === 'REVERSAL') return { error: '반대전표는 다시 취소할 수 없습니다.' };
+
+  const nowIso = new Date().toISOString();
+  const memo = `취소/반대전표 (원전표 ${doc.doc_no})${reason ? `: ${reason}` : ''}`;
+  let reverseDocId: string | null = null;
+  let reverseDocNo: string | null = null;
+
+  // 1) 연결된 실제 재고이동(reference_id=docId) — 있으면 그대로 반전(정확).
+  const { data: linked } = await db.from('inventory_movements')
+    .select('id, branch_id, product_id, movement_type, quantity, reference_type, usage_type_id')
+    .eq('reference_id', docId);
+  const linkedMovs = ((linked as any[]) || []).filter((m) => m.movement_type === 'IN' || m.movement_type === 'OUT');
+
+  if (linkedMovs.length > 0) {
+    const { data: items0 } = await db.from('stock_movement_doc_items').select('product_id, quantity, usage_type_id, reason').eq('doc_id', docId);
+    const revDoc = await createStockMovementDoc(db, {
+      moveType: doc.move_type, fromBranchId: doc.from_branch_id, toBranchId: doc.to_branch_id,
+      usageTypeId: doc.usage_type_id ?? null, memo, movementDate: doc.movement_date ?? null, createdBy: session.id,
+      items: ((items0 as any[]) || []).map((it) => ({ product_id: it.product_id, quantity: it.quantity, usage_type_id: it.usage_type_id, reason: it.reason })),
+    });
+    reverseDocId = revDoc?.id ?? null;
+    reverseDocNo = revDoc?.docNo ?? null;
+
+    for (const m of linkedMovs) {
+      const qty = Math.abs(toNum(m.quantity));
+      if (qty === 0) continue;
+      const undoDelta = m.movement_type === 'IN' ? -qty : qty;   // IN 되돌림=차감, OUT 되돌림=복원
+      const { data: invArr } = await db.from('inventories').select('id, quantity').eq('branch_id', m.branch_id).eq('product_id', m.product_id);
+      const inv = invArr?.[0];
+      if (inv) await db.from('inventories').update({ quantity: toNum(inv.quantity) + undoDelta }).eq('id', inv.id);
+      else await db.from('inventories').insert({ branch_id: m.branch_id, product_id: m.product_id, quantity: undoDelta, safety_stock: 0 });
+      const rev: any = {
+        branch_id: m.branch_id, product_id: m.product_id,
+        movement_type: m.movement_type === 'IN' ? 'OUT' : 'IN', quantity: qty,
+        reference_type: m.reference_type, usage_type_id: m.usage_type_id ?? null,
+        memo, created_by: session.id, created_at: nowIso,
+      };
+      if (reverseDocId) rev.reference_id = reverseDocId;
+      await db.from('inventory_movements').insert(rev);
+    }
+  } else {
+    // 2) 폴백(연결 없음, 과거 전표): 유형별 재작성.
+    if (doc.move_type === 'TRANSFER') {
+      const { data: items } = await db.from('stock_movement_doc_items').select('product_id, quantity').eq('doc_id', docId);
+      const itemList = ((items as any[]) || []).filter((it) => it.product_id && Number(it.quantity) > 0).map((it) => ({ product_id: it.product_id, quantity: Math.round(Number(it.quantity)) }));
+      if (itemList.length === 0) return { error: '되돌릴 품목이 없습니다.' };
+      const res: any = await transferInventoryBatch({ from_branch_id: doc.to_branch_id, to_branch_id: doc.from_branch_id, memo, items: itemList });
+      if (res?.error) return { error: `반대전표 처리 실패: ${res.error}` };
+      reverseDocNo = res?.transferNo ?? null;
+    } else if (doc.move_type === 'USAGE') {
+      const { data: items } = await db.from('stock_movement_doc_items').select('product_id, quantity, usage_type_id').eq('doc_id', docId);
+      const itemList = ((items as any[]) || []).filter((it) => it.product_id && Number(it.quantity) !== 0).map((it) => ({ product_id: it.product_id, quantity: -Math.round(Number(it.quantity)), usage_type_id: it.usage_type_id ?? null }));
+      if (itemList.length === 0) return { error: '되돌릴 품목이 없습니다.' };
+      const res: any = await recordStockUsage({ branch_id: doc.from_branch_id, usage_type_id: doc.usage_type_id ?? undefined, memo, items: itemList });
+      if (res?.error) return { error: `반대전표 처리 실패: ${res.error}` };
+      reverseDocNo = res?.docNo ?? null;
+    } else {
+      return { error: '이전 버전 강제조정 전표는 자동 취소할 수 없습니다. 새 강제조정으로 목표값을 정정하세요.' };
+    }
+    if (reverseDocNo) { const { data: rd } = await db.from('stock_movement_docs').select('id').eq('doc_no', reverseDocNo).maybeSingle(); reverseDocId = rd?.id ?? null; }
+  }
+
+  try {
+    if (reverseDocId) await db.from('stock_movement_docs').update({ status: 'REVERSAL', reversal_of: docId }).eq('id', reverseDocId);
+    await db.from('stock_movement_docs').update({
+      status: 'REVERSED', cancel_reason: (reason || '').trim() || null,
+      cancelled_by: session.id, cancelled_at: nowIso,
+    }).eq('id', docId);
+  } catch (e) { console.error('[reverseStockMovementDoc] 연결/취소표시 실패:', e); }
+
+  writeAuditLog({
+    userId: session.id, action: 'UPDATE', tableName: 'stock_movement_docs', recordId: docId,
+    description: `재고변동전표 취소(반대전표): ${doc.doc_no}${reverseDocNo ? ` → ${reverseDocNo}` : ''}, 사유: ${(reason || '').trim() || '-'}`,
+  }).catch(() => {});
+
+  revalidatePath('/inventory');
+  return { success: true, reverseDocNo: reverseDocNo || undefined };
+}
+
+// #107 마스터 권한 재고변동전표 정정(직접 수정) — 업무 기준일자·메모·품목별 사유.
+//   품목/수량/창고 변경은 재고 재계산이 필요해 '취소(반대전표) 후 재입력'으로 처리(정합 원칙).
+//   여기선 재고를 움직이지 않는 값만 in-place 수정하고, 연결된 movements 의 일시(created_at)·메모도 함께 갱신.
+export async function updateStockMovementDocMeta(input: {
+  docId: string;
+  movement_date?: string | null;   // YYYY-MM-DD (USAGE/ADJUST 기준일자)
+  memo?: string | null;
+  lines?: { item_id: string; usage_type_id?: string | null; reason?: string | null }[];
+  reason?: string;                  // 정정 사유(감사 로그)
+}): Promise<{ success?: true; error?: string }> {
+  let session;
+  try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
+  if (!STOCK_DOC_MASTER_ROLES.includes(session.role)) {
+    return { error: '전표 정정은 마스터·본부대표·HQ 권한만 가능합니다.' };
+  }
+  const supabase = await createClient() as any;
+  const db = supabase;
+
+  const { data: doc, error: dErr } = await db.from('stock_movement_docs').select('*').eq('id', input.docId).maybeSingle();
+  if (dErr) return { error: dErr.message };
+  if (!doc) return { error: '전표를 찾을 수 없습니다.' };
+  if (doc.status === 'REVERSED' || doc.status === 'REVERSAL') {
+    return { error: '취소되었거나 반대전표인 전표는 정정할 수 없습니다.' };
+  }
+
+  const newDate = (input.movement_date || '').trim() || null;
+  const dateChanged = input.movement_date !== undefined && newDate !== (doc.movement_date ?? null);
+  const memoChanged = input.memo !== undefined && (input.memo ?? null) !== (doc.memo ?? null);
+
+  // 1) 헤더 갱신(변경분만) — movement_date 컬럼 폴백.
+  const hdrPatch: any = {};
+  if (dateChanged) hdrPatch.movement_date = newDate;
+  if (memoChanged) hdrPatch.memo = input.memo ?? null;
+  if (Object.keys(hdrPatch).length > 0) {
+    let upErr = (await db.from('stock_movement_docs').update(hdrPatch).eq('id', input.docId)).error;
+    if (upErr && /movement_date/i.test(String(upErr?.message))) {
+      delete hdrPatch.movement_date;
+      if (Object.keys(hdrPatch).length > 0) upErr = (await db.from('stock_movement_docs').update(hdrPatch).eq('id', input.docId)).error;
+      else upErr = null;
+    }
+    if (upErr) return { error: `정정 실패: ${upErr.message}` };
+  }
+
+  // 2) 품목별 사유(usage_type_id/reason) 갱신 — doc_items.
+  for (const ln of (input.lines || [])) {
+    if (!ln.item_id) continue;
+    const patch: any = {};
+    if (ln.usage_type_id !== undefined) patch.usage_type_id = ln.usage_type_id || null;
+    if (ln.reason !== undefined) patch.reason = (ln.reason || '').trim() || null;
+    if (Object.keys(patch).length === 0) continue;
+    const { error: e } = await db.from('stock_movement_doc_items').update(patch).eq('id', ln.item_id).eq('doc_id', input.docId);
+    if (e && !/(usage_type_id|reason)/i.test(String(e?.message))) return { error: `품목 사유 정정 실패: ${e.message}` };
+  }
+
+  // 3) 연결된 실제 재고이동(reference_id=docId) 일시·메모 동기화 — 현황·이력이 정정 일자를 반영.
+  if (dateChanged || memoChanged) {
+    const movPatch: any = {};
+    if (dateChanged) movPatch.created_at = newDate ? `${newDate}T12:00:00+09:00` : nowNoonFallback();
+    if (memoChanged) movPatch.memo = input.memo ?? null;
+    // 연결 movements 만(과거 미연결 전표는 대상 없음 → 조용히 skip).
+    await db.from('inventory_movements').update(movPatch).eq('reference_id', input.docId);
+  }
+
+  writeAuditLog({
+    userId: session.id, action: 'UPDATE', tableName: 'stock_movement_docs', recordId: input.docId,
+    description: `재고변동전표 정정: ${doc.doc_no}${dateChanged ? `, 기준일자→${newDate ?? '-'}` : ''}${memoChanged ? ', 메모변경' : ''}, 사유: ${(input.reason || '').trim() || '-'}`,
+    oldData: { movement_date: doc.movement_date ?? null, memo: doc.memo ?? null },
+    newData: { movement_date: newDate, memo: input.memo ?? doc.memo ?? null },
+  }).catch(() => {});
+
+  revalidatePath('/inventory');
+  return { success: true };
+}
+
+// movement_date 미지정 시 movements created_at 폴백(현재 정오 KST 유지 불필요 → now()).
+function nowNoonFallback(): string { return new Date().toISOString(); }
 
 // ============ Categories ============
 

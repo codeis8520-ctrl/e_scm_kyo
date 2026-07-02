@@ -107,10 +107,19 @@ export default function InventoryPage() {
   };
   const [phantomPackProducts, setPhantomPackProducts] = useState<PhantomPackProduct[]>([]);
 
+  // #107 딥링크 — 재고 이력의 '재고변동전표' 행 클릭 시 ?view=transferList 로 전표조회 탭 오픈.
+  //   (useSearchParams는 Suspense 경계를 요구 → 마운트 시 location.search 직접 파싱으로 회피)
+  useEffect(() => {
+    const v = new URLSearchParams(window.location.search).get('view');
+    if (v === 'transferList' || v === 'transfer' || v === 'stock') setSubView(v);
+  }, []);
+
   const userRole = getCookie('user_role');
   const userBranchId = getCookie('user_branch_id');
   const isBranchUser = userRole === 'BRANCH_STAFF' || userRole === 'PHARMACY_STAFF';
   const isHQUser = userRole === 'SUPER_ADMIN' || userRole === 'HQ_OPERATOR';
+  // #107 마스터·본부대표·HQ — 재고변동전표 취소(반대전표)·정정 권한.
+  const isMaster = userRole === 'SUPER_ADMIN' || userRole === 'EXECUTIVE' || userRole === 'HQ_OPERATOR';
 
   // 첫 진입 — 페이지 메타(지점·카테고리)만 로드. inventories 는 검색 조건이 있을 때만.
   useEffect(() => {
@@ -295,6 +304,11 @@ export default function InventoryPage() {
   };
   const handleAdjust = (item: Inventory) => openMovement('ADJUST', item);
   const handleUsageClick = (item: Inventory) => openMovement('USAGE', item);
+  // #107 재고현황 숫자 클릭 → 해당 지점·품목의 재고 변동 이력(원본 전표 연결)
+  const openHistory = (product: { id: string; name: string; code: string }, branchId?: string) => {
+    setHistoryProduct(product);
+    setHistoryInitialBranchId(branchId);
+  };
 
   // ── 카테고리 트리 정보 (path 코드/정렬키/조상) ────────────────────────
   const categoryInfo = (() => buildCategoryInfo(categories))();
@@ -523,7 +537,7 @@ export default function InventoryPage() {
       )}
 
       {subView === 'transferList' && (
-        <StockTransferList branches={branches} canReverse={isHQUser} />
+        <StockTransferList branches={branches} canReverse={isMaster} usageTypes={usageTypes} />
       )}
 
       {subView === 'stock' && (<>
@@ -787,45 +801,29 @@ export default function InventoryPage() {
                       };
                       const isLow = toNum(effective.quantity) < toNum(effective.safety_stock);
                       const isMissing = !inv;
-                      // 원자재·부자재는 본사에서만 입출고·조정 가능. 본사 지정이 없으면 제한 생략.
-                      const materialBlocked = isMaterialType(row.productType) && !!hqBranchId && b.id !== hqBranchId;
-                      // 셀 클릭 = 자가 사용(USAGE). 지점직원은 자기 지점만, 원자재·부자재는 본사만,
-                      // 현재고 0/없음 칸은 차감 의미 없으므로 비활성.
-                      const isEmpty = toNum(effective.quantity) <= 0;
+                      // #107 셀(숫자) 클릭 = 재고 변동 이력(해당 지점·품목). 자가사용·강제조정은
+                      //   '재고변동전표 입력' 탭 / 지점별 뷰 행 버튼으로 일원화.
+                      // 지점직원은 자기 지점만 조회. (원자재·부자재도 읽기전용 이력은 조회 허용)
                       const otherBranch = isBranchUser && b.id !== userBranchId;
-                      // 재고>0: 자가 사용(소모 차감). 빈 칸(0 이하): 본사 권한자는 클릭 시 강제 조정(입고/맞춤).
-                      const usageAllowed = !materialBlocked && !otherBranch && !isEmpty;
-                      const forceAdjustAllowed = isHQUser && !materialBlocked && isEmpty;
-                      const clickable = usageAllowed || forceAdjustAllowed;
+                      const clickable = !otherBranch;
                       return (
                         <td key={b.id} className="text-center p-0">
                           <button
-                            onClick={() => {
-                              if (usageAllowed) handleUsageClick(effective);
-                              else if (forceAdjustAllowed) handleAdjust(effective);
-                            }}
+                            onClick={() => { if (clickable) openHistory({ id: row.productId, name: row.productName, code: row.productCode }, b.id); }}
                             disabled={!clickable}
-                            title={
-                              materialBlocked ? '원자재·부자재는 본사에서만 처리 가능'
-                              : otherBranch ? '다른 지점 재고는 처리 불가'
-                              : forceAdjustAllowed ? '재고 없음 · 클릭하여 강제 조정(입고/맞춤)'
-                              : usageAllowed ? `자가 사용(소모 차감) · 안전재고 ${fmtStock(effective.safety_stock, row.allowDecimal)}`
-                              : '재고 없음 · 강제 조정은 본사 권한'
-                            }
+                            title={otherBranch ? '다른 지점 재고는 조회 불가' : '클릭 → 이 지점·품목의 재고 변동 이력(원본 전표 연결)'}
                             className={`w-full h-full px-3 py-2 font-semibold transition-colors rounded ${
                               !clickable
                                 ? `cursor-not-allowed ${isMissing ? 'text-slate-300' : isLow ? 'text-red-400' : 'text-slate-400'}`
-                                : forceAdjustAllowed
-                                  ? 'hover:ring-2 hover:ring-red-300 hover:ring-inset text-slate-400 hover:bg-red-50 hover:text-red-600'
-                                  : `hover:ring-2 hover:ring-blue-300 hover:ring-inset ${
-                                      isLow
-                                        ? 'text-red-600 bg-red-50 hover:bg-red-100'
-                                        : 'text-slate-800 hover:bg-blue-50'
-                                    }`
+                                : `hover:ring-2 hover:ring-blue-300 hover:ring-inset ${
+                                    isLow
+                                      ? 'text-red-600 bg-red-50 hover:bg-red-100'
+                                      : 'text-slate-800 hover:bg-blue-50'
+                                  }`
                             }`}
                           >
                             {fmtStock(effective.quantity, row.allowDecimal)}
-                            {isLow && !isMissing && usageAllowed && <span className="ml-1 text-xs font-normal">↓{fmtStock(effective.safety_stock, row.allowDecimal)}</span>}
+                            {isLow && !isMissing && clickable && <span className="ml-1 text-xs font-normal">↓{fmtStock(effective.safety_stock, row.allowDecimal)}</span>}
                           </button>
                         </td>
                       );
@@ -840,7 +838,7 @@ export default function InventoryPage() {
             </tbody>
           </table>
           <p className="text-xs text-slate-400 mt-3">
-            숫자 클릭 → 자가 사용(소모) · 재고 없는 칸은 본사 권한자가 클릭 시 강제 조정(입고) · 제품명 클릭 → 변동 이력 · 빨간 숫자 = 안전재고 미달 (↓기준값) · 원자재·부자재는 본사만
+            숫자 클릭 → 재고 변동 이력(원본 전표 연결) · 제품명 클릭 → 변동 이력 · 자가 사용·강제 조정·이동은 상단 '+ 재고변동전표' 또는 지점별 뷰에서 · 빨간 숫자 = 안전재고 미달 (↓기준값)
           </p>
         </div>
       ) : (
@@ -910,8 +908,18 @@ export default function InventoryPage() {
                     ) : null}
                   </td>
                   <td className="font-mono text-xs text-slate-500">{item.product?.barcode || '-'}</td>
-                  <td className={isLow ? 'text-red-600 font-semibold' : ''}>
-                    {fmtStock(item.quantity, allowDecimal)}
+                  <td>
+                    {/* #107 현재재고 숫자 클릭 → 해당 지점·품목 재고 변동 이력(원본 전표 연결) */}
+                    <button
+                      onClick={() => {
+                        if (!item.product) return;
+                        openHistory({ id: item.product.id, name: item.product.name, code: item.product.code }, item.branch_id);
+                      }}
+                      title="클릭 → 재고 변동 이력(원본 전표 연결)"
+                      className={`hover:underline hover:text-blue-600 transition-colors ${isLow ? 'text-red-600 font-semibold' : 'text-slate-800'}`}
+                    >
+                      {fmtStock(item.quantity, allowDecimal)}
+                    </button>
                   </td>
                   <td>
                     <SafetyStockCell
@@ -958,19 +966,9 @@ export default function InventoryPage() {
                     )}
                     <button
                       onClick={() => openMovement('TRANSFER', item)}
-                      className="text-green-600 hover:underline mr-2"
+                      className="text-green-600 hover:underline"
                     >
                       이동
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (!item.product) return;
-                        setHistoryProduct({ id: item.product.id, name: item.product.name, code: item.product.code });
-                        setHistoryInitialBranchId(item.branch_id);
-                      }}
-                      className="text-purple-600 hover:underline"
-                    >
-                      이력
                     </button>
                   </td>
                 </tr>

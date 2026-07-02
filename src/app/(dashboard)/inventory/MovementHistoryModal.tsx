@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
 import { getInventoryMovements } from '@/lib/inventory-actions';
 import { fmtDateTimeKST, fmtDateKST, kstTodayString } from '@/lib/date';
 import { useEscClose } from '@/hooks/useEscClose';
@@ -33,15 +34,50 @@ const MOVEMENT_TYPE_LABEL: Record<string, { label: string; cls: string }> = {
 const REFERENCE_LABEL: Record<string, string> = {
   MANUAL:            '수동 조정',
   TRANSFER:          '지점 이동',
+  USAGE:             '자가 소모',
   POS_SALE:          '판매',
+  ONLINE_SALE:       '온라인 판매',
+  ONLINE_SALE_CANCEL:'온라인 취소',
+  ONLINE_REFUND:     '온라인 환불',
+  B2B_SALE:          'B2B 판매',
+  B2B_CANCEL:        'B2B 취소',
+  SALE_REVISE_ADD:   '전표 수정(추가)',
+  SALE_REVISE_REMOVE:'전표 수정(삭제)',
+  SALE_REVISE_EDIT:  '전표 수정',
+  SALE_CANCEL:       '판매 취소',
+  PHANTOM_DECOMPOSE: '세트 분해',
   PURCHASE_RECEIPT:  '매입 입고',
   PRODUCTION_ORDER:  '생산 완료',
   PRODUCTION:        '생산',
   STOCK_COUNT:       '재고 실사',
   CREDIT_CANCEL:     '외상 취소 복원',
   RETURN:            '반품',
+  DAILY_REPORT:      '판매일보',
+  DAILY_REPORT_CANCEL:'판매일보 취소',
   PACK_UNPACK:       '박스 분해/재포장',
 };
+
+// #107 각 이력 행 → 원본 전표 화면으로 연결.
+//   reference_id 가 있으면 해당 전표를 딥링크로 열고, 없으면(재고변동전표 등) 조회 화면으로 이동.
+const SALE_REF_TYPES = new Set([
+  'POS_SALE', 'PHANTOM_DECOMPOSE', 'SALE_REVISE_ADD', 'SALE_REVISE_REMOVE',
+  'SALE_REVISE_EDIT', 'SALE_CANCEL', 'CREDIT_CANCEL', 'DAILY_REPORT', 'DAILY_REPORT_CANCEL',
+]);
+const STOCK_DOC_REF_TYPES = new Set(['TRANSFER', 'USAGE', 'MANUAL']);
+function resolveSourceHref(m: { reference_type: string | null; reference_id: string | null }): string | null {
+  const rt = m.reference_type;
+  if (!rt) return null;
+  // 재고변동전표(이동/소모/강제조정) — 전표조회 화면으로 이동(정확 전표 매칭은 조회 화면에서).
+  if (STOCK_DOC_REF_TYPES.has(rt)) return '/inventory?view=transferList';
+  // 판매 계열 — reference_id = 판매전표 id → 판매현황 상세 자동 오픈.
+  if (SALE_REF_TYPES.has(rt) && m.reference_id) return `/pos?tab=list&order=${m.reference_id}`;
+  if (rt === 'ONLINE_SALE' || rt === 'ONLINE_SALE_CANCEL' || rt === 'ONLINE_REFUND') return '/pos?tab=online';
+  if (rt === 'B2B_SALE' || rt === 'B2B_CANCEL') return '/pos?tab=list';
+  if (rt === 'RETURN') return '/pos?tab=list';
+  if (rt === 'PRODUCTION_ORDER' || rt === 'PRODUCTION') return '/production';
+  if (rt === 'PURCHASE_RECEIPT') return '/purchases';
+  return null;
+}
 
 function fmtDateTime(iso: string): string {
   return fmtDateTimeKST(iso);
@@ -167,6 +203,7 @@ export default function MovementHistoryModal({ product, branches, initialBranchI
                 ) : items.map(m => {
                   const typeDef = MOVEMENT_TYPE_LABEL[m.movement_type] || { label: m.movement_type, cls: 'bg-slate-100 text-slate-600' };
                   const refLabel = m.reference_type ? (REFERENCE_LABEL[m.reference_type] || m.reference_type) : '-';
+                  const sourceHref = resolveSourceHref(m);
                   const rawQty = Number(m.quantity);
                   // inventory_movements.quantity 는 절대값으로 저장됨. movement_type 으로 방향 결정.
                   //   IN / TRANSFER 도착 / 복원 → +
@@ -192,7 +229,19 @@ export default function MovementHistoryModal({ product, branches, initialBranchI
                       <td className={`text-right font-semibold tabular-nums ${isPositive ? 'text-emerald-700' : isNegative ? 'text-red-600' : 'text-slate-500'}`}>
                         {isPositive ? '+' : ''}{signedQty.toLocaleString()}
                       </td>
-                      <td className="text-sm text-slate-600">{refLabel}</td>
+                      <td className="text-sm">
+                        {sourceHref ? (
+                          <Link
+                            href={sourceHref}
+                            className="text-blue-600 hover:underline inline-flex items-center gap-0.5"
+                            title="원본 전표 화면으로 이동"
+                          >
+                            {refLabel}<span className="text-[10px]">↗</span>
+                          </Link>
+                        ) : (
+                          <span className="text-slate-600">{refLabel}</span>
+                        )}
+                      </td>
                       <td className="text-xs text-slate-600 whitespace-nowrap">{m.creator_name || '-'}</td>
                       <td className="text-xs text-slate-500">{m.memo || '-'}</td>
                     </tr>

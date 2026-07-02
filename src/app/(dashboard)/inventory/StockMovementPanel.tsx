@@ -17,7 +17,7 @@ const TYPE_LABEL: Record<MoveType, string> = {
 // 유형별 안내 — 기준/대상창고 해석 + 재고 반영 방식.
 const TYPE_GUIDE: Record<MoveType, string> = {
   TRANSFER: '기준창고(보내는 창고)에서 차감하고 대상창고(받는 창고)로 증가합니다. 두 창고 재고가 함께 움직입니다.',
-  USAGE: '기준창고의 재고를 차감합니다(판매 아님 · 시음/파손/내부사용 등). 사용유형을 선택하세요. 음수 입력 시 재고가 복원(반대 처리)됩니다.',
+  USAGE: '기준창고의 재고를 차감합니다(판매 아님 · 시음/파손/폐기/직원사용 등). 품목마다 사유를 개별 지정할 수 있습니다. 음수 입력 시 재고가 복원(반대 처리)됩니다.',
   ADJUST: '⚠ 재고를 입력한 목표 수량으로 강제로 맞춥니다(실사·오류 보정 전용). 재고를 임의로 맞추는 마지막 보루이므로 신중히 사용하세요. 본사 권한자만 가능합니다.',
 };
 
@@ -25,7 +25,8 @@ interface Inventory {
   id: string; branch_id: string; product_id: string; quantity: number;
   product?: { id: string; name: string; code: string; allow_decimal_stock?: boolean; is_phantom?: boolean; track_inventory?: boolean };
 }
-interface Row { product_id: string; name: string; code: string; quantity: number; }
+// #107 usage_type_id: 자가사용 품목별 사유(라인 우선, 미지정 시 헤더 기본값).
+interface Row { product_id: string; name: string; code: string; quantity: number; usage_type_id?: string; }
 
 interface Props {
   branches: { id: string; name: string; is_headquarters?: boolean }[];
@@ -47,6 +48,8 @@ export default function StockMovementPanel({
   const [memo, setMemo] = useState('');
   const [shipDate, setShipDate] = useState(fmtDateKST(new Date()));
   const [arrivalDate, setArrivalDate] = useState('');
+  // #107 자가사용·강제조정 업무 기준일자(현황·이력 기준). 기본=오늘.
+  const [movementDate, setMovementDate] = useState(fmtDateKST(new Date()));
   const [search, setSearch] = useState('');
   const [rows, setRows] = useState<Row[]>([]);
   const [error, setError] = useState('');
@@ -122,6 +125,7 @@ export default function StockMovementPanel({
     setRows(prev => [...prev, { ...c, quantity: 1 }]);
   const removeRow = (id: string) => setRows(prev => prev.filter(r => r.product_id !== id));
   const updateQty = (id: string, qty: number) => setRows(prev => prev.map(r => r.product_id === id ? { ...r, quantity: qty } : r));
+  const updateRowUsageType = (id: string, utid: string) => setRows(prev => prev.map(r => r.product_id === id ? { ...r, usage_type_id: utid || undefined } : r));
   const toggleProduct = (c: { product_id: string; name: string; code: string }) =>
     rows.some(r => r.product_id === c.product_id) ? removeRow(c.product_id) : addRow(c);
 
@@ -136,10 +140,12 @@ export default function StockMovementPanel({
     : isUsage ? (!Number.isInteger(r.quantity) || r.quantity === 0)
     : r.quantity < 1);
 
+  // #107 자가사용 — 품목마다 사유(라인 우선, 없으면 헤더 기본값)가 있어야 함.
+  const usageReasonMissing = isUsage && rows.some(r => !(r.usage_type_id || usageTypeId));
   const submitDisabled =
     loading || adjustBlocked || hasInvalidQty || rows.length === 0 || !fromBranchId ||
     (isTransfer && (!toBranchId || sameBranch)) ||
-    (isUsage && !usageTypeId);
+    usageReasonMissing;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -152,10 +158,12 @@ export default function StockMovementPanel({
       if (sameBranch) { setError('창고이동은 기준창고와 대상창고가 달라야 합니다.'); return; }
       if (arrivalDate && shipDate && arrivalDate < shipDate) { setError('도착예정일은 출발일과 같거나 이후여야 합니다.'); return; }
     }
-    if (isUsage && !usageTypeId) { setError('사용유형을 선택하세요.'); return; }
     for (const r of rows) {
       if (isAdjust) { if (!Number.isFinite(r.quantity)) { setError(`'${r.name}' 목표 수량을 올바르게 입력하세요.`); return; } }
-      else if (isUsage) { if (!Number.isInteger(r.quantity) || r.quantity === 0) { setError(`'${r.name}' 수량은 0이 아닌 정수여야 합니다. (음수=복원)`); return; } }
+      else if (isUsage) {
+        if (!Number.isInteger(r.quantity) || r.quantity === 0) { setError(`'${r.name}' 수량은 0이 아닌 정수여야 합니다. (음수=복원)`); return; }
+        if (!(r.usage_type_id || usageTypeId)) { setError(`'${r.name}' 사용유형(사유)을 선택하세요.`); return; }   // #107 품목별 사유
+      }
       else if (!Number.isInteger(r.quantity) || r.quantity < 1) { setError(`'${r.name}' 수량은 1개 이상의 정수여야 합니다.`); return; }
     }
 
@@ -169,12 +177,15 @@ export default function StockMovementPanel({
       }) as { error?: string };
     } else if (isUsage) {
       result = await recordStockUsage({
-        branch_id: fromBranchId, usage_type_id: usageTypeId, memo: memo || undefined,
-        items: rows.map(r => ({ product_id: r.product_id, quantity: r.quantity })),
+        branch_id: fromBranchId, usage_type_id: usageTypeId || undefined, memo: memo || undefined,
+        movement_date: movementDate || undefined,   // #107 업무 기준일자
+        // #107 품목별 사유(라인 usage_type_id, 미지정 시 헤더 기본값 서버 폴백)
+        items: rows.map(r => ({ product_id: r.product_id, quantity: r.quantity, usage_type_id: r.usage_type_id || null })),
       }) as { error?: string };
     } else {
       result = await adjustInventoryBatch({
         branch_id: fromBranchId, memo: memo || undefined,
+        movement_date: movementDate || undefined,   // #107 업무 기준일자
         items: rows.map(r => ({ product_id: r.product_id, target_quantity: r.quantity })),
       }) as { error?: string };
     }
@@ -260,19 +271,20 @@ export default function StockMovementPanel({
         </div>
         {sameBranch && <p className="text-sm text-red-600">창고이동은 기준창고와 대상창고가 달라야 합니다.</p>}
 
-        {/* 사유 정보 — 자가사용=사용유형, 창고이동/강제조정=메모 */}
+        {/* 사유 정보 — 자가사용=기본 사용유형(품목별로 재지정 가능), 창고이동/강제조정=메모 */}
         {isUsage && (
           <div>
-            <label className="block text-sm font-medium text-gray-700">사용유형(사유) *</label>
-            <select value={usageTypeId} onChange={e => setUsageTypeId(e.target.value)} required className="mt-1 input">
-              <option value="">사용유형 선택 (시음/파손/내부사용 등)</option>
+            <label className="block text-sm font-medium text-gray-700">기본 사용유형(사유)</label>
+            <select value={usageTypeId} onChange={e => setUsageTypeId(e.target.value)} className="mt-1 input">
+              <option value="">품목별로 각각 선택</option>
               {usageTypes.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
             </select>
+            <p className="mt-1 text-xs text-slate-400">전 품목 공통 사유를 먼저 정하면 편합니다. 품목마다 다른 사유는 아래 목록에서 개별 지정하세요.</p>
             {usageTypes.length === 0 && <p className="mt-1 text-xs text-amber-600">등록된 사용유형이 없습니다. 코드관리에서 먼저 추가하세요.</p>}
           </div>
         )}
 
-        {/* 이동일자 — 창고이동만(출발/도착). 자가사용·강제조정은 처리일=오늘 기준. */}
+        {/* 업무 기준일자 — 창고이동=출발/도착, 자가사용·강제조정=기준일자(#107 백데이트/정정 가능). */}
         {isTransfer ? (
           <div className="flex flex-col sm:flex-row gap-3">
             <div className="flex-1">
@@ -286,7 +298,11 @@ export default function StockMovementPanel({
             </div>
           </div>
         ) : (
-          <p className="text-xs text-slate-400">처리일: 오늘 기준으로 기록됩니다.</p>
+          <div className="sm:max-w-xs">
+            <label className="block text-sm font-medium text-gray-700">업무 기준일자 *</label>
+            <input type="date" value={movementDate} onChange={e => setMovementDate(e.target.value)} required className="mt-1 input" />
+            <p className="mt-1 text-xs text-slate-400">현황·이력·재고에 반영되는 기준일입니다(전표생성일시는 내부 로그). 과거 일자로 정정할 수 있습니다.</p>
+          </div>
         )}
 
         <div>
@@ -359,6 +375,17 @@ export default function StockMovementPanel({
                       {r.code} · 현재고: <span className="font-semibold">{stock === null ? '없음(0)' : fmtStock(stock, dec)}</span>
                       {over && <span className="ml-2 px-1.5 py-0.5 rounded bg-red-100 text-red-700">현재고 초과</span>}
                     </p>
+                    {/* #107 자가사용 품목별 사유 — 미선택 시 헤더 기본 사유 적용 */}
+                    {isUsage && (
+                      <select
+                        value={r.usage_type_id || ''}
+                        onChange={e => updateRowUsageType(r.product_id, e.target.value)}
+                        className={`mt-1 input py-1 text-xs ${!(r.usage_type_id || usageTypeId) ? 'border-amber-400' : ''}`}
+                      >
+                        <option value="">{usageTypeId ? '기본 사유 사용' : '사유 선택 *'}</option>
+                        {usageTypes.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                      </select>
+                    )}
                   </div>
                   <input
                     type="number"
