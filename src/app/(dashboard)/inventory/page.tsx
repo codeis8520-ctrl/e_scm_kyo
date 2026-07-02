@@ -528,7 +528,7 @@ export default function InventoryPage() {
         <StockMovementPanel
           branches={branches}
           usageTypes={usageTypes}
-          isHQUser={isHQUser}
+          isHQUser={isMaster}   /* #107 14차: 강제조정 권한 = 마스터·본부대표(EXECUTIVE)·HQ */
           defaultBranchId={isBranchUser && userBranchId ? userBranchId : ''}
           branchLocked={isBranchUser && !!userBranchId}
           preset={movementPreset}

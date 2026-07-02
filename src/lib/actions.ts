@@ -1034,8 +1034,9 @@ export async function getInventory(branchId?: string, search?: string) {
 
 export async function adjustInventory(formData: FormData) {
   const session = await requireSession();
-  if (session.role !== 'SUPER_ADMIN' && session.role !== 'HQ_OPERATOR') {
-    return { error: '재고 조정은 본사 권한만 가능합니다.' };
+  // #107 14차: 마스터(SUPER_ADMIN)·본부대표(EXECUTIVE)·HQ 모두 강제조정 가능(충분한 수정 자유도).
+  if (!['SUPER_ADMIN', 'EXECUTIVE', 'HQ_OPERATOR'].includes(session.role)) {
+    return { error: '재고 조정은 마스터·본부대표·HQ 권한만 가능합니다.' };
   }
 
   const supabase = await createClient();
@@ -1209,8 +1210,9 @@ export async function adjustInventoryBatch(input: {
   items: { product_id: string; target_quantity: number }[];
 }): Promise<{ success?: true; count?: number; docNo?: string | null; error?: string }> {
   const session = await requireSession();
-  if (session.role !== 'SUPER_ADMIN' && session.role !== 'HQ_OPERATOR') {
-    return { error: '강제 조정은 본사 권한(본부대표·HQ)만 가능합니다.' };
+  // #107 14차: 마스터·본부대표(EXECUTIVE)·HQ 모두 강제조정 가능.
+  if (!['SUPER_ADMIN', 'EXECUTIVE', 'HQ_OPERATOR'].includes(session.role)) {
+    return { error: '강제 조정은 마스터·본부대표·HQ 권한만 가능합니다.' };
   }
   const supabase = await createClient();
   const db = supabase as any;
@@ -1771,8 +1773,8 @@ export async function getStockMovementDocDetail(id: string): Promise<{ header?: 
 export async function reverseStockTransfer(docId: string, reason?: string): Promise<{ success?: true; reverseDocNo?: string; error?: string }> {
   let session;
   try { session = await requireSession(); } catch (e: any) { return { error: e.message }; }
-  if (session.role !== 'SUPER_ADMIN' && session.role !== 'HQ_OPERATOR') {
-    return { error: '전표 취소(반대전표)는 본사 권한(본부대표·HQ)만 가능합니다.' };
+  if (!['SUPER_ADMIN', 'EXECUTIVE', 'HQ_OPERATOR'].includes(session.role)) {
+    return { error: '전표 취소(반대전표)는 마스터·본부대표·HQ 권한만 가능합니다.' };
   }
   const supabase = await createClient() as any;
 
